@@ -289,3 +289,27 @@ type RemoveUnixUserResponse struct {
 	Killed      int  `json:"killed"`
 	HomeRemoved bool `json:"home_removed"`
 }
+
+// InstallPanelRequest asks the agent to replace the panel itself with a
+// package the API process has already downloaded and verified. The agent
+// checks the same package again — the API is unprivileged and must not be the
+// only thing standing between a release key and root.
+type InstallPanelRequest struct {
+	Package string `json:"package"`
+	SHA256  string `json:"sha256"`
+	Version string `json:"version"`
+	// Sums and Sig are the release checksum list and its detached signature;
+	// they are required when a release key is configured.
+	Sums string `json:"sums,omitempty"`
+	Sig  string `json:"sig,omitempty"`
+}
+
+// InstallPanelResponse reports that the update was handed to systemd. The
+// installation itself outlives this request: it restarts the agent.
+type InstallPanelResponse struct {
+	Unit    string `json:"unit"`
+	Started bool   `json:"started"`
+	// Signed is false when the panel has no release key and the package was
+	// accepted on its digest alone.
+	Signed bool `json:"signed"`
+}

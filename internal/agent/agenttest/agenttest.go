@@ -196,6 +196,11 @@ func (a *Agent) respond(path string, body []byte) any {
 		}
 		return agent.PkgResponse{Installed: installed, Output: "ok"}
 
+	case "/v1/panel/install":
+		var req agent.InstallPanelRequest
+		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		return agent.InstallPanelResponse{Unit: "monopanel-update.service", Started: true, Signed: req.Sig != ""}
+
 	case "/v1/tool":
 		var req agent.ToolRequest
 		json.Unmarshal(body, &req) //nolint:errcheck // test double
@@ -242,6 +247,17 @@ func (a *Agent) Called(path string) bool {
 		}
 	}
 	return false
+}
+
+// LastCall returns the most recent request to an endpoint.
+func (a *Agent) LastCall(path string) (Call, bool) {
+	calls := a.Calls()
+	for i := len(calls) - 1; i >= 0; i-- {
+		if calls[i].Path == path {
+			return calls[i], true
+		}
+	}
+	return Call{}, false
 }
 
 // File returns the content last written to a path, and whether it was written.

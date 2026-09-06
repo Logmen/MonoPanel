@@ -53,9 +53,37 @@
 | Файлы | `mp files ls\|put\|get\|mkdir\|rm\|mv\|chmod\|extract\|size` | `monopanel fsop` через helper с необратимым сбросом привилегий, пути относительно домашнего каталога |
 | SFTP / SSH | `mp user add`, `mp user set --shell\|--sftp-only --password` | SFTP-only = chroot в `/var/www/<login>` (root-owned 0750) через `sshd_config.d/monopanel.conf`, пароль общий для панели и SFTP; `mp user rm <login> [--purge]` — удаление вместе с сайтами, базами, cron, app-сервисами, сертификатами и unix-аккаунтом |
 | Метрики и логи | `mp metrics`, `mp site logs`, `mp logs <unit>`, `mp doctor` | сэмплер раз в 10 с → точки по минутам (30 дней), хвост логов сайтов и journald через агент, 17+ проверок doctor |
+| Обновление панели | `mp update`, `mp update apply`, `mp update settings` | релизы репозитория: панель находит новую версию, скачивает пакет для своей ОС, проверяет подпись ed25519 и ставит его отдельным systemd-юнитом с откатом на прежний бинарник, если новая версия не отвечает |
 | Безопасность | `mp user totp-reset`, `mp token create`, `mp webhook add` | TOTP 2FA (QR в Web UI), Bearer-токены, webhooks с HMAC-SHA256 на события задач |
 
-Не реализовано: собственные сборки PHP (пока Sury/Remi), Apache и СУБД на EL не проверялись (нет тестового хоста), phpMyAdmin, квоты диска, cgroup-лимиты на сайт, почта, PowerDNS, WAF, multi-server, пакеты deb/rpm с репозиторием.
+Не реализовано: собственные сборки PHP (пока Sury/Remi), Apache и СУБД на EL не проверялись (нет тестового хоста), phpMyAdmin, квоты диска, cgroup-лимиты на сайт, почта, PowerDNS, WAF, multi-server, apt/yum-репозиторий (пакеты выкладываются релизами, панель ставит их сама).
+
+## Релизы и обновление
+
+Версия выпускается тегом; всё остальное делает CI. Тег `v0.6.0` собирает `.deb` и `.rpm`
+под amd64 и arm64, подписывает список контрольных сумм ключом из секрета репозитория и
+публикует релиз. Панель на сервере обращается к этому же релизу.
+
+```bash
+make keygen                       # один раз: ключ подписи (приватный — в секрет MONOPANEL_RELEASE_KEY)
+make release VERSION=0.6.0        # тег + push, дальше CI собирает и публикует
+make packages VERSION=0.6.0       # то же самое локально, без публикации
+```
+
+На сервере:
+
+```bash
+mp update settings --repo owner/name --token-stdin   # приватный репозиторий: токен с правом чтения
+mp update trust --key <публичный ключ>               # пишется в config.yaml, доступен только root
+mp update                                            # что установлено и что доступно
+mp update apply                                      # скачать, проверить, установить, перезапуститься
+```
+
+Проверка идёт по расписанию (по умолчанию раз в сутки), `--auto-apply` ставит найденное
+обновление без участия человека. Установка выполняется не самой панелью: агент запускает
+transient-юнит `monopanel-update.service`, который переживает перезапуск API и агента,
+и откатывает прежний бинарник, если новая версия не отвечает по сокету. Если ключ задан,
+неподписанный релиз не установится; без ключа проверяется только контрольная сумма.
 
 ## Сборка и запуск
 
@@ -135,9 +163,11 @@ internal/render/      рендер шаблонов + golden-тесты
 internal/cli/ tui/    команды mp и TUI-меню
 internal/setup/       mp setup
 internal/client/      Go-клиент API (CLI, TUI, setup)
+internal/updater/     поиск релиза, проверка подписи, установка пакета с откатом
 templates/            nginx/, apache/, php-fpm/, systemd/
 web/                  SvelteKit-приложение (build/ вшивается в бинарник)
 packaging/            nfpm.yaml, units, sysusers/tmpfiles, install.sh
+scripts/release/      генерация ключа и подпись SHA256SUMS для релиза
 ```
 
 ## Документация

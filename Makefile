@@ -1,4 +1,8 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.0.0-dev)
+# Releases are tagged v0.6.0 but the version in package names, in `mp version`
+# and in the update check is plain semver.
+VERSION := $(patsubst v%,%,$(VERSION))
+RPMARCH  = $(if $(filter arm64,$(ARCH)),aarch64,x86_64)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w -X monopanel/internal/buildinfo.Version=$(VERSION) -X monopanel/internal/buildinfo.Commit=$(COMMIT) -X monopanel/internal/buildinfo.Date=$(DATE)
@@ -8,7 +12,7 @@ DEV_HOST ?= ubuntu@185.253.8.5
 DEV_SSH  ?= ssh -i ~/.ssh/monopanel-dev -o IdentitiesOnly=yes
 GOLANGCI_VERSION ?= v2.13.2
 
-.PHONY: build build-arm64 test test-race test-short cover cover-html lint vet fmt fmt-check check web web-check web-stub e2e deb rpm deploy-dev clean help
+.PHONY: build build-arm64 test test-race test-short cover cover-html lint vet fmt fmt-check check web web-check web-stub e2e deb rpm packages arch-artifacts sign release keygen deploy-dev clean help
 
 help: ## Show the available targets
 	@grep -hE '^[a-z0-9-]+:.*##' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*## "} {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -89,6 +93,36 @@ endif
 
 deb rpm: build
 	VERSION=$(VERSION) ARCH=$(ARCH) nfpm package -f packaging/nfpm.yaml -p $@ -t dist/
+
+# Release artefacts. The names are part of the update protocol: the panel asks
+# a release for exactly these files, so nothing here may be renamed casually.
+packages: ## Build the release packages and binaries for amd64 and arm64
+	@command -v nfpm >/dev/null 2>&1 || (echo "nfpm is missing: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest" && exit 1)
+	$(MAKE) arch-artifacts ARCH=amd64
+	$(MAKE) arch-artifacts ARCH=arm64
+	cd dist && sha256sum monopanel_$(VERSION)_*.deb monopanel-$(VERSION).*.rpm monopanel-linux-* > SHA256SUMS
+	@echo "dist/: $$(cd dist && ls monopanel_* monopanel-* SHA256SUMS | tr '\n' ' ')"
+
+arch-artifacts: build
+	cp dist/monopanel dist/monopanel-linux-$(ARCH)
+	VERSION=$(VERSION) ARCH=$(ARCH) nfpm package -f packaging/nfpm.yaml -p deb -t dist/monopanel_$(VERSION)_$(ARCH).deb
+	VERSION=$(VERSION) ARCH=$(ARCH) nfpm package -f packaging/nfpm.yaml -p rpm -t dist/monopanel-$(VERSION).$(RPMARCH).rpm
+
+keygen: ## Generate a release signing key pair (private key goes into the repository secret)
+	$(GO) run ./scripts/release keygen
+
+# Signing needs MONOPANEL_RELEASE_KEY; without it the release still installs,
+# but only on servers that have no key pinned.
+sign: ## Sign dist/SHA256SUMS with $MONOPANEL_RELEASE_KEY
+	$(GO) run ./scripts/release sign dist/SHA256SUMS
+
+release: ## Tag the current commit and let CI publish the release (VERSION=0.6.0)
+	@echo "$(VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)?$$' || \
+		{ echo "pass a release version: make release VERSION=0.6.0"; exit 2; }
+	@git diff --quiet || { echo "working tree is dirty"; exit 2; }
+	git tag -a v$(VERSION) -m "MonoPanel $(VERSION)"
+	git push origin v$(VERSION)
+	@echo "release workflow: gh run watch \$$(gh run list --workflow=release.yml -L1 --json databaseId -q '.[0].databaseId')"
 
 # Dev deploy without a package: copy the binary and run setup on the test host.
 deploy-dev: build

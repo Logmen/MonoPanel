@@ -788,3 +788,27 @@ func (c *Client) Presets(ctx context.Context) ([]apitypes.SitePreset, error) {
 	var out []apitypes.SitePreset
 	return out, c.do(ctx, http.MethodGet, "/sites/presets", nil, &out)
 }
+
+// UpdateStatus reports the panel version and the release found last time.
+func (c *Client) UpdateStatus(ctx context.Context) (*apitypes.UpdateStatus, error) {
+	var out apitypes.UpdateStatus
+	return &out, c.do(ctx, http.MethodGet, "/system/update", nil, &out)
+}
+
+// SetUpdateSettings changes where the panel looks for new versions.
+func (c *Client) SetUpdateSettings(ctx context.Context, req apitypes.UpdateSettingsRequest) (*apitypes.UpdateStatus, error) {
+	var out apitypes.UpdateStatus
+	return &out, c.do(ctx, http.MethodPut, "/system/update", req, &out)
+}
+
+// CheckUpdate asks the repository for a release right now.
+func (c *Client) CheckUpdate(ctx context.Context) (*apitypes.UpdateStatus, error) {
+	var out apitypes.UpdateStatus
+	return &out, c.do(ctx, http.MethodPost, "/system/update/check", struct{}{}, &out)
+}
+
+// ApplyUpdate installs a version; an empty version means the latest one.
+func (c *Client) ApplyUpdate(ctx context.Context, version string) (*apitypes.JobRef, error) {
+	var out apitypes.JobRef
+	return &out, c.do(ctx, http.MethodPost, "/system/update/apply", apitypes.UpdateApplyRequest{Version: version}, &out)
+}

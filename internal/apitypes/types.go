@@ -530,3 +530,56 @@ type SitePreset struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 }
+
+// UpdateSettings says where the panel looks for new versions of itself.
+type UpdateSettings struct {
+	Repo       string `json:"repo" doc:"Репозиторий с релизами в виде owner/name"`
+	API        string `json:"api,omitempty" doc:"Адрес API репозитория; пусто — api.github.com (для GitHub Enterprise)"`
+	Channel    string `json:"channel" doc:"stable — только релизы, beta — ещё и предрелизы"`
+	HasToken   bool   `json:"has_token" doc:"Токен доступа сохранён (обязателен для приватного репозитория)"`
+	CheckHours int    `json:"check_hours" doc:"Как часто проверять обновления; 0 — не проверять"`
+	AutoApply  bool   `json:"auto_apply" doc:"Устанавливать найденное обновление без подтверждения"`
+}
+
+// UpdateSettingsRequest changes them. Omitted fields keep their value.
+type UpdateSettingsRequest struct {
+	Repo       string `json:"repo,omitempty" maxLength:"140"`
+	API        string `json:"api,omitempty" maxLength:"200" doc:"Адрес API репозитория; \"-\" возвращает api.github.com"`
+	Channel    string `json:"channel,omitempty" enum:"stable,beta"`
+	Token      string `json:"token,omitempty" maxLength:"512" doc:"Токен доступа к репозиторию; хранится зашифрованным"`
+	ClearToken bool   `json:"clear_token,omitempty" doc:"Удалить сохранённый токен"`
+	CheckHours *int   `json:"check_hours,omitempty" minimum:"0" maximum:"720"`
+	AutoApply  *bool  `json:"auto_apply,omitempty"`
+}
+
+// UpdateAttempt is the outcome of the last installation, read back from disk
+// after the panel restarted itself.
+type UpdateAttempt struct {
+	Status   string     `json:"status" doc:"installing, done, failed или rolled-back"`
+	From     string     `json:"from,omitempty"`
+	To       string     `json:"to,omitempty"`
+	Started  *time.Time `json:"started,omitempty"`
+	Finished *time.Time `json:"finished,omitempty"`
+	Error    string     `json:"error,omitempty"`
+	Log      string     `json:"log,omitempty"`
+}
+
+// UpdateStatus is what the panel knows about its own version.
+type UpdateStatus struct {
+	Current     string         `json:"current"`
+	Latest      string         `json:"latest,omitempty"`
+	Tag         string         `json:"tag,omitempty"`
+	Notes       string         `json:"notes,omitempty"`
+	PublishedAt *time.Time     `json:"published_at,omitempty"`
+	Available   bool           `json:"available" doc:"Latest новее текущей версии"`
+	KeyPinned   bool           `json:"key_pinned" doc:"Настроен ключ, которым подписаны релизы"`
+	Settings    UpdateSettings `json:"settings"`
+	CheckedAt   *time.Time     `json:"checked_at,omitempty"`
+	LastError   string         `json:"last_error,omitempty"`
+	LastAttempt *UpdateAttempt `json:"last_attempt,omitempty"`
+}
+
+// UpdateApplyRequest installs a version; empty means the latest one.
+type UpdateApplyRequest struct {
+	Version string `json:"version,omitempty" maxLength:"64" doc:"Версия или тег; по умолчанию последняя в канале"`
+}

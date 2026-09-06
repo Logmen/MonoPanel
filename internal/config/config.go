@@ -30,10 +30,11 @@ type Config struct {
 	WebGroup      string `yaml:"web_group"`
 	WWWRoot       string `yaml:"www_root"`
 
-	Web   Web   `yaml:"web"`
-	Agent Agent `yaml:"agent"`
-	Jobs  Jobs  `yaml:"jobs"`
-	Log   Log   `yaml:"log"`
+	Web    Web    `yaml:"web"`
+	Agent  Agent  `yaml:"agent"`
+	Jobs   Jobs   `yaml:"jobs"`
+	Log    Log    `yaml:"log"`
+	Update Update `yaml:"update"`
 
 	path string
 }
@@ -52,6 +53,19 @@ type Web struct {
 type Agent struct {
 	Socket             string   `yaml:"socket"`
 	ExtraWritePrefixes []string `yaml:"extra_write_prefixes,omitempty"`
+}
+
+// Update configures panel self-updates. Only the trust anchor lives here: a
+// package that replaces the panel binary runs as root, so the key that vouches
+// for it must not be changeable from the panel itself. Where to look for
+// releases is an ordinary setting in the database.
+type Update struct {
+	// PublicKey is the base64 ed25519 key the release checksums are signed
+	// with. Empty means unsigned releases are accepted after a digest check.
+	PublicKey string `yaml:"public_key,omitempty"`
+	// Unit names the panel restarts after installing a new version.
+	AgentUnit string `yaml:"agent_unit,omitempty"`
+	APIUnit   string `yaml:"api_unit,omitempty"`
 }
 
 // Jobs configures the job runner.
@@ -115,6 +129,7 @@ func Default() Config {
 		Web:           Web{Listen: ":8443"},
 		Agent:         Agent{},
 		Jobs:          Jobs{Workers: 2},
+		Update:        Update{AgentUnit: "monopanel-agent.service", APIUnit: "monopanel-api.service"},
 		Log:           Log{Level: "info", Format: "text"},
 	}
 }
@@ -164,6 +179,8 @@ func (c *Config) applyDefaults() {
 	def(&c.Web.Listen, d.Web.Listen)
 	def(&c.Log.Level, d.Log.Level)
 	def(&c.Log.Format, d.Log.Format)
+	def(&c.Update.AgentUnit, d.Update.AgentUnit)
+	def(&c.Update.APIUnit, d.Update.APIUnit)
 	if c.Jobs.Workers <= 0 {
 		c.Jobs.Workers = d.Jobs.Workers
 	}
@@ -207,6 +224,12 @@ func (c Config) TLSKeyPath() string {
 	}
 	return filepath.Join(c.DataDir, "tls", "panel.key")
 }
+
+// DownloadsDir is where packages are staged before they are installed.
+func (c Config) DownloadsDir() string { return filepath.Join(c.DataDir, "downloads") }
+
+// UpdatesDir holds the state of the last self-update and the binary it replaced.
+func (c Config) UpdatesDir() string { return filepath.Join(c.DataDir, "updates") }
 
 // ConfHistoryDir stores previous versions of generated configuration files.
 func (c Config) ConfHistoryDir() string { return filepath.Join(c.DataDir, "confhistory") }

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -34,7 +35,11 @@ type siteFixture struct {
 	ctx    context.Context
 }
 
-func newSiteFixture(t *testing.T) *siteFixture {
+func newSiteFixture(t *testing.T) *siteFixture { return newFixture(t, nil) }
+
+// newFixture is newSiteFixture with a say in the configuration, for tests that
+// need a pinned release key or another data directory.
+func newFixture(t *testing.T, tweak func(*config.Config)) *siteFixture {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -43,6 +48,14 @@ func newSiteFixture(t *testing.T) *siteFixture {
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
 	cfg.RunDir = t.TempDir()
+	// A real key file makes the encrypted settings (tokens) work in tests.
+	cfg.SecretKeyFile = filepath.Join(cfg.DataDir, "secret.key")
+	if err := os.WriteFile(cfg.SecretKeyFile, []byte(strings.Repeat("k", 48)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if tweak != nil {
+		tweak(&cfg)
+	}
 	db, err := store.Open(ctx, filepath.Join(cfg.DataDir, "panel.db"))
 	if err != nil {
 		t.Fatal(err)

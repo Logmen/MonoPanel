@@ -8,6 +8,7 @@ import (
 	"time"
 
 	sd "github.com/coreos/go-systemd/v22/dbus"
+	"github.com/godbus/dbus/v5"
 )
 
 // Conn is a connection to the system manager.
@@ -118,4 +119,31 @@ func (c *Conn) Status(ctx context.Context, unit string) (Status, error) {
 		s.ActiveSince = time.UnixMicro(int64(ts))
 	}
 	return s, nil
+}
+
+// RunDetached starts a transient one-shot unit and returns as soon as systemd
+// has accepted the job. The command keeps running when the caller exits or is
+// restarted, which is what makes a self-update possible.
+func (c *Conn) RunDetached(ctx context.Context, unit, description string, argv []string) error {
+	if len(argv) == 0 {
+		return fmt.Errorf("run %s: no command", unit)
+	}
+	// A finished transient unit lingers when it failed; clear it or systemd
+	// refuses to reuse the name.
+	_ = c.c.ResetFailedUnitContext(ctx, unit)
+	props := []sd.Property{
+		sd.PropDescription(description),
+		sd.PropExecStart(argv, false),
+		{Name: "Type", Value: dbus.MakeVariant("oneshot")},
+		{Name: "CollectMode", Value: dbus.MakeVariant("inactive-or-failed")},
+		{Name: "TimeoutStartUSec", Value: dbus.MakeVariant(uint64(30 * 60 * 1e6))},
+		{Name: "StandardOutput", Value: dbus.MakeVariant("journal")},
+		{Name: "StandardError", Value: dbus.MakeVariant("journal")},
+	}
+	// The start job of a one-shot unit only completes when the command exits;
+	// the buffered channel takes that result long after this call returned.
+	if _, err := c.c.StartTransientUnitContext(ctx, unit, "replace", props, make(chan string, 1)); err != nil {
+		return fmt.Errorf("start %s: %w", unit, err)
+	}
+	return nil
 }

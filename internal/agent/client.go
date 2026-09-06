@@ -169,3 +169,11 @@ func (c *Client) RemoveUnixUser(ctx context.Context, req *RemoveUnixUserRequest)
 	var r RemoveUnixUserResponse
 	return &r, c.call(ctx, "/v1/user/remove", req, &r)
 }
+
+// InstallPanel replaces the panel with a staged package. It returns as soon as
+// systemd has taken the job: the update restarts both daemons, so the reply to
+// this call is the last thing this connection sees.
+func (c *Client) InstallPanel(ctx context.Context, req *InstallPanelRequest) (*InstallPanelResponse, error) {
+	var r InstallPanelResponse
+	return &r, c.call(ctx, "/v1/panel/install", req, &r)
+}

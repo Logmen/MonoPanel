@@ -58,6 +58,7 @@ func (s *Server) Handler() http.Handler {
 	r.Post("/v1/runas", handle(s.runAsUser))
 	r.Post("/v1/service", handle(s.service))
 	r.Post("/v1/pkg", handle(s.pkg))
+	r.Post("/v1/panel/install", handle(s.installPanel))
 	return r
 }
 

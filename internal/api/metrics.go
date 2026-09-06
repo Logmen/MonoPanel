@@ -17,7 +17,9 @@ import (
 
 	"monopanel/internal/agent"
 	"monopanel/internal/apitypes"
+	"monopanel/internal/buildinfo"
 	"monopanel/internal/store"
+	"monopanel/internal/updater"
 )
 
 // sampler collects host metrics every 10 s and stores one point per minute.
@@ -362,6 +364,19 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 				add(check("certificate "+c.Name, "ok", "until "+c.NotAfter.Format("2006-01-02")))
 			}
 		}
+	}
+	if c := s.loadUpdateConfig(actx); c.Repo != "" {
+		switch {
+		case c.LastError != "":
+			add(check("update", "warn", "проверка обновлений: "+c.LastError))
+		case c.Latest != nil && updater.Newer(buildinfo.Version, c.Latest.Version):
+			add(check("update", "warn", "доступна версия "+c.Latest.Version+" (mp update apply)"))
+		default:
+			add(check("update", "ok", "версия "+buildinfo.Version))
+		}
+	}
+	if st, err := updater.ReadState(s.cfg.UpdatesDir()); err == nil && st != nil && (st.Status == updater.StatusFailed || st.Status == updater.StatusRolledBack) {
+		add(check("update", "warn", "последнее обновление до "+st.To+": "+st.Status+", "+st.Error))
 	}
 	if jobs, err := s.db.ListJobs(actx, 200, store.JobFailed); err == nil {
 		recent := 0

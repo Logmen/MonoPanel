@@ -38,6 +38,14 @@
 - [x] Токены по локальному сокету: `POST /tokens` принимает `user`, root без аккаунта получает токен единственного администратора (при нескольких — ошибка со списком), администратор видит и отзывает токены любого аккаунта; `make e2e HOST=…` берёт токен по ssh и отзывает его после прогона.
 - [x] CI: параллельные джобы go / lint / templates / web, кэш модулей и pnpm, `-race` с покрытием в summary, сборка amd64 + arm64, e2e по `workflow_dispatch`.
 
+### Обновление панели из релизов (2026-09-06)
+- [x] `internal/updater`: релизы GitHub (или GitHub Enterprise через `api`), выбор по версии, а не по дате публикации; канал stable/beta; имена артефактов фиксированы (`monopanel_<v>_<arch>.deb`, `monopanel-<v>.<arch>.rpm`, `monopanel-linux-<arch>`, `SHA256SUMS`, `SHA256SUMS.sig`).
+- [x] Подпись релиза ed25519: `scripts/release keygen|sign|verify`, приватный ключ — секрет репозитория, публичный — `update.public_key` в `config.yaml` (root-only, менять из панели нельзя). При заданном ключе неподписанный релиз не устанавливается; агент проверяет подпись повторно, а не доверяет хешу от API-процесса.
+- [x] Установка вне панели: агент `POST /v1/panel/install` запускает transient-юнит `monopanel-update.service` (`StartTransientUnit`), который переживает перезапуск API и агента; `mp update-run` ставит пакет, перезапускает юниты, ждёт `/health` с новой версией и откатывает прежний бинарник, если она не отвечает. Итог пишется в `<data>/updates/state.json` и попадает в audit после перезапуска.
+- [x] API `GET|PUT /system/update`, `POST /system/update/check|apply` (только администратор), задача `panel.update`, ежедневная проверка по расписанию и `auto_apply`; токен репозитория шифруется секрет-боксом.
+- [x] `mp update`, `mp update check|apply|settings|trust`; карточка «Обновление панели» в настройках Web UI ждёт перезапуск и перезагружает страницу; проверка `update` в `mp doctor`.
+- [x] Пакеты: `make packages` (deb+rpm × amd64+arm64 + бинарники + SHA256SUMS), `make release VERSION=…`, workflow `release.yml` по тегу `v*`; `preremove` больше не выключает панель при обновлении, `postinstall` перезапускает юниты только на апгрейде.
+
 ### Добавлено при миграции сайтов с FASTPANEL (2026-09-05)
 - [x] IP-allow-list на сайт (`sites.allow_from`, `mp site add|set --allow`), ACME-проверка остаётся доступной.
 - [x] Импорт готовых сертификатов (`POST /certificates/import`, `mp ssl import`); Let's Encrypt-сертификаты продолжают продлеваться через ACME.

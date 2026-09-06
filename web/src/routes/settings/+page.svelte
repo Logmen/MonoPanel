@@ -15,11 +15,33 @@
   let hook = $state({ url: '', events: 'job.failed,cert.issue.*' });
   let realip = $state<any>(null);
   let realipFrom = $state('');
+  let upd = $state<any>(null);
+  let updForm = $state({ repo: '', channel: 'stable', token: '', check_hours: 24, auto_apply: false });
+  let updating = $state('');
   let error = $state('');
   let msg = $state('');
   const admin = $derived(auth.me?.role === 'admin');
   const fail = (e: unknown) => { error = e instanceof ApiError ? e.text : String(e); notify(error, 'err'); };
-  async function load() { try { totp = await api('/auth/totp'); tokens = await api('/tokens'); if (admin) { hooks = await api('/webhooks'); realip = await api('/stack/nginx/real-ip'); realipFrom = (realip.from || []).join(', '); } } catch (e: any) { error = e.text || String(e); } }
+  async function load() { try { totp = await api('/auth/totp'); tokens = await api('/tokens'); if (admin) { hooks = await api('/webhooks'); realip = await api('/stack/nginx/real-ip'); realipFrom = (realip.from || []).join(', '); setUpdate(await api('/system/update')); } } catch (e: any) { error = e.text || String(e); } }
+  function setUpdate(st: any) { upd = st; updForm = { repo: st.settings.repo, channel: st.settings.channel, token: '', check_hours: st.settings.check_hours, auto_apply: st.settings.auto_apply }; }
+  async function saveUpdate(e: Event) { e.preventDefault(); try { setUpdate(await api('/system/update', { method: 'PUT', json: { ...updForm, token: updForm.token || undefined } })); notify('настройки обновлений сохранены'); } catch (e) { fail(e); } }
+  async function checkUpdate() { updating = 'проверяем репозиторий…'; try { setUpdate(await api('/system/update/check', { method: 'POST', json: {} })); notify(upd.available ? 'доступна версия ' + upd.latest : 'установлена последняя версия'); } catch (e) { fail(e); } finally { updating = ''; } }
+  // Установка перезапускает саму панель: ждём, пока она ответит новой версией, и перезагружаем страницу.
+  async function applyUpdate() {
+    if (!confirm(`Обновить панель до ${upd.latest}? Панель перезапустится, сайты продолжат работать.`)) return;
+    try { await api('/system/update/apply', { method: 'POST', json: {} }); } catch (e) { fail(e); return; }
+    updating = 'устанавливаем ' + upd.latest + '…';
+    const deadline = Date.now() + 240000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 3000));
+      try {
+        const h: any = await api('/health');
+        if ((h.version || '').replace(/^v/, '') === upd.latest) { location.reload(); return; }
+      } catch { /* панель перезапускается */ }
+    }
+    updating = '';
+    notify('панель не ответила новой версией — проверьте mp update', 'err');
+  }
   onMount(load);
   async function startTotp() { error = ''; try { setup = await api('/auth/totp/setup', { method: 'POST' }); qr = await QRCode.toDataURL(setup.url, { width: 180, margin: 1 }); } catch (e) { fail(e); } }
   async function enableTotp(e: Event) { e.preventDefault(); error = ''; try { await api('/auth/totp/enable', { method: 'POST', json: { code } }); setup = null; code = ''; notify('2FA включена'); await load(); } catch (e) { fail(e); } }
@@ -72,6 +94,35 @@
       {/if}
     </div>
     <div class="card md:col-span-2 rise" style="--i:4">
+      <div class="flex justify-between items-start gap-3 mb-2 flex-wrap">
+        <div>
+          <div class="font-medium">Обновление панели</div>
+          <p class="text-xs text-muted">Версия {upd?.current ?? '…'}{#if upd?.checked_at} · проверено {when(upd.checked_at)}{/if}{#if upd?.key_pinned} · подпись релиза обязательна{/if}</p>
+        </div>
+        <div class="flex gap-2">
+          <button class="btn btn-sm" onclick={checkUpdate} disabled={!!updating || !upd?.settings?.repo}><Icon name="refresh" size={13} /> проверить</button>
+          {#if upd?.available}<button class="btn btn-primary btn-sm" onclick={applyUpdate} disabled={!!updating}>обновить до {upd.latest}</button>{/if}
+        </div>
+      </div>
+      {#if updating}<p class="text-sm text-accent-ink mb-3">{updating}</p>{/if}
+      {#if upd?.available}
+        <div class="p-3 rounded-lg border border-accent bg-accent-soft mb-3">
+          <div class="text-sm font-medium text-accent-ink">Доступна версия {upd.latest}{#if upd.published_at} от {new Date(upd.published_at).toLocaleDateString('ru-RU')}{/if}</div>
+          {#if upd.notes}<pre class="text-xs whitespace-pre-wrap mt-1 max-h-40 overflow-y-auto">{upd.notes}</pre>{/if}
+        </div>
+      {/if}
+      {#if upd?.last_error}<p class="text-sm text-danger mb-3">{upd.last_error}</p>{/if}
+      {#if upd?.last_attempt && upd.last_attempt.status !== 'done'}<p class="text-sm text-danger mb-3">последняя установка {upd.last_attempt.from} → {upd.last_attempt.to}: {upd.last_attempt.status} {upd.last_attempt.error}</p>{/if}
+      <form class="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end" onsubmit={saveUpdate}>
+        <div><label class="label" for="ur">Репозиторий</label><input id="ur" class="input font-mono" bind:value={updForm.repo} placeholder="owner/name" /></div>
+        <div><label class="label" for="uc">Канал</label><select id="uc" class="input" bind:value={updForm.channel}><option value="stable">stable</option><option value="beta">beta (предрелизы)</option></select></div>
+        <div><label class="label" for="ut">Токен доступа</label><input id="ut" class="input" type="password" bind:value={updForm.token} placeholder={upd?.settings?.has_token ? 'сохранён' : 'для приватного репозитория'} /></div>
+        <div><label class="label" for="uh">Проверять, часов</label><input id="uh" class="input" type="number" min="0" max="720" bind:value={updForm.check_hours} /></div>
+        <label class="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" bind:checked={updForm.auto_apply} /> устанавливать обновления автоматически</label>
+        <div class="sm:col-span-2 flex justify-end"><button class="btn btn-primary">Сохранить</button></div>
+      </form>
+    </div>
+    <div class="card md:col-span-2 rise" style="--i:5">
       <div class="font-medium mb-2">Webhooks (HMAC-SHA256)</div>
       <form class="flex flex-wrap gap-2 items-end mb-3" onsubmit={addHook}><div class="flex-1 min-w-64"><label class="label" for="hu">URL</label><input id="hu" class="input" bind:value={hook.url} required /></div><div><label class="label" for="he">События</label><input id="he" class="input font-mono" bind:value={hook.events} /></div><button class="btn btn-primary">Добавить</button></form>
       <ul class="text-sm divide-y divide-line">{#each hooks as h}<li class="flex justify-between items-center py-1.5 font-mono text-xs"><span>{h.url} · {h.events.join(',')}</span><button class="btn btn-danger btn-sm" onclick={() => rmHook(h.id)}>удалить</button></li>{/each}</ul>

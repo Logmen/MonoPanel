@@ -110,6 +110,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 		s.registerUserDelete()
 		s.registerSiteNginx()
 		s.registerPresets()
+		s.registerUpdate()
 	})
 	r.Handle("/*", s.uiHandler())
 	s.router = r
@@ -124,6 +125,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	s.jobs.Register("site.delete", s.jobSiteDelete)
 	s.jobs.Register("backup.run", s.jobBackupRun)
 	s.jobs.Register("backup.restore", s.jobBackupRestore)
+	s.jobs.Register("panel.update", s.jobPanelUpdate)
 	return s
 }
 
