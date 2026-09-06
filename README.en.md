@@ -75,7 +75,7 @@ and the terminal menu.
 
 | Area | Commands | How it works |
 |---|---|---|
-| PHP 5.6–8.5 | `mp php list\|install\|remove` | Sury / ondrej PPA / Remi; several branches side by side, one php-fpm master per branch, `99-monopanel.ini` |
+| PHP 5.6–8.5 | `mp php list\|install\|remove`, `mp php ext list\|enable\|disable` | Sury / ondrej PPA / Remi; several branches side by side, one php-fpm master per branch, `99-monopanel.ini`; a branch's extensions can be switched off and on (`phpenmod`/`phpdismod` plus a php-fpm restart) — it applies to every site on that branch, because there is one master per version |
 | Sites | `mp site add\|set\|apply\|suspend\|rm\|logs` | modes `fpm`, `apache` (loopback 8080 via mod_proxy_fcgi) and `proxy` (nginx → backend); one pool per site, ACLs for the `monopanel-web` group, placeholder page, automatic certificate, suspend serves a 503 page; per-site IP allow-list (`--allow`), HSTS when HTTPS is forced, custom directives in `sites/<domain>.d/*.conf`; `mp site nginx <domain> --set file` validates with `nginx -t` and rolls back; `mp site php <domain>` shows the effective PHP settings; CMS presets `--preset wordpress\|joomla\|bitrix\|opencart` (`mp site presets`) add routing and hardening (pretty URLs, Joomla `/api/`, Bitrix `urlrewrite.php`, OpenCart `_route_`, denied service directories, no PHP execution in uploads) plus sane PHP defaults |
 | App services | `mp app add\|set\|start\|stop\|restart\|logs\|rm` | a systemd unit `monopanel-app-<login>-<name>` running as the account (gunicorn, node, bots): command, working directory and env-file confined to the home directory, autostart, logs via journalctl |
 | Apache 2.4 | `mp stack install apache` | Debian/Ubuntu: mpm_event + proxy_fcgi, `conf-available/monopanel.conf` |
