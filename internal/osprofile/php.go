@@ -105,8 +105,11 @@ func suryLayout(v string) PHPLayout {
 	l.FPMCheckArgv = []string{l.FPMBinary, "-t", "-y", l.FPMConf}
 	l.CorePackages = []string{"php" + v + "-fpm", "php" + v + "-cli"}
 	for _, e := range phpCoreExt {
-		if e == "opcache" && versionLess(v, "7.0") {
-			continue // php5.6-opcache is part of the core package
+		// Отдельный пакет opcache существует только с 7.0 по 8.4: в 5.6 он
+		// внутри ядра, а начиная с 8.5 Sury его не собирает — opcache встроен,
+		// и php8.5-opcache в репозитории просто нет.
+		if e == "opcache" && (versionLess(v, "7.0") || !versionLess(v, "8.5")) {
+			continue
 		}
 		if e == "sqlite3" && versionLess(v, "7.0") {
 			continue

@@ -16,6 +16,14 @@ func TestPHPLayouts(t *testing.T) {
 		t.Fatalf("sury packages 8.4: core=%v extra=%v", l.CorePackages, l.ExtraPackages)
 	}
 	old := PHP(deb, "5.6")
+	// В 8.5 opcache встроен, отдельного пакета в Sury нет — просить его
+	// значит завалить установку целиком.
+	if newest := suryLayout("8.5"); contains(newest.CorePackages, "php8.5-opcache") {
+		t.Errorf("php8.5-opcache не существует: %v", newest.CorePackages)
+	}
+	if l84 := suryLayout("8.4"); !contains(l84.CorePackages, "php8.4-opcache") {
+		t.Errorf("для 8.4 пакет opcache нужен: %v", l84.CorePackages)
+	}
 	if contains(old.CorePackages, "php5.6-opcache") || !contains(old.ExtraPackages, "php5.6-mcrypt") || contains(old.ExtraPackages, "php5.6-sodium") {
 		t.Fatalf("sury packages 5.6: core=%v extra=%v", old.CorePackages, old.ExtraPackages)
 	}
