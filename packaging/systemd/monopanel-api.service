@@ -1,0 +1,22 @@
+[Unit]
+Description=MonoPanel API and web interface
+After=network-online.target monopanel-agent.service
+Wants=network-online.target
+Requires=monopanel-agent.service
+
+[Service]
+Type=simple
+User=monopanel
+Group=monopanel
+ExecStart=/usr/bin/monopanel api
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/monopanel /run/monopanel /var/log/monopanel
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

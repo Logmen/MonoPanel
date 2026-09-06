@@ -1,0 +1,44 @@
+# nfpm packaging (deb + rpm from one description). Build: make deb rpm
+name: monopanel
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: admin
+priority: optional
+maintainer: MonoPanel <ops@monopanel.local>
+description: |
+  MonoPanel web hosting control panel: nginx + php-fpm, nginx + Apache,
+  PHP 5.6–8.5 side by side, MySQL 8.4 / Percona Server 8.4.
+vendor: MonoPanel
+homepage: https://monopanel.local
+license: Proprietary
+depends:
+  - ca-certificates
+contents:
+  - src: ./dist/monopanel
+    dst: /usr/bin/monopanel
+    file_info:
+      mode: 0755
+  - src: /usr/bin/monopanel
+    dst: /usr/bin/mp
+    type: symlink
+  - src: ./packaging/systemd/monopanel-agent.service
+    dst: /usr/lib/systemd/system/monopanel-agent.service
+  - src: ./packaging/systemd/monopanel-api.service
+    dst: /usr/lib/systemd/system/monopanel-api.service
+  - src: ./packaging/sysusers.d/monopanel.conf
+    dst: /usr/lib/sysusers.d/monopanel.conf
+  - src: ./packaging/tmpfiles.d/monopanel.conf
+    dst: /usr/lib/tmpfiles.d/monopanel.conf
+scripts:
+  postinstall: ./packaging/scripts/postinstall.sh
+  preremove: ./packaging/scripts/preremove.sh
+overrides:
+  rpm:
+    depends:
+      - ca-certificates
+      - shadow-utils
+  deb:
+    depends:
+      - ca-certificates
+      - passwd

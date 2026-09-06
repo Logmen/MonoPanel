@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>{{ .Domain }}</title>
+<style>
+  :root { color-scheme: light dark; --bg: #F5F7F8; --ink: #18212B; --muted: #6B7A88; --a: #0E7C73; --b: #3FC9B8; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0F151B; --ink: #E6ECF0; --muted: #8C9AA6; } }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--ink); font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; display: grid; place-items: center; overflow: hidden; }
+  .scene { text-align: center; padding: 24px; animation: rise 1.1s cubic-bezier(.2, .8, .2, 1) both; }
+  .orb { position: relative; width: 148px; height: 148px; margin: 0 auto 34px; }
+  .orb::before { content: ""; position: absolute; inset: 0; border-radius: 50%; background: conic-gradient(from 0deg, var(--a), var(--b), var(--a)); animation: spin 9s linear infinite; }
+  .orb::after { content: ""; position: absolute; inset: 9px; border-radius: 50%; background: var(--bg); }
+  .core { position: absolute; inset: 36px; border-radius: 50%; z-index: 1; background: radial-gradient(circle at 35% 35%, var(--b), var(--a) 72%); box-shadow: 0 12px 44px rgba(14, 124, 115, .35); animation: breathe 3.4s ease-in-out infinite; }
+  .dot { position: absolute; top: 50%; left: 50%; width: 10px; height: 10px; margin: -5px; border-radius: 50%; z-index: 2; background: var(--b); box-shadow: 0 0 12px var(--b); animation: orbit 4.5s linear infinite; }
+  h1 { font-size: clamp(22px, 4vw, 34px); letter-spacing: -0.02em; margin: 0 0 10px; font-weight: 600; }
+  p { color: var(--muted); margin: 0; font-size: 15px; }
+  .domain { font-family: ui-monospace, Menlo, Consolas, monospace; color: var(--a); font-size: 16px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes breathe { 0%, 100% { transform: scale(.94); } 50% { transform: scale(1.05); } }
+  @keyframes orbit { from { transform: rotate(0deg) translateX(70px); } to { transform: rotate(360deg) translateX(70px); } }
+  @keyframes rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; } }
+</style>
+</head>
+<body>
+<main class="scene">
+  <div class="orb" aria-hidden="true"><div class="core"></div><div class="dot"></div></div>
+  <h1>Скоро здесь будет сайт</h1>
+  <p><span class="domain">{{ .Domain }}</span></p>
+</main>
+</body>
+</html>

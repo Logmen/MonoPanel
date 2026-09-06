@@ -1,0 +1,7 @@
+# Managed by MonoPanel for {{ .Login }} — edit via the panel (mp cron), manual changes are overwritten.
+SHELL=/bin/sh
+PATH={{ .BinDir }}:/usr/local/bin:/usr/bin:/bin
+MAILTO=""
+{{- range .Jobs }}
+{{ if not .Enabled }}#DISABLED# {{ end }}{{ .Schedule }} {{ .Command }}{{ if .Comment }}  # {{ .Comment }}{{ end }}
+{{- end }}

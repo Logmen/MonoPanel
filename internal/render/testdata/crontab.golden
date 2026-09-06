@@ -1,0 +1,6 @@
+# Managed by MonoPanel for alex — edit via the panel (mp cron), manual changes are overwritten.
+SHELL=/bin/sh
+PATH=/var/www/alex/data/bin:/usr/local/bin:/usr/bin:/bin
+MAILTO=""
+*/5 * * * * php cron.php  # wp
+#DISABLED# @daily echo x

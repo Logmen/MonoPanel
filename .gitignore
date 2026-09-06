@@ -1,0 +1,8 @@
+dist/
+*.db
+*.db-wal
+*.db-shm
+.dev/
+web/node_modules/
+web/.svelte-kit/
+web/build/

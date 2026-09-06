@@ -1,0 +1,23 @@
+{{- /* Joomla 3-6: SEF URLs, /api (Joomla 4+), protected config/cache/logs, no PHP in media */ -}}
+{{- define "preset-joomla" }}
+
+    # --- preset: Joomla ---
+    location = /favicon.ico { log_not_found off; access_log off; }
+    location = /robots.txt  { allow all; log_not_found off; access_log off; }
+    location ~* ^/(?:configuration\.php(?:-dist)?|htaccess\.txt|web\.config\.txt|joomla\.xml|LICENSE\.txt|README\.txt)$ { deny all; return 404; }
+    location ~* ^/(?:administrator/)?(?:cache|logs|tmp)/ { deny all; return 404; }
+    location ~* ^/(?:images|media|files|templates)/.*\.(?:php|phtml|phar)$ { deny all; return 403; }
+    location /api/ { try_files $uri $uri/ /api/index.php?$args; }
+
+    location ~* \.(?:css|js|mjs|map|jpe?g|png|gif|webp|avif|svg|ico|woff2?|ttf|eot|otf|mp4|webm|mp3|pdf|zip|gz)$ {
+        try_files $uri =404;
+        include monopanel/snippets/static-cache.conf;
+{{- template "tlsheaders" . }}
+    }
+    location / { try_files $uri $uri/ /index.php?$args; }
+    location ~ \.php$ {
+        try_files $uri =404;
+        include monopanel/snippets/fastcgi.conf;
+        fastcgi_pass unix:{{ .FPMSocket }};
+    }
+{{- end }}

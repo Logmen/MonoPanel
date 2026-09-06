@@ -1,0 +1,26 @@
+{{- /* OpenCart 3/4: SEO URLs via _route_, system/storage closed, template/log files hidden */ -}}
+{{- define "preset-opencart" }}
+
+    # --- preset: OpenCart ---
+    location = /favicon.ico { log_not_found off; access_log off; }
+    location = /robots.txt  { allow all; log_not_found off; access_log off; }
+    location = /sitemap.xml    { rewrite ^ /index.php?route=extension/feed/google_sitemap last; }
+    location = /googlebase.xml { rewrite ^ /index.php?route=extension/feed/google_base last; }
+    location ~* ^/(?:system|storage|vendor)/ { deny all; return 404; }
+    location ~* ^/(?:admin/)?config(?:-dist)?\.php$ { deny all; return 404; }
+    location ~* \.(?:tpl|twig|ini|log|sql)$ { deny all; return 404; }
+    location ~* ^/image/.*\.(?:php|phtml|phar)$ { deny all; return 403; }
+
+    location ~* \.(?:css|js|mjs|map|jpe?g|png|gif|webp|avif|svg|ico|woff2?|ttf|eot|otf|mp4|webm|mp3|pdf|zip|gz)$ {
+        try_files $uri =404;
+        include monopanel/snippets/static-cache.conf;
+{{- template "tlsheaders" . }}
+    }
+    location / { try_files $uri $uri/ @opencart; }
+    location @opencart { rewrite ^/(.+)$ /index.php?_route_=$1 last; }
+    location ~ \.php$ {
+        try_files $uri =404;
+        include monopanel/snippets/fastcgi.conf;
+        fastcgi_pass unix:{{ .FPMSocket }};
+    }
+{{- end }}

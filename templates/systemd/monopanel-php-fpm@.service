@@ -1,0 +1,17 @@
+[Unit]
+Description=MonoPanel PHP %i FastCGI Process Manager
+After=network.target
+PartOf=monopanel-php-fpm.target
+
+[Service]
+Type=notify
+ExecStart=/opt/monopanel/php/%i/sbin/php-fpm --nodaemonize --fpm-config /etc/monopanel/php/%i/php-fpm.conf
+ExecReload=/bin/kill -USR2 $MAINPID
+RuntimeDirectory=monopanel/php
+RuntimeDirectoryPreserve=yes
+PrivateTmp=true
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

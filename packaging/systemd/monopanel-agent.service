@@ -1,0 +1,12 @@
+[Unit]
+Description=MonoPanel privileged agent
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/monopanel agent
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
