@@ -94,7 +94,12 @@
     if (editing === null || saving) return;
     saving = true;
     try {
-      await apiPutRaw(`/files/content?${q(join(cwd, editing))}`, text);
+      if (text === '') {
+        // Пустое тело PUT не принимает — опустошение файла идёт отдельной операцией.
+        await api('/files/op', { method: 'POST', json: { user, op: 'touch', path: join(cwd, editing), force: true } });
+      } else {
+        await apiPutRaw(`/files/content?${q(join(cwd, editing))}`, text);
+      }
       original = text;
       notify(`${editing} сохранён`);
       await load();
@@ -135,13 +140,7 @@
   }
 
   const mkdir = () => request('Новая папка', 'Название', '', (v) => op({ op: 'mkdir', path: join(cwd, v) }, `папка ${v} создана`));
-  const touch = () => request('Новый файл', 'Название', '', async (v) => {
-    try {
-      await apiPutRaw(`/files/content?${q(join(cwd, v))}`, '');
-      notify(`файл ${v} создан`);
-      await load();
-    } catch (e) { fail(e); }
-  });
+  const touch = () => request('Новый файл', 'Название', '', (v) => op({ op: 'touch', path: join(cwd, v) }, `файл ${v} создан`));
   const rename = (e: Entry) => request('Переименовать', 'Новое имя или путь', e.name, (v) =>
     op({ op: 'mv', path: join(cwd, e.name), dest: v.includes('/') ? clean(v) : join(cwd, v) }, 'переименовано'));
   const chmod = (e: Entry) => request(`Права на ${e.name}`, 'Восьмеричные права, например 644', modeOctal(e.mode), (v) =>
@@ -180,6 +179,10 @@
     input.onchange = () => upload(input.files);
     input.click();
   }
+
+  let askInput = $state<HTMLInputElement | null>(null);
+  // Диалог открывается пустым или с текущим значением — курсор сразу в поле.
+  $effect(() => { if (ask.open) queueMicrotask(() => askInput?.select()); });
 
   let dragging = $state(false);
   function drop(e: DragEvent) {
@@ -264,10 +267,10 @@
         <thead class="text-xs text-muted">
           <tr class="border-b border-line">
             <th class="w-8 py-2"></th>
-            <th class="text-left font-medium py-2">Имя</th>
-            <th class="text-right font-medium py-2 w-24">Размер</th>
-            <th class="text-left font-medium py-2 w-28 hidden sm:table-cell">Права</th>
-            <th class="text-left font-medium py-2 w-40 hidden md:table-cell">Изменён</th>
+            <th class="text-left font-medium py-2 px-2">Имя</th>
+            <th class="text-right font-medium py-2 px-3 w-24">Размер</th>
+            <th class="text-left font-medium py-2 px-3 w-28 hidden sm:table-cell">Права</th>
+            <th class="text-left font-medium py-2 px-3 w-40 hidden md:table-cell">Изменён</th>
             <th class="w-40"></th>
           </tr>
         </thead>
@@ -277,22 +280,22 @@
               <td class="text-center">
                 <input type="checkbox" checked={selected.includes(e.name)} onchange={() => toggle(e.name)} aria-label={'выбрать ' + e.name} />
               </td>
-              <td class="py-1.5">
+              <td class="py-1.5 px-2">
                 <button class="inline-flex items-center gap-2 text-left max-w-full" onclick={() => open(e)}>
                   <Icon name={icon(e)} size={15} class="shrink-0 text-muted" />
                   <span class="truncate {e.type === 'dir' ? 'font-medium' : ''}">{e.name}</span>
                   {#if e.type === 'link'}<span class="text-xs text-muted">→ {e.target}</span>{/if}
                 </button>
               </td>
-              <td class="text-right text-muted tabular-nums">{e.type === 'dir' ? '—' : bytes(e.size)}</td>
-              <td class="font-mono text-xs text-muted hidden sm:table-cell">{e.mode}</td>
-              <td class="text-muted text-xs hidden md:table-cell">{(e.mtime || '').replace('T', ' ').slice(0, 16)}</td>
+              <td class="text-right text-muted tabular-nums px-3 whitespace-nowrap">{e.type === 'dir' ? '—' : bytes(e.size)}</td>
+              <td class="font-mono text-xs text-muted hidden sm:table-cell px-3">{e.mode}</td>
+              <td class="text-muted text-xs hidden md:table-cell px-3 whitespace-nowrap">{(e.mtime || '').replace('T', ' ').slice(0, 16)}</td>
               <td class="text-right whitespace-nowrap pr-2">
                 {#if e.type !== 'dir'}
-                  <button class="btn btn-ghost btn-sm" onclick={() => download(e)} title="скачать"><Icon name="external" size={13} /></button>
+                  <button class="btn btn-ghost btn-sm" onclick={() => download(e)} title="скачать"><Icon name="download" size={13} /></button>
                   {#if archiveExt.test(e.name)}<button class="btn btn-ghost btn-sm" onclick={() => extract(e)} title="распаковать"><Icon name="archive" size={13} /></button>{/if}
                 {/if}
-                <button class="btn btn-ghost btn-sm" onclick={() => rename(e)} title="переименовать"><Icon name="code" size={13} /></button>
+                <button class="btn btn-ghost btn-sm" onclick={() => rename(e)} title="переименовать"><Icon name="pencil" size={13} /></button>
                 <button class="btn btn-ghost btn-sm" onclick={() => chmod(e)} title="права"><Icon name="lock" size={13} /></button>
                 <button class="btn btn-ghost btn-sm text-danger" onclick={() => remove([e.name])} title="удалить"><Icon name="trash" size={13} /></button>
               </td>
@@ -342,7 +345,10 @@
 <Modal bind:open={ask.open} title={ask.title}>
   <form id="fm-ask" onsubmit={askSubmit}>
     <label class="label" for="fm-value">{ask.label}</label>
-    <input id="fm-value" class="input font-mono" bind:value={ask.value} />
+    <input id="fm-value" class="input font-mono" bind:this={askInput} bind:value={ask.value} />
+    <!-- Кнопка «Готово» живёт в подвале модалки, вне формы; без этой скрытой
+         кнопки браузер не отправляет форму по Enter. -->
+    <button type="submit" class="hidden" tabindex="-1" aria-hidden="true"></button>
   </form>
   {#snippet footer()}
     <button class="btn" onclick={() => (ask.open = false)}>Отмена</button>

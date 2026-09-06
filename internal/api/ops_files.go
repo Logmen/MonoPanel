@@ -132,6 +132,16 @@ func (s *Server) registerFiles() {
 		switch in.Body.Op {
 		case "mkdir", "size":
 			args = []string{in.Body.Op, in.Body.Path}
+		case "touch":
+			// Запись пустого файла: PUT с пустым телом huma не принимает.
+			// Без force создание не должно молча затирать существующий файл,
+			// поэтому сначала спрашиваем размер — успех означает, что он есть.
+			if !in.Body.Force {
+				if _, err := s.fsop(ctx, u, nil, "size", in.Body.Path); err == nil {
+					return nil, huma.Error409Conflict(path.Base(in.Body.Path) + " уже существует")
+				}
+			}
+			args = []string{"write", in.Body.Path}
 		case "rm":
 			args = append([]string{"rm", in.Body.Path}, in.Body.Paths...)
 		case "mv", "extract":

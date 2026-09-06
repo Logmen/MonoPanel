@@ -17,6 +17,8 @@
     logout: 'M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4m7 14l5-5-5-5m5 5H9',
     plus: 'M12 5v14M5 12h14',
     trash: 'M3 6h18M8 6V4h8v2m-9 0l1 14h8l1-14',
+    pencil: 'M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17v3M14.5 6.5l3 3',
+    download: 'M12 3v12m0 0 4-4m-4 4-4-4M4 19h16',
     refresh: 'M21 12a9 9 0 1 1-3-6.7L21 8m0-5v5h-5',
     play: 'M6 4l14 8-14 8z',
     stop: 'M6 6h12v12H6z',

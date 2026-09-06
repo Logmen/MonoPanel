@@ -426,11 +426,12 @@ type FileList struct {
 // FileOpRequest is a file manager operation.
 type FileOpRequest struct {
 	User  string   `json:"user,omitempty"`
-	Op    string   `json:"op" enum:"mkdir,rm,mv,chmod,extract,size"`
+	Op    string   `json:"op" enum:"mkdir,touch,rm,mv,chmod,extract,size"`
 	Path  string   `json:"path" minLength:"1"`
 	Paths []string `json:"paths,omitempty" doc:"extra paths for rm"`
 	Dest  string   `json:"dest,omitempty"`
 	Mode  string   `json:"mode,omitempty" pattern:"^[0-7]{3,4}$"`
+	Force bool     `json:"force,omitempty" doc:"Для touch: перезаписать существующий файл пустым"`
 }
 
 // FileOpResult reports success and an optional value (size, extracted count).
