@@ -156,6 +156,7 @@ func (i *Installer) Run(ctx context.Context) (err error) {
 		}
 	}
 	i.log().Info("panel updated", "from", i.From, "to", i.To)
+	i.pruneBackups(backup)
 	return finish(StatusDone, nil, out)
 }
 
@@ -181,6 +182,24 @@ func (i *Installer) backupBinary() (string, error) {
 		return "", err
 	}
 	return dst, nil
+}
+
+// pruneBackups keeps only the binary we can still roll back to; each one is
+// tens of megabytes and older ones are of no use once an update succeeded.
+func (i *Installer) pruneBackups(keep string) {
+	entries, err := os.ReadDir(i.Dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		path := filepath.Join(i.Dir, e.Name())
+		if e.IsDir() || path == keep || !strings.HasPrefix(e.Name(), "monopanel-") {
+			continue
+		}
+		if err := os.Remove(path); err != nil {
+			i.log().Warn("remove old backup", "path", path, "err", err)
+		}
+	}
 }
 
 func (i *Installer) restore(ctx context.Context, backup string) {

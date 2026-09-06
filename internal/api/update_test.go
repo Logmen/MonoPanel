@@ -118,12 +118,24 @@ func TestUpdateInstallsSignedRelease(t *testing.T) {
 		t.Fatalf("check should record when it ran and no error: %+v", st)
 	}
 
+	// Packages left by earlier updates are dropped, not kept forever.
+	stale := filepath.Join(f.s.cfg.DownloadsDir(), "monopanel_0.0.1_amd64.deb")
+	if err := os.MkdirAll(f.s.cfg.DownloadsDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stale, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	var ref struct {
 		JobID int64 `json:"job_id"`
 	}
 	f.call(http.MethodPost, "/system/update/apply", map[string]any{}, http.StatusAccepted, &ref)
 	if job := f.waitJob(ref.JobID); job.Status != store.JobDone {
 		t.Fatalf("update job failed: %s", job.Error)
+	}
+	if _, err := os.Stat(stale); err == nil {
+		t.Error("the package from a previous update is still taking up space")
 	}
 
 	call, ok := f.agent.LastCall("/v1/panel/install")
@@ -207,6 +219,12 @@ func TestUpdateSettingsValidatedAndAdminOnly(t *testing.T) {
 	f.call(http.MethodGet, "/system/update", nil, http.StatusOK, &st)
 	if st.Available || st.Latest != "" {
 		t.Fatalf("no check has run: %+v", st)
+	}
+
+	// "-" switches updates off again, cached release and all.
+	f.call(http.MethodPut, "/system/update", map[string]any{"repo": "-"}, http.StatusOK, &st)
+	if st.Settings.Repo != "" {
+		t.Fatalf("repository should be cleared: %+v", st.Settings)
 	}
 
 	h, _ := auth.HashPassword("alex-password")

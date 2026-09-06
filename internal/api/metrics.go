@@ -376,7 +376,7 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 		}
 	}
 	if st, err := updater.ReadState(s.cfg.UpdatesDir()); err == nil && st != nil && (st.Status == updater.StatusFailed || st.Status == updater.StatusRolledBack) {
-		add(check("update", "warn", "последнее обновление до "+st.To+": "+st.Status+", "+st.Error))
+		add(check("update attempt", "warn", "установка "+st.To+": "+st.Status+", "+st.Error))
 	}
 	if jobs, err := s.db.ListJobs(actx, 200, store.JobFailed); err == nil {
 		recent := 0

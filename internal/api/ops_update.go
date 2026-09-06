@@ -176,7 +176,9 @@ func (s *Server) registerUpdate() {
 	}, func(ctx context.Context, in *updateSettingsInput) (*updateStatusOutput, error) {
 		p := principalFrom(ctx)
 		c := s.loadUpdateConfig(ctx)
-		if r := strings.TrimSpace(in.Body.Repo); r != "" {
+		if r := strings.TrimSpace(in.Body.Repo); r == "-" {
+			c.Repo, c.Latest, c.CheckedAt, c.LastError = "", nil, nil, ""
+		} else if r != "" {
 			r = strings.TrimSuffix(strings.TrimPrefix(r, "https://github.com/"), ".git")
 			if !updater.ValidRepo(r) {
 				return nil, huma.Error422UnprocessableEntity("репозиторий указывается как owner/name")
@@ -312,6 +314,7 @@ func (s *Server) jobPanelUpdate(ctx context.Context, jc *jobs.Context) error {
 
 	jc.Progress(35, "загрузка "+asset.Name)
 	local := filepath.Join(s.cfg.DownloadsDir(), asset.Name)
+	prunePackages(s.cfg.DownloadsDir(), asset.Name)
 	sum, err := cl.SaveTo(ctx, asset, local)
 	if err != nil {
 		return fmt.Errorf("скачать %s: %w", asset.Name, err)
@@ -335,6 +338,24 @@ func (s *Server) jobPanelUpdate(ctx context.Context, jc *jobs.Context) error {
 	jc.Progress(100, "панель перезапускается")
 	jc.Logf("установка %s запущена в %s; панель перезапустится через несколько секунд", rel.Version, res.Unit)
 	return nil
+}
+
+// prunePackages drops panel packages left by earlier updates; each is around
+// ten megabytes and only the one being installed is of any use.
+func prunePackages(dir, keep string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || name == keep || !strings.HasPrefix(name, "monopanel") {
+			continue
+		}
+		if strings.HasSuffix(name, ".deb") || strings.HasSuffix(name, ".rpm") {
+			os.Remove(filepath.Join(dir, name))
+		}
+	}
 }
 
 // releaseSums fetches the checksum list and verifies its signature when the

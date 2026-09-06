@@ -18,6 +18,7 @@ import (
 	"monopanel/internal/buildinfo"
 	"monopanel/internal/config"
 	"monopanel/internal/osprofile"
+	"monopanel/internal/systemd"
 	"monopanel/internal/updater"
 )
 
@@ -79,7 +80,8 @@ func updateCmd() *cobra.Command {
 		printUpdate(st)
 		return nil
 	}}
-	settings.Flags().StringVar(&req.Repo, "repo", "", "репозиторий с релизами (owner/name)")
+	settings.Flags().StringVar(&req.Repo, "repo", "", "репозиторий с релизами (owner/name; \"-\" отключить обновления)")
+	settings.Flags().StringVar(&req.API, "api", "", "адрес API репозитория (по умолчанию api.github.com; \"-\" вернуть обратно)")
 	settings.Flags().StringVar(&req.Channel, "channel", "", "stable или beta")
 	settings.Flags().StringVar(&req.Token, "token", "", "токен доступа к репозиторию")
 	settings.Flags().BoolVar(&tokenStdin, "token-stdin", false, "прочитать токен из stdin, не оставляя его в истории команд")
@@ -89,10 +91,19 @@ func updateCmd() *cobra.Command {
 	c.AddCommand(settings)
 
 	var key string
+	var restart, clear bool
 	trust := &cobra.Command{Use: "trust", Short: "ключ, которым подписаны релизы (пишется в config.yaml)", RunE: func(cmd *cobra.Command, _ []string) error {
 		cfg, err := loadConfig()
 		if err != nil {
 			return err
+		}
+		if clear {
+			cfg.Update.PublicKey = ""
+			if err := cfg.Save(cfg.Path()); err != nil {
+				return err
+			}
+			fmt.Println("ключ удалён: релизы будут приниматься по контрольной сумме")
+			key = "-"
 		}
 		if key == "" {
 			if cfg.Update.PublicKey == "" {
@@ -102,17 +113,38 @@ func updateCmd() *cobra.Command {
 			fmt.Println(cfg.Update.PublicKey)
 			return nil
 		}
-		if _, err := updater.ParsePublicKey(key); err != nil {
+		if key != "-" {
+			if _, err := updater.ParsePublicKey(key); err != nil {
+				return err
+			}
+			cfg.Update.PublicKey = key
+			if err := cfg.Save(cfg.Path()); err != nil {
+				return err
+			}
+			fmt.Println("ключ сохранён в", cfg.Path())
+		}
+		// Both daemons read the key at startup: the API to check a release
+		// before downloading it, the agent to check it again before install.
+		if !restart {
+			fmt.Println("применится после перезапуска: systemctl restart monopanel-agent monopanel-api (или --restart)")
+			return nil
+		}
+		sd, err := systemd.Connect(cmd.Context())
+		if err != nil {
 			return err
 		}
-		cfg.Update.PublicKey = key
-		if err := cfg.Save(cfg.Path()); err != nil {
-			return err
+		defer sd.Close()
+		for _, unit := range []string{cfg.Update.AgentUnit, cfg.Update.APIUnit} {
+			if err := sd.Restart(cmd.Context(), unit); err != nil {
+				return err
+			}
 		}
-		fmt.Println("ключ сохранён в", cfg.Path())
+		fmt.Println("панель перезапущена")
 		return nil
 	}}
 	trust.Flags().StringVar(&key, "key", "", "публичный ключ ed25519 в base64 (без флага — показать текущий)")
+	trust.Flags().BoolVar(&clear, "clear", false, "убрать ключ и принимать релизы без подписи")
+	trust.Flags().BoolVar(&restart, "restart", false, "перезапустить панель, чтобы ключ начал действовать")
 	c.AddCommand(trust)
 	return c
 }
@@ -144,7 +176,11 @@ func printUpdate(st *apitypes.UpdateStatus) {
 	case st.Settings.Repo == "":
 		fmt.Println("Репозиторий: не настроен (mp update settings --repo owner/name --token-stdin)")
 	default:
-		fmt.Printf("Репозиторий: %s (%s)\n", st.Settings.Repo, st.Settings.Channel)
+		where := st.Settings.Repo
+		if st.Settings.API != "" {
+			where += " @ " + st.Settings.API
+		}
+		fmt.Printf("Репозиторий: %s (%s)\n", where, st.Settings.Channel)
 	}
 	if st.Latest != "" {
 		when := ""

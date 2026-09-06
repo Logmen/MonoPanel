@@ -543,7 +543,7 @@ type UpdateSettings struct {
 
 // UpdateSettingsRequest changes them. Omitted fields keep their value.
 type UpdateSettingsRequest struct {
-	Repo       string `json:"repo,omitempty" maxLength:"140"`
+	Repo       string `json:"repo,omitempty" maxLength:"140" doc:"owner/name; \"-\" отключает проверку обновлений"`
 	API        string `json:"api,omitempty" maxLength:"200" doc:"Адрес API репозитория; \"-\" возвращает api.github.com"`
 	Channel    string `json:"channel,omitempty" enum:"stable,beta"`
 	Token      string `json:"token,omitempty" maxLength:"512" doc:"Токен доступа к репозиторию; хранится зашифрованным"`
