@@ -61,7 +61,14 @@ jobs:
         with:
           go-version: "1.27"
           cache-dependency-path: go.sum
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends nginx-core apache2
+      # The panel installs nginx from nginx.org on a host; validate against the
+      # same build (Ubuntu's 1.24 predates "http2 on;").
+      - name: install nginx (nginx.org) and apache
+        run: |
+          curl -fsSL https://nginx.org/keys/nginx_signing.key | sudo gpg --dearmor -o /usr/share/keyrings/nginx.gpg
+          echo "deb [signed-by=/usr/share/keyrings/nginx.gpg] http://nginx.org/packages/ubuntu $(lsb_release -cs) nginx" | sudo tee /etc/apt/sources.list.d/nginx.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nginx apache2
       # Regenerate the golden files from the templates, then feed them to the
       # real servers: a template that nginx rejects fails here, not on a host.
       - run: make web-stub && go test ./internal/render -update

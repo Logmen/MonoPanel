@@ -13,6 +13,15 @@ trap 'rm -rf "$work"' EXIT
 
 command -v nginx >/dev/null || { echo "nginx not installed"; exit 1; }
 
+# The panel installs nginx from nginx.org; "http2 on;" (1.25.1+) and QUIC are
+# generated unconditionally, so an older distro nginx cannot validate them.
+version=$(nginx -v 2>&1 | sed -E 's#.*/([0-9]+\.[0-9]+\.[0-9]+).*#\1#')
+if [ "$(printf '%s\n1.25.1\n' "$version" | sort -V | head -1)" != "1.25.1" ]; then
+	echo "nginx $version is older than 1.25.1: the panel installs nginx.org packages, which support 'http2 on;'" >&2
+	exit 1
+fi
+echo "nginx $version"
+
 # A minimal tree that mirrors what the panel creates on a host.
 mkdir -p "$work"/{conf,snippets,sites,logs,docroot,certs,run/php}
 cp templates/nginx/snippets/*.conf "$work/snippets/"
@@ -62,10 +71,11 @@ for f in "$golden"/nginx-site-*.golden; do
 		-e "s#/var/www/alex/data/logs#$work/logs#" \
 		-e "s#include monopanel/snippets/#include $work/snippets/#" \
 		-e "s#include monopanel/sites/example.com.d/\*.conf;##" \
-		-e "s#listen 203.0.113.10#listen 127.0.0.1#g" \
+		-e "s#listen 203.0.113.10:80#listen 127.0.0.1:18080#g" \
+		-e "s#listen 203.0.113.10:443#listen 127.0.0.1:18443#g" \
 		"$f" > "$work/sites/site.conf"
 	write_main
-	if out=$(nginx -t -c "$work/conf/nginx.conf" -p "$work" 2>&1); then
+	if out=$(nginx -t -c "$work/conf/nginx.conf" -p "$work" -e "$work/logs/startup.log" 2>&1); then
 		echo "ok   $name"
 	else
 		echo "FAIL $name"
@@ -75,10 +85,12 @@ for f in "$golden"/nginx-site-*.golden; do
 done
 
 # Apache vhost: the panel only generates it on Debian-family hosts.
-apachectl=$(command -v apache2ctl || command -v apachectl || true)
+# apache2ctl/apachectl are wrappers that create /var/run/apache2; the binary
+# takes the same -t and runs unprivileged.
+apachectl=$(command -v apache2 || command -v httpd || command -v apache2ctl || command -v apachectl || true)
 vhost="$golden/apache-site.conf.golden"
 if [ -n "$apachectl" ] && [ -f "$vhost" ]; then
-	mkdir -p "$work/apache/sites" "$work/apache/include"
+	mkdir -p "$work/apache/sites" "$work/apache/include" "$work/apache/run"
 	sed -e "s#/var/www/alex/data/www/example.com#$work/docroot#" \
 		-e "s#/var/www/alex/data/logs#$work/logs#" \
 		-e "s#/etc/apache2/monopanel/sites/example.com.d#$work/apache/include#" \
@@ -88,6 +100,7 @@ if [ -n "$apachectl" ] && [ -f "$vhost" ]; then
 	cat > "$work/apache/httpd.conf" <<EOF
 ServerName localhost
 PidFile $work/apache/httpd.pid
+DefaultRuntimeDir $work/apache/run
 ErrorLog $work/logs/apache-error.log
 EOF
 	# Some of these are compiled in depending on the build; only load what is missing.
