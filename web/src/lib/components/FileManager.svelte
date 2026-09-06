@@ -1,6 +1,7 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { api, apiText, apiPutRaw, ApiError, bytes } from '$lib/api';
-  import { notify } from '$lib/state.svelte';
+  import { notify, theme } from '$lib/state.svelte';
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
 
@@ -21,6 +22,11 @@
   let saving = $state(false);
   let area = $state<HTMLTextAreaElement | null>(null);
   let gutter = $state<HTMLDivElement | null>(null);
+  let monacoBox = $state<HTMLDivElement | null>(null);
+  // Редактор VS Code грузится лениво: 4,7 МБ статики нужны только тому, кто
+  // открыл файл. Если не загрузится — остаётся простое поле ввода.
+  let editor: any = null;
+  let monacoFailed = $state(false);
   const dirty = $derived(editing !== null && text !== original);
   const lines = $derived(text.split('\n').length);
 
@@ -46,6 +52,86 @@
     confirmRun = run;
     confirmOpen = true;
   }
+
+  // Режимы подсветки, которые лежат в web/static/monaco; всё остальное —
+  // обычный текст.
+  const languages: Record<string, string> = {
+    php: 'php', phtml: 'php', inc: 'php',
+    html: 'html', htm: 'html', twig: 'html', tpl: 'html', vue: 'html',
+    css: 'css', scss: 'css', less: 'css',
+    js: 'javascript', mjs: 'javascript', cjs: 'javascript',
+    ts: 'typescript', json: 'json', map: 'json', lock: 'json',
+    xml: 'xml', svg: 'xml', xsl: 'xml',
+    yml: 'yaml', yaml: 'yaml',
+    md: 'markdown', markdown: 'markdown',
+    sql: 'sql', sh: 'shell', bash: 'shell', zsh: 'shell', py: 'python',
+    ini: 'ini', conf: 'ini', cfg: 'ini', env: 'ini', htaccess: 'ini', htpasswd: 'ini',
+    dockerfile: 'dockerfile'
+  };
+  function languageFor(name: string): string {
+    const lower = name.toLowerCase();
+    if (lower === 'dockerfile') return 'dockerfile';
+    const ext = lower.includes('.') ? lower.slice(lower.lastIndexOf('.') + 1) : lower.replace(/^\./, '');
+    return languages[ext] ?? 'plaintext';
+  }
+  const darkTheme = () =>
+    theme.mode === 'dark' ||
+    (theme.mode === 'system' && typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: dark)').matches);
+
+  // AMD-загрузчик Monaco: подключается один раз на страницу.
+  let monacoPromise: Promise<any> | null = null;
+  function loadMonaco(): Promise<any> {
+    const w = window as any;
+    if (w.monaco) return Promise.resolve(w.monaco);
+    if (monacoPromise) return monacoPromise;
+    monacoPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = '/monaco/vs/loader.js';
+      script.onerror = () => reject(new Error('редактор не загрузился'));
+      script.onload = () => {
+        w.MonacoEnvironment = { getWorkerUrl: () => '/monaco/vs/editor/editor.worker.js' };
+        w.require.config({ paths: { vs: '/monaco/vs' } });
+        w.require(['vs/editor/editor.main'], () => resolve(w.monaco), reject);
+      };
+      document.head.appendChild(script);
+    });
+    return monacoPromise;
+  }
+
+  async function mountEditor(name: string) {
+    if (monacoFailed) return;
+    await tick();
+    if (!monacoBox) return;
+    try {
+      const monaco = await loadMonaco();
+      editor?.dispose();
+      editor = monaco.editor.create(monacoBox, {
+        value: text,
+        language: languageFor(name),
+        theme: darkTheme() ? 'vs-dark' : 'vs',
+        automaticLayout: true,
+        minimap: { enabled: false },
+        fontSize: 13,
+        tabSize: 2,
+        renderWhitespace: 'selection',
+        scrollBeyondLastLine: false,
+        fixedOverflowWidgets: true
+      });
+      editor.onDidChangeModelContent(() => (text = editor.getValue()));
+      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => save());
+      editor.focus();
+    } catch (e) {
+      monacoFailed = true;
+      notify('редактор VS Code не загрузился, работает простое поле', 'err');
+    }
+  }
+
+  // Тема редактора следует за темой панели.
+  $effect(() => {
+    const dark = darkTheme();
+    const w = window as any;
+    if (editor && w.monaco) w.monaco.editor.setTheme(dark ? 'vs-dark' : 'vs');
+  });
 
   // Расширения, которые точно не текст: не тратим запрос на попытку открыть.
   const binaryExt = /\.(png|jpe?g|gif|webp|avif|ico|bmp|tiff?|svgz|pdf|zip|gz|tgz|bz2|xz|7z|rar|tar|mp[34]|m4a|mov|avi|mkv|webm|woff2?|ttf|eot|otf|so|bin|exe|dll|class|jar|db|sqlite3?|psd)$/i;
@@ -83,6 +169,8 @@
   $effect(() => { user; cwd; load(); });
 
   function closeEditor() {
+    editor?.dispose();
+    editor = null;
     editing = null;
     text = original = '';
   }
@@ -117,6 +205,7 @@
       if (body.indexOf('\u0000') >= 0) { notify('двоичный файл — доступно скачивание', 'err'); return; }
       original = text = body;
       editing = e.name;
+      mountEditor(e.name);
     } catch (err) { fail(err); }
   }
 
@@ -358,25 +447,29 @@
       </button>
       <button class="btn btn-sm" onclick={() => leaveEditor()}>Закрыть</button>
     </div>
-    <div class="flex font-mono text-[13px] leading-[1.5]">
-      <div bind:this={gutter} class="select-none text-right text-muted bg-surface-2 py-3 px-2 overflow-hidden" style="max-height:60vh">
-        {#each Array.from({ length: lines }) as _, i}<div>{i + 1}</div>{/each}
+    {#if monacoFailed}
+      <div class="flex font-mono text-[13px] leading-[1.5]">
+        <div bind:this={gutter} class="select-none text-right text-muted bg-surface-2 py-3 px-2 overflow-hidden" style="max-height:60vh">
+          {#each Array.from({ length: lines }) as _, i}<div>{i + 1}</div>{/each}
+        </div>
+        <textarea
+          bind:this={area}
+          bind:value={text}
+          onkeydown={editorKeys}
+          onscroll={syncGutter}
+          spellcheck="false"
+          autocomplete="off"
+          autocapitalize="off"
+          class="flex-1 bg-transparent p-3 outline-none resize-none font-mono text-[13px] leading-[1.5]"
+          style="min-height:40vh;max-height:60vh"
+          aria-label="содержимое файла"
+        ></textarea>
       </div>
-      <textarea
-        bind:this={area}
-        bind:value={text}
-        onkeydown={editorKeys}
-        onscroll={syncGutter}
-        spellcheck="false"
-        autocomplete="off"
-        autocapitalize="off"
-        class="flex-1 bg-transparent p-3 outline-none resize-none font-mono text-[13px] leading-[1.5]"
-        style="min-height:40vh;max-height:60vh"
-        aria-label="содержимое файла"
-      ></textarea>
-    </div>
+    {:else}
+      <div bind:this={monacoBox} style="height:60vh" aria-label="содержимое файла"></div>
+    {/if}
     <div class="px-3 py-2 border-t border-line text-xs text-muted">
-      Ctrl+S — сохранить, Esc — закрыть. Файл пишется от имени {user}; nginx и php-fpm подхватывают изменения сразу.
+      Ctrl+S — сохранить{monacoFailed ? '' : ', F1 — команды редактора'}. Файл пишется от имени {user}; nginx и php-fpm подхватывают изменения сразу.
     </div>
   </div>
 {/if}

@@ -28,7 +28,8 @@ func uiCSP(index []byte) string {
 	if len(hashes) > 0 {
 		script += " " + strings.Join(hashes, " ")
 	}
-	return "default-src 'self'; script-src " + script + "; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'"
+	// font-src с data: — шрифт иконок редактора вшит в его CSS как data-URI.
+	return "default-src 'self'; script-src " + script + "; img-src 'self' data:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'"
 }
 
 // uiHandler serves the embedded SPA with an index.html fallback.
