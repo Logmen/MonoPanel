@@ -12,7 +12,7 @@ import (
 func TestPHPExtensionsListAndToggle(t *testing.T) {
 	f := newSiteFixture(t)
 	f.agent.DirEntries["/etc/php/8.4/mods-available"] = []string{"opcache.ini", "imagick.ini", "redis.ini", "README"}
-	f.agent.ToolOutput["phpquery"] = "opcache imagick"
+	f.agent.DirEntries["/etc/php/8.4/fpm/conf.d"] = []string{"10-opcache.ini", "20-imagick.ini"}
 
 	var out apitypes.PHPExtensions
 	f.call(http.MethodGet, "/php/versions/8.4/extensions", nil, http.StatusOK, &out)
@@ -31,9 +31,8 @@ func TestPHPExtensionsListAndToggle(t *testing.T) {
 	}
 
 	// Выключение зовёт phpdismod и перезапускает php-fpm ветки.
-	f.agent.ToolOutput["phpquery"] = "opcache"
+	f.agent.DirEntries["/etc/php/8.4/fpm/conf.d"] = []string{"10-opcache.ini"}
 	f.call(http.MethodPost, "/php/versions/8.4/extensions", map[string]any{"name": "imagick", "enabled": false}, http.StatusOK, &out)
-	// Последним вызовом идёт повторный phpquery, поэтому ищем по всем.
 	dismod := false
 	for _, c := range f.agent.Calls() {
 		if c.Path == "/v1/tool" && strings.Contains(string(c.Body), "phpdismod") && strings.Contains(string(c.Body), "imagick") {

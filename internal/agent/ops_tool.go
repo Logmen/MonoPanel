@@ -26,7 +26,6 @@ var tools = map[string][]string{
 	"php":             {},
 	"phpenmod":        {"/usr/sbin/phpenmod"},
 	"phpdismod":       {"/usr/sbin/phpdismod"},
-	"phpquery":        {"/usr/sbin/phpquery"},
 	"sshd":            {"/usr/sbin/sshd"},
 	"setquota":        {"/usr/sbin/setquota"},
 	"repquota":        {"/usr/sbin/repquota"},

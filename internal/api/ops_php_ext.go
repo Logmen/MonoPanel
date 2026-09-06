@@ -53,7 +53,9 @@ func (s *Server) phpLayoutFor(ctx context.Context, version string) (*store.PHPVe
 }
 
 // phpModules reads what exists and what is switched on. Everything with an ini
-// in mods-available can be enabled; phpquery reports what the FPM SAPI loads.
+// in mods-available can be enabled; what php-fpm actually loads is exactly the
+// content of its conf.d — phpquery answers from Debian's own registry and goes
+// on listing a module after phpdismod removed it from the SAPI.
 func (s *Server) phpModules(ctx context.Context, version string) ([]apitypes.PHPExtension, error) {
 	if s.profile.Family() != osprofile.FamilyDebian {
 		return nil, huma.Error501NotImplemented("пока поддержано только на Debian/Ubuntu (phpenmod)")
@@ -63,9 +65,14 @@ func (s *Server) phpModules(ctx context.Context, version string) ([]apitypes.PHP
 		return nil, huma.Error502BadGateway(err.Error())
 	}
 	enabled := map[string]bool{}
-	if res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "phpquery", Args: []string{"-v", version, "-s", "fpm", "-M"}, TimeoutSeconds: 30}); err == nil && res.ExitCode == 0 {
-		for _, m := range strings.Fields(res.Output) {
-			enabled[m] = true
+	if confd, err := s.agent.ListDir(ctx, "/etc/php/"+version+"/fpm/conf.d"); err == nil {
+		for _, e := range confd.Entries {
+			// Имена вида "20-imagick.ini": приоритет спереди, модуль дальше.
+			name := strings.TrimSuffix(e.Name, ".ini")
+			if _, rest, ok := strings.Cut(name, "-"); ok {
+				name = rest
+			}
+			enabled[name] = true
 		}
 	}
 	out := make([]apitypes.PHPExtension, 0, len(dir.Entries))
