@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "packageManager": "pnpm@11.25.0",
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
@@ -22,10 +23,5 @@
   },
   "dependencies": {
     "qrcode": "^1.5.4"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ]
   }
 }

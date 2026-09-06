@@ -1,4 +1,3 @@
+# esbuild ships a platform binary and needs its install script to run.
 allowBuilds:
-  esbuild: set this to true or false
-onlyBuiltDependencies:
-  - esbuild
+  esbuild: true
