@@ -196,11 +196,11 @@ func (s *Server) applyFirewall(ctx context.Context) (*apitypes.FirewallStatus, e
 	if load.ExitCode != 0 {
 		return nil, fmt.Errorf("nft load failed: %s", strings.TrimSpace(load.Output))
 	}
-	s.agent.Service(ctx, "", "daemon-reload")
+	s.agent.Service(ctx, "", "daemon-reload") //nolint:errcheck // best effort: the state is read back afterwards
 	if _, err := s.agent.Service(ctx, nftUnit, "enable"); err != nil {
 		return nil, err
 	}
-	s.agent.Service(ctx, nftUnit, "start")
+	s.agent.Service(ctx, nftUnit, "start") //nolint:errcheck // best effort: the state is read back afterwards
 	s.db.SetSetting(ctx, settingFirewall, "yes")
 	return s.firewallStatus(ctx)
 }
@@ -216,8 +216,8 @@ func (s *Server) anySiteHTTP3(ctx context.Context) bool {
 }
 
 func (s *Server) disableFirewall(ctx context.Context) error {
-	s.agent.Tool(ctx, &agent.ToolRequest{Name: "nft", Args: []string{"delete", "table", "inet", "monopanel"}})
-	s.agent.Service(ctx, nftUnit, "disable")
+	s.agent.Tool(ctx, &agent.ToolRequest{Name: "nft", Args: []string{"delete", "table", "inet", "monopanel"}}) //nolint:errcheck // best effort: the state is read back afterwards
+	s.agent.Service(ctx, nftUnit, "disable")                                                                   //nolint:errcheck // best effort: the state is read back afterwards
 	return s.db.SetSetting(ctx, settingFirewall, "no")
 }
 
@@ -366,15 +366,15 @@ func (s *Server) registerFirewall() {
 					}
 				}
 				if !exists {
-					s.db.CreateFirewallRule(ctx, &store.FirewallRule{Kind: "deny", Proto: "any", Source: ip, Comment: "banned by " + p.Login, Enabled: true})
+					s.db.CreateFirewallRule(ctx, &store.FirewallRule{Kind: "deny", Proto: "any", Source: ip, Comment: "banned by " + p.Login, Enabled: true}) //nolint:errcheck // best effort; the caller reports the real failure
 				}
 			} else {
 				for _, r := range rules {
 					if r.Kind == "deny" && r.Source == ip && r.Port == "" {
-						s.db.DeleteFirewallRule(ctx, r.ID)
+						s.db.DeleteFirewallRule(ctx, r.ID) //nolint:errcheck // best effort; the caller reports the real failure
 					}
 				}
-				s.agent.Tool(ctx, &agent.ToolRequest{Name: "fail2ban-client", Args: []string{"unban", ip}})
+				s.agent.Tool(ctx, &agent.ToolRequest{Name: "fail2ban-client", Args: []string{"unban", ip}}) //nolint:errcheck // best effort: the state is read back afterwards
 			}
 			st, err := s.applyFirewall(ctx)
 			s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "firewall." + action, Target: ip, IP: requestInfo(ctx).IP, Result: resultOf(err)})

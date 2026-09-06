@@ -195,7 +195,7 @@ func (s *Server) registerCerts() {
 		}
 		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "cert.delete", Target: c.Name, IP: requestInfo(ctx).IP})
 		if containsName(c.Names, s.cfg.Web.Hostname) {
-			s.tls.Reload()
+			s.tls.Reload() //nolint:errcheck // the panel keeps serving the old certificate
 		}
 		return nil, nil
 	})

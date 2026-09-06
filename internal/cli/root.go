@@ -131,5 +131,5 @@ func table(header []string, rows [][]string) {
 	for _, r := range rows {
 		fmt.Fprintln(w, strings.Join(r, "\t"))
 	}
-	w.Flush()
+	w.Flush() //nolint:errcheck // best effort; the caller reports the real failure
 }

@@ -116,8 +116,8 @@ func readDisk(mount string) (used, total int64) {
 	if err := unix.Statfs(mount, &st); err != nil {
 		return 0, 0
 	}
-	total = int64(st.Blocks) * int64(st.Bsize)
-	free := int64(st.Bavail) * int64(st.Bsize)
+	total = int64(st.Blocks) * st.Bsize
+	free := int64(st.Bavail) * st.Bsize
 	return total - free, total
 }
 
@@ -134,7 +134,7 @@ func (m *sampler) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-prune.C:
-			m.s.db.PruneMetrics(ctx, time.Now().Add(-30*24*time.Hour).Unix())
+			m.s.db.PruneMetrics(ctx, time.Now().Add(-30*24*time.Hour).Unix()) //nolint:errcheck // retention trim retries on the next tick
 		case <-t.C:
 			idle, total, err := readCPU()
 			if err == nil && total > m.prevTotal {

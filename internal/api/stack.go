@@ -313,14 +313,14 @@ func (s *Server) installApache(ctx context.Context, jc *jobs.Context) error {
 
 	jc.Progress(40, "modules")
 	for _, m := range []string{"mpm_prefork", "mpm_worker", "php8.4", "php8.3", "php8.2", "php8.1"} {
-		s.agent.ApacheCtl(ctx, "dismod", m) // best effort: may not be enabled
+		s.agent.ApacheCtl(ctx, "dismod", m) //nolint:errcheck // best effort: the module may not be enabled
 	}
 	for _, m := range []string{"mpm_event", "proxy", "proxy_fcgi", "rewrite", "remoteip", "headers", "expires", "setenvif", "deflate", "dir", "alias", "mime"} {
 		if _, err := s.agent.ApacheCtl(ctx, "enmod", m); err != nil {
 			return err
 		}
 	}
-	s.agent.ApacheCtl(ctx, "dissite", "000-default")
+	s.agent.ApacheCtl(ctx, "dissite", "000-default") //nolint:errcheck // best effort: apachectl reports the result
 	if _, err := s.agent.EnsureGroup(ctx, &agent.EnsureGroupRequest{Name: s.cfg.WebGroup, System: true}); err != nil {
 		return err
 	}

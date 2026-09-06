@@ -425,7 +425,7 @@ func (s *Server) jobBackupRun(ctx context.Context, jc *jobs.Context) error {
 	}
 	cleanup := []string{tmp}
 	defer func() {
-		s.agent.RemovePaths(context.WithoutCancel(ctx), &agent.RemovePathsRequest{Paths: cleanup, Recursive: true})
+		s.agent.RemovePaths(context.WithoutCancel(ctx), &agent.RemovePathsRequest{Paths: cleanup, Recursive: true}) //nolint:errcheck // cleanup: the caller already reports the real error
 	}()
 	jc.Progress(15, "database dumps")
 	inst, instErr := s.db.GetDBInstance(ctx)

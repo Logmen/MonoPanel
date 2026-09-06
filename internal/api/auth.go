@@ -38,15 +38,15 @@ func (s *Server) authMiddleware(ctx huma.Context, next func(huma.Context)) {
 	op := ctx.Operation()
 	if len(op.Security) > 0 {
 		if p == nil {
-			huma.WriteErr(s.api, ctx, http.StatusUnauthorized, "authentication required")
+			huma.WriteErr(s.api, ctx, http.StatusUnauthorized, "authentication required") //nolint:errcheck // the error response itself is best effort
 			return
 		}
 		if admin, _ := op.Metadata["admin"].(bool); admin && p.Role != store.RoleAdmin {
-			huma.WriteErr(s.api, ctx, http.StatusForbidden, "administrator role required")
+			huma.WriteErr(s.api, ctx, http.StatusForbidden, "administrator role required") //nolint:errcheck // the error response itself is best effort
 			return
 		}
 		if p.Via == "session" && !isSafeMethod(ctx.Method()) && !sameOrigin(ctx) {
-			huma.WriteErr(s.api, ctx, http.StatusForbidden, "cross-site request rejected")
+			huma.WriteErr(s.api, ctx, http.StatusForbidden, "cross-site request rejected") //nolint:errcheck // the error response itself is best effort
 			return
 		}
 	}
@@ -90,7 +90,7 @@ func (s *Server) authenticate(ctx huma.Context) *principal {
 		if err != nil || u.Status != store.UserActive {
 			return nil
 		}
-		go s.db.TouchAPIToken(context.Background(), tok.ID)
+		go s.db.TouchAPIToken(context.Background(), tok.ID) //nolint:errcheck // last-used bookkeeping must not fail the request
 		return &principal{Principal: apitypes.Principal{UserID: u.ID, Login: u.Login, Role: u.Role, Via: "token", Scopes: tok.Scopes}}
 	}
 	if c, err := huma.ReadCookie(ctx, sessionCookieName); err == nil && c.Value != "" {

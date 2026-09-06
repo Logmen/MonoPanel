@@ -1,0 +1,62 @@
+version: "2"
+
+linters:
+  enable:
+    - bodyclose      # HTTP response bodies must be closed: the panel talks to the agent and ACME a lot
+    - errcheck
+    - govet
+    - ineffassign
+    - misspell
+    - nilerr         # returning nil after a non-nil error hides agent failures
+    - rowserrcheck
+    - sqlclosecheck
+    - staticcheck
+    - unconvert
+    - unused
+  settings:
+    errcheck:
+      # Deliberately ignored: audit/telemetry writes must never fail a request,
+      # and cleanup paths (Close, Remove, Rollback) have nothing to do with an
+      # error. Everything else has to be checked.
+      exclude-functions:
+        - (*monopanel/internal/store.DB).Audit
+        - (*monopanel/internal/store.DB).SetSetting
+        - (*monopanel/internal/store.DB).SetAppStatus
+        - (*monopanel/internal/store.DB).SetUserStatus
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.Tx).Rollback
+        - (*github.com/spf13/cobra.Command).MarkFlagRequired
+        - os.Remove
+        - os.MkdirAll
+        - fmt.Sscanf
+        - fmt.Fprintf
+        - fmt.Fprintln
+    staticcheck:
+      checks:
+        - all
+        - -ST1000  # package comments are on the packages that need them
+        - -ST1003  # initialisms in generated-ish config structs
+        - -ST1005  # messages start with a product name (Apache, MySQL)
+        - -QF1001  # De Morgan rewrites do not read better here
+        - -QF1002  # tagged switch suggestions
+        - -QF1003
+        - -QF1012  # WriteString(fmt.Sprintf(...)) is fine in the TUI renderers
+  exclusions:
+    generated: lax
+    rules:
+      # Tests may ignore errors on setup helpers and use weak TLS against fakes.
+      - path: _test\.go
+        linters: [errcheck, bodyclose, gosec]
+      - path: internal/agent/agenttest/
+        linters: [errcheck, bodyclose]
+
+formatters:
+  enable:
+    - gofmt
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

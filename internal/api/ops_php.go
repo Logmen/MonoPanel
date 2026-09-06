@@ -103,7 +103,7 @@ func (s *Server) registerPHP() {
 		if n, _ := s.db.CountSitesByPHP(ctx, in.Version); n > 0 {
 			return nil, huma.Error409Conflict(fmt.Sprintf("%d site(s) still use PHP %s", n, in.Version))
 		}
-		s.db.SetPHPStatus(ctx, in.Version, store.PHPRemoving, "")
+		s.db.SetPHPStatus(ctx, in.Version, store.PHPRemoving, "") //nolint:errcheck // best effort; the caller reports the real failure
 		job, err := s.jobs.Enqueue(ctx, "php.remove", phpPayload{Version: in.Version}, jobs.WithLockKey("php"), jobs.WithRequestedBy(p.Login))
 		if err != nil {
 			return nil, err

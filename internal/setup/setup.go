@@ -209,11 +209,11 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 		if password != "" {
 			h, err := auth.HashPassword(password)
 			if err != nil {
-				db.Close()
+				db.Close() //nolint:errcheck // cleanup
 				return nil, err
 			}
 			if err := db.SetUserPassword(ctx, existing.ID, h); err != nil {
-				db.Close()
+				db.Close() //nolint:errcheck // cleanup
 				return nil, err
 			}
 			step("пароль администратора %s обновлён", login)
@@ -224,29 +224,29 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 		if password == "" {
 			password, err = auth.NewToken(15)
 			if err != nil {
-				db.Close()
+				db.Close() //nolint:errcheck // cleanup
 				return nil, err
 			}
 			res.GeneratedPassword = true
 		}
 		h, err := auth.HashPassword(password)
 		if err != nil {
-			db.Close()
+			db.Close() //nolint:errcheck // cleanup
 			return nil, err
 		}
 		if err := db.CreateUser(ctx, &store.User{Login: login, Role: store.RoleAdmin, PasswordHash: h}); err != nil {
-			db.Close()
+			db.Close() //nolint:errcheck // cleanup
 			return nil, err
 		}
 		res.AdminCreated = true
 		res.AdminPassword = password
 		step("администратор %s создан", login)
 	default:
-		db.Close()
+		db.Close() //nolint:errcheck // cleanup
 		return nil, err
 	}
 	db.Audit(ctx, store.AuditEntry{Actor: "root", Action: "setup", Target: login})
-	db.Close()
+	db.Close() //nolint:errcheck // cleanup
 	if err := chownTree(cfg.DataDir, cfg.ServiceUser, cfg.ServiceGroup, cfg.ConfHistoryDir()); err != nil {
 		return nil, err
 	}

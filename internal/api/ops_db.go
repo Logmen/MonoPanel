@@ -184,8 +184,8 @@ func (s *Server) registerDB() {
 		} else if errors.Is(err, store.ErrExists) {
 			db, _ = s.db.GetDatabaseByName(ctx, full)
 		}
-		if db.Users == nil || len(db.Users) == 0 {
-			s.db.CreateDBUser(ctx, &store.DBUser{UserID: owner.ID, DatabaseID: &db.ID, Name: full, Host: "localhost", AuthPlugin: plugin})
+		if len(db.Users) == 0 {
+			s.db.CreateDBUser(ctx, &store.DBUser{UserID: owner.ID, DatabaseID: &db.ID, Name: full, Host: "localhost", AuthPlugin: plugin}) //nolint:errcheck // best effort while rolling back a failed create
 			db.Users, _ = s.db.ListDBUsers(ctx, db.ID)
 		}
 		db.Login = owner.Login
@@ -367,7 +367,7 @@ func (s *Server) refreshDBSizes(ctx context.Context, list []*store.Database) {
 	for _, db := range list {
 		if n, ok := sizes[db.Name]; ok && n != db.SizeBytes {
 			db.SizeBytes = n
-			s.db.SetDatabaseSize(ctx, db.ID, n)
+			s.db.SetDatabaseSize(ctx, db.ID, n) //nolint:errcheck // size refresh is informational
 		}
 	}
 }

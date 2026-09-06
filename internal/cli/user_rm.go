@@ -16,7 +16,7 @@ func userRmCmd() *cobra.Command {
 			}
 			fmt.Printf("Удалить пользователя %s вместе с сайтами и базами (%s)? [y/N] ", args[0], what)
 			var answer string
-			fmt.Scanln(&answer)
+			fmt.Scanln(&answer) //nolint:errcheck // best effort; the caller reports the real failure
 			if answer != "y" && answer != "Y" && answer != "yes" {
 				return &exitError{code: 1, msg: "отменено"}
 			}

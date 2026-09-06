@@ -150,7 +150,7 @@ func fsopCmd() *cobra.Command {
 			os.Remove(tmp.Name())
 			return err
 		}
-		tmp.Chmod(0o644)
+		tmp.Chmod(0o644) //nolint:errcheck // best effort; the caller reports the real failure
 		tmp.Close()
 		return os.Rename(tmp.Name(), p)
 	}}
@@ -179,7 +179,7 @@ func fsopCmd() *cobra.Command {
 			return err
 		}
 		var total int64
-		filepath.WalkDir(p, func(_ string, d os.DirEntry, err error) error {
+		filepath.WalkDir(p, func(_ string, d os.DirEntry, err error) error { //nolint:errcheck // best effort; the caller reports the real failure
 			if err == nil && !d.IsDir() {
 				if info, err := d.Info(); err == nil {
 					total += info.Size()
@@ -210,7 +210,7 @@ func extractArchive(arc, dest string) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		defer r.Close()
+		defer r.Close() //nolint:errcheck // cleanup
 		for _, f := range r.File {
 			p, err := safeJoin(dest, f.Name)
 			if err != nil {
@@ -250,7 +250,7 @@ func extractArchive(arc, dest string) (int, error) {
 			if err != nil {
 				return 0, err
 			}
-			defer gz.Close()
+			defer gz.Close() //nolint:errcheck // cleanup
 			rd = gz
 		}
 		tr := tar.NewReader(rd)

@@ -41,7 +41,7 @@ func (s *Server) registerAuth() {
 		}
 		u, err := s.db.GetUserByLogin(ctx, in.Body.Login)
 		if err != nil || u.PasswordHash == "" {
-			auth.VerifyPassword(in.Body.Password, "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA") // equalise timing
+			auth.VerifyPassword(in.Body.Password, "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA") //nolint:errcheck // dummy verification equalises the timing of a wrong login
 			s.db.Audit(ctx, store.AuditEntry{Actor: in.Body.Login, Action: "auth.login", IP: info.IP, Result: "denied"})
 			s.log.Warn("login denied", "login", in.Body.Login, "ip", info.IP)
 			return nil, huma.Error401Unauthorized("invalid login or password")
@@ -82,7 +82,7 @@ func (s *Server) registerAuth() {
 	}, func(ctx context.Context, _ *struct{}) (*logoutOutput, error) {
 		p := principalFrom(ctx)
 		if p.SessionID != "" {
-			s.db.DeleteSession(ctx, p.SessionID)
+			s.db.DeleteSession(ctx, p.SessionID) //nolint:errcheck // logout proceeds even if the row is already gone
 		}
 		return &logoutOutput{SetCookie: sessionCookie("", time.Unix(0, 0), requestInfo(ctx).TLS)}, nil
 	})

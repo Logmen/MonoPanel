@@ -43,14 +43,14 @@ func (s *Server) uiHandler() http.Handler {
 		p := strings.TrimPrefix(r.URL.Path, "/")
 		if p != "" && !strings.HasSuffix(p, "/") {
 			if f, err := sub.Open(p); err == nil {
-				f.Close()
+				f.Close() //nolint:errcheck // cleanup
 				files.ServeHTTP(w, r)
 				return
 			}
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
-		w.Write(index)
+		w.Write(index) //nolint:errcheck // writing to an in-memory buffer or a closed client
 	})
 }
 

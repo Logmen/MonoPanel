@@ -91,9 +91,7 @@ func ValidateNameDNS(name string) error {
 	if n == "" || len(n) > 253 {
 		return errors.New("empty or too long hostname")
 	}
-	if strings.HasPrefix(n, "*.") {
-		n = n[2:]
-	}
+	n = strings.TrimPrefix(n, "*.")
 	if strings.Contains(n, "*") {
 		return errors.New("wildcard is only allowed as the leftmost label")
 	}

@@ -53,14 +53,14 @@ func dnsProvider(typ string, creds map[string]string) (challenge.Provider, func(
 		} else {
 			prev[k] = nil
 		}
-		os.Setenv(k, v)
+		os.Setenv(k, v) //nolint:errcheck // provider env is swapped under the mutex above
 	}
 	release := func() {
 		for k, old := range prev {
 			if old == nil {
-				os.Unsetenv(k)
+				os.Unsetenv(k) //nolint:errcheck // provider env is swapped under the mutex above
 			} else {
-				os.Setenv(k, *old)
+				os.Setenv(k, *old) //nolint:errcheck // provider env is swapped under the mutex above
 			}
 		}
 		dnsMu.Unlock()

@@ -76,7 +76,7 @@ func (l *Listener) Accept() (net.Conn, error) {
 		}
 		cred, err := Get(c)
 		if err != nil || (l.Allow != nil && !l.Allow(cred)) {
-			c.Close()
+			c.Close() //nolint:errcheck // cleanup
 			continue
 		}
 		return &Conn{Conn: c, Cred: cred}, nil

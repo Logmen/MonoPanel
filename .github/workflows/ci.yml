@@ -2,21 +2,73 @@ name: ci
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+# A newer push supersedes a running check on the same branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   go:
+    name: go (test + build)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
         with:
           go-version: "1.27"
+          cache-dependency-path: go.sum
       - run: make web-stub
       - run: go vet ./...
-      - run: go test ./...
+      - name: test (race detector, coverage)
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+      - name: coverage summary
+        run: |
+          go tool cover -func=coverage.out | tail -1 >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          go tool cover -func=coverage.out | grep -vE '\s100.0%$' | tail -20 >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
       - run: make build
+      - run: make build-arm64
+
+  lint:
+    name: lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache-dependency-path: go.sum
+      - run: make web-stub
+      - name: gofmt
+        run: make fmt-check
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.13.2
+
+  templates:
+    name: templates (real nginx / apache)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache-dependency-path: go.sum
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends nginx-core apache2
+      # Regenerate the golden files from the templates, then feed them to the
+      # real servers: a template that nginx rejects fails here, not on a host.
+      - run: make web-stub && go test ./internal/render -update
+      - run: scripts/check-templates.sh
 
   web:
+    name: web (build + type check)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -24,12 +76,38 @@ jobs:
         with:
           node-version: 24
       - run: corepack enable
-      - run: cd web && pnpm install --frozen-lockfile && node_modules/.bin/svelte-kit sync && node_modules/.bin/vite build
+      - uses: actions/cache@v4
+        with:
+          path: ~/.local/share/pnpm/store
+          key: pnpm-${{ hashFiles('web/pnpm-lock.yaml') }}
+          restore-keys: pnpm-
+      - run: cd web && pnpm install --frozen-lockfile
+      - run: cd web && node_modules/.bin/svelte-kit sync
+      - run: cd web && node_modules/.bin/svelte-check --tsconfig ./tsconfig.json
+      - run: cd web && node_modules/.bin/vite build
       - uses: actions/upload-artifact@v4
         with:
           name: web-build
           path: web/build
 
+  # End-to-end tests drive a real panel over its API (user -> site -> database
+  # -> removal). They need a reachable host, so they run on demand: set the
+  # repository secrets MONOPANEL_URL and MONOPANEL_TOKEN, or run `make e2e`
+  # locally against an ssh-reachable host.
+  e2e:
+    name: e2e (live panel)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - run: make web-stub
+      - env:
+          MONOPANEL_URL: ${{ secrets.MONOPANEL_URL }}
+          MONOPANEL_TOKEN: ${{ secrets.MONOPANEL_TOKEN }}
+        run: go test -tags e2e -count=1 -v ./e2e/
+
   # Full OS matrix (Debian 12/13, Ubuntu 22.04/24.04/26.04, AlmaLinux/Rocky 9/10)
-  # needs VMs with systemd, nftables, SELinux: run on a self-hosted runner.
-  # `make deploy-dev` reproduces the smoke scenario documented in docs/05-roadmap.md.
+  # needs VMs with systemd, nftables and SELinux: run it on a self-hosted runner.

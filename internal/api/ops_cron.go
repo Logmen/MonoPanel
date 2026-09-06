@@ -134,7 +134,7 @@ func (s *Server) registerCron() {
 			return nil, err
 		}
 		if err := s.applyCrontab(ctx, u); err != nil {
-			s.db.DeleteCronJob(ctx, job.ID)
+			s.db.DeleteCronJob(ctx, job.ID) //nolint:errcheck // rollback of a job that could not be installed
 			return nil, huma.Error502BadGateway(err.Error())
 		}
 		job.Login = u.Login

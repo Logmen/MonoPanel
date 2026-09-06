@@ -761,15 +761,15 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 		return s.siteFail(ctx, site, err)
 	}
 	jc.Logf("configuration: %d written, %d unchanged; reloaded %s", len(apply.Written), len(apply.Unchanged), strings.Join(apply.Reloaded, ", "))
-	if !suspended && !proxy {
+	if !suspended && !proxy && s.poolSocketWait > 0 {
 		// systemd's reload returns once the signal is sent; give php-fpm a moment to open the pool socket.
-		deadline := time.Now().Add(10 * time.Second)
+		deadline := time.Now().Add(s.poolSocketWait)
 		for {
 			if _, err := os.Stat(l.socket); err == nil {
 				break
 			}
 			if time.Now().After(deadline) {
-				jc.Logf("warning: pool socket %s did not appear within 10s", l.socket)
+				jc.Logf("warning: pool socket %s did not appear within %s", l.socket, s.poolSocketWait)
 				break
 			}
 			time.Sleep(200 * time.Millisecond)
@@ -778,8 +778,8 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 	// nginx reload is graceful: old workers keep answering (with the old server
 	// set) until they drain. Wait until a request for this host gets an HTTP
 	// answer instead of the default server's connection close.
-	if !suspended && site.IP != "" {
-		if err := waitNginxHost(ctx, site.IP, site.Domain, 15*time.Second); err != nil {
+	if !suspended && site.IP != "" && s.nginxWait > 0 {
+		if err := waitNginxHost(ctx, site.IP, site.Domain, s.nginxWait); err != nil {
 			jc.Logf("warning: %v", err)
 		}
 	}

@@ -43,7 +43,7 @@ func newLogger(cfg config.Config) *slog.Logger {
 func versionCmd() *cobra.Command {
 	return &cobra.Command{Use: "version", Short: "версия панели", Run: func(cmd *cobra.Command, _ []string) {
 		if g.json {
-			printJSON(map[string]string{"version": buildinfo.Version, "commit": buildinfo.Commit, "date": buildinfo.Date})
+			printJSON(map[string]string{"version": buildinfo.Version, "commit": buildinfo.Commit, "date": buildinfo.Date}) //nolint:errcheck // best effort; the caller reports the real failure
 			return
 		}
 		fmt.Println("monopanel", buildinfo.String())
@@ -70,7 +70,7 @@ func apiCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer db.Close()
+		defer db.Close() //nolint:errcheck // cleanup
 		runner := jobs.NewRunner(db, cfg.Jobs.Workers, logger)
 		srv := api.New(cfg, db, agent.NewClient(cfg.AgentSocket()), runner, profile, logger)
 		runner.Start(ctx)

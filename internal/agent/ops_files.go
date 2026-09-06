@@ -75,7 +75,7 @@ func (s *Server) ensureFile(_ context.Context, req *EnsureFileRequest) (*EnsureF
 	if err != nil {
 		return nil, &Error{Status: http.StatusBadRequest, Message: "owner: " + err.Error()}
 	}
-	gid := -1
+	var gid int
 	if req.Group != "" {
 		if gid, err = lookupGID(req.Group); err != nil {
 			return nil, &Error{Status: http.StatusBadRequest, Message: "group: " + err.Error()}

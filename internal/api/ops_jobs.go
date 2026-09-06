@@ -91,7 +91,7 @@ func (s *Server) registerJobs() {
 		defer stop()
 		j, err := s.db.GetJob(ctx, in.ID)
 		if err != nil || !s.canSeeJob(ctx, j) {
-			send.Data(FailedEvent{JobID: in.ID, Type: "failed", Error: "job not found", Time: time.Now()})
+			send.Data(FailedEvent{JobID: in.ID, Type: "failed", Error: "job not found", Time: time.Now()}) //nolint:errcheck // best effort; the caller reports the real failure
 			return
 		}
 		if err := send.Data(JobSnapshot{Job: j}); err != nil {

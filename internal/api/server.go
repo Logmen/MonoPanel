@@ -43,6 +43,16 @@ type Server struct {
 	tls     *certHolder
 	acme    *acme.Manager
 	secrets *secrets.Box
+	// Readiness waits after a reload: systemd returns before php-fpm opens the
+	// pool socket and nginx drains its old workers. Zero skips the wait, which
+	// is what tests with a fake agent want.
+	poolSocketWait time.Duration
+	nginxWait      time.Duration
+}
+
+// SetReadinessWaits overrides the post-reload waits. Intended for tests.
+func (s *Server) SetReadinessWaits(poolSocket, nginx time.Duration) {
+	s.poolSocketWait, s.nginxWait = poolSocket, nginx
 }
 
 var secured = []map[string][]string{{"bearer": {}}, {"session": {}}}
@@ -53,6 +63,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 		log = slog.Default()
 	}
 	s := &Server{cfg: cfg, db: db, agent: ag, jobs: runner, profile: profile, render: render.New(cfg.TemplatesDir), log: log, started: time.Now(), limiter: newLoginLimiter(8, time.Minute)}
+	s.poolSocketWait, s.nginxWait = 10*time.Second, 15*time.Second
 	s.tls = newCertHolder(cfg, log)
 	if box, err := secrets.Open(cfg.SecretKeyFile); err == nil {
 		s.secrets = box

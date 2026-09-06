@@ -100,7 +100,7 @@ func EnsureUnixUser(ctx context.Context, profile osprofile.Profile, req *EnsureU
 		if !nameRe.MatchString(g) {
 			return nil, &Error{Status: http.StatusBadRequest, Message: "invalid group name: " + g}
 		}
-		runArgv(ctx, nil, "gpasswd", "-d", req.Login, g) // not a member: ignore
+		runArgv(ctx, nil, "gpasswd", "-d", req.Login, g) //nolint:errcheck // not a member of the group: nothing to do
 	}
 	uid, _ := strconv.Atoi(u.Uid)
 	gid, _ := strconv.Atoi(u.Gid)

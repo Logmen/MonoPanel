@@ -84,7 +84,7 @@ func (s *Server) Run(ctx context.Context) error {
 			case <-gctx.Done():
 				return nil
 			case <-t.C:
-				s.db.DeleteExpiredSessions(context.Background())
+				s.db.DeleteExpiredSessions(context.Background()) //nolint:errcheck // best effort; the caller reports the real failure
 				s.scheduledBackups(gctx)
 			}
 		}
