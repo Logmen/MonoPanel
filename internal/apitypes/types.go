@@ -80,6 +80,7 @@ type UserWithJob struct {
 // CreateTokenRequest mints an API token.
 type CreateTokenRequest struct {
 	Name          string   `json:"name" minLength:"1" maxLength:"64"`
+	User          string   `json:"user,omitempty" pattern:"^[a-z_][a-z0-9_-]{0,31}$" doc:"Account the token acts as; administrators only. Root on the local socket has no account of its own: without this the single administrator is used."`
 	Scopes        []string `json:"scopes,omitempty"`
 	ExpiresInDays int      `json:"expires_in_days,omitempty" minimum:"0" maximum:"3650"`
 }

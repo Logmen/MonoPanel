@@ -44,6 +44,7 @@
 | App-сервисы | `mp app add\|set\|start\|stop\|restart\|logs\|rm` | systemd-юнит `monopanel-app-<login>-<name>` от имени пользователя (gunicorn, node, боты): команда, workdir и env-file внутри домашнего каталога, автозапуск, журнал через journalctl |
 | Apache 2.4 | `mp stack install apache` | Debian/Ubuntu: mpm_event + proxy_fcgi, `conf-available/monopanel.conf` |
 | СУБД | `mp stack install percona\|mysql`, `mp db create\|list\|passwd\|rm` | Percona Server / MySQL 8.4 LTS, root по `auth_socket`, тюнинг по RAM, `mysql_native_password` только при PHP < 7.4, базы `<login>_<name>` |
+| API-токены | `mp token create\|list\|revoke` | токен принадлежит аккаунту; администратор выпускает его и для другого аккаунта (`--user`), root по локальному сокету — для единственного администратора без флагов |
 | TLS | `mp ssl issue\|list\|renew\|rm`, `mp dns-provider add`, `mp web tls` | lego: HTTP-01 по webroot nginx, DNS-01 (Cloudflare, Hetzner, DigitalOcean, Gandi, deSEC, Namecheap, RFC2136) для wildcard, автопродление за 30 дней, hot-swap сертификата панели; `mp ssl import --cert --key` для готовых сертификатов (Let's Encrypt дальше продлеваются через ACME) |
 | Cron | `mp cron add\|list\|enable\|disable\|rm` | crontab пользователя целиком из БД, PATH с `~/data/bin` (php нужной версии) |
 | Real IP | `mp stack real-ip --cloudflare [--from CIDR]` | доверенные прокси для nginx `real_ip` (сети Cloudflare встроены): allow-list и логи видят адрес клиента, а не прокси |
@@ -89,8 +90,9 @@ make help             # все цели
 End-to-end гоняется против настоящей панели и убирает за собой всё, что создал:
 
 ```bash
-MONOPANEL_URL=https://toolkit.onehost.kz:8443 \
-MONOPANEL_LOGIN=admin MONOPANEL_PASSWORD='…' make e2e
+make e2e HOST=toolkit      # токен берётся по ssh и отзывается после прогона
+# или явно:
+MONOPANEL_URL=https://panel:8443 MONOPANEL_TOKEN='…' make e2e
 ```
 
 CI (GitHub Actions) на каждый push: тесты с детектором гонок и покрытием, линтер,

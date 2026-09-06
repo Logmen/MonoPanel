@@ -67,12 +67,25 @@ web: ## Build the web UI into web/build
 
 # End-to-end against a real panel: creates a user, a site with a preset and a
 # database, checks that nginx and PHP actually answer, then removes them again.
-e2e: web-stub ## Run end-to-end tests against a live panel (URL/credentials from the environment)
+# With HOST=<ssh alias> a token is minted over ssh and revoked afterwards;
+# otherwise MONOPANEL_URL plus a token or login/password come from the caller.
+e2e: web-stub ## Run end-to-end tests against a live panel (HOST=toolkit, or MONOPANEL_* in the environment)
+ifdef HOST
+	@set -e; \
+	token=$$(ssh $(HOST) 'mp token create --name e2e --json' | $(GO) run ./scripts/jsonfield token); \
+	id=$$(ssh $(HOST) 'mp token list --json' | $(GO) run ./scripts/jsonfield last-id); \
+	url=$$(ssh $(HOST) 'mp config show --json' | $(GO) run ./scripts/jsonfield panel-url); \
+	echo "e2e against $$url (token #$$id)"; \
+	MONOPANEL_URL=$$url MONOPANEL_TOKEN=$$token $(GO) test -tags e2e -count=1 -v ./e2e/ ; status=$$?; \
+	ssh $(HOST) "mp token revoke $$id" >/dev/null 2>&1 || true; \
+	exit $$status
+else
 	@[ -n "$$MONOPANEL_URL" ] || { \
-		echo "set MONOPANEL_URL and credentials, for example:"; \
-		echo "  MONOPANEL_URL=https://toolkit.onehost.kz:8443 MONOPANEL_LOGIN=admin MONOPANEL_PASSWORD=… make e2e"; \
-		echo "  (or MONOPANEL_TOKEN=… from 'mp token create' in the web UI)"; exit 2; }
+		echo "pass a host with an ssh alias, or set the environment yourself:"; \
+		echo "  make e2e HOST=toolkit"; \
+		echo "  MONOPANEL_URL=https://panel:8443 MONOPANEL_LOGIN=admin MONOPANEL_PASSWORD=… make e2e"; exit 2; }
 	$(GO) test -tags e2e -count=1 -v ./e2e/
+endif
 
 deb rpm: build
 	VERSION=$(VERSION) ARCH=$(ARCH) nfpm package -f packaging/nfpm.yaml -p $@ -t dist/

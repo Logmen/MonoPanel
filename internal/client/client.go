@@ -173,9 +173,13 @@ func (c *Client) CreateToken(ctx context.Context, req apitypes.CreateTokenReques
 }
 
 // ListTokens lists the caller's tokens.
-func (c *Client) ListTokens(ctx context.Context) ([]*store.APIToken, error) {
+func (c *Client) ListTokens(ctx context.Context, user string) ([]*store.APIToken, error) {
 	var out []*store.APIToken
-	return out, c.do(ctx, http.MethodGet, "/tokens", nil, &out)
+	p := "/tokens"
+	if user != "" {
+		p += "?user=" + url.QueryEscape(user)
+	}
+	return out, c.do(ctx, http.MethodGet, p, nil, &out)
 }
 
 // DeleteToken revokes a token.

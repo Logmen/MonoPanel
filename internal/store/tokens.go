@@ -88,9 +88,14 @@ func (d *DB) ListAPITokens(ctx context.Context, userID int64) ([]*APIToken, erro
 	return out, rows.Err()
 }
 
-// DeleteAPIToken revokes a token owned by userID.
+// DeleteAPIToken revokes a token owned by userID; userID 0 revokes any token
+// and is reserved for administrators.
 func (d *DB) DeleteAPIToken(ctx context.Context, id, userID int64) error {
-	res, err := d.sql.ExecContext(ctx, `DELETE FROM api_tokens WHERE id=? AND user_id=?`, id, userID)
+	query, args := `DELETE FROM api_tokens WHERE id=? AND user_id=?`, []any{id, userID}
+	if userID == 0 {
+		query, args = `DELETE FROM api_tokens WHERE id=?`, []any{id}
+	}
+	res, err := d.sql.ExecContext(ctx, query, args...)
 	if err != nil {
 		return err
 	}

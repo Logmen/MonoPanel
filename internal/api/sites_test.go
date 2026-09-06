@@ -79,13 +79,18 @@ func newSiteFixture(t *testing.T) *siteFixture {
 
 // login authenticates as the administrator and keeps the session cookie, so
 // requests travel through the real authentication and CSRF middleware.
-func (f *siteFixture) login() {
+func (f *siteFixture) login() { f.loginAs("admin", "secret-password") }
+
+// loginAs switches the fixture to another account.
+func (f *siteFixture) loginAs(login, password string) {
 	f.t.Helper()
-	res, err := http.Post(f.ts.URL+"/api/v1/auth/login", "application/json", strings.NewReader(`{"login":"admin","password":"secret-password"}`))
+	body := `{"login":"` + login + `","password":"` + password + `"}`
+	res, err := http.Post(f.ts.URL+"/api/v1/auth/login", "application/json", strings.NewReader(body))
 	if err != nil || res.StatusCode != http.StatusOK {
-		f.t.Fatalf("login: %v %v", res, err)
+		f.t.Fatalf("login as %s: %v %v", login, res, err)
 	}
 	defer res.Body.Close()
+	f.cookie = nil
 	for _, c := range res.Cookies() {
 		if c.Name == sessionCookieName {
 			f.cookie = c

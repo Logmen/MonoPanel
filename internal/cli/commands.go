@@ -353,14 +353,16 @@ func tokenCmd() *cobra.Command {
 		return nil
 	}}
 	create.Flags().StringVar(&req.Name, "name", "cli", "название токена")
+	create.Flags().StringVar(&req.User, "user", "", "аккаунт, от имени которого выпустить токен (для администратора; по сокету от root — единственный администратор)")
 	create.Flags().StringVar(&scopes, "scopes", "", "scope через запятую (пока информационно)")
 	create.Flags().IntVar(&req.ExpiresInDays, "expires", 0, "срок в днях (0 = бессрочно)")
-	list := &cobra.Command{Use: "list", Short: "мои токены", RunE: func(cmd *cobra.Command, _ []string) error {
+	var listUser string
+	list := &cobra.Command{Use: "list", Short: "токены аккаунта (по умолчанию свои)", RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
 		}
-		list, err := cl.ListTokens(cmd.Context())
+		list, err := cl.ListTokens(cmd.Context(), listUser)
 		if err != nil {
 			return err
 		}
@@ -381,7 +383,8 @@ func tokenCmd() *cobra.Command {
 		table([]string{"ID", "NAME", "SCOPES", "EXPIRES", "LAST USED"}, rows)
 		return nil
 	}}
-	revoke := &cobra.Command{Use: "revoke <id>", Short: "отозвать токен", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	list.Flags().StringVar(&listUser, "user", "", "аккаунт (для администратора)")
+	revoke := &cobra.Command{Use: "revoke <id>", Short: "отозвать токен (администратор — любой)", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
