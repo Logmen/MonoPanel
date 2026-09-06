@@ -34,6 +34,30 @@ export async function api<T = unknown>(path: string, init: RequestInit & { json?
   return data as T;
 }
 
+// Файловый менеджер работает с сырым телом: содержимое файла — не JSON.
+async function fail(res: Response): Promise<never> {
+  const text = await res.text();
+  let data: any = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+  throw new ApiError(res.status, data?.detail || data?.title || text || res.statusText, data?.errors);
+}
+
+export async function apiText(path: string): Promise<string> {
+  const res = await fetch('/api/v1' + path, { credentials: 'same-origin' });
+  if (!res.ok) await fail(res);
+  return res.text();
+}
+
+export async function apiPutRaw(path: string, body: BodyInit): Promise<void> {
+  const res = await fetch('/api/v1' + path, {
+    method: 'PUT',
+    body,
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/octet-stream' }
+  });
+  if (!res.ok) await fail(res);
+}
+
 export function jobEvents(id: number, onEvent: (type: string, data: any) => void): () => void {
   const es = new EventSource(`/api/v1/jobs/${id}/events`);
   for (const t of ['snapshot', 'queued', 'started', 'progress', 'log', 'done', 'failed', 'ping']) {

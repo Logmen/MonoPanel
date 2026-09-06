@@ -7,12 +7,13 @@
   import JobLog from '$lib/components/JobLog.svelte';
   import PageHead from '$lib/components/PageHead.svelte';
   import Icon from '$lib/components/Icon.svelte';
+  import FileManager from '$lib/components/FileManager.svelte';
   const domain = $derived(page.params.domain!);
   const admin = $derived(auth.me?.role === 'admin');
   let site = $state<any>(null);
   let php = $state<any[]>([]);
   let presets = $state<any[]>([]);
-  let tab = $state<'settings' | 'php' | 'nginx' | 'logs'>('settings');
+  let tab = $state<'settings' | 'php' | 'nginx' | 'files' | 'logs'>('settings');
   let logType = $state('access');
   let log = $state<any>(null);
   let job = $state<number | null>(null);
@@ -96,7 +97,7 @@
     if (e.key === 'Tab') { e.preventDefault(); const t = e.target as HTMLTextAreaElement; const s = t.selectionStart; custom = custom.slice(0, s) + '    ' + custom.slice(t.selectionEnd); queueMicrotask(() => t.setSelectionRange(s + 4, s + 4)); }
   }
   async function loadLog() { try { log = await api(`/sites/${domain}/logs/${logType}?lines=200`); } catch (e: any) { error = e.text || String(e); } }
-  const tabs: [typeof tab, string, string][] = [['settings', 'Настройки', 'settings'], ['php', 'PHP', 'code'], ['nginx', 'nginx', 'file'], ['logs', 'Логи', 'terminal']];
+  const tabs: [typeof tab, string, string][] = [['settings', 'Настройки', 'settings'], ['php', 'PHP', 'code'], ['nginx', 'nginx', 'file'], ['files', 'Файлы', 'box'], ['logs', 'Логи', 'terminal']];
 </script>
 
 <PageHead title={domain} mono back="/sites" sub={site ? `владелец ${site.login} · ${site.ip} · ${site.mode === 'proxy' ? 'proxy → ' + site.backend : 'PHP ' + site.php_version + ' · ' + site.mode}` : ''}>
@@ -198,6 +199,11 @@
         <button class="text-sm font-medium inline-flex items-center gap-1.5" onclick={() => (showGenerated = !showGenerated)}><Icon name="chevron" size={14} class="transition-transform {showGenerated ? 'rotate-90' : ''}" /> Сгенерированный server-блок <span class="text-xs text-muted font-mono font-normal">{nginx?.config_path || ''}</span></button>
         {#if showGenerated}<pre class="code mt-3 max-h-[32rem]" transition:slide={{ duration: dur(200) }}>{nginx?.generated || ''}</pre>{/if}
       </div>
+    </div>
+
+  {:else if tab === 'files'}
+    <div class="rise">
+      <FileManager user={site.login} start={'/data/www/' + domain + (site.docroot ? '/' + site.docroot : '')} />
     </div>
 
   {:else if tab === 'logs'}
