@@ -24,9 +24,13 @@
   const dirty = $derived(editing !== null && text !== original);
   const lines = $derived(text.split('\n').length);
 
-  let ask = $state<{ open: boolean; title: string; label: string; value: string; run: (v: string) => Promise<void> }>({
-    open: false, title: '', label: '', value: '', run: async () => {}
-  });
+  // Диалог одного поля: отдельные переменные, а не объект — привязка к
+  // свойству объекта, который целиком переприсваивается, значение теряет.
+  let askOpen = $state(false);
+  let askTitle = $state('');
+  let askLabel = $state('');
+  let askValue = $state('');
+  let askRun: (v: string) => Promise<void> = async () => {};
 
   // Расширения, которые точно не текст: не тратим запрос на попытку открыть.
   const binaryExt = /\.(png|jpe?g|gif|webp|avif|ico|bmp|tiff?|svgz|pdf|zip|gz|tgz|bz2|xz|7z|rar|tar|mp[34]|m4a|mov|avi|mkv|webm|woff2?|ttf|eot|otf|so|bin|exe|dll|class|jar|db|sqlite3?|psd)$/i;
@@ -129,14 +133,18 @@
   }
 
   function request(title: string, label: string, value: string, run: (v: string) => Promise<void>) {
-    ask = { open: true, title, label, value, run };
+    askTitle = title;
+    askLabel = label;
+    askValue = value;
+    askRun = run;
+    askOpen = true;
   }
   async function askSubmit(e: Event) {
     e.preventDefault();
-    const value = ask.value.trim();
+    const value = askValue.trim();
     if (!value) return;
-    ask.open = false;
-    await ask.run(value);
+    askOpen = false;
+    await askRun(value);
   }
 
   const mkdir = () => request('Новая папка', 'Название', '', (v) => op({ op: 'mkdir', path: join(cwd, v) }, `папка ${v} создана`));
@@ -182,7 +190,7 @@
 
   let askInput = $state<HTMLInputElement | null>(null);
   // Диалог открывается пустым или с текущим значением — курсор сразу в поле.
-  $effect(() => { if (ask.open) queueMicrotask(() => askInput?.select()); });
+  $effect(() => { if (askOpen) queueMicrotask(() => askInput?.select()); });
 
   let dragging = $state(false);
   function drop(e: DragEvent) {
@@ -342,21 +350,21 @@
   </div>
 {/if}
 
-<Modal bind:open={ask.open} title={ask.title}>
+<Modal bind:open={askOpen} title={askTitle}>
   <form id="fm-ask" onsubmit={askSubmit}>
-    <label class="label" for="fm-value">{ask.label}</label>
+    <label class="label" for="fm-value">{askLabel}</label>
     <!-- Кнопка «Готово» живёт в подвале модалки, вне формы, поэтому Enter
          обрабатывается здесь, а не неявной отправкой формы. -->
     <input
       id="fm-value"
       class="input font-mono"
       bind:this={askInput}
-      bind:value={ask.value}
+      bind:value={askValue}
       onkeydown={(e) => { if (e.key === 'Enter') askSubmit(e); }}
     />
   </form>
   {#snippet footer()}
-    <button class="btn" onclick={() => (ask.open = false)}>Отмена</button>
+    <button class="btn" onclick={() => (askOpen = false)}>Отмена</button>
     <button class="btn btn-primary" form="fm-ask" type="submit">Готово</button>
   {/snippet}
 </Modal>
