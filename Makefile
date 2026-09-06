@@ -8,8 +8,12 @@ DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w -X monopanel/internal/buildinfo.Version=$(VERSION) -X monopanel/internal/buildinfo.Commit=$(COMMIT) -X monopanel/internal/buildinfo.Date=$(DATE)
 GO      ?= go
 ARCH    ?= amd64
-DEV_HOST ?= ubuntu@185.253.8.5
-DEV_SSH  ?= ssh -i ~/.ssh/monopanel-dev -o IdentitiesOnly=yes
+# Where `make deploy-dev` and `make e2e` point. Keep your own host out of the
+# repository: put DEV_HOST/DEV_SSH/HOST in .dev/config.mk, which is git-ignored.
+-include .dev/config.mk
+DEV_HOST ?= root@panel.example.com
+DEV_SSH  ?= ssh
+DEV_SCP  ?= scp
 GOLANGCI_VERSION ?= v2.13.2
 
 .PHONY: build build-arm64 test test-race test-short cover cover-html lint vet fmt fmt-check check web web-check web-stub e2e deb rpm packages arch-artifacts sign release keygen deploy-dev clean help
@@ -73,7 +77,7 @@ web: ## Build the web UI into web/build
 # database, checks that nginx and PHP actually answer, then removes them again.
 # With HOST=<ssh alias> a token is minted over ssh and revoked afterwards;
 # otherwise MONOPANEL_URL plus a token or login/password come from the caller.
-e2e: web-stub ## Run end-to-end tests against a live panel (HOST=toolkit, or MONOPANEL_* in the environment)
+e2e: web-stub ## Run end-to-end tests against a live panel (HOST=<ssh alias>, or MONOPANEL_* in the environment)
 ifdef HOST
 	@set -e; \
 	token=$$(ssh $(HOST) 'mp token create --name e2e --json' | $(GO) run ./scripts/jsonfield token); \
@@ -86,7 +90,7 @@ ifdef HOST
 else
 	@[ -n "$$MONOPANEL_URL" ] || { \
 		echo "pass a host with an ssh alias, or set the environment yourself:"; \
-		echo "  make e2e HOST=toolkit"; \
+		echo "  make e2e HOST=<ssh alias>"; \
 		echo "  MONOPANEL_URL=https://panel:8443 MONOPANEL_LOGIN=admin MONOPANEL_PASSWORD=… make e2e"; exit 2; }
 	$(GO) test -tags e2e -count=1 -v ./e2e/
 endif
@@ -126,7 +130,7 @@ release: ## Tag the current commit and let CI publish the release (VERSION=0.6.0
 
 # Dev deploy without a package: copy the binary and run setup on the test host.
 deploy-dev: build
-	scp -i ~/.ssh/monopanel-dev -o IdentitiesOnly=yes dist/monopanel $(DEV_HOST):/tmp/monopanel
+	$(DEV_SCP) dist/monopanel $(DEV_HOST):/tmp/monopanel
 	$(DEV_SSH) $(DEV_HOST) 'sudo install -m 0755 /tmp/monopanel /usr/bin/monopanel && sudo ln -sf /usr/bin/monopanel /usr/bin/mp && sudo mp setup'
 
 clean:

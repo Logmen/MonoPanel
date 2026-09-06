@@ -59,7 +59,7 @@ func TestGolden(t *testing.T) {
 			return s
 		}(), []string{"allow 203.0.113.0/24;", "allow 2001:db8::1;", "deny  all;"}},
 		{"nginx-real-ip.conf", "nginx/real-ip.conf.tmpl", RealIP{Cloudflare: true, CloudflareRanges: CloudflareRanges}, []string{"set_real_ip_from 173.245.48.0/20;", "real_ip_header    CF-Connecting-IP;"}},
-		{"systemd-app.service", "systemd/app.service.tmpl", AppUnit{Login: "look", Name: "web", Description: "gunicorn", Command: "/var/www/look/data/venv/bin/gunicorn --bind 127.0.0.1:5000 app:app", WorkDir: "/var/www/look/data/www/look.onehost.kz", EnvFile: "/var/www/look/data/.env", Env: []string{"PORT=5000"}, Restart: "always"}, []string{"User=look", "ExecStart=/var/www/look/data/venv/bin/gunicorn --bind 127.0.0.1:5000 app:app", "EnvironmentFile=/var/www/look/data/.env", "Environment=\"PORT=5000\"", "Restart=always"}},
+		{"systemd-app.service", "systemd/app.service.tmpl", AppUnit{Login: "alex", Name: "web", Description: "gunicorn", Command: "/var/www/alex/data/venv/bin/gunicorn --bind 127.0.0.1:5000 app:app", WorkDir: "/var/www/alex/data/www/app.example.com", EnvFile: "/var/www/alex/data/.env", Env: []string{"PORT=5000"}, Restart: "always"}, []string{"User=alex", "ExecStart=/var/www/alex/data/venv/bin/gunicorn --bind 127.0.0.1:5000 app:app", "EnvironmentFile=/var/www/alex/data/.env", "Environment=\"PORT=5000\"", "Restart=always"}},
 		{"php-fpm-pool.conf", "php-fpm/pool.conf.tmpl", examplePool(), []string{"[example.com]", "listen.group = monopanel-web", "php_value[memory_limit] = 256M", "pm = ondemand"}},
 	}
 	presets := []string{"nginx/presets/wordpress.conf.tmpl", "nginx/presets/joomla.conf.tmpl", "nginx/presets/bitrix.conf.tmpl", "nginx/presets/opencart.conf.tmpl"}

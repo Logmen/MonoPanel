@@ -7,11 +7,11 @@
 // It never touches objects it did not create, so it is safe against a host
 // that also carries real sites.
 //
-//	MONOPANEL_URL=https://toolkit.onehost.kz:8443 \
+//	MONOPANEL_URL=https://panel.example.com:8443 \
 //	MONOPANEL_TOKEN=... \
 //	go test -tags e2e ./e2e/ -v
 //
-// or simply: make e2e HOST=toolkit
+// or simply: make e2e HOST=<ssh alias>
 package e2e
 
 import (

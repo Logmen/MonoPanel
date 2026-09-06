@@ -5,13 +5,13 @@ platform: linux
 version: ${VERSION}
 section: admin
 priority: optional
-maintainer: MonoPanel <ops@monopanel.local>
+maintainer: Alex Bekker <logmen11@gmail.com>
 description: |
   MonoPanel web hosting control panel: nginx + php-fpm, nginx + Apache,
   PHP 5.6–8.5 side by side, MySQL 8.4 / Percona Server 8.4.
 vendor: MonoPanel
-homepage: https://monopanel.local
-license: Proprietary
+homepage: https://github.com/Logmen/MonoPanel
+license: Apache-2.0
 depends:
   - ca-certificates
 contents:

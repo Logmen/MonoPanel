@@ -6,7 +6,7 @@
 - [x] OS Profile для Debian/Ubuntu и EL9/EL10 (+ generic для dev-машин); агент с `ApplyConfigSet`, `EnsureGroup`, `EnsureUnixUser`, `EnsureDirs`, `Service`, `Pkg`; peer-cred на обоих сокетах.
 - [x] SQLite-схема и миграции; auth (argon2id, сессии, Bearer-токены, CSRF-проверка); job-runner с локами; SSE.
 - [x] Установка nginx с nginx.org (`mp stack install nginx`), шаблоны nginx/Apache/php-fpm с golden-тестами, CLI и TUI.
-- [x] ACME (lego, HTTP-01 по webroot): `mp ssl issue/list/renew/rm`, таблица `certificates`, автопродление, hot-swap сертификата панели (`mp web tls`). Проверено выпуском боевого сертификата Let's Encrypt для toolkit.onehost.kz.
+- [x] ACME (lego, HTTP-01 по webroot): `mp ssl issue/list/renew/rm`, таблица `certificates`, автопродление, hot-swap сертификата панели (`mp web tls`). Проверено выпуском боевого сертификата Let's Encrypt на тестовом хосте.
 - [ ] Сборка SvelteKit-приложения (нужен Node; пока заглушка `web/build/index.html`).
 - [ ] Репозиторий deb/rpm и подпись пакетов.
 - [ ] Установка PHP (Sury/Remi) и Percona/MySQL 8.4 с `auth_socket` — переносится в начало этапа 1.

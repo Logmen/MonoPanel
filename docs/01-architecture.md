@@ -2,6 +2,8 @@
 
 Состояние на сентябрь 2026. Версии компонентов указаны на этот момент; их актуальность проверяется отдельным CI-job (см. [05-roadmap.md](05-roadmap.md)).
 
+> Это проектный документ: он описывает решения и их обоснование, в том числе те части, до которых реализация ещё не дошла. Что действительно работает — в [README](../README.md) и в отметках [x] в [05-roadmap.md](05-roadmap.md). Ниже такие места помечены как «планируется».
+
 ## 1. Цели и границы
 
 **Что делаем**
@@ -97,8 +99,8 @@
 
 ### 3.4 Web UI
 
-- SvelteKit 2 (Svelte 5, runes), `adapter-static`, TypeScript strict, Tailwind CSS 4, shadcn-svelte (Bits UI), TanStack Query + Table, uPlot (графики), CodeMirror 6 (редактор конфигов/файлов), xterm.js (терминал), Paraglide (i18n: ru/en).
-- Клиент API генерируется из OpenAPI (`@hey-api/openapi-ts`) — типы общие с бэкендом.
+- SvelteKit 2 (Svelte 5, runes), `adapter-static`, TypeScript strict, Tailwind CSS 4. Реализовано на этом наборе без сторонних UI-библиотек: компоненты, графики и таблицы — свои, единственная внешняя зависимость рантайма — `qrcode` (QR для TOTP).
+- Планируется: библиотека компонентов (shadcn-svelte / Bits UI), TanStack Query + Table, CodeMirror 6 для редактора конфигов, xterm.js для терминала, Paraglide (i18n ru/en), генерация клиента из OpenAPI (`@hey-api/openapi-ts`).
 - Сборка в `web/build` и вшивание в бинарник; SPA, один HTML, целевой размер JS ≈ 200–300 КБ gzip.
 - Два режима интерфейса: администратор (весь сервер) и клиент (свои сайты/БД/файлы/cron).
 
@@ -111,7 +113,7 @@
 
 ### 3.6 Хранилище состояния
 
-- `/var/lib/monopanel/panel.db` — SQLite, WAL, `foreign_keys=ON`, `busy_timeout`. Драйвер `modernc.org/sqlite` (pure Go → CGO-free статический бинарник). Запросы — `sqlc`, миграции — встроенные SQL через `goose`.
+- `/var/lib/monopanel/panel.db` — SQLite, WAL, `foreign_keys=ON`, `busy_timeout`. Драйвер `modernc.org/sqlite` (pure Go → CGO-free статический бинарник). Запросы написаны руками в `internal/store`, миграции — встроенные SQL-файлы, применяются при старте.
 - Секреты (пароли БД клиентов, токены DNS-провайдеров, ключи ACME, пароли SFTP/S3 бэкапов) шифруются AES-256-GCM ключом из `/etc/monopanel/secret.key` (0640 root:monopanel). Бэкап SQLite без ключа для атакующего бесполезен.
 - История конфигов: `/var/lib/monopanel/confhistory/<escaped-path>/<timestamp>` — последние N версий каждого сгенерированного файла, diff в UI, ручной откат.
 - Снимок состояния: `mp backup run --scope panel` = `panel.db` + `/etc/monopanel` + `/var/lib/monopanel/{certs,acme}` — этого достаточно для восстановления панели на новом сервере с последующим `mp config apply --all`.
@@ -122,12 +124,12 @@
 
 | Кандидат | Плюсы | Минусы | Вердикт |
 |---|---|---|---|
-| **Go 1.26+** | Статический бинарник, быстрый старт, goroutines для задач, stdlib HTTP/TLS, зрелые библиотеки для systemd/ACME/nftables/TUI, кросс-сборка amd64/arm64, nfpm/goreleaser | GC-паузы несущественны для панели | **выбран** |
+| **Go 1.26+** | Статический бинарник, быстрый старт, goroutines для задач, stdlib HTTP/TLS, зрелые библиотеки для systemd/ACME/nftables/TUI, кросс-сборка amd64/arm64, nfpm | GC-паузы несущественны для панели | **выбран** |
 | Rust | Максимальная производительность и безопасность памяти | В 2–3 раза дольше разработка; узкое место панели — nginx/PHP, а не ядро | нет |
 | Python (FastAPI) | Скорость разработки | Интерпретатор на хосте: конфликты версий на 9 релизах ОС, venv, медленный старт CLI | нет |
 | PHP / Node.js | Знакомы веб-разработчикам | Рантайм на хосте, плохая пригодность для системного демона с root-операциями | нет |
 
-Библиотеки: `go-chi/chi` (роутер), `danielgtaylor/huma/v2` (OpenAPI 3.1 из типов, валидация), `sqlc` + `modernc.org/sqlite`, `pressly/goose` (миграции), `coreos/go-systemd/v22` (D-Bus), `go-acme/lego/v4` (ACME), `x/crypto/argon2`, `pquerna/otp` (TOTP), `go-webauthn/webauthn`, `spf13/cobra`, `charmbracelet/bubbletea` v2 + `huh` + `lipgloss`, `google/nftables`, `log/slog`, `goccy/go-yaml`, `yookoala/gofast` (FastCGI-клиент для phpMyAdmin через панель), `goreleaser/nfpm` (deb/rpm), `google/go-cmp`/`testify` (тесты).
+Библиотеки: `go-chi/chi` (роутер), `danielgtaylor/huma/v2` (OpenAPI 3.1 из типов, валидация), `modernc.org/sqlite`, `coreos/go-systemd/v22` (D-Bus), `go-acme/lego/v4` (ACME), `x/crypto/argon2`, `pquerna/otp` (TOTP), `spf13/cobra`, `charmbracelet/bubbletea` v2 + `lipgloss`, `miekg/dns`, `robfig/cron`, `log/slog`, `goccy/go-yaml`, `goreleaser/nfpm` (deb/rpm, отдельный инструмент). Планируется: `go-webauthn/webauthn`, `google/nftables` (сейчас nftables управляется через файл правил и `nft`), `yookoala/gofast` (FastCGI-клиент для phpMyAdmin через панель).
 
 ### 4.2 Фронтенд
 
@@ -231,7 +233,7 @@ worker: 1) собрать модель сайта из БД (site + user + php_v
 
 ## 9. Упаковка, установка, обновление
 
-- Сборка: `goreleaser` → бинарники amd64/arm64 → `nfpm` → `monopanel_<ver>_amd64.deb` / `monopanel-<ver>.x86_64.rpm` (+ `monopanel-selinux` для EL). Внутри: бинарник, unit-файлы (`monopanel-api.service`, `monopanel-agent.service`, `monopanel-php-fpm@.service`), `/etc/monopanel/config.yaml`, встроенные шаблоны, SELinux-модуль, logrotate, fail2ban-фильтры, bash/fish-completion.
+- Сборка: `make packages` → бинарники amd64/arm64 → `nfpm` → `monopanel_<ver>_amd64.deb` / `monopanel-<ver>.x86_64.rpm` (планируется `monopanel-selinux` для EL). Внутри: бинарник, unit-файлы (`monopanel-api.service`, `monopanel-agent.service`, `monopanel-php-fpm@.service`), `/etc/monopanel/config.yaml`, встроенные шаблоны, SELinux-модуль, logrotate, fail2ban-фильтры, bash/fish-completion.
 - Репозитории: `deb https://repo.<domain>/deb <codename> main` и `https://repo.<domain>/rpm/el$releasever/$basearch` (aptly / `createrepo_c`, подпись GPG). Там же — собственные сборки PHP, phpMyAdmin, restic.
 - Установка: `curl -fsSL https://get.<domain> | bash` → определяет ОС и архитектуру → подключает репозиторий → `apt/dnf install monopanel` → `mp setup` (TUI-мастер: hostname панели, admin-пароль, выбор СУБД, версии PHP, режим по умолчанию, IP, firewall) → установка стека из официальных репозиториев. Полностью неинтерактивный режим — `mp setup --config setup.yaml`.
 - Обновление панели: `mp update` или из UI (задача `self-update`: `apt/dnf upgrade monopanel` → миграции БД → рестарт api, затем agent). Обновление компонентов стека — по инициативе администратора; мажорные апгрейды СУБД не автоматизируются.
@@ -248,7 +250,7 @@ monopanel/
 │   ├── jobs/                 # очередь, воркеры, шаги, локи
 │   ├── render/               # рендер шаблонов, модель конфигов, golden-тесты
 │   ├── osprofile/            # debian/, rhel/: пакеты, пути, сервисы, MAC, firewall
-│   ├── store/                # sqlc-код, миграции
+│   ├── store/                # запросы, модели, миграции
 │   ├── cli/                  # cobra-команды
 │   └── tui/                  # bubbletea-экраны
 ├── templates/                # nginx/, apache/, php-fpm/, mysql/, systemd/, logrotate/, fail2ban/, nftables/
