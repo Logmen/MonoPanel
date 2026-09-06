@@ -151,7 +151,7 @@ transient-юнит `monopanel-update.service`, который переживае
 | Ядро, CLI, TUI | Go 1.27, один статический бинарник (`CGO_ENABLED=0`) |
 | HTTP / API | `chi` + `huma` v2 (OpenAPI 3.1 из типов), SSE для прогресса задач |
 | Состояние | SQLite (WAL) через `modernc.org/sqlite`, встроенные SQL-миграции |
-| Web UI | Svelte 5 + SvelteKit 2 (static), TypeScript, Tailwind 4 — собирается в `web/build` и вшивается в бинарник |
+| Web UI | Svelte 5 + SvelteKit 2 (static), TypeScript, Tailwind 4 — собирается в `web/build` и вшивается в бинарник; адаптивен: на телефоне меню выезжает, а таблицы становятся карточками |
 | CLI / TUI | `cobra`, Bubble Tea v2 + Lip Gloss v2 |
 | ACME | `lego` как библиотека |
 | systemd | D-Bus (`go-systemd`) |

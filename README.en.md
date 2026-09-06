@@ -160,7 +160,7 @@ unsigned release will not install.
 | Core, CLI, menu | Go 1.27, one static binary (`CGO_ENABLED=0`) |
 | HTTP / API | `chi` + `huma` v2 (OpenAPI 3.1 from types), SSE for job progress |
 | State | SQLite (WAL) via `modernc.org/sqlite`, embedded SQL migrations |
-| Web UI | Svelte 5 + SvelteKit 2 (static), TypeScript, Tailwind 4 — built into `web/build` and embedded in the binary |
+| Web UI | Svelte 5 + SvelteKit 2 (static), TypeScript, Tailwind 4 — built into `web/build` and embedded in the binary; responsive: the menu becomes a drawer on a phone and tables become cards |
 | CLI / TUI | `cobra`, Bubble Tea v2 + Lip Gloss v2 |
 | ACME | `lego` as a library |
 | systemd | D-Bus (`go-systemd`) |
