@@ -118,7 +118,12 @@
         fixedOverflowWidgets: true
       });
       editor.onDidChangeModelContent(() => (text = editor.getValue()));
-      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => save());
+      // Высота под содержимое: короткий .htaccess не должен занимать пол-экрана.
+      editor.onDidContentSizeChange(() => {
+        if (!monacoBox) return;
+        const fit = Math.min(Math.max(editor.getContentHeight() + 24, 240), window.innerHeight * 0.6);
+        monacoBox.style.height = fit + 'px';
+      });
       editor.focus();
     } catch (e) {
       monacoFailed = true;
@@ -225,8 +230,16 @@
     } catch (e) { fail(e); } finally { saving = false; }
   }
 
+  // Ctrl+S ловится на окне: внутри Monaco свои привязки, и до textarea-обработчика
+  // событие не доходит.
+  function windowKeys(e: KeyboardEvent) {
+    if (editing !== null && (e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'ы')) {
+      e.preventDefault();
+      save();
+    }
+  }
+
   function editorKeys(e: KeyboardEvent) {
-    if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); save(); return; }
     if (e.key === 'Escape') { leaveEditor(); return; }
     if (e.key === 'Tab') {
       e.preventDefault();
@@ -335,6 +348,8 @@
   const toggle = (name: string) =>
     (selected = selected.includes(name) ? selected.filter((n) => n !== name) : [...selected, name]);
 </script>
+
+<svelte:window onkeydown={windowKeys} />
 
 <div class="card p-0 overflow-hidden">
   <div class="flex flex-wrap items-center gap-2 p-3 border-b border-line bg-surface-2">
@@ -466,7 +481,7 @@
         ></textarea>
       </div>
     {:else}
-      <div bind:this={monacoBox} style="height:60vh" aria-label="содержимое файла"></div>
+      <div bind:this={monacoBox} style="height:240px" aria-label="содержимое файла"></div>
     {/if}
     <div class="px-3 py-2 border-t border-line text-xs text-muted">
       Ctrl+S — сохранить{monacoFailed ? '' : ', F1 — команды редактора'}. Файл пишется от имени {user}; nginx и php-fpm подхватывают изменения сразу.
