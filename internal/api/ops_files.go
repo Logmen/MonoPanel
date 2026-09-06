@@ -133,15 +133,13 @@ func (s *Server) registerFiles() {
 		case "mkdir", "size":
 			args = []string{in.Body.Op, in.Body.Path}
 		case "touch":
-			// Запись пустого файла: PUT с пустым телом huma не принимает.
-			// Без force создание не должно молча затирать существующий файл,
-			// поэтому сначала спрашиваем размер — успех означает, что он есть.
-			if !in.Body.Force {
-				if _, err := s.fsop(ctx, u, nil, "size", in.Body.Path); err == nil {
-					return nil, huma.Error409Conflict(path.Base(in.Body.Path) + " уже существует")
-				}
+			// Пустой файл: PUT с пустым телом huma не принимает. Создание идёт
+			// через O_EXCL и не затирает существующий файл; force опустошает.
+			if in.Body.Force {
+				args = []string{"write", in.Body.Path}
+			} else {
+				args = []string{"touch", in.Body.Path}
 			}
-			args = []string{"write", in.Body.Path}
 		case "rm":
 			args = append([]string{"rm", in.Body.Path}, in.Body.Paths...)
 		case "mv", "extract":

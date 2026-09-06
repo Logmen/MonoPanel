@@ -173,6 +173,22 @@ func fsopCmd() *cobra.Command {
 		fmt.Println(n)
 		return nil
 	}}
+	touch := &cobra.Command{Use: "touch <path>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		p, err := inside(args[0])
+		if err != nil {
+			return err
+		}
+		// O_EXCL: создание пустого файла не должно затирать существующий.
+		f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err != nil {
+			if os.IsExist(err) {
+				return fmt.Errorf("%s уже существует", filepath.Base(p))
+			}
+			return err
+		}
+		return f.Close()
+	}}
+
 	size := &cobra.Command{Use: "size <path>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		p, err := inside(args[0])
 		if err != nil {
@@ -190,7 +206,7 @@ func fsopCmd() *cobra.Command {
 		fmt.Println(total)
 		return nil
 	}}
-	c.AddCommand(list, mkdir, rm, mv, chmod, read, write, extract, size)
+	c.AddCommand(list, mkdir, touch, rm, mv, chmod, read, write, extract, size)
 	return c
 }
 

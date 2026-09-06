@@ -345,10 +345,15 @@
 <Modal bind:open={ask.open} title={ask.title}>
   <form id="fm-ask" onsubmit={askSubmit}>
     <label class="label" for="fm-value">{ask.label}</label>
-    <input id="fm-value" class="input font-mono" bind:this={askInput} bind:value={ask.value} />
-    <!-- Кнопка «Готово» живёт в подвале модалки, вне формы; без этой скрытой
-         кнопки браузер не отправляет форму по Enter. -->
-    <button type="submit" class="hidden" tabindex="-1" aria-hidden="true"></button>
+    <!-- Кнопка «Готово» живёт в подвале модалки, вне формы, поэтому Enter
+         обрабатывается здесь, а не неявной отправкой формы. -->
+    <input
+      id="fm-value"
+      class="input font-mono"
+      bind:this={askInput}
+      bind:value={ask.value}
+      onkeydown={(e) => { if (e.key === 'Enter') askSubmit(e); }}
+    />
   </form>
   {#snippet footer()}
     <button class="btn" onclick={() => (ask.open = false)}>Отмена</button>
