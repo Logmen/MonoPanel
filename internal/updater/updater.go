@@ -125,6 +125,11 @@ func (c *Client) get(ctx context.Context, path, accept string) (*http.Response, 
 			// A private repository answers 404 for a wrong or missing token too.
 			return nil, fmt.Errorf("%s: not found (check the repository name and the token)", c.Repo)
 		case http.StatusUnauthorized, http.StatusForbidden:
+			// A public repository answers 401 to a token that is no longer
+			// valid — the token is then the problem, not the access.
+			if c.Token != "" {
+				return nil, fmt.Errorf("%s: access denied (%s); if the repository is public, drop the token: mp update settings --clear-token", c.Repo, res.Status)
+			}
 			return nil, fmt.Errorf("%s: access denied (%s)", c.Repo, res.Status)
 		}
 		return nil, fmt.Errorf("%s: %s: %s", c.Repo, res.Status, msg)

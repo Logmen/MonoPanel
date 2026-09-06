@@ -177,14 +177,19 @@ func (s *Server) registerUpdate() {
 		p := principalFrom(ctx)
 		c := s.loadUpdateConfig(ctx)
 		if r := strings.TrimSpace(in.Body.Repo); r == "-" {
-			c.Repo, c.Latest, c.CheckedAt, c.LastError = "", nil, nil, ""
+			// Turning updates off resets the whole source, endpoint and token
+			// included: leaving them behind makes the next repository inherit
+			// settings nobody meant for it.
+			c = updateConfig{CheckHours: c.CheckHours, AutoApply: c.AutoApply}
 		} else if r != "" {
 			r = strings.TrimSuffix(strings.TrimPrefix(r, "https://github.com/"), ".git")
 			if !updater.ValidRepo(r) {
 				return nil, huma.Error422UnprocessableEntity("репозиторий указывается как owner/name")
 			}
 			if r != c.Repo {
-				c.Latest, c.CheckedAt, c.LastError = nil, nil, ""
+				// A token belongs to the repository it was issued for and must
+				// not be sent to a different one.
+				c.Latest, c.CheckedAt, c.LastError, c.TokenEnc = nil, nil, "", ""
 			}
 			c.Repo = r
 		}

@@ -221,10 +221,31 @@ func TestUpdateSettingsValidatedAndAdminOnly(t *testing.T) {
 		t.Fatalf("no check has run: %+v", st)
 	}
 
-	// "-" switches updates off again, cached release and all.
-	f.call(http.MethodPut, "/system/update", map[string]any{"repo": "-"}, http.StatusOK, &st)
-	if st.Settings.Repo != "" {
-		t.Fatalf("repository should be cleared: %+v", st.Settings)
+	// A token is issued for one repository and must not follow the panel to
+	// another one, nor survive updates being switched off.
+	f.call(http.MethodPut, "/system/update", map[string]any{"repo": "acme/panel", "api": "https://ghe.example.com/api/v3", "token": "for-acme"}, http.StatusOK, &st)
+	if !st.Settings.HasToken {
+		t.Fatal("token not stored")
+	}
+	f.call(http.MethodPut, "/system/update", map[string]any{"repo": "other/panel"}, http.StatusOK, &st)
+	if st.Settings.HasToken {
+		t.Error("the token of the previous repository would be sent to the new one")
+	}
+	if st.Settings.API != "https://ghe.example.com/api/v3" {
+		t.Errorf("the API endpoint belongs to the server, not the repository: %q", st.Settings.API)
+	}
+
+	// "-" switches updates off again: source, endpoint, token and cache. The
+	// answer is decoded into a fresh value — "api" is omitted when empty, and
+	// reusing st would keep showing the old endpoint.
+	f.call(http.MethodPut, "/system/update", map[string]any{"repo": "acme/panel", "token": "again"}, http.StatusOK, &st)
+	var off apitypes.UpdateStatus
+	f.call(http.MethodPut, "/system/update", map[string]any{"repo": "-"}, http.StatusOK, &off)
+	if off.Settings.Repo != "" || off.Settings.API != "" || off.Settings.HasToken {
+		t.Fatalf("switching updates off must leave nothing behind: %+v", off.Settings)
+	}
+	if off.Settings.CheckHours != 0 {
+		t.Errorf("the schedule is a preference and should survive: %+v", off.Settings)
 	}
 
 	h, _ := auth.HashPassword("alex-password")
