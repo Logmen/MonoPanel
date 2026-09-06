@@ -27,12 +27,12 @@
       {#each data.available as a, i}
         {@const p = installed[a.version]}
         <tr class="rise" style="--i:{i}">
-          <td class="font-mono font-medium">{a.version}</td>
-          <td><span class="tag {a.support === 'active' ? 'tag-ok' : a.support === 'security' ? 'tag-warn' : 'tag-muted'}">{a.support}</span></td>
-          <td>{#if p}<span class="tag {p.status === 'installed' ? 'tag-ok' : p.status === 'error' ? 'tag-err' : 'tag-warn'}">{p.status}</span>{#if p.last_error}<div class="text-xs text-danger">{p.last_error}</div>{/if}{:else if !a.available}<span class="text-xs text-muted">{a.note}</span>{:else}<span class="text-muted">—</span>{/if}</td>
-          <td class="font-mono text-xs text-muted">{p?.package_version || ''}</td>
-          <td class="text-xs text-muted max-w-md">{p?.extensions?.length ? p.extensions.length + ': ' + p.extensions.join(', ') : ''}</td>
-          <td class="text-right">{#if p?.status === 'installed'}<button class="btn btn-danger btn-sm" onclick={() => remove(a.version)}><Icon name="trash" size={13} /></button>{:else if a.available}<button class="btn btn-sm" onclick={() => install(a.version)}><Icon name="plus" size={13} /> установить</button>{/if}</td>
+          <td data-label="Ветка" class="font-mono font-medium">{a.version}</td>
+          <td data-label="Upstream"><span class="tag {a.support === 'active' ? 'tag-ok' : a.support === 'security' ? 'tag-warn' : 'tag-muted'}">{a.support}</span></td>
+          <td data-label="Состояние">{#if p}<span class="tag {p.status === 'installed' ? 'tag-ok' : p.status === 'error' ? 'tag-err' : 'tag-warn'}">{p.status}</span>{#if p.last_error}<div class="text-xs text-danger">{p.last_error}</div>{/if}{:else if !a.available}<span class="text-xs text-muted">{a.note}</span>{:else}<span class="text-muted">—</span>{/if}</td>
+          <td data-label="Пакет" class="font-mono text-xs text-muted">{p?.package_version || ''}</td>
+          <td data-label="Расширения" class="text-xs text-muted max-w-md">{p?.extensions?.length ? p.extensions.length + ': ' + p.extensions.join(', ') : ''}</td>
+          <td data-label="" class="text-right">{#if p?.status === 'installed'}<button class="btn btn-danger btn-sm" onclick={() => remove(a.version)}><Icon name="trash" size={13} /></button>{:else if a.available}<button class="btn btn-sm" onclick={() => install(a.version)}><Icon name="plus" size={13} /> установить</button>{/if}</td>
         </tr>
       {/each}
     </tbody>

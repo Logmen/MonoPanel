@@ -86,11 +86,11 @@
     <tbody>
       {#each sites as s, i}
         <tr class="rise" style="--i:{i}">
-          <td><a class="link font-medium" href="/sites/{s.domain}">{s.domain}</a>{#if s.aliases?.length}<div class="text-xs text-muted">{s.aliases.join(', ')}</div>{/if}{#if s.allow_from?.length}<div class="text-[11px] text-muted font-mono flex items-center gap-1 mt-0.5"><Icon name="lock" size={11} /> {s.allow_from.length} IP</div>{/if}</td>
-          <td>{s.login}</td><td class="font-mono">{s.php_version || '—'}</td><td class="text-muted">{s.mode}{#if s.preset}<span class="tag tag-accent ml-1">{s.preset}</span>{/if}</td>
-          <td><span class="tag {s.certificate_id ? 'tag-ok' : 'tag-muted'}">{s.certificate_id ? 'https' : s.ssl}</span></td>
-          <td><span class="tag {s.status === 'active' ? 'tag-ok' : s.status === 'error' ? 'tag-err' : 'tag-warn'}">{s.status}</span>{#if s.last_error}<div class="text-xs text-danger max-w-xs truncate" title={s.last_error}>{s.last_error}</div>{/if}</td>
-          <td><div class="row-actions">
+          <td data-label="Домен"><a class="link font-medium" href="/sites/{s.domain}">{s.domain}</a>{#if s.aliases?.length}<div class="text-xs text-muted">{s.aliases.join(', ')}</div>{/if}{#if s.allow_from?.length}<div class="text-[11px] text-muted font-mono flex items-center gap-1 mt-0.5"><Icon name="lock" size={11} /> {s.allow_from.length} IP</div>{/if}</td>
+          <td data-label="Владелец">{s.login}</td><td data-label="PHP" class="font-mono">{s.php_version || '—'}</td><td data-label="Режим" class="text-muted">{s.mode}{#if s.preset}<span class="tag tag-accent ml-1">{s.preset}</span>{/if}</td>
+          <td data-label="SSL"><span class="tag {s.certificate_id ? 'tag-ok' : 'tag-muted'}">{s.certificate_id ? 'https' : s.ssl}</span></td>
+          <td data-label="Статус"><span class="tag {s.status === 'active' ? 'tag-ok' : s.status === 'error' ? 'tag-err' : 'tag-warn'}">{s.status}</span>{#if s.last_error}<div class="text-xs text-danger max-w-xs truncate" title={s.last_error}>{s.last_error}</div>{/if}</td>
+          <td data-label=""><div class="row-actions">
             <button class="btn btn-sm" onclick={() => action(s.domain, 'apply')} title="перегенерировать и применить"><Icon name="refresh" size={13} /></button>
             {#if admin}{#if s.status === 'suspended'}<button class="btn btn-sm" onclick={() => action(s.domain, 'unsuspend')}><Icon name="play" size={13} /> включить</button>{:else}<button class="btn btn-sm" onclick={() => action(s.domain, 'suspend')}><Icon name="stop" size={13} /> стоп</button>{/if}{/if}
             <button class="btn btn-danger btn-sm" onclick={() => { del = s; purge = false; }}><Icon name="trash" size={13} /></button>

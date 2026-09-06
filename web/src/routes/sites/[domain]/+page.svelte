@@ -150,10 +150,10 @@
               {#each phpInfo.values as v, i}
                 {@const o = overrides.find((x) => x.key === v.key)}
                 <tr class="rise" style="--i:{i}">
-                  <td class="font-mono text-xs">{v.key}</td>
-                  <td class="font-mono text-xs">{o ? o.value : v.value}{#if o && o.value !== v.value}<span class="text-muted"> (было {v.value})</span>{/if}</td>
-                  <td><span class="tag {o || v.source === 'site' ? 'tag-accent' : v.source === 'preset' ? 'tag-ok' : 'tag-muted'}">{o || v.source === 'site' ? 'сайт' : v.source === 'preset' ? 'пресет' : 'панель'}</span></td>
-                  <td class="text-right"><button class="btn btn-ghost btn-sm" onclick={() => useDefault(v.key, o ? o.value : v.value)}>изменить</button></td>
+                  <td data-label="Параметр" class="font-mono text-xs">{v.key}</td>
+                  <td data-label="Значение" class="font-mono text-xs">{o ? o.value : v.value}{#if o && o.value !== v.value}<span class="text-muted"> (было {v.value})</span>{/if}</td>
+                  <td data-label="Источник"><span class="tag {o || v.source === 'site' ? 'tag-accent' : v.source === 'preset' ? 'tag-ok' : 'tag-muted'}">{o || v.source === 'site' ? 'сайт' : v.source === 'preset' ? 'пресет' : 'панель'}</span></td>
+                  <td data-label="" class="text-right"><button class="btn btn-ghost btn-sm" onclick={() => useDefault(v.key, o ? o.value : v.value)}>изменить</button></td>
                 </tr>
               {/each}
             </tbody>

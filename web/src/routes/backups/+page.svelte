@@ -43,7 +43,7 @@
 {#if created?.password}<div class="card mb-4 text-sm rise border-accent/40">Пароль репозитория <b>{created.target.name}</b> (сохраните, показывается один раз): <code class="font-mono select-all">{created.password}</code></div>{/if}
 <div class="card overflow-x-auto p-0 mb-4 rise">
   <table class="tbl"><thead><tr><th>Цель</th><th>Тип</th><th>Репозиторий</th><th>Расписание</th><th>Последний запуск</th><th></th></tr></thead><tbody>
-    {#each targets as t, i}<tr class="rise" style="--i:{i}"><td class="font-medium">{t.name}</td><td>{t.type}</td><td class="font-mono text-xs">{t.repository}</td><td class="text-muted">{t.schedule || 'вручную'}</td><td class="text-xs">{#if t.last_run_at}{when(t.last_run_at)} · <span class="tag {t.last_status === 'done' ? 'tag-ok' : 'tag-err'}">{t.last_status}</span>{:else}—{/if}{#if t.last_error}<div class="text-danger">{t.last_error}</div>{/if}</td><td class="text-right"><button class="btn btn-sm" onclick={() => showSnaps(t.name)}><Icon name="archive" size={13} /> снимки</button></td></tr>{/each}
+    {#each targets as t, i}<tr class="rise" style="--i:{i}"><td data-label="Цель" class="font-medium">{t.name}</td><td data-label="Тип">{t.type}</td><td data-label="Репозиторий" class="font-mono text-xs">{t.repository}</td><td data-label="Расписание" class="text-muted">{t.schedule || 'вручную'}</td><td data-label="Последний запуск" class="text-xs">{#if t.last_run_at}{when(t.last_run_at)} · <span class="tag {t.last_status === 'done' ? 'tag-ok' : 'tag-err'}">{t.last_status}</span>{:else}—{/if}{#if t.last_error}<div class="text-danger">{t.last_error}</div>{/if}</td><td data-label="" class="text-right"><button class="btn btn-sm" onclick={() => showSnaps(t.name)}><Icon name="archive" size={13} /> снимки</button></td></tr>{/each}
     {#if !targets.length}<Empty text="Репозиториев нет." cols={6} />{/if}
   </tbody></table>
 </div>
@@ -56,15 +56,13 @@
 {/if}
 {#if job}<div class="mb-4"><JobLog jobId={job} onfinish={() => load()} /></div>{/if}
 {#if snaps}
-  <div class="card mb-4 rise"><div class="flex justify-between mb-2"><span class="font-medium">Снимки: {snaps.target}</span><button class="btn btn-sm" onclick={() => (snaps = null)}>закрыть</button></div>
-    <table class="tbl"><thead><tr><th>ID</th><th>Время</th><th>Теги</th><th>Пути</th><th></th></tr></thead><tbody>
-      {#each snaps.list as s}<tr><td class="font-mono">{s.short_id}</td><td class="text-xs">{when(s.time)}</td><td class="text-xs">{s.tags.join(', ')}</td><td class="text-xs font-mono">{s.paths.join(' ')}</td><td class="text-right"><button class="btn btn-sm" onclick={() => restore(s.short_id)}>восстановить</button></td></tr>{/each}
+  <div class="card mb-4 rise"><div class="flex justify-between mb-2"><span class="font-medium">Снимк<thead><tr><th>ID</th><th>Время</th><th>Теги</th><th>Пути</th><th></th></tr></thead><tbody>
+      {#each snaps.list as s}<tr><td data-label="ID" class="font-mono">{s.short_id}</td><td data-label="Время" class="text-xs">{when(s.time)}</td><td data-label="Теги" class="text-xs">{s.tags.join(', ')}</td><td data-label="Пути" class="text-xs font-mono">{s.paths.join(' ')}</td><td data-label="" class="text-right"><button class="btn btn-sm" onclick={() => restore(s.short_id)}>восстановить</button></td></tr>{/each}
       {#if !snaps.list.length}<Empty text="Снимков нет." cols={5} />{/if}
-    </tbody></table></div>
-{/if}
-<div class="card overflow-x-auto p-0 rise" style="--i:2">
-  <table class="tbl"><thead><tr><th>ID</th><th>Scope</th><th>Статус</th><th>Снимок</th><th>Размер</th><th>Файлов</th><th>Начат</th></tr></thead><tbody>
-    {#each runs as b}<tr><td class="text-muted">{b.id}</td><td class="font-mono">{b.scope}</td><td><span class="tag {b.status === 'done' ? 'tag-ok' : b.status === 'failed' ? 'tag-err' : 'tag-warn'}">{b.status}</span>{#if b.error}<div class="text-xs text-danger">{b.error}</div>{/if}</td><td class="font-mono text-xs">{b.snapshot_id?.slice(0, 8)}</td><td class="tabular-nums">{bytes(b.size_bytes)}</td><td class="tabular-nums">{b.files}</td><td class="text-xs text-muted">{when(b.started_at)}</td></tr>{/each}
+    </tbody>)}>восстановить<thead><tr><th>ID</th><th>Scope</th><th>Статус</th><th>Снимок</th><th>Размер</th><th>Файлов</th><th>Начат</th></tr></thead><tbody>
+    {#each runs as b}<tr><td data-label="ID" class="text-muted">{b.id}</td><td data-label="Scope" class="font-mono">{b.scope}</td><td data-label="Статус"><span class="tag {b.status === 'done' ? 'tag-ok' : b.status === 'failed' ? 'tag-err' : 'tag-warn'}">{b.status}</span>{#if b.error}<div class="text-xs text-danger">{b.error}</div>{/if}</td><td data-label="Снимок" class="font-mono text-xs">{b.snapshot_id?.slice(0, 8)}</td><td data-label="Размер" class="tabular-nums">{bytes(b.size_bytes)}</td><td data-label="Файлов" class="tabular-nums">{b.files}</td><td data-label="Начат" class="text-xs text-muted">{when(b.started_at)}</td></tr>{/each}
+    {#if !runs.length}<Empty text="Бэкапов ещё не было." cols={7} />{/if}
+  </tbody>s(b.size_bytes)}</td><td class="tabular-nums">{b.files}</td><td class="text-xs text-muted">{when(b.started_at)}</td></tr>{/each}
     {#if !runs.length}<Empty text="Бэкапов ещё не было." cols={7} />{/if}
   </tbody></table>
 </div>

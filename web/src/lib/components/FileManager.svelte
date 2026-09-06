@@ -406,34 +406,34 @@
     {:else if !entries.length}
       <p class="text-sm text-muted p-6 text-center">Пусто. Перетащите файлы сюда или создайте новый.</p>
     {:else}
-      <table class="w-full text-sm">
-        <thead class="text-xs text-muted">
-          <tr class="border-b border-line">
-            <th class="w-8 py-2"></th>
-            <th class="text-left font-medium py-2 px-2">Имя</th>
-            <th class="text-right font-medium py-2 px-3 w-24">Размер</th>
-            <th class="text-left font-medium py-2 px-3 w-28 hidden sm:table-cell">Права</th>
-            <th class="text-left font-medium py-2 px-3 w-40 hidden md:table-cell">Изменён</th>
+      <table class="tbl">
+        <thead>
+          <tr>
+            <th class="w-8"></th>
+            <th>Имя</th>
+            <th class="text-right w-24">Размер</th>
+            <th class="w-28 hidden sm:table-cell">Права</th>
+            <th class="w-40 hidden md:table-cell">Изменён</th>
             <th class="w-40"></th>
           </tr>
         </thead>
         <tbody>
           {#each entries as e (e.name)}
-            <tr class="border-b border-line last:border-0 hover:bg-surface-2 transition-colors {editing === e.name ? 'bg-accent-soft' : ''}">
-              <td class="text-center">
+            <tr class={editing === e.name ? 'bg-accent-soft' : ''}>
+              <td data-label="" class="text-center">
                 <input type="checkbox" checked={selected.includes(e.name)} onchange={() => toggle(e.name)} aria-label={'выбрать ' + e.name} />
               </td>
-              <td class="py-1.5 px-2">
+              <td data-label="Имя">
                 <button class="inline-flex items-center gap-2 text-left max-w-full" onclick={() => open(e)}>
                   <Icon name={icon(e)} size={15} class="shrink-0 text-muted" />
                   <span class="truncate {e.type === 'dir' ? 'font-medium' : ''}">{e.name}</span>
                   {#if e.type === 'link'}<span class="text-xs text-muted">→ {e.target}</span>{/if}
                 </button>
               </td>
-              <td class="text-right text-muted tabular-nums px-3 whitespace-nowrap">{e.type === 'dir' ? '—' : bytes(e.size)}</td>
-              <td class="font-mono text-xs text-muted hidden sm:table-cell px-3">{e.mode}</td>
-              <td class="text-muted text-xs hidden md:table-cell px-3 whitespace-nowrap">{(e.mtime || '').replace('T', ' ').slice(0, 16)}</td>
-              <td class="text-right whitespace-nowrap pr-2">
+              <td data-label="Размер" class="text-right text-muted tabular-nums whitespace-nowrap">{e.type === 'dir' ? '—' : bytes(e.size)}</td>
+              <td data-label="Права" class="font-mono text-xs text-muted hidden sm:table-cell">{e.mode}</td>
+              <td data-label="Изменён" class="text-muted text-xs hidden md:table-cell whitespace-nowrap">{(e.mtime || '').replace('T', ' ').slice(0, 16)}</td>
+              <td data-label="" class="text-right whitespace-nowrap">
                 {#if e.type !== 'dir'}
                   <button class="btn btn-ghost btn-sm" onclick={() => download(e)} title="скачать"><Icon name="download" size={13} /></button>
                   {#if archiveExt.test(e.name)}<button class="btn btn-ghost btn-sm" onclick={() => extract(e)} title="распаковать"><Icon name="archive" size={13} /></button>{/if}

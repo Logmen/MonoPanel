@@ -72,11 +72,11 @@
     <tbody>
       {#each users as u, i}
         <tr class="rise" style="--i:{i}">
-          <td class="font-medium">{u.login}{#if u.login === auth.me?.login}<span class="tag tag-muted ml-1">вы</span>{/if}</td><td class="text-muted">{u.role}</td>
+          <td data-label="Логин" class="font-medium">{u.login}{#if u.login === auth.me?.login}<span class="tag tag-muted ml-1">вы</span>{/if}</td><td data-label="Роль" class="text-muted">{u.role}</td>
           <td><span class="tag {u.status === 'active' ? 'tag-ok' : u.status === 'deleting' ? 'tag-err' : 'tag-warn'}">{#if u.status === 'deleting'}<span class="dot dot-live"></span>{/if}{u.status}</span></td>
-          <td class="font-mono">{u.unix_uid ?? '—'}</td>
+          <td data-label="UID" class="font-mono">{u.unix_uid ?? '—'}</td>
           <td>{#if u.role === 'user'}<span class="tag tag-muted">{u.shell ? 'SSH shell' : 'SFTP-only'}</span>{/if}</td>
-          <td class="text-muted">{u.email || '—'}</td><td class="text-xs text-muted">{when(u.created_at)}</td>
+          <td data-label="E-mail" class="text-muted">{u.email || '—'}</td><td data-label="Создан" class="text-xs text-muted">{when(u.created_at)}</td>
           <td><div class="row-actions">
             <button class="btn btn-sm" onclick={() => (pw = { login: u.login, value: '' })} title="сменить пароль"><Icon name="key" size={13} /></button>
             {#if u.role === 'user'}
@@ -104,7 +104,7 @@
         <button class="btn btn-primary">Добавить</button>
       </form>
       <table class="tbl"><thead><tr><th>ID</th><th>Расписание</th><th>Команда</th><th></th></tr></thead><tbody>
-        {#each panel.items as j}<tr><td>{j.id}</td><td class="font-mono">{j.schedule}{#if !j.enabled} <span class="tag tag-muted">off</span>{/if}</td><td class="font-mono text-xs">{j.command}</td><td class="text-right"><button class="btn btn-danger btn-sm" onclick={() => rmCron(j.id)}><Icon name="trash" size={13} /></button></td></tr>{/each}
+        {#each panel.items as j}<tr><td data-label="ID">{j.id}</td><td data-label="Расписание" class="font-mono">{j.schedule}{#if !j.enabled} <span class="tag tag-muted">off</span>{/if}</td><td data-label="Команда" class="font-mono text-xs">{j.command}</td><td data-label="" class="text-right"><button class="btn btn-danger btn-sm" onclick={() => rmCron(j.id)}><Icon name="trash" size={13} /></button></td></tr>{/each}
         {#if !panel.items.length}<tr><td colspan="4" class="text-muted text-center py-4">Заданий нет.</td></tr>{/if}
       </tbody></table>
     {:else}
@@ -117,7 +117,7 @@
       <table class="tbl"><thead><tr><th>Имя</th><th>Состояние</th><th>Команда</th><th></th></tr></thead><tbody>
         {#each panel.items as a}
           {@const st = a.service?.active_state || a.app.status}
-          <tr><td class="font-mono">{a.app.name}</td><td><span class="tag {st === 'active' ? 'tag-ok' : st === 'failed' ? 'tag-err' : 'tag-muted'}">{#if st === 'active'}<span class="dot dot-live"></span>{/if}{st}{a.service ? '/' + a.service.sub_state : ''}</span>{#if !a.app.enabled}<span class="tag tag-muted ml-1">автозапуск off</span>{/if}</td><td class="font-mono text-xs max-w-md truncate" title={a.app.command}>{a.app.command}</td>
+          <tr><td data-label="Имя" class="font-mono">{a.app.name}</td><td data-label="Состояние"><span class="tag {st === 'active' ? 'tag-ok' : st === 'failed' ? 'tag-err' : 'tag-muted'}">{#if st === 'active'}<span class="dot dot-live"></span>{/if}{st}{a.service ? '/' + a.service.sub_state : ''}</span>{#if !a.app.enabled}<span class="tag tag-muted ml-1">автозапуск off</span>{/if}</td><td data-label="Команда" class="font-mono text-xs max-w-md truncate" title={a.app.command}>{a.app.command}</td>
           <td><div class="row-actions"><button class="btn btn-sm" onclick={() => appAction(a.app.name, 'restart')} title="перезапустить"><Icon name="refresh" size={13} /></button>{#if st === 'active'}<button class="btn btn-sm" onclick={() => appAction(a.app.name, 'stop')}><Icon name="stop" size={13} /></button>{:else}<button class="btn btn-sm" onclick={() => appAction(a.app.name, 'start')}><Icon name="play" size={13} /></button>{/if}<button class="btn btn-danger btn-sm" onclick={() => confirm('Удалить app-сервис ' + a.app.name + '? Файлы останутся.') && appAction(a.app.name, 'delete')}><Icon name="trash" size={13} /></button></div></td></tr>
         {/each}
         {#if !panel.items.length}<tr><td colspan="4" class="text-muted text-center py-4">App-сервисов нет.</td></tr>{/if}

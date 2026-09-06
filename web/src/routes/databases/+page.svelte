@@ -49,7 +49,7 @@
   <div class="card overflow-x-auto p-0 rise">
     <table class="tbl"><thead><tr><th>База</th><th>Владелец</th><th>Аккаунты</th><th>Размер</th><th></th></tr></thead>
       <tbody>
-        {#each dbs as d, i}<tr class="rise" style="--i:{i}"><td class="font-mono font-medium">{d.name}</td><td>{d.login}</td><td class="font-mono text-xs text-muted">{d.users.map((u: any) => u.name + '@' + u.host + ' (' + u.auth_plugin + ')').join(', ')}</td><td class="tabular-nums">{bytes(d.size_bytes)}</td><td><div class="row-actions"><button class="btn btn-sm" onclick={() => passwd(d.name)}><Icon name="key" size={13} /> пароль</button><button class="btn btn-danger btn-sm" onclick={() => (del = d)}><Icon name="trash" size={13} /></button></div></td></tr>{/each}
+        {#each dbs as d, i}<tr class="rise" style="--i:{i}"><td data-label="База" class="font-mono font-medium">{d.name}</td><td data-label="Владелец">{d.login}</td><td data-label="Аккаунты" class="font-mono text-xs text-muted">{d.users.map((u: any) => u.name + '@' + u.host + ' (' + u.auth_plugin + ')').join(', ')}</td><td data-label="Размер" class="tabular-nums">{bytes(d.size_bytes)}</td><td data-label=""><div class="row-actions"><button class="btn btn-sm" onclick={() => passwd(d.name)}><Icon name="key" size={13} /> пароль</button><button class="btn btn-danger btn-sm" onclick={() => (del = d)}><Icon name="trash" size={13} /></button></div></td></tr>{/each}
         {#if !dbs.length}<Empty text="Баз пока нет." cols={5} />{/if}
       </tbody></table>
   </div>

@@ -39,17 +39,15 @@
   </form>
   <div class="card overflow-x-auto p-0 mb-4 rise" style="--i:1">
     <table class="tbl"><thead><tr><th>ID</th><th>Тип</th><th>Proto</th><th>Порт</th><th>Источник</th><th>Комментарий</th><th></th></tr></thead>
-      <tbody>{#each fw.rules as r, i}<tr class="rise" style="--i:{i}"><td class="text-muted">{r.id}</td><td><span class="tag {r.kind === 'allow' ? 'tag-ok' : 'tag-err'}">{r.kind}</span></td><td>{r.proto}</td><td class="font-mono">{r.port}</td><td class="font-mono">{r.source}</td><td class="text-muted">{r.comment}</td><td class="text-right"><button class="btn btn-danger btn-sm" onclick={() => rm(r.id)}><Icon name="trash" size={13} /></button></td></tr>{/each}
+      <tbody>{#each fw.rules as r, i}<tr class="rise" style="--i:{i}"><td data-label="ID" class="text-muted">{r.id}</td><td data-label="Тип"><span class="tag {r.kind === 'allow' ? 'tag-ok' : 'tag-err'}">{r.kind}</span></td><td data-label="Proto">{r.proto}</td><td data-label="Порт" class="font-mono">{r.port}</td><td data-label="Источник" class="font-mono">{r.source}</td><td data-label="Комментарий" class="text-muted">{r.comment}</td><td data-label="" class="text-right"><button class="btn btn-danger btn-sm" onclick={() => rm(r.id)}><Icon name="trash" size={13} /></button></td></tr>{/each}
       {#if !fw.rules.length}<Empty text="Пользовательских правил нет." cols={7} />{/if}</tbody></table>
   </div>
   <div class="card rise" style="--i:2">
     <div class="flex flex-wrap items-center gap-3 mb-3"><span class="font-medium">fail2ban</span>
       {#if fw.fail2ban}<span class="tag {fw.fail2ban.running ? 'tag-ok' : 'tag-err'}">{fw.fail2ban.running ? 'running' : 'stopped'}</span>{:else}<button class="btn btn-sm" onclick={installF2b}>установить (sshd, nginx, панель)</button>{/if}
-      <form class="ml-auto flex gap-2" onsubmit={(e) => { e.preventDefault(); doBan('ban', ban); }}><input class="input w-48 font-mono" bind:value={ban} placeholder="IP для бана" /><button class="btn btn-danger btn-sm">забанить</button></form>
-    </div>
-    {#if fw.fail2ban}
-      <table class="tbl"><thead><tr><th>Jail</th><th>Сейчас</th><th>Всего</th><th>IP (клик — разбанить)</th></tr></thead><tbody>
-        {#each fw.fail2ban.jails as j}<tr><td class="font-mono">{j.name}</td><td class="tabular-nums">{j.banned}</td><td class="tabular-nums">{j.total}</td><td class="font-mono text-xs">{#each j.ips || [] as ip}<button class="tag tag-err mr-1 mb-1 hover:bg-danger hover:text-white transition-colors" onclick={() => doBan('unban', ip)} title="разбанить">{ip} ✕</button>{/each}</td></tr>{/each}
+      <form class="ml-auto flex gap-2" onsubmit={(e) => { e.preventDefault(); doBan('ban', ban); }}><input class="input w-48 font-mono" bind:value={ban} placeholder="IP дл<thead><tr><th>Jail</th><th>Сейчас</th><th>Всего</th><th>IP (клик — разбанить)</th></tr></thead><tbody>
+        {#each fw.fail2ban.jails as j}<tr><td data-label="Jail" class="font-mono">{j.name}</td><td data-label="Сейчас" class="tabular-nums">{j.banned}</td><td data-label="Всего" class="tabular-nums">{j.total}</td><td data-label="IP (клик — разбанить)" class="font-mono text-xs">{#each j.ips || [] as ip}<button class="tag tag-err mr-1 mb-1 hover:bg-danger hover:text-white transition-colors" onclick={() => doBan('unban', ip)} title="разбанить">{ip} ✕</button>{/each}</td></tr>{/each}
+      </tbody>hite transition-colors" onclick={() => doBan('unban', ip)} title="разбанить">{ip} ✕</button>{/each}</td></tr>{/each}
       </tbody></table>
     {/if}
   </div>

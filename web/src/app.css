@@ -120,6 +120,23 @@ html, body {
   .tbl tbody tr { @apply transition-colors duration-100; }
   .tbl tbody tr:hover { background: color-mix(in srgb, var(--surface-2) 70%, transparent); }
   .tbl tbody tr:last-child td { @apply border-b-0; }
+  /* На телефоне таблица нечитаема: строка становится карточкой, а заголовки
+     колонок — подписями слева от значений (через data-label на ячейках). */
+  @media (width < 40rem) {
+    .tbl thead { @apply hidden; }
+    .tbl tbody tr { @apply block rounded-xl border border-line mb-2 py-1 bg-surface; }
+    .tbl tbody tr:hover { background: var(--surface); }
+    .tbl tbody tr:last-child td { @apply border-b-0; }
+    .tbl td { @apply flex items-baseline justify-between gap-3 text-right border-b-0 px-3 py-1.5; }
+    .tbl td::before {
+      content: attr(data-label);
+      @apply text-[11px] uppercase tracking-wider text-muted font-mono text-left shrink-0;
+    }
+    .tbl td[data-label='']::before { content: none; }
+    .tbl td[colspan]::before { content: none; }
+    .tbl td[colspan] { @apply justify-center text-center; }
+  }
+
   .tag { @apply inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-mono leading-4 whitespace-nowrap; }
   .tag-ok { @apply border-ok/40 text-ok bg-ok-soft; }
   .tag-warn { @apply border-warn/40 text-warn bg-warn-soft; }
