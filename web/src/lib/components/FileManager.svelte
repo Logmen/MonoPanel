@@ -32,6 +32,21 @@
   let askValue = $state('');
   let askRun: (v: string) => Promise<void> = async () => {};
 
+  // Подтверждения — тем же модальным окном, что и в остальной панели.
+  let confirmOpen = $state(false);
+  let confirmTitle = $state('');
+  let confirmText = $state('');
+  let confirmLabel = $state('Удалить');
+  let confirmRun: () => void = () => {};
+
+  function askConfirm(title: string, text: string, label: string, run: () => void) {
+    confirmTitle = title;
+    confirmText = text;
+    confirmLabel = label;
+    confirmRun = run;
+    confirmOpen = true;
+  }
+
   // Расширения, которые точно не текст: не тратим запрос на попытку открыть.
   const binaryExt = /\.(png|jpe?g|gif|webp|avif|ico|bmp|tiff?|svgz|pdf|zip|gz|tgz|bz2|xz|7z|rar|tar|mp[34]|m4a|mov|avi|mkv|webm|woff2?|ttf|eot|otf|so|bin|exe|dll|class|jar|db|sqlite3?|psd)$/i;
   const archiveExt = /\.(zip|tar|tgz|gz|bz2|xz)$/i;
@@ -67,24 +82,35 @@
 
   $effect(() => { user; cwd; load(); });
 
-  // Уход из редактора с несохранёнными правками требует подтверждения.
-  function leaveEditor(): boolean {
-    if (dirty && !confirm('Изменения не сохранены. Закрыть файл?')) return false;
+  function closeEditor() {
     editing = null;
     text = original = '';
+  }
+
+  // Уход из редактора с несохранёнными правками требует подтверждения.
+  function leaveEditor(then?: () => void): boolean {
+    if (dirty) {
+      askConfirm('Изменения не сохранены', `${editing}: правки будут потеряны.`, 'Отбросить', () => {
+        closeEditor();
+        then?.();
+      });
+      return false;
+    }
+    closeEditor();
+    then?.();
     return true;
   }
 
   function go(path: string) {
-    if (!leaveEditor()) return;
-    cwd = clean(path);
+    leaveEditor(() => (cwd = clean(path)));
   }
 
   async function open(e: Entry) {
     if (e.type === 'dir') { go(join(cwd, e.name)); return; }
+    if (dirty) { leaveEditor(() => open(e)); return; }
     if (binaryExt.test(e.name)) { notify('двоичный файл — доступно скачивание', 'err'); return; }
     if (e.size > editLimit) { notify(`файл больше ${bytes(editLimit)} — доступно скачивание`, 'err'); return; }
-    if (!leaveEditor()) return;
+    closeEditor();
     try {
       const body = await apiText(`/files/content?${q(join(cwd, e.name))}`);
       // Нулевой байт — верный признак, что это не текст.
@@ -149,8 +175,10 @@
 
   const mkdir = () => request('Новая папка', 'Название', '', (v) => op({ op: 'mkdir', path: join(cwd, v) }, `папка ${v} создана`));
   const touch = () => request('Новый файл', 'Название', '', (v) => op({ op: 'touch', path: join(cwd, v) }, `файл ${v} создан`));
-  const rename = (e: Entry) => request('Переименовать', 'Новое имя или путь', e.name, (v) =>
-    op({ op: 'mv', path: join(cwd, e.name), dest: v.includes('/') ? clean(v) : join(cwd, v) }, 'переименовано'));
+  const rename = (e: Entry) => request('Переименовать', 'Новое имя или путь', e.name, (v) => {
+    if (editing === e.name) closeEditor();
+    return op({ op: 'mv', path: join(cwd, e.name), dest: v.includes('/') ? clean(v) : join(cwd, v) }, 'переименовано');
+  });
   const chmod = (e: Entry) => request(`Права на ${e.name}`, 'Восьмеричные права, например 644', modeOctal(e.mode), (v) =>
     op({ op: 'chmod', path: join(cwd, e.name), mode: v }, 'права изменены'));
   const extract = (e: Entry) => request(`Распаковать ${e.name}`, 'Куда распаковать', cwd, (v) =>
@@ -159,9 +187,12 @@
   function remove(names: string[]) {
     if (!names.length) return;
     const what = names.length === 1 ? names[0] : `${names.length} объект(ов)`;
-    if (!confirm(`Удалить ${what}? Действие необратимо.`)) return;
-    const paths = names.map((n) => join(cwd, n));
-    op({ op: 'rm', path: paths[0], paths: paths.slice(1) }, 'удалено');
+    askConfirm('Удаление', `${what} — восстановить будет нечем.`, 'Удалить', () => {
+      // Открытый в редакторе файл после удаления показывать нечего.
+      if (editing !== null && names.includes(editing)) closeEditor();
+      const paths = names.map((n) => join(cwd, n));
+      op({ op: 'rm', path: paths[0], paths: paths.slice(1) }, 'удалено');
+    });
   }
 
   function download(e: Entry) {
@@ -325,7 +356,7 @@
       <button class="btn btn-primary btn-sm" disabled={!dirty || saving} onclick={save}>
         <Icon name="save" size={13} /> {saving ? 'сохраняю…' : 'Сохранить'}
       </button>
-      <button class="btn btn-sm" onclick={leaveEditor}>Закрыть</button>
+      <button class="btn btn-sm" onclick={() => leaveEditor()}>Закрыть</button>
     </div>
     <div class="flex font-mono text-[13px] leading-[1.5]">
       <div bind:this={gutter} class="select-none text-right text-muted bg-surface-2 py-3 px-2 overflow-hidden" style="max-height:60vh">
@@ -349,6 +380,14 @@
     </div>
   </div>
 {/if}
+
+<Modal bind:open={confirmOpen} title={confirmTitle}>
+  <p>{confirmText}</p>
+  {#snippet footer()}
+    <button class="btn" onclick={() => (confirmOpen = false)}>Отмена</button>
+    <button class="btn btn-danger" onclick={() => { confirmOpen = false; confirmRun(); }}>{confirmLabel}</button>
+  {/snippet}
+</Modal>
 
 <Modal bind:open={askOpen} title={askTitle}>
   <form id="fm-ask" onsubmit={askSubmit}>
