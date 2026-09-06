@@ -313,3 +313,21 @@ type InstallPanelResponse struct {
 	// accepted on its digest alone.
 	Signed bool `json:"signed"`
 }
+
+// ListDirRequest lists the names in a directory. Only a few configuration
+// directories may be listed: this is for reading the panel's own domain
+// (which PHP modules exist), not a file browser.
+type ListDirRequest struct {
+	Path string `json:"path"`
+}
+
+// ListDirResponse is the directory content, names only.
+type ListDirResponse struct {
+	Entries []ListDirEntry `json:"entries"`
+}
+
+// ListDirEntry is one name in a directory.
+type ListDirEntry struct {
+	Name  string `json:"name"`
+	IsDir bool   `json:"is_dir"`
+}

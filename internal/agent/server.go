@@ -52,6 +52,7 @@ func (s *Server) Handler() http.Handler {
 	r.Post("/v1/apache/ctl", handle(s.apacheCtl))
 	r.Post("/v1/tool", handle(s.tool))
 	r.Post("/v1/stat", handle(s.stat))
+	r.Post("/v1/dir/list", handle(s.listDir))
 	r.Post("/v1/file/read", handle(s.readFile))
 	r.Post("/v1/user/password", handle(s.setUnixPassword))
 	r.Post("/v1/user/remove", handle(s.removeUnixUser))

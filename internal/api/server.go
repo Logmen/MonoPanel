@@ -110,6 +110,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 		s.registerUserDelete()
 		s.registerSiteNginx()
 		s.registerPresets()
+		s.registerPHPExtensions()
 		s.registerUpdate()
 	})
 	r.Handle("/*", s.uiHandler())

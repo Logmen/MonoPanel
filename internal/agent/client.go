@@ -177,3 +177,9 @@ func (c *Client) InstallPanel(ctx context.Context, req *InstallPanelRequest) (*I
 	var r InstallPanelResponse
 	return &r, c.call(ctx, "/v1/panel/install", req, &r)
 }
+
+// ListDir lists an allow-listed configuration directory.
+func (c *Client) ListDir(ctx context.Context, path string) (*ListDirResponse, error) {
+	var r ListDirResponse
+	return &r, c.call(ctx, "/v1/dir/list", &ListDirRequest{Path: path}, &r)
+}

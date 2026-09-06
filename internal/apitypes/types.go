@@ -584,3 +584,23 @@ type UpdateStatus struct {
 type UpdateApplyRequest struct {
 	Version string `json:"version,omitempty" maxLength:"64" doc:"Версия или тег; по умолчанию последняя в канале"`
 }
+
+// PHPExtension is one module of a branch: it exists (a package installed it)
+// and is either loaded by php-fpm or switched off.
+type PHPExtension struct {
+	Name     string `json:"name"`
+	Enabled  bool   `json:"enabled"`
+	Critical bool   `json:"critical,omitempty" doc:"Без него типовой сайт перестанет работать"`
+}
+
+// PHPExtensions is the extension list of one branch.
+type PHPExtensions struct {
+	Version    string         `json:"version"`
+	Extensions []PHPExtension `json:"extensions"`
+}
+
+// PHPExtensionRequest switches one extension on or off for the whole branch.
+type PHPExtensionRequest struct {
+	Name    string `json:"name" pattern:"^[a-z0-9_]{2,32}$"`
+	Enabled bool   `json:"enabled"`
+}

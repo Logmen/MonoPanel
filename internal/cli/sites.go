@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -77,7 +78,7 @@ func phpCmd() *cobra.Command {
 		}
 		return followJob(cmd, cl, ref.JobID)
 	}}
-	c.AddCommand(list, install, remove)
+	c.AddCommand(list, install, remove, phpExtCmd())
 	return c
 }
 
@@ -335,5 +336,63 @@ func siteCmd() *cobra.Command {
 		return nil
 	}}
 	c.AddCommand(add, list, show, set, rm, siteLogsCmd(), siteNginxCmd(), sitePHPCmd(), presets)
+	return c
+}
+
+// phpExtCmd управляет расширениями ветки целиком: php-fpm — один мастер на
+// версию, поэтому отключить расширение только для одного сайта нельзя.
+func phpExtCmd() *cobra.Command {
+	c := &cobra.Command{Use: "ext", Short: "расширения ветки: посмотреть, включить, выключить"}
+	show := func(st *apitypes.PHPExtensions) error {
+		if g.json {
+			return printJSON(st)
+		}
+		rows := make([][]string, 0, len(st.Extensions))
+		for _, e := range st.Extensions {
+			state, note := "выключено", ""
+			if e.Enabled {
+				state = "включено"
+			}
+			if e.Critical {
+				note = "нужен типовому сайту"
+			}
+			rows = append(rows, []string{e.Name, state, note})
+		}
+		table([]string{"РАСШИРЕНИЕ", "СОСТОЯНИЕ", ""}, rows)
+		return nil
+	}
+	list := &cobra.Command{Use: "list <версия>", Short: "расширения ветки", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		cl, err := newClient()
+		if err != nil {
+			return err
+		}
+		st, err := cl.PHPExtensions(cmd.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		return show(st)
+	}}
+	c.AddCommand(list)
+	for _, action := range []string{"enable", "disable"} {
+		on := action == "enable"
+		short := "выключить расширение (php-fpm перезапустится)"
+		if on {
+			short = "включить расширение (php-fpm перезапустится)"
+		}
+		c.AddCommand(&cobra.Command{Use: action + " <версия> <расширение>", Short: short, Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
+			cl, err := newClient()
+			if err != nil {
+				return err
+			}
+			st, err := cl.SetPHPExtension(cmd.Context(), args[0], args[1], on)
+			if err != nil {
+				return err
+			}
+			if !g.json {
+				fmt.Fprintf(os.Stderr, "%s для PHP %s: %s\n", args[1], args[0], map[bool]string{true: "включено", false: "выключено"}[on])
+			}
+			return show(st)
+		}})
+	}
 	return c
 }

@@ -50,6 +50,8 @@ type Agent struct {
 	ReadFile map[string]string
 	// ToolOutput answers agent.Tool by tool name.
 	ToolOutput map[string]string
+	// Dirs answers agent.ListDir: directory path -> names inside it.
+	DirEntries map[string][]string
 
 	srv *httptest.Server
 }
@@ -73,6 +75,7 @@ func Start(t *testing.T) *Agent {
 		Stat:       map[string]bool{},
 		ReadFile:   map[string]string{},
 		ToolOutput: map[string]string{},
+		DirEntries: map[string][]string{},
 	}
 	ln, err := net.Listen("unix", a.Socket)
 	if err != nil {
@@ -195,6 +198,15 @@ func (a *Agent) respond(path string, body []byte) any {
 			installed[p] = "1.0-test"
 		}
 		return agent.PkgResponse{Installed: installed, Output: "ok"}
+
+	case "/v1/dir/list":
+		var req agent.ListDirRequest
+		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		out := agent.ListDirResponse{Entries: []agent.ListDirEntry{}}
+		for _, name := range a.DirEntries[req.Path] {
+			out.Entries = append(out.Entries, agent.ListDirEntry{Name: name})
+		}
+		return out
 
 	case "/v1/panel/install":
 		var req agent.InstallPanelRequest

@@ -812,3 +812,15 @@ func (c *Client) ApplyUpdate(ctx context.Context, version string) (*apitypes.Job
 	var out apitypes.JobRef
 	return &out, c.do(ctx, http.MethodPost, "/system/update/apply", apitypes.UpdateApplyRequest{Version: version}, &out)
 }
+
+// PHPExtensions lists the extensions of a branch.
+func (c *Client) PHPExtensions(ctx context.Context, version string) (*apitypes.PHPExtensions, error) {
+	var out apitypes.PHPExtensions
+	return &out, c.do(ctx, http.MethodGet, "/php/versions/"+version+"/extensions", nil, &out)
+}
+
+// SetPHPExtension switches one extension on or off for a branch.
+func (c *Client) SetPHPExtension(ctx context.Context, version, name string, enabled bool) (*apitypes.PHPExtensions, error) {
+	var out apitypes.PHPExtensions
+	return &out, c.do(ctx, http.MethodPost, "/php/versions/"+version+"/extensions", apitypes.PHPExtensionRequest{Name: name, Enabled: enabled}, &out)
+}

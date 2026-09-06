@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -108,4 +109,39 @@ func (s *Server) setUnixPassword(ctx context.Context, req *SetUnixPasswordReques
 		return nil, &Error{Message: "chpasswd failed", Output: res.Output}
 	}
 	return &struct{}{}, nil
+}
+
+// listDirAllowed limits directory listing to configuration the panel manages.
+// A general listing operation would hand the API process a file browser over
+// the whole disk; this stays inside what the panel needs to know.
+var listDirAllowed = []*regexp.Regexp{
+	regexp.MustCompile(`^/etc/php/[0-9]+\.[0-9]+/mods-available$`),
+	regexp.MustCompile(`^/etc/php/[0-9]+\.[0-9]+/(fpm|cli)/conf\.d$`),
+	regexp.MustCompile(`^/etc/opt/remi/php[0-9]+/php\.d$`),
+}
+
+func (s *Server) listDir(_ context.Context, req *ListDirRequest) (*ListDirResponse, error) {
+	p := filepath.Clean(req.Path)
+	ok := false
+	for _, re := range listDirAllowed {
+		if re.MatchString(p) {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		return nil, &Error{Status: http.StatusForbidden, Message: "directory not allowed: " + p}
+	}
+	entries, err := os.ReadDir(p)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return &ListDirResponse{Entries: []ListDirEntry{}}, nil
+		}
+		return nil, err
+	}
+	out := &ListDirResponse{Entries: make([]ListDirEntry, 0, len(entries))}
+	for _, e := range entries {
+		out.Entries = append(out.Entries, ListDirEntry{Name: e.Name(), IsDir: e.IsDir()})
+	}
+	return out, nil
 }
