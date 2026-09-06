@@ -116,7 +116,7 @@
 
   {#if tab === 'settings'}
     <form class="card grid md:grid-cols-3 gap-3 rise" onsubmit={save}>
-      <div class="md:col-span-3 text-xs text-muted font-mono">docroot /var/www/{site.login}/data/www/{domain}{site.docroot ? '/' + site.docroot : ''}</div>
+      <div class="md:col-span-3 text-xs text-muted font-mono break-all">docroot /var/www/{site.login}/data/www/{domain}{site.docroot ? '/' + site.docroot : ''}</div>
       <div><label class="label" for="al">Алиасы</label><input id="al" class="input" bind:value={aliases} placeholder="www.example.com, shop.example.com" /></div>
       <div><label class="label" for="mode">Режим</label><select id="mode" class="input" bind:value={site.mode}><option value="fpm">nginx + php-fpm</option><option value="apache">nginx + Apache</option><option value="proxy">proxy → backend</option></select></div>
       {#if site.mode === 'proxy'}<div><label class="label" for="be">Backend</label><input id="be" class="input font-mono" bind:value={site.backend} /></div>{:else}

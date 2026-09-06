@@ -123,17 +123,26 @@ html, body {
   /* На телефоне таблица нечитаема: строка становится карточкой, а заголовки
      колонок — подписями слева от значений (через data-label на ячейках). */
   @media (width < 40rem) {
+    /* Таблица перестаёт быть таблицей: иначе она считает ширину по содержимому
+       и длинные значения уезжают за край экрана. */
+    .tbl,
+    .tbl tbody { @apply block w-full; }
     .tbl thead { @apply hidden; }
     .tbl tbody tr { @apply block rounded-xl border border-line mb-2 py-1 bg-surface; }
     .tbl tbody tr:hover { background: var(--surface); }
     .tbl tbody tr:last-child td { @apply border-b-0; }
-    .tbl td { @apply flex items-baseline justify-between gap-3 text-right border-b-0 px-3 py-1.5; }
+    .tbl td {
+      @apply flex items-baseline justify-between gap-3 text-right border-b-0 px-3 py-1.5 min-w-0;
+      overflow-wrap: anywhere;
+    }
     .tbl td::before {
       content: attr(data-label);
       @apply text-[11px] uppercase tracking-wider text-muted font-mono text-left shrink-0;
     }
-    .tbl td[data-label='']::before { content: none; }
+    /* Ячейки без подписи — это кнопки действий: держим их вместе справа. */
+    .tbl td[data-label='']::before,
     .tbl td[colspan]::before { content: none; }
+    .tbl td[data-label=''] { @apply justify-end; }
     .tbl td[colspan] { @apply justify-center text-center; }
   }
 

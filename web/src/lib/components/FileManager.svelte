@@ -353,7 +353,7 @@
 
 <div class="card p-0 overflow-hidden">
   <div class="flex flex-wrap items-center gap-2 p-3 border-b border-line bg-surface-2">
-    <div class="flex items-center gap-1 text-sm min-w-0 flex-1 flex-wrap">
+    <div class="flex items-center gap-1 text-sm min-w-0 w-full sm:w-auto sm:flex-1 flex-wrap">
       <button class="btn btn-ghost btn-sm" onclick={() => go('/')} title="домашний каталог"><Icon name="home" size={14} /></button>
       {#if cwd !== '/'}<button class="btn btn-ghost btn-sm" onclick={() => go(parent(cwd))} title="вверх">..</button>{/if}
       <span class="text-muted font-mono text-xs">/var/www/{user}</span>
@@ -364,7 +364,7 @@
     </div>
     {#if sites.length}
       <select
-        class="input py-1 text-xs w-auto"
+        class="input py-1 text-xs w-full sm:w-auto"
         onchange={(e) => {
           const el = e.currentTarget as HTMLSelectElement;
           if (el.value) go(el.value);
