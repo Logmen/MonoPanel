@@ -738,21 +738,33 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 		}
 	}
 	if len(remove) > 0 {
-		if rr, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: remove}); err != nil {
+		// Освобождение сокета старой ветки должно случиться до того, как новая
+		// попытается его занять: пул слушает один и тот же путь, и мастер новой
+		// версии не стартует, пока файл держит мастер прежней.
+		staleReload := []string{}
+		probe, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: remove})
+		if err != nil {
 			return s.siteFail(ctx, site, err)
-		} else if len(rr.Removed) > 0 {
-			jc.Logf("removed stale: %s", strings.Join(rr.Removed, ", "))
+		}
+		if len(probe.Removed) > 0 {
+			jc.Logf("removed stale: %s", strings.Join(probe.Removed, ", "))
 			for _, v := range osprofileVersions() {
 				if other := osprofile.PHP(s.profile, v); other != nil && v != site.PHPVersion {
-					for _, r := range rr.Removed {
+					for _, r := range probe.Removed {
 						if strings.HasPrefix(r, other.PoolDir+"/") {
 							if _, err := s.db.GetPHPVersion(ctx, v); err == nil {
-								reload = append(reload, other.FPMService)
+								staleReload = append(staleReload, other.FPMService)
 							}
 						}
 					}
 				}
 			}
+		}
+		for _, unit := range staleReload {
+			if _, err := s.agent.Service(ctx, unit, "reload-or-restart"); err != nil {
+				return s.siteFail(ctx, site, err)
+			}
+			jc.Logf("%s released the pool socket", unit)
 		}
 	}
 	jc.Progress(75, "applying")

@@ -334,6 +334,51 @@ func TestSiteCustomNginxValidatedAndRolledBack(t *testing.T) {
 	delete(f.agent.Fail, "/v1/config/apply")
 }
 
+// Смена ветки PHP: пул старой версии удаляется, и её мастер перезапускается
+// раньше, чем занимает сокет новый — иначе новый не стартует.
+func TestSitePHPSwitchReleasesOldPoolFirst(t *testing.T) {
+	f := newSiteFixture(t)
+	if err := f.db.UpsertPHPVersion(f.ctx, &store.PHPVersion{Version: "8.3", Source: "sury", Status: store.PHPInstalled}); err != nil {
+		t.Fatal(err)
+	}
+	site := f.createSite(map[string]any{"domain": "switch.example.com", "user": "alex", "php_version": "8.3", "ssl": "none"})
+	if site.PHPVersion != "8.3" {
+		t.Fatalf("создан на %s", site.PHPVersion)
+	}
+	// Reset() стёр бы и файлы, которые фейковый агент «записал» при создании,
+	// и тогда пул 8.3 не считался бы существующим — смотрим по срезу вызовов.
+	base := len(f.agent.Calls())
+
+	var out struct {
+		JobID int64 `json:"job_id"`
+	}
+	f.call(http.MethodPatch, "/sites/switch.example.com", map[string]any{"php_version": "8.4"}, http.StatusAccepted, &out)
+	if job := f.waitJob(out.JobID); job.Status != store.JobDone {
+		t.Fatalf("переключение: %s %s", job.Status, job.Error)
+	}
+
+	// Порядок: сначала удаление пула 8.3 и перезапуск его мастера, потом
+	// запись нового пула и перезапуск 8.4.
+	removeAt, oldReloadAt, applyAt := -1, -1, -1
+	for i, c := range f.agent.Calls()[base:] {
+		body := string(c.Body)
+		switch {
+		case c.Path == "/v1/paths/remove" && strings.Contains(body, "/etc/php/8.3/fpm/pool.d/switch.example.com.conf"):
+			removeAt = i
+		case c.Path == "/v1/service" && strings.Contains(body, "php8.3-fpm.service"):
+			oldReloadAt = i
+		case c.Path == "/v1/config/apply" && strings.Contains(body, "/etc/php/8.4/fpm/pool.d/switch.example.com.conf"):
+			applyAt = i
+		}
+	}
+	if removeAt < 0 || oldReloadAt < 0 || applyAt < 0 {
+		t.Fatalf("шаги не найдены: remove=%d reload=%d apply=%d", removeAt, oldReloadAt, applyAt)
+	}
+	if !(removeAt < oldReloadAt && oldReloadAt < applyAt) {
+		t.Fatalf("новый пул применён до освобождения сокета: remove=%d reload=%d apply=%d", removeAt, oldReloadAt, applyAt)
+	}
+}
+
 func TestSitePHPEndpointReportsSources(t *testing.T) {
 	f := newSiteFixture(t)
 	site := f.createSite(map[string]any{

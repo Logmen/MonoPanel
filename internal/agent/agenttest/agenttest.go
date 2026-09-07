@@ -155,9 +155,17 @@ func (a *Agent) respond(path string, body []byte) any {
 		var req agent.RemovePathsRequest
 		json.Unmarshal(body, &req) //nolint:errcheck // test double
 		a.removed = append(a.removed, req.Paths...)
-		// A real agent only reports what existed; reporting nothing keeps the
-		// panel from treating unrelated paths as stale.
-		return agent.RemovePathsResponse{Removed: []string{}}
+		// A real agent reports only what existed, and the panel acts on that
+		// (a removed pool means the old php-fpm has to be reloaded). The fake
+		// knows what it wrote, so it answers the same way.
+		gone := []string{}
+		for _, p := range req.Paths {
+			if _, ok := a.files[p]; ok {
+				delete(a.files, p)
+				gone = append(gone, p)
+			}
+		}
+		return agent.RemovePathsResponse{Removed: gone}
 
 	case "/v1/group/ensure":
 		return agent.EnsureGroupResponse{GID: 3000, Created: true}
