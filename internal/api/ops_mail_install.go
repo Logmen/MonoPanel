@@ -231,13 +231,23 @@ func defaultBanner(s string) string {
 // mailPortList is the human list of ports the firewall opens.
 func mailPortList(c mailConfig) string {
 	out := []string{}
-	for _, p := range mailPortsFor(c) {
+	for _, p := range firewallMailPorts(c) {
 		out = append(out, fmt.Sprint(p))
 	}
 	return strings.Join(out, ", ")
 }
 
-// mailPortsFor is what the firewall has to allow for the current settings.
+// firewallMailPorts is everything the firewall opens for mail, including the
+// webmail port when the webmail is published on one.
+func firewallMailPorts(c mailConfig) []int {
+	ports := mailPortsFor(c)
+	if c.WebmailPort > 0 && c.Webmail != "" {
+		ports = append(ports, c.WebmailPort)
+	}
+	return ports
+}
+
+// mailPortsFor is what the mail protocols themselves need.
 func mailPortsFor(c mailConfig) []int {
 	if !c.Installed {
 		return nil
@@ -317,7 +327,7 @@ func (s *Server) mailStatus(ctx context.Context) apitypes.MailStatus {
 	_, _, kind, until := s.mailTLS(ctx, c)
 	out := apitypes.MailStatus{
 		Installed: c.Installed, Hostname: c.Hostname, POP3: c.POP3, DKIM: c.DKIM, Port25: c.Port25,
-		MaxSizeMB: c.MaxSizeMB, RBL: c.RBL, Webmail: c.Webmail, TLS: kind, CertName: c.Hostname, CertUntil: until,
+		MaxSizeMB: c.MaxSizeMB, RBL: c.RBL, Webmail: c.Webmail, WebmailPort: c.WebmailPort, TLS: kind, CertName: c.Hostname, CertUntil: until,
 		Versions: map[string]string{"postfix": c.PostfixVersion, "dovecot": c.DovecotVersion, "roundcube": c.WebmailVersion},
 	}
 	if !c.Installed {
@@ -325,6 +335,9 @@ func (s *Server) mailStatus(ctx context.Context) apitypes.MailStatus {
 	}
 	if c.Webmail != "" {
 		out.WebmailURL = "https://" + c.Webmail + "/"
+		if c.WebmailPort > 0 {
+			out.WebmailURL = fmt.Sprintf("https://%s:%d/", c.Hostname, c.WebmailPort)
+		}
 	}
 	if domains, err := s.db.ListMailDomains(ctx, 0); err == nil {
 		out.Domains = len(domains)
@@ -349,7 +362,11 @@ func (s *Server) mailStatus(ctx context.Context) apitypes.MailStatus {
 		for _, port := range mailPortsFor(c) {
 			managed[port] = true
 		}
-		probes := s.probePorts(allMailPorts())
+		ports := allMailPorts()
+		if c.WebmailPort > 0 && c.Webmail != "" {
+			ports = append(ports, c.WebmailPort)
+		}
+		probes := s.probePorts(ports)
 		for _, mp := range mailPorts {
 			r := probes[mp.Port]
 			p := apitypes.MailPort{Port: mp.Port, Name: mp.Name, Open: r.Open, Managed: managed[mp.Port]}
@@ -357,6 +374,9 @@ func (s *Server) mailStatus(ctx context.Context) apitypes.MailStatus {
 				p.Owner = firstLine(r.Banner)
 			}
 			out.Ports = append(out.Ports, p)
+		}
+		if c.WebmailPort > 0 && c.Webmail != "" {
+			out.Ports = append(out.Ports, apitypes.MailPort{Port: c.WebmailPort, Name: "Вебпочта", Open: probes[c.WebmailPort].Open, Managed: true})
 		}
 		out.Warnings = s.mailWarnings(ctx, c, kind, probes)
 	}

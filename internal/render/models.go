@@ -238,3 +238,17 @@ type Roundcube struct {
 	TempDir     string
 	Plugins     []string
 }
+
+// Webmail feeds mail/webmail.conf.tmpl: Roundcube on a port of the mail host,
+// so a webmail needs no DNS record of its own.
+type Webmail struct {
+	IP                string
+	Port              int
+	ServerName        string
+	CertPath          string
+	KeyPath           string
+	Docroot           string
+	LogDir            string
+	Socket            string
+	ClientMaxBodySize string
+}

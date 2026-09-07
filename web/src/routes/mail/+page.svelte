@@ -26,11 +26,11 @@
   let purge = $state(false);
 
   let install = $state({ hostname: '' });
-  let domainForm = $state({ name: '', user: '' });
+  let domainForm = $state({ name: '', user: '', lenient: false });
   let boxForm = $state({ address: '', password: '', name: '', quota_mb: 1024 });
   let aliasForm = $state({ address: '', destinations: '' });
-  let webmailForm = $state({ domain: '', user: '' });
-  let settings = $state({ hostname: '', max_size_mb: 50, pop3: true, dkim: true, port25: true, rbl: '' });
+  let webmailForm = $state({ domain: '', user: '', port: 2096 });
+  let settings = $state({ hostname: '', max_size_mb: 50, pop3: true, dkim: true, port25: true, rbl: '', webmail_port: 0 });
   let showSettings = $state(false);
 
   const fail = (e: unknown) => { error = e instanceof ApiError ? e.text : String(e); notify(error, 'err'); };
@@ -44,7 +44,7 @@
         admin ? api('/users') : Promise.resolve([])
       ]);
       st = status;
-      settings = { hostname: st.hostname ?? '', max_size_mb: st.max_size_mb || 50, pop3: !!st.pop3, dkim: !!st.dkim, port25: !!st.port25, rbl: (st.rbl ?? []).join(', ') };
+      settings = { hostname: st.hostname ?? '', max_size_mb: st.max_size_mb || 50, pop3: !!st.pop3, dkim: !!st.dkim, port25: !!st.port25, rbl: (st.rbl ?? []).join(', '), webmail_port: st.webmail_port ?? 0 };
       domains = d as any[];
       boxes = b as any[];
       aliases = a as any[];
@@ -61,7 +61,7 @@
     e.preventDefault(); error = '';
     try {
       const body: any = { hostname: settings.hostname, max_size_mb: settings.max_size_mb, pop3: settings.pop3, dkim: settings.dkim, port25: settings.port25,
-        rbl: settings.rbl.split(',').map((s) => s.trim()).filter(Boolean) };
+        webmail_port: Number(settings.webmail_port) || 0, rbl: settings.rbl.split(',').map((s) => s.trim()).filter(Boolean) };
       st = await api('/mail/settings', { method: 'PUT', json: body });
       notify('настройки сохранены'); showSettings = false; await load();
     } catch (e) { fail(e); }
@@ -69,7 +69,7 @@
   async function addDomain(e: Event) {
     e.preventDefault(); error = '';
     try {
-      const body: any = { name: domainForm.name.trim() };
+      const body: any = { name: domainForm.name.trim(), lenient: domainForm.lenient };
       if (admin) body.user = domainForm.user;
       await api('/mail/domains', { method: 'POST', json: body });
       domainForm.name = ''; notify('домен добавлен — пропишите записи в DNS'); await load();
@@ -110,12 +110,15 @@
     dnsLoading = true; dns = { domain: name, records: [] };
     try { dns = await api(`/mail/domains/${name}/dns`); } catch (e) { fail(e); dns = null; } finally { dnsLoading = false; }
   }
+  async function toggleLenient(d: any) {
+    try { await api(`/mail/domains/${d.name}`, { method: 'PATCH', json: { lenient: !d.lenient } }); await load(); } catch (e) { fail(e); }
+  }
   async function rotateDKIM(name: string) {
     try { await api(`/mail/domains/${name}/dkim`, { method: 'POST', json: {} }); notify('новый ключ выпущен — обновите TXT-запись'); await load(); await showDNS(name); } catch (e) { fail(e); }
   }
   async function installWebmail(e: Event) {
     e.preventDefault(); error = '';
-    try { const r: any = await api('/mail/webmail', { method: 'POST', json: webmailForm }); job = r.job_id; } catch (e) { fail(e); }
+    try { const r: any = await api('/mail/webmail', { method: 'POST', json: { ...webmailForm, port: Number(webmailForm.port) || 0 } }); job = r.job_id; } catch (e) { fail(e); }
   }
   const mark = (s: string) => ({ ok: 'text-ok', missing: 'text-danger', mismatch: 'text-warn', unknown: 'text-muted' })[s] ?? 'text-muted';
   const markText = (s: string) => ({ ok: 'опубликовано', missing: 'нет записи', mismatch: 'не совпадает', unknown: 'не проверено' })[s] ?? s;
@@ -154,6 +157,8 @@
       <div><label class="label" for="sh">Имя сервера</label><input id="sh" class="input font-mono" bind:value={settings.hostname} /></div>
       <div><label class="label" for="sm">Размер письма, МБ</label><input id="sm" class="input" type="number" min="1" max="512" bind:value={settings.max_size_mb} /></div>
       <div><label class="label" for="sr">Чёрные списки</label><input id="sr" class="input font-mono" bind:value={settings.rbl} placeholder="zen.spamhaus.org" /></div>
+      <div><label class="label" for="sw">Порт вебпочты</label><input id="sw" class="input" type="number" min="0" max="65535" bind:value={settings.webmail_port} />
+        <p class="text-xs text-muted mt-1">0 — только по своему домену</p></div>
       <label class="flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={settings.pop3} /> POP3 (110/995)</label>
       <label class="flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={settings.dkim} /> Подписывать письма DKIM</label>
       <label class="flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={settings.port25} /> Принимать почту на 25 порту</label>
@@ -183,15 +188,17 @@
     <div class="card rise" style="--i:2">
       <div class="text-xs text-muted mb-2">Вебпочта</div>
       {#if st.webmail}
-        <a class="text-sm text-accent-ink hover:underline inline-flex items-center gap-1" href={st.webmail_url} target="_blank">{st.webmail} <Icon name="external" size={12} /></a>
-        <div class="text-xs text-muted mt-1">Roundcube {st.versions?.roundcube}</div>
+        <a class="text-sm text-accent-ink hover:underline inline-flex items-center gap-1 break-all" href={st.webmail_url} target="_blank">{st.webmail_url.replace('https://', '').replace(/\/$/, '')} <Icon name="external" size={12} /></a>
+        <div class="text-xs text-muted mt-1">Roundcube {st.versions?.roundcube}{#if st.webmail_port} · сайт {st.webmail}{/if}</div>
       {:else if admin}
         <form class="space-y-2" onsubmit={installWebmail}>
           <input class="input font-mono text-sm" bind:value={webmailForm.domain} placeholder="webmail.example.com" required />
           <div class="flex gap-2">
             <select class="input text-sm" bind:value={webmailForm.user} required><option value="">владелец</option>{#each users as u}<option value={u.login}>{u.login}</option>{/each}</select>
+            <input class="input text-sm w-24" type="number" min="0" max="65535" bind:value={webmailForm.port} title="порт на имени почтового сервера; 0 — только по домену" />
             <button class="btn btn-primary btn-sm whitespace-nowrap">Поставить</button>
           </div>
+          <p class="text-xs text-muted">Порт открывает почту на {st.hostname} с его сертификатом — своя запись в DNS не нужна.</p>
         </form>
       {:else}
         <div class="text-sm text-muted">не установлена</div>
@@ -223,6 +230,9 @@
     <form class="card grid md:grid-cols-4 gap-3 items-end mb-3 rise" onsubmit={addDomain}>
       <div><label class="label" for="dn">Домен</label><input id="dn" class="input font-mono" bind:value={domainForm.name} placeholder="example.com" required /></div>
       {#if admin}<div><label class="label" for="du">Владелец</label><select id="du" class="input" bind:value={domainForm.user} required><option value="">—</option>{#each users as u}<option value={u.login}>{u.login}</option>{/each}</select></div>{/if}
+      <label class="flex items-center gap-2 text-sm pb-2" title="принимать письма и от криво настроенных отправителей — для диагностических приёмников">
+        <input type="checkbox" bind:checked={domainForm.lenient} /> домен-приёмник
+      </label>
       <button class="btn btn-primary">Добавить домен</button>
     </form>
     <div class="card overflow-x-auto p-0 rise">
@@ -230,7 +240,7 @@
         <tbody>
           {#each domains as d, i}
             <tr class="rise" style="--i:{i}">
-              <td data-label="Домен" class="font-mono font-medium">{d.name}</td>
+              <td data-label="Домен" class="font-mono font-medium">{d.name}{#if d.lenient}<span class="ml-2 text-[10px] px-1.5 py-0.5 rounded border border-warn/40 text-warn font-sans">приёмник</span>{/if}</td>
               <td data-label="Владелец">{d.login}</td>
               <td data-label="Ящиков" class="tabular-nums">{d.mailboxes}</td>
               <td data-label="Алиасов" class="tabular-nums">{d.aliases}</td>
@@ -238,6 +248,7 @@
               <td data-label=""><div class="row-actions">
                 <button class="btn btn-sm" onclick={() => showDNS(d.name)}><Icon name="globe" size={13} /> DNS</button>
                 <button class="btn btn-sm" onclick={() => rotateDKIM(d.name)} title="выпустить новый ключ DKIM"><Icon name="key" size={13} /></button>
+                <button class="btn btn-sm" onclick={() => toggleLenient(d)} title={d.lenient ? 'вернуть строгие проверки отправителя' : 'домен-приёмник: принимать письма и от криво настроенных отправителей'}><Icon name="shield" size={13} /></button>
                 <button class="btn btn-danger btn-sm" onclick={() => (del = { kind: 'domain', name: d.name, note: 'Домен, его ящики и все письма будут удалены.' })}><Icon name="trash" size={13} /></button>
               </div></td>
             </tr>

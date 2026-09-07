@@ -155,7 +155,7 @@ func (s *Server) applyFirewall(ctx context.Context) (*apitypes.FirewallStatus, e
 	}
 	// Почтовые порты открываются вместе с почтовым сервером: закрытый 25-й
 	// молча съедал бы входящую почту.
-	for _, p := range mailPortsFor(s.loadMailConfig(ctx)) {
+	for _, p := range firewallMailPorts(s.loadMailConfig(ctx)) {
 		base[p] = true
 	}
 	ports := make([]string, 0, len(base))

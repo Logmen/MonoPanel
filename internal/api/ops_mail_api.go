@@ -45,6 +45,11 @@ type mailNameInput struct {
 	Name string `path:"name" maxLength:"253"`
 }
 
+type mailDomainPatchInput struct {
+	Name string `path:"name" maxLength:"253"`
+	Body apitypes.MailDomainUpdateRequest
+}
+
 type mailboxesInput struct {
 	Domain string `query:"domain" doc:"Показать ящики одного домена"`
 }
@@ -173,6 +178,13 @@ func (s *Server) registerMail() {
 		if in.Body.Port25 != nil {
 			c.Port25 = *in.Body.Port25
 		}
+		if in.Body.WebmailPort != nil {
+			port := *in.Body.WebmailPort
+			if port != 0 && (port < 1024 || port == s.panelPort() || port == 80 || port == 443) {
+				return nil, huma.Error422UnprocessableEntity("для вебпочты возьмите свободный порт выше 1024, например 2096")
+			}
+			c.WebmailPort = port
+		}
 		if in.Body.RBL != nil {
 			list := []string{}
 			for _, r := range *in.Body.RBL {
@@ -231,7 +243,7 @@ func (s *Server) registerMail() {
 		if err != nil {
 			return nil, err
 		}
-		d := &store.MailDomain{UserID: owner.ID, Name: name, Active: true}
+		d := &store.MailDomain{UserID: owner.ID, Name: name, Active: true, Lenient: in.Body.Lenient}
 		wantDKIM := c.DKIM && (in.Body.DKIM == nil || *in.Body.DKIM)
 		if wantDKIM {
 			if s.secrets == nil {
@@ -280,6 +292,30 @@ func (s *Server) registerMail() {
 		}
 		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "mail.domain.delete", Target: d.Name, IP: requestInfo(ctx).IP})
 		return nil, nil
+	})
+
+	huma.Register(s.api, huma.Operation{
+		OperationID: "mail-domains-update", Method: http.MethodPatch, Path: "/mail/domains/{name}", Summary: "Change a mail domain (state, lenient checks)", Tags: []string{"mail"}, Security: secured,
+	}, func(ctx context.Context, in *mailDomainPatchInput) (*mailDomainOutput, error) {
+		p := principalFrom(ctx)
+		d, err := s.mailDomainFor(ctx, strings.ToLower(in.Name))
+		if err != nil {
+			return nil, huma.Error404NotFound(err.Error())
+		}
+		if in.Body.Active != nil {
+			d.Active = *in.Body.Active
+		}
+		if in.Body.Lenient != nil {
+			d.Lenient = *in.Body.Lenient
+		}
+		if err := s.db.UpdateMailDomain(ctx, d); err != nil {
+			return nil, err
+		}
+		if err := s.applyMail(ctx, nil); err != nil {
+			return nil, huma.Error502BadGateway(err.Error())
+		}
+		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "mail.domain.update", Target: d.Name, IP: requestInfo(ctx).IP, Details: map[string]any{"active": d.Active, "lenient": d.Lenient}})
+		return &mailDomainOutput{Status: http.StatusOK, Body: d}, nil
 	})
 
 	huma.Register(s.api, huma.Operation{
@@ -530,6 +566,9 @@ func (s *Server) registerMail() {
 			return nil, huma.Error502BadGateway(err.Error())
 		}
 		a.Domain, a.Address = d.Name, source+"@"+d.Name
+		if source == "@" {
+			a.Address = "@" + d.Name
+		}
 		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "mail.alias.create", Target: a.Address, IP: requestInfo(ctx).IP})
 		return &aliasOutput{Status: http.StatusCreated, Body: a}, nil
 	})
@@ -571,7 +610,10 @@ func (s *Server) registerMail() {
 		if err != nil {
 			return nil, err
 		}
-		job, err := s.jobs.Enqueue(ctx, "mail.webmail", webmailPayload{Domain: strings.ToLower(in.Body.Domain), User: owner.Login, PHPVersion: in.Body.PHPVersion}, jobs.WithLockKey("mail"), jobs.WithRequestedBy(p.Login))
+		if in.Body.Port != 0 && (in.Body.Port < 1024 || in.Body.Port == s.panelPort() || in.Body.Port == 80 || in.Body.Port == 443) {
+			return nil, huma.Error422UnprocessableEntity("для вебпочты возьмите свободный порт выше 1024, например 2096")
+		}
+		job, err := s.jobs.Enqueue(ctx, "mail.webmail", webmailPayload{Domain: strings.ToLower(in.Body.Domain), User: owner.Login, PHPVersion: in.Body.PHPVersion, Port: in.Body.Port}, jobs.WithLockKey("mail"), jobs.WithRequestedBy(p.Login))
 		if err != nil {
 			return nil, err
 		}

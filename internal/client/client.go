@@ -861,6 +861,12 @@ func (c *Client) CreateMailDomain(ctx context.Context, req apitypes.MailDomainRe
 	return &out, c.do(ctx, http.MethodPost, "/mail/domains", req, &out)
 }
 
+// UpdateMailDomain changes a mail domain.
+func (c *Client) UpdateMailDomain(ctx context.Context, name string, req apitypes.MailDomainUpdateRequest) (*store.MailDomain, error) {
+	var out store.MailDomain
+	return &out, c.do(ctx, http.MethodPatch, "/mail/domains/"+name, req, &out)
+}
+
 // DeleteMailDomain removes a mail domain.
 func (c *Client) DeleteMailDomain(ctx context.Context, name string) error {
 	return c.do(ctx, http.MethodDelete, "/mail/domains/"+name, nil, nil)

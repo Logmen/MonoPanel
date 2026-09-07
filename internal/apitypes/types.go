@@ -607,23 +607,24 @@ type PHPExtensionRequest struct {
 
 // MailStatus is the mail page payload.
 type MailStatus struct {
-	Installed  bool              `json:"installed"`
-	Hostname   string            `json:"hostname,omitempty"`
-	Domains    int               `json:"domains"`
-	Mailboxes  int               `json:"mailboxes"`
-	Aliases    int               `json:"aliases"`
-	TLS        string            `json:"tls,omitempty" doc:"acme | selfsigned | none"`
-	CertName   string            `json:"cert_name,omitempty"`
-	CertUntil  *time.Time        `json:"cert_until,omitempty"`
-	POP3       bool              `json:"pop3"`
-	DKIM       bool              `json:"dkim"`
-	Port25     bool              `json:"port25"`
-	MaxSizeMB  int               `json:"max_size_mb"`
-	RBL        []string          `json:"rbl,omitempty"`
-	Webmail    string            `json:"webmail,omitempty"`
-	WebmailURL string            `json:"webmail_url,omitempty"`
-	Versions   map[string]string `json:"versions,omitempty"`
-	Services   []systemd.Status  `json:"services,omitempty"`
+	Installed   bool              `json:"installed"`
+	Hostname    string            `json:"hostname,omitempty"`
+	Domains     int               `json:"domains"`
+	Mailboxes   int               `json:"mailboxes"`
+	Aliases     int               `json:"aliases"`
+	TLS         string            `json:"tls,omitempty" doc:"acme | selfsigned | none"`
+	CertName    string            `json:"cert_name,omitempty"`
+	CertUntil   *time.Time        `json:"cert_until,omitempty"`
+	POP3        bool              `json:"pop3"`
+	DKIM        bool              `json:"dkim"`
+	Port25      bool              `json:"port25"`
+	MaxSizeMB   int               `json:"max_size_mb"`
+	RBL         []string          `json:"rbl,omitempty"`
+	Webmail     string            `json:"webmail,omitempty"`
+	WebmailURL  string            `json:"webmail_url,omitempty"`
+	WebmailPort int               `json:"webmail_port,omitempty"`
+	Versions    map[string]string `json:"versions,omitempty"`
+	Services    []systemd.Status  `json:"services,omitempty"`
 	// Ports lists the listeners the panel expects and whether they answer.
 	Ports []MailPort `json:"ports,omitempty"`
 	// Warnings are things an administrator has to fix by hand.
@@ -648,6 +649,8 @@ type MailSettingsRequest struct {
 	DKIM      *bool     `json:"dkim,omitempty"`
 	Port25    *bool     `json:"port25,omitempty" doc:"Принимать почту на 25 порту"`
 	RBL       *[]string `json:"rbl,omitempty" maxItems:"8" doc:"Чёрные списки для входящих, например zen.spamhaus.org"`
+	// WebmailPort публикует вебпочту на порту почтового хоста; 0 выключает.
+	WebmailPort *int `json:"webmail_port,omitempty" minimum:"0" maximum:"65535"`
 }
 
 // MailInstallRequest installs the mail stack.
@@ -658,9 +661,16 @@ type MailInstallRequest struct {
 
 // MailDomainRequest adds a mail domain.
 type MailDomainRequest struct {
-	Name string `json:"name" doc:"Домен, например example.com"`
-	User string `json:"user,omitempty" doc:"Владелец (администратору обязателен)"`
-	DKIM *bool  `json:"dkim,omitempty" doc:"Сгенерировать ключ DKIM (по умолчанию да)"`
+	Name    string `json:"name" doc:"Домен, например example.com"`
+	User    string `json:"user,omitempty" doc:"Владелец (администратору обязателен)"`
+	DKIM    *bool  `json:"dkim,omitempty" doc:"Сгенерировать ключ DKIM (по умолчанию да)"`
+	Lenient bool   `json:"lenient,omitempty" doc:"Домен-приёмник: принимать письма и от криво настроенных отправителей"`
+}
+
+// MailDomainUpdateRequest patches a mail domain.
+type MailDomainUpdateRequest struct {
+	Active  *bool `json:"active,omitempty"`
+	Lenient *bool `json:"lenient,omitempty" doc:"Принимать почту домена без проверок HELO и домена отправителя (домен-приёмник)"`
 }
 
 // MailboxRequest creates a mailbox.
@@ -718,4 +728,7 @@ type WebmailRequest struct {
 	Domain     string `json:"domain" doc:"Имя сайта вебпочты, например webmail.example.com"`
 	User       string `json:"user,omitempty" doc:"Владелец сайта (администратору обязателен)"`
 	PHPVersion string `json:"php_version,omitempty"`
+	// Port публикует вебпочту ещё и на порту почтового хоста — тогда для неё
+	// не нужны ни своя запись в DNS, ни свой сертификат.
+	Port int `json:"port,omitempty" minimum:"0" maximum:"65535"`
 }

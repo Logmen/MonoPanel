@@ -41,6 +41,7 @@ type webmailPayload struct {
 	Domain     string `json:"domain"`
 	User       string `json:"user"`
 	PHPVersion string `json:"php_version,omitempty"`
+	Port       int    `json:"port,omitempty"`
 }
 
 // jobWebmailInstall unpacks Roundcube into a site of the panel, creates its
@@ -169,7 +170,7 @@ func (s *Server) jobWebmailInstall(ctx context.Context, jc *jobs.Context) error 
 		SieveHost:   fmt.Sprintf("tls://%s:4190", host),
 		VerifyPeer:  verified,
 		SupportURL:  "",
-		ProductName: "Почта " + p.Domain,
+		ProductName: "Почта " + webmailName(c, p),
 		DESKey:      desKey[:24],
 		Domain:      firstMailDomain(ctx, s),
 		TempDir:     path.Join(l.siteRoot, "temp"),
@@ -185,6 +186,9 @@ func (s *Server) jobWebmailInstall(ctx context.Context, jc *jobs.Context) error 
 	}
 
 	c.Webmail, c.WebmailVersion = p.Domain, roundcubeVersion
+	if p.Port != 0 {
+		c.WebmailPort = p.Port
+	}
 	if err := s.saveMailConfig(ctx, c); err != nil {
 		return err
 	}
@@ -193,6 +197,14 @@ func (s *Server) jobWebmailInstall(ctx context.Context, jc *jobs.Context) error 
 		return err
 	}
 	jc.Logf("сайт применяется задачей #%d; после неё вебпочта откроется на https://%s/", job.ID, p.Domain)
+	if c.WebmailPort != 0 {
+		// Серверный блок на порту ссылается на сокет пула, который создаст
+		// задача сайта, — поэтому он пишется после неё.
+		if _, err := s.jobs.Enqueue(ctx, "mail.apply", struct{}{}, jobs.WithLockKey("mail"), jobs.WithRequestedBy(jc.RequestedBy)); err != nil {
+			return err
+		}
+		jc.Logf("и на https://%s:%d/ — там имя и сертификат почтового сервера, отдельная запись в DNS не нужна", c.Hostname, c.WebmailPort)
+	}
 	jc.Progress(100, "Roundcube "+roundcubeVersion+" установлен")
 	return nil
 }
@@ -318,6 +330,15 @@ func (s *Server) webmailDatabase(ctx context.Context, jc *jobs.Context, owner *s
 	}
 	jc.Logf("база %s готова", name)
 	return name, password, nil
+}
+
+// webmailName is what Roundcube calls itself: тем именем, по которому вебпочту
+// и будут открывать — на порту это имя почтового сервера, а не сайта.
+func webmailName(c mailConfig, p webmailPayload) string {
+	if p.Port != 0 {
+		return c.Hostname
+	}
+	return p.Domain
 }
 
 // firstMailDomain is what Roundcube appends when someone logs in without a

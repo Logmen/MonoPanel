@@ -58,6 +58,9 @@ func mailCmd() *cobra.Command {
 		}
 		if st.Webmail != "" {
 			fmt.Printf("Вебпочта: %s (Roundcube %s)\n", st.WebmailURL, st.Versions["roundcube"])
+			if st.WebmailPort > 0 {
+				fmt.Printf("          сайт %s, порт %d — на имени и сертификате почтового сервера\n", st.Webmail, st.WebmailPort)
+			}
 		}
 		for _, w := range st.Warnings {
 			fmt.Println("!", w)
@@ -135,6 +138,15 @@ func mailCmd() *cobra.Command {
 	settings.Flags().StringVar(&dkim, "dkim", "", "true|false — подписывать письма")
 	settings.Flags().StringVar(&port25, "port25", "", "true|false — принимать почту на 25 порту")
 	settings.Flags().StringSliceVar(&rbl, "rbl", nil, "чёрные списки для входящих (пустое значение очищает)")
+	var webmailPort int
+	settings.Flags().IntVar(&webmailPort, "webmail-port", 0, "порт для вебпочты на имени почтового сервера (0 — выключить)")
+	settingsRunE := settings.RunE
+	settings.RunE = func(cmd *cobra.Command, args []string) error {
+		if cmd.Flags().Changed("webmail-port") {
+			set.WebmailPort = &webmailPort
+		}
+		return settingsRunE(cmd, args)
+	}
 
 	c.AddCommand(status, inst, apply, settings, mailDomainCmd(), mailboxCmd(), mailAliasCmd(), webmailCmd())
 	return c
@@ -168,6 +180,9 @@ func mailDomainCmd() *cobra.Command {
 			if !d.Active {
 				state = "выключен"
 			}
+			if d.Lenient {
+				state += ", приёмник"
+			}
 			rows = append(rows, []string{d.Name, d.Login, state, strconv.Itoa(d.Mailboxes), strconv.Itoa(d.Aliases), d.DKIMSelector})
 		}
 		table([]string{"ДОМЕН", "ВЛАДЕЛЕЦ", "СОСТОЯНИЕ", "ЯЩИКОВ", "АЛИАСОВ", "DKIM"}, rows)
@@ -199,6 +214,41 @@ func mailDomainCmd() *cobra.Command {
 	}}
 	add.Flags().StringVar(&req.User, "user", "", "владелец (обязателен для администратора)")
 	add.Flags().BoolVar(&noDKIM, "no-dkim", false, "не выпускать ключ DKIM")
+	add.Flags().BoolVar(&req.Lenient, "lenient", false, "домен-приёмник: принимать письма и от криво настроенных отправителей")
+
+	var lenient, activeFlag string
+	set := &cobra.Command{Use: "set <domain>", Short: "включить домен, выключить или сделать приёмником", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		cl, err := newClient()
+		if err != nil {
+			return err
+		}
+		var patch apitypes.MailDomainUpdateRequest
+		for name, raw := range map[string]string{"lenient": lenient, "active": activeFlag} {
+			if raw == "" {
+				continue
+			}
+			v, err := strconv.ParseBool(raw)
+			if err != nil {
+				return &exitError{code: 2, msg: "--" + name + ": нужно true или false"}
+			}
+			if name == "lenient" {
+				patch.Lenient = &v
+			} else {
+				patch.Active = &v
+			}
+		}
+		d, err := cl.UpdateMailDomain(cmd.Context(), args[0], patch)
+		if err != nil {
+			return err
+		}
+		if g.json {
+			return printJSON(d)
+		}
+		fmt.Printf("домен %s: активен %v, приём без строгих проверок %v\n", d.Name, d.Active, d.Lenient)
+		return nil
+	}}
+	set.Flags().StringVar(&lenient, "lenient", "", "true|false — принимать письма без проверок HELO и домена отправителя")
+	set.Flags().StringVar(&activeFlag, "active", "", "true|false")
 
 	rm := &cobra.Command{Use: "rm <domain>", Short: "удалить домен вместе с ящиками и письмами", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
@@ -257,7 +307,7 @@ func mailDomainCmd() *cobra.Command {
 		return nil
 	}}
 
-	c.AddCommand(list, add, rm, dkim, dnsCmd)
+	c.AddCommand(list, add, set, rm, dkim, dnsCmd)
 	return c
 }
 
@@ -451,5 +501,6 @@ func webmailCmd() *cobra.Command {
 	}}
 	c.Flags().StringVar(&req.User, "user", "", "владелец сайта (обязателен для администратора)")
 	c.Flags().StringVar(&req.PHPVersion, "php", "", "версия PHP (по умолчанию самая новая установленная)")
+	c.Flags().IntVar(&req.Port, "port", 0, "открыть вебпочту ещё и на этом порту почтового хоста (например 2096) — без своей записи в DNS")
 	return c
 }

@@ -221,6 +221,35 @@ func TestMailboxAndAliasReachTheMaps(t *testing.T) {
 	}
 }
 
+// Домен-приёмник обрывает список проверок на OK: письмо от отправителя с
+// несуществующим доменом должно дойти до него, а не улететь в отказ.
+func TestLenientDomainReachesTheAccessMap(t *testing.T) {
+	f := newMailFixture(t)
+	f.call(http.MethodPost, "/mail/domains", map[string]any{"name": "example.com", "user": "alex"}, http.StatusCreated, nil)
+	f.call(http.MethodPost, "/mail/domains", map[string]any{"name": "sink.example.com", "user": "alex", "lenient": true}, http.StatusCreated, nil)
+
+	lenient, _ := f.agent.File("/etc/postfix/monopanel/lenient")
+	if !strings.Contains(lenient, "sink.example.com OK") {
+		t.Errorf("домена-приёмника нет в карте:\n%s", lenient)
+	}
+	if strings.Contains(lenient, "\nexample.com OK") {
+		t.Errorf("обычный домен попал в карту мягких проверок:\n%s", lenient)
+	}
+	main, _ := f.agent.File("/etc/postfix/main.cf")
+	before := strings.Index(main, "check_recipient_access hash:/etc/postfix/monopanel/lenient")
+	after := strings.Index(main, "reject_unknown_sender_domain")
+	if before < 0 || after < 0 || before > after {
+		t.Error("карта приёмников должна стоять перед строгими проверками отправителя")
+	}
+
+	// Обратное переключение снимает поблажку.
+	f.call(http.MethodPatch, "/mail/domains/sink.example.com", map[string]any{"lenient": false}, http.StatusOK, nil)
+	lenient, _ = f.agent.File("/etc/postfix/monopanel/lenient")
+	if strings.Contains(lenient, "sink.example.com") {
+		t.Errorf("домен остался в карте после выключения:\n%s", lenient)
+	}
+}
+
 func TestMailDomainRejectsDuplicateAndBadNames(t *testing.T) {
 	f := newMailFixture(t)
 	f.call(http.MethodPost, "/mail/domains", map[string]any{"name": "example.com", "user": "alex"}, http.StatusCreated, nil)

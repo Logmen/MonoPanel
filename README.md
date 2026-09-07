@@ -61,7 +61,7 @@ mp mail install --hostname mail.example.com   # postfix + dovecot + opendkim
 mp mail domain add example.com --user alex    # + ключ DKIM
 mp mail box add ivan@example.com --quota 2048
 mp mail domain dns example.com                # что прописать в DNS
-mp mail webmail webmail.example.com --user alex   # Roundcube
+mp mail webmail webmail.example.com --user alex --port 2096   # Roundcube
 
 mp                              # TUI-меню
 ```
@@ -86,7 +86,7 @@ mp                              # TUI-меню
 | Cron | `mp cron add\|list\|enable\|disable\|rm` | crontab пользователя целиком из БД, PATH с `~/data/bin` (php нужной версии) |
 | Real IP | `mp stack real-ip --cloudflare [--from CIDR]` | доверенные прокси для nginx `real_ip` (сети Cloudflare встроены): allow-list и логи видят адрес клиента, а не прокси |
 | Firewall | `mp firewall enable\|allow\|deny\|ban\|unban`, `mp stack install fail2ban` | nftables `inet monopanel`, policy drop, SSH/80/443/панель всегда открыты, unit `monopanel-firewall`; fail2ban с jail'ами sshd, nginx и панели |
-| Почта | `mp mail install\|status\|domain\|box\|alias\|dns\|webmail` | postfix + dovecot + opendkim: домены, ящики (пароли и квоты в панели, Maildir у `vmail`), алиасы и catch-all, IMAP/POP3/submission с TLS панели, подпись DKIM, sieve-фильтры; `mp mail domain dns` показывает нужные MX/SPF/DKIM/DMARC/PTR и проверяет их по публичным резолверам; вебпочта Roundcube ставится отдельным сайтом ([docs/06-mail.md](docs/06-mail.md)) |
+| Почта | `mp mail install\|status\|domain\|box\|alias\|dns\|webmail` | postfix + dovecot + opendkim: домены, ящики (пароли и квоты в панели, Maildir у `vmail`), алиасы и catch-all, IMAP/POP3/submission с TLS панели, подпись DKIM, sieve-фильтры; `mp mail domain dns` показывает нужные MX/SPF/DKIM/DMARC/PTR и проверяет их по публичным резолверам; вебпочта Roundcube ставится отдельным сайтом или на порту почтового хоста (`--port 2096` — без своей записи в DNS и своего сертификата); домен можно объявить приёмником (`--lenient`) — он примет письма и от криво настроенных отправителей ([docs/06-mail.md](docs/06-mail.md)) |
 | Бэкапы | `mp backup target add\|run\|list\|snapshots\|restore` | restic (local/SFTP/S3/B2/REST), дампы MySQL, копия panel.db, retention, ежедневное расписание, восстановление в `<data>/restore/<snapshot>` или in-place |
 | Файлы | `mp files ls\|put\|get\|mkdir\|rm\|mv\|chmod\|extract\|size` | `monopanel fsop` через helper с необратимым сбросом привилегий, пути относительно домашнего каталога; в Web UI — файловый менеджер с редактором: обзор каталога, загрузка перетаскиванием, права, распаковка архивов и правка файлов в редакторе VS Code (Monaco: подсветка php/html/css/js/sql/yaml/ini, поиск и замена, мультикурсор, свёртка, F1 — палитра команд), вкладка «Файлы» в карточке сайта открывается сразу в его docroot |
 | SFTP / SSH | `mp user add`, `mp user set --shell\|--sftp-only --password` | SFTP-only = chroot в `/var/www/<login>` через `sshd_config.d/monopanel.conf`, пароль общий для панели и SFTP; `mp user rm <login> [--purge]` — удаление вместе с сайтами, базами, cron, app-сервисами и сертификатами |
