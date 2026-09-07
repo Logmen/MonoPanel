@@ -425,20 +425,18 @@ func newDKIMKey() (private, public string, err error) {
 	return private, base64.StdEncoding.EncodeToString(der), nil
 }
 
-// wrappedTLSPorts start the TLS handshake immediately, so waiting for a
-// greeting on them only burns the read timeout.
-var wrappedTLSPorts = map[int]bool{465: true, 993: true, 995: true}
-
-// probePort reports whether something answers on the loopback port and, for
-// SMTP-like services, what it says: the panel has to tell an administrator
-// that another daemon already owns port 25.
-func probePort(port int) (bool, string) {
+// probePort reports whether something answers on the loopback port and, when
+// asked, what it says: the panel has to tell an administrator that another
+// daemon already owns port 25. Ports that start TLS right away (465, 993, 995,
+// вебпочта) never say anything readable — спрашивать их баннер значит просто
+// выждать таймаут, поэтому banner там false.
+func probePort(port int, banner bool) (bool, string) {
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 400*time.Millisecond)
 	if err != nil {
 		return false, ""
 	}
 	defer conn.Close() //nolint:errcheck // проба порта, закрывать нечего
-	if wrappedTLSPorts[port] {
+	if !banner {
 		return true, ""
 	}
 	conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond)) //nolint:errcheck // best effort: the banner is decoration
@@ -453,6 +451,10 @@ type probeResult struct {
 	Banner string
 }
 
+// plaintextPorts are the ones that greet a client in the clear; only there is
+// a banner worth waiting for.
+var plaintextPorts = map[int]bool{25: true, 587: true, 143: true, 110: true, 4190: true}
+
 // probePorts checks the ports at once: восемь последовательных проб с
 // ожиданием баннера превращали страницу почты в четыре секунды ожидания.
 func (s *Server) probePorts(ports []int) map[int]probeResult {
@@ -463,7 +465,7 @@ func (s *Server) probePorts(ports []int) map[int]probeResult {
 		wg.Add(1)
 		go func(port int) {
 			defer wg.Done()
-			open, banner := s.probe(port)
+			open, banner := s.probe(port, plaintextPorts[port])
 			mu.Lock()
 			out[port] = probeResult{Open: open, Banner: banner}
 			mu.Unlock()

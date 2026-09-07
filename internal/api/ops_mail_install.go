@@ -77,7 +77,7 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 	fresh := installed.Installed["postfix"] == ""
 	// Чужой демон на 25 порту — не редкость (на этом хосте его занимает
 	// приёмник mail-tester). Свой postfix узнаётся по баннеру с именем хоста.
-	if open, banner := s.probe(25); open && !strings.Contains(banner, c.Hostname) {
+	if open, banner := s.probe(25, true); open && !strings.Contains(banner, c.Hostname) {
 		c.Port25 = false
 		jc.Logf("порт 25 занят другим сервисом (%s) — приём почты снаружи выключен; освободите порт и включите его в настройках", defaultBanner(firstLine(banner)))
 	}

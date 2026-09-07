@@ -50,7 +50,7 @@ type Server struct {
 	nginxWait      time.Duration
 	// probe answers whether a local port has a listener. Mail installs verify
 	// their own listeners this way; tests with a fake agent replace it.
-	probe func(port int) (bool, string)
+	probe func(port int, banner bool) (bool, string)
 }
 
 // SetReadinessWaits overrides the post-reload waits. Intended for tests.
@@ -60,7 +60,7 @@ func (s *Server) SetReadinessWaits(poolSocket, nginx time.Duration) {
 
 // SetPortProbe overrides how the panel checks a local listener. Intended for
 // tests, where no daemon actually binds anything.
-func (s *Server) SetPortProbe(fn func(port int) (bool, string)) { s.probe = fn }
+func (s *Server) SetPortProbe(fn func(port int, banner bool) (bool, string)) { s.probe = fn }
 
 var secured = []map[string][]string{{"bearer": {}}, {"session": {}}}
 

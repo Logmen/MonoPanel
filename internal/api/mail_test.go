@@ -24,7 +24,7 @@ func newMailFixture(t *testing.T) *siteFixture {
 	f := newSiteFixture(t)
 	// За фейковым агентом никто портов не занимает: считаем, что слушает наш
 	// же postfix — его установка узнаёт по баннеру с именем хоста.
-	f.s.SetPortProbe(func(int) (bool, string) { return true, "220 mail.example.com ESMTP" })
+	f.s.SetPortProbe(func(int, bool) (bool, string) { return true, "220 mail.example.com ESMTP" })
 	dir := t.TempDir()
 	cert, key := filepath.Join(dir, "fullchain.pem"), filepath.Join(dir, "key.pem")
 	if _, err := EnsureSelfSigned(cert, key, []string{"mail.example.com"}); err != nil {
@@ -113,7 +113,7 @@ func TestMailInstallRendersConfiguration(t *testing.T) {
 // снаружи и говорит об этом.
 func TestMailInstallYieldsPort25ToAnotherDaemon(t *testing.T) {
 	f := newSiteFixture(t)
-	f.s.SetPortProbe(func(port int) (bool, string) {
+	f.s.SetPortProbe(func(port int, _ bool) (bool, string) {
 		if port == 25 {
 			return true, "220 mail-test.example.org MailTester"
 		}
