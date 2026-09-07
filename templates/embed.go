@@ -4,7 +4,7 @@ package templates
 
 import "embed"
 
-// FS holds nginx/, apache/, php-fpm/, php/, site/ and systemd/ templates.
+// FS holds nginx/, apache/, php-fpm/, php/, site/, mail/ and systemd/ templates.
 //
-//go:embed nginx apache php-fpm php site mysql nftables fail2ban cron systemd
+//go:embed nginx apache php-fpm php site mysql nftables fail2ban cron systemd mail
 var FS embed.FS

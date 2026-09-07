@@ -176,3 +176,65 @@ var CloudflareRanges = []string{
 	"104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
 	"2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32", "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
 }
+
+// Postfix feeds mail/main.cf.tmpl.
+type Postfix struct {
+	Hostname         string
+	MapsDir          string
+	MailBase         string
+	MessageSizeBytes int64
+	VmailUID         int
+	VmailGID         int
+	TLS              bool
+	CertPath         string
+	KeyPath          string
+	RBL              []string
+	// Milter is the opendkim socket in Postfix notation, empty when DKIM is off.
+	Milter string
+}
+
+// PostfixMaster feeds mail/master.cf.tmpl. Port25 is off on hosts where
+// something else already owns the SMTP port.
+type PostfixMaster struct {
+	MapsDir string
+	TLS     bool
+	Port25  bool
+}
+
+// Dovecot feeds mail/dovecot.conf.tmpl (2.3 syntax).
+type Dovecot struct {
+	Hostname   string
+	MailBase   string
+	UsersFile  string
+	VmailUser  string
+	VmailUID   int
+	VmailGID   int
+	TLS        bool
+	CertPath   string
+	KeyPath    string
+	POP3       bool
+	Postmaster string
+}
+
+// OpenDKIM feeds mail/opendkim.conf.tmpl.
+type OpenDKIM struct {
+	Socket       string
+	KeyTable     string
+	SigningTable string
+	TrustedHosts string
+}
+
+// Roundcube feeds mail/roundcube.inc.php.tmpl.
+type Roundcube struct {
+	DSN         string
+	IMAPHost    string
+	SMTPHost    string
+	SieveHost   string
+	VerifyPeer  bool
+	SupportURL  string
+	ProductName string
+	DESKey      string
+	Domain      string
+	TempDir     string
+	Plugins     []string
+}

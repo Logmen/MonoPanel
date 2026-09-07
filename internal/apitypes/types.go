@@ -604,3 +604,118 @@ type PHPExtensionRequest struct {
 	Name    string `json:"name" pattern:"^[a-z0-9_]{2,32}$"`
 	Enabled bool   `json:"enabled"`
 }
+
+// MailStatus is the mail page payload.
+type MailStatus struct {
+	Installed  bool              `json:"installed"`
+	Hostname   string            `json:"hostname,omitempty"`
+	Domains    int               `json:"domains"`
+	Mailboxes  int               `json:"mailboxes"`
+	Aliases    int               `json:"aliases"`
+	TLS        string            `json:"tls,omitempty" doc:"acme | selfsigned | none"`
+	CertName   string            `json:"cert_name,omitempty"`
+	CertUntil  *time.Time        `json:"cert_until,omitempty"`
+	POP3       bool              `json:"pop3"`
+	DKIM       bool              `json:"dkim"`
+	Port25     bool              `json:"port25"`
+	MaxSizeMB  int               `json:"max_size_mb"`
+	RBL        []string          `json:"rbl,omitempty"`
+	Webmail    string            `json:"webmail,omitempty"`
+	WebmailURL string            `json:"webmail_url,omitempty"`
+	Versions   map[string]string `json:"versions,omitempty"`
+	Services   []systemd.Status  `json:"services,omitempty"`
+	// Ports lists the listeners the panel expects and whether they answer.
+	Ports []MailPort `json:"ports,omitempty"`
+	// Warnings are things an administrator has to fix by hand.
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+// MailPort is one mail listener. Managed says whether the panel's settings
+// promise this port: an open port that is not managed belongs to somebody else.
+type MailPort struct {
+	Port    int    `json:"port"`
+	Name    string `json:"name"`
+	Open    bool   `json:"open"`
+	Managed bool   `json:"managed"`
+	Owner   string `json:"owner,omitempty"`
+}
+
+// MailSettingsRequest changes the server-wide mail settings.
+type MailSettingsRequest struct {
+	Hostname  string    `json:"hostname,omitempty" doc:"Имя почтового сервера (MX, HELO, имя в сертификате)"`
+	MaxSizeMB int       `json:"max_size_mb,omitempty" minimum:"1" maximum:"512"`
+	POP3      *bool     `json:"pop3,omitempty"`
+	DKIM      *bool     `json:"dkim,omitempty"`
+	Port25    *bool     `json:"port25,omitempty" doc:"Принимать почту на 25 порту"`
+	RBL       *[]string `json:"rbl,omitempty" maxItems:"8" doc:"Чёрные списки для входящих, например zen.spamhaus.org"`
+}
+
+// MailInstallRequest installs the mail stack.
+type MailInstallRequest struct {
+	Hostname string `json:"hostname,omitempty" doc:"Имя почтового сервера; по умолчанию FQDN хоста"`
+	POP3     *bool  `json:"pop3,omitempty"`
+}
+
+// MailDomainRequest adds a mail domain.
+type MailDomainRequest struct {
+	Name string `json:"name" doc:"Домен, например example.com"`
+	User string `json:"user,omitempty" doc:"Владелец (администратору обязателен)"`
+	DKIM *bool  `json:"dkim,omitempty" doc:"Сгенерировать ключ DKIM (по умолчанию да)"`
+}
+
+// MailboxRequest creates a mailbox.
+type MailboxRequest struct {
+	Address  string `json:"address" doc:"user@example.com"`
+	Password string `json:"password,omitempty" minLength:"8" maxLength:"1024" doc:"Пустой — сгенерируется"`
+	Name     string `json:"name,omitempty" maxLength:"128"`
+	QuotaMB  int    `json:"quota_mb,omitempty" minimum:"0" maximum:"1048576" doc:"0 — без ограничения"`
+}
+
+// MailboxUpdateRequest patches a mailbox.
+type MailboxUpdateRequest struct {
+	Password string  `json:"password,omitempty" minLength:"8" maxLength:"1024"`
+	Name     *string `json:"name,omitempty" maxLength:"128"`
+	QuotaMB  *int    `json:"quota_mb,omitempty" minimum:"0" maximum:"1048576"`
+	Active   *bool   `json:"active,omitempty"`
+}
+
+// MailboxResponse returns a mailbox and, once, a generated password.
+type MailboxResponse struct {
+	Mailbox  *store.Mailbox `json:"mailbox"`
+	Password string         `json:"password,omitempty"`
+	IMAP     string         `json:"imap,omitempty"`
+	SMTP     string         `json:"smtp,omitempty"`
+}
+
+// MailAliasRequest creates or changes an alias.
+type MailAliasRequest struct {
+	Address      string   `json:"address" doc:"info@example.com или @example.com (catch-all)"`
+	Destinations []string `json:"destinations" minItems:"1" maxItems:"32"`
+}
+
+// MailDNS is what the domain needs in DNS and what is published now.
+type MailDNS struct {
+	Domain   string          `json:"domain"`
+	Hostname string          `json:"hostname"`
+	IPv4     []string        `json:"ipv4,omitempty"`
+	Records  []MailDNSRecord `json:"records"`
+	OK       bool            `json:"ok"`
+}
+
+// MailDNSRecord is one required record with the live answer.
+type MailDNSRecord struct {
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Value    string `json:"value"`
+	Found    string `json:"found,omitempty"`
+	Status   string `json:"status" doc:"ok | missing | mismatch | unknown"`
+	Required bool   `json:"required"`
+	Note     string `json:"note,omitempty"`
+}
+
+// WebmailRequest installs Roundcube as a site of the panel.
+type WebmailRequest struct {
+	Domain     string `json:"domain" doc:"Имя сайта вебпочты, например webmail.example.com"`
+	User       string `json:"user,omitempty" doc:"Владелец сайта (администратору обязателен)"`
+	PHPVersion string `json:"php_version,omitempty"`
+}

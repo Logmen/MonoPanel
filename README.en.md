@@ -62,6 +62,12 @@ mp site add app.example.com --user alex --mode proxy --backend http://127.0.0.1:
 mp db create shop --user alex --generate
 mp firewall enable && mp stack install fail2ban
 mp backup target add local1 --repo /var/backups/monopanel --schedule daily
+
+mp mail install --hostname mail.example.com   # postfix + dovecot + opendkim
+mp mail domain add example.com --user alex    # with a DKIM key
+mp mail box add ivan@example.com --quota 2048
+mp mail domain dns example.com                # what to publish in DNS
+mp mail webmail webmail.example.com --user alex   # Roundcube
 mp                              # terminal menu
 ```
 
@@ -86,6 +92,7 @@ and the terminal menu.
 | Cron | `mp cron add\|list\|enable\|disable\|rm` | the account's crontab is rendered whole from the database, with `~/data/bin` on PATH (the site's PHP version) |
 | Real IP | `mp stack real-ip --cloudflare [--from CIDR]` | trusted proxies for nginx `real_ip` (Cloudflare ranges built in), so allow-lists and logs see the visitor rather than the proxy |
 | Firewall | `mp firewall enable\|allow\|deny\|ban\|unban`, `mp stack install fail2ban` | nftables table `inet monopanel`, drop policy, SSH/80/443/panel always open, unit `monopanel-firewall`; fail2ban jails for sshd, nginx and the panel itself |
+| Mail | `mp mail install\|status\|domain\|box\|alias\|dns\|webmail` | postfix + dovecot + opendkim: domains, mailboxes (passwords and quotas in the panel, Maildir owned by `vmail`), aliases and catch-all, IMAP/POP3/submission on the panel's certificate, DKIM signing, sieve filters; `mp mail domain dns` prints the required MX/SPF/DKIM/DMARC/PTR records and checks them against public resolvers; Roundcube webmail installs as a regular panel site ([docs/06-mail.md](docs/06-mail.md)) |
 | Backups | `mp backup target add\|run\|list\|snapshots\|restore` | restic (local/SFTP/S3/B2/REST), MySQL dumps, a copy of panel.db, retention, a daily schedule, restore into `<data>/restore/<snapshot>` or in place |
 | Files | `mp files ls\|put\|get\|mkdir\|rm\|mv\|chmod\|extract\|size` | `monopanel fsop` behind a helper that drops privileges irreversibly; paths are relative to the account's home. The web UI has a file manager with an editor: browsing, drag-and-drop upload, permissions, archive extraction and editing in the VS Code editor (Monaco: highlighting for php/html/css/js/sql/yaml/ini, find and replace, multiple cursors, folding, F1 for the command palette); a site's Files tab opens at its docroot |
 | SFTP / SSH | `mp user add`, `mp user set --shell\|--sftp-only --password` | SFTP-only means a chroot into `/var/www/<login>` via `sshd_config.d/monopanel.conf`, with one password for the panel and SFTP; `mp user rm <login> [--purge]` removes sites, databases, cron, app services, certificates and the unix account together |
@@ -95,9 +102,11 @@ and the terminal menu.
 ### Not there yet
 
 Own PHP builds (Sury/Remi are used instead), tested Apache and database support on
-EL, phpMyAdmin, disk quotas, per-site cgroup limits, mail, a DNS server, a WAF,
+EL, phpMyAdmin, disk quotas, per-site cgroup limits, a DNS server, a WAF,
 several servers from one panel, an apt/yum repository (packages ship as releases
-and the panel installs them itself).
+and the panel installs them itself). Mail runs on Debian/Ubuntu with dovecot 2.3;
+the configuration for EL and for dovecot 2.4 is not written yet, and there is no
+content filter (rspamd).
 
 ## How it works
 
@@ -163,6 +172,7 @@ unsigned release will not install.
 | Web UI | Svelte 5 + SvelteKit 2 (static), TypeScript, Tailwind 4 — built into `web/build` and embedded in the binary; responsive: the menu becomes a drawer on a phone and tables become cards |
 | CLI / TUI | `cobra`, Bubble Tea v2 + Lip Gloss v2 |
 | ACME | `lego` as a library |
+| Mail | postfix + dovecot (IMAP/POP3/LMTP/sieve) + opendkim, Roundcube webmail |
 | systemd | D-Bus (`go-systemd`) |
 | Packaging | `nfpm` → .deb/.rpm, releases with signed checksums |
 
@@ -227,8 +237,8 @@ scripts/release/      key generation and SHA256SUMS signing for a release
 ## Documentation
 
 The design documents are in Russian, in [docs/](docs/): architecture, the platform
-matrix, the web stack, the CLI/TUI/API reference and the roadmap. The API reference
-is served by the panel itself at `/api/v1/docs` (OpenAPI 3.1).
+matrix, the web stack, the CLI/TUI/API reference, the roadmap and the mail server.
+The API reference is served by the panel itself at `/api/v1/docs` (OpenAPI 3.1).
 
 ## Security
 

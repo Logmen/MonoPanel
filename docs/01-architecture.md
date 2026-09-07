@@ -16,7 +16,7 @@
 - Интерфейсы: Web UI, CLI (скриптуемый, `--json`), TUI-меню (интерактивное, по SSH), REST API (OpenAPI 3.1).
 - TLS (ACME), бэкапы, cron, firewall, защита от перебора, метрики, логи, файловый менеджер.
 
-**Что не делаем в v1** (см. roadmap): почта, DNS-сервер, multi-server, контейнерные приложения, Node/Python-приложения, WAF, reseller-роль.
+**Что не делаем в v1** (см. roadmap): DNS-сервер, multi-server, контейнерные приложения, WAF, reseller-роль. Почта (postfix + dovecot + opendkim + Roundcube) появилась после v1 и описана отдельно — [06-mail.md](06-mail.md).
 
 ## 2. Архитектурные решения (ADR, кратко)
 

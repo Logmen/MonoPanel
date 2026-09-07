@@ -824,3 +824,114 @@ func (c *Client) SetPHPExtension(ctx context.Context, version, name string, enab
 	var out apitypes.PHPExtensions
 	return &out, c.do(ctx, http.MethodPost, "/php/versions/"+version+"/extensions", apitypes.PHPExtensionRequest{Name: name, Enabled: enabled}, &out)
 }
+
+// MailStatus returns the state of the mail server.
+func (c *Client) MailStatus(ctx context.Context) (*apitypes.MailStatus, error) {
+	var out apitypes.MailStatus
+	return &out, c.do(ctx, http.MethodGet, "/mail", nil, &out)
+}
+
+// MailInstall installs postfix, dovecot and opendkim.
+func (c *Client) MailInstall(ctx context.Context, req apitypes.MailInstallRequest) (*apitypes.JobRef, error) {
+	var out apitypes.JobRef
+	return &out, c.do(ctx, http.MethodPost, "/mail/install", req, &out)
+}
+
+// MailApply regenerates the mail configuration.
+func (c *Client) MailApply(ctx context.Context) (*apitypes.JobRef, error) {
+	var out apitypes.JobRef
+	return &out, c.do(ctx, http.MethodPost, "/mail/apply", struct{}{}, &out)
+}
+
+// MailSettings changes the server-wide mail settings.
+func (c *Client) MailSettings(ctx context.Context, req apitypes.MailSettingsRequest) (*apitypes.MailStatus, error) {
+	var out apitypes.MailStatus
+	return &out, c.do(ctx, http.MethodPut, "/mail/settings", req, &out)
+}
+
+// MailDomains lists mail domains.
+func (c *Client) MailDomains(ctx context.Context) ([]*store.MailDomain, error) {
+	var out []*store.MailDomain
+	return out, c.do(ctx, http.MethodGet, "/mail/domains", nil, &out)
+}
+
+// CreateMailDomain adds a mail domain.
+func (c *Client) CreateMailDomain(ctx context.Context, req apitypes.MailDomainRequest) (*store.MailDomain, error) {
+	var out store.MailDomain
+	return &out, c.do(ctx, http.MethodPost, "/mail/domains", req, &out)
+}
+
+// DeleteMailDomain removes a mail domain.
+func (c *Client) DeleteMailDomain(ctx context.Context, name string) error {
+	return c.do(ctx, http.MethodDelete, "/mail/domains/"+name, nil, nil)
+}
+
+// MailDKIM generates a new signing key for the domain.
+func (c *Client) MailDKIM(ctx context.Context, name string) (*store.MailDomain, error) {
+	var out store.MailDomain
+	return &out, c.do(ctx, http.MethodPost, "/mail/domains/"+name+"/dkim", struct{}{}, &out)
+}
+
+// MailDNS returns the required DNS records and their live state.
+func (c *Client) MailDNS(ctx context.Context, name string) (*apitypes.MailDNS, error) {
+	var out apitypes.MailDNS
+	return &out, c.do(ctx, http.MethodGet, "/mail/domains/"+name+"/dns", nil, &out)
+}
+
+// Mailboxes lists mailboxes, optionally of one domain.
+func (c *Client) Mailboxes(ctx context.Context, domain string) ([]*store.Mailbox, error) {
+	var out []*store.Mailbox
+	q := ""
+	if domain != "" {
+		q = "?domain=" + domain
+	}
+	return out, c.do(ctx, http.MethodGet, "/mail/mailboxes"+q, nil, &out)
+}
+
+// CreateMailbox creates a mailbox.
+func (c *Client) CreateMailbox(ctx context.Context, req apitypes.MailboxRequest) (*apitypes.MailboxResponse, error) {
+	var out apitypes.MailboxResponse
+	return &out, c.do(ctx, http.MethodPost, "/mail/mailboxes", req, &out)
+}
+
+// UpdateMailbox changes a mailbox.
+func (c *Client) UpdateMailbox(ctx context.Context, address string, req apitypes.MailboxUpdateRequest) (*apitypes.MailboxResponse, error) {
+	var out apitypes.MailboxResponse
+	return &out, c.do(ctx, http.MethodPatch, "/mail/mailboxes/"+address, req, &out)
+}
+
+// DeleteMailbox removes a mailbox.
+func (c *Client) DeleteMailbox(ctx context.Context, address string, purge bool) error {
+	q := ""
+	if purge {
+		q = "?purge=true"
+	}
+	return c.do(ctx, http.MethodDelete, "/mail/mailboxes/"+address+q, nil, nil)
+}
+
+// MailAliases lists aliases, optionally of one domain.
+func (c *Client) MailAliases(ctx context.Context, domain string) ([]*store.MailAlias, error) {
+	var out []*store.MailAlias
+	q := ""
+	if domain != "" {
+		q = "?domain=" + domain
+	}
+	return out, c.do(ctx, http.MethodGet, "/mail/aliases"+q, nil, &out)
+}
+
+// CreateMailAlias creates or replaces an alias.
+func (c *Client) CreateMailAlias(ctx context.Context, req apitypes.MailAliasRequest) (*store.MailAlias, error) {
+	var out store.MailAlias
+	return &out, c.do(ctx, http.MethodPost, "/mail/aliases", req, &out)
+}
+
+// DeleteMailAlias removes an alias.
+func (c *Client) DeleteMailAlias(ctx context.Context, address string) error {
+	return c.do(ctx, http.MethodDelete, "/mail/aliases/"+address, nil, nil)
+}
+
+// InstallWebmail installs Roundcube as a site.
+func (c *Client) InstallWebmail(ctx context.Context, req apitypes.WebmailRequest) (*apitypes.JobRef, error) {
+	var out apitypes.JobRef
+	return &out, c.do(ctx, http.MethodPost, "/mail/webmail", req, &out)
+}

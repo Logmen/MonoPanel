@@ -8,10 +8,10 @@
   let { open = false, onclose }: { open?: boolean; onclose?: () => void } = $props();
   const items: [string, string, string][] = [
     ['/', 'Дашборд', 'home'], ['/sites', 'Сайты', 'globe'], ['/users', 'Пользователи', 'users'], ['/php', 'PHP', 'code'], ['/databases', 'Базы данных', 'db'],
-    ['/files', 'Файлы', 'file'], ['/ssl', 'SSL', 'shield'], ['/jobs', 'Задачи', 'tasks'], ['/firewall', 'Firewall', 'fire'], ['/backups', 'Бэкапы', 'archive'], ['/settings', 'Настройки', 'settings']
+    ['/mail', 'Почта', 'mail'], ['/files', 'Файлы', 'file'], ['/ssl', 'SSL', 'shield'], ['/jobs', 'Задачи', 'tasks'], ['/firewall', 'Firewall', 'fire'], ['/backups', 'Бэкапы', 'archive'], ['/settings', 'Настройки', 'settings']
   ];
   const admin = $derived(auth.me?.role === 'admin');
-  const visible = $derived(items.filter(([href]) => admin || ['/', '/sites', '/databases', '/files', '/jobs', '/settings'].includes(href)));
+  const visible = $derived(items.filter(([href]) => admin || ['/', '/sites', '/databases', '/mail', '/files', '/jobs', '/settings'].includes(href)));
   const active = (href: string) => page.url.pathname === href || (href !== '/' && page.url.pathname.startsWith(href));
   const modes: [ThemeMode, string, string][] = [['system', 'monitor', 'как в системе'], ['light', 'sun', 'светлая'], ['dark', 'moon', 'тёмная']];
 </script>

@@ -48,12 +48,19 @@ type Server struct {
 	// is what tests with a fake agent want.
 	poolSocketWait time.Duration
 	nginxWait      time.Duration
+	// probe answers whether a local port has a listener. Mail installs verify
+	// their own listeners this way; tests with a fake agent replace it.
+	probe func(port int) (bool, string)
 }
 
 // SetReadinessWaits overrides the post-reload waits. Intended for tests.
 func (s *Server) SetReadinessWaits(poolSocket, nginx time.Duration) {
 	s.poolSocketWait, s.nginxWait = poolSocket, nginx
 }
+
+// SetPortProbe overrides how the panel checks a local listener. Intended for
+// tests, where no daemon actually binds anything.
+func (s *Server) SetPortProbe(fn func(port int) (bool, string)) { s.probe = fn }
 
 var secured = []map[string][]string{{"bearer": {}}, {"session": {}}}
 
@@ -64,6 +71,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	}
 	s := &Server{cfg: cfg, db: db, agent: ag, jobs: runner, profile: profile, render: render.New(cfg.TemplatesDir), log: log, started: time.Now(), limiter: newLoginLimiter(8, time.Minute)}
 	s.poolSocketWait, s.nginxWait = 10*time.Second, 15*time.Second
+	s.probe = probePort
 	s.tls = newCertHolder(cfg, log)
 	if box, err := secrets.Open(cfg.SecretKeyFile); err == nil {
 		s.secrets = box
@@ -112,6 +120,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 		s.registerPresets()
 		s.registerPHPExtensions()
 		s.registerUpdate()
+		s.registerMail()
 	})
 	r.Handle("/*", s.uiHandler())
 	s.router = r
@@ -127,6 +136,9 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	s.jobs.Register("backup.run", s.jobBackupRun)
 	s.jobs.Register("backup.restore", s.jobBackupRestore)
 	s.jobs.Register("panel.update", s.jobPanelUpdate)
+	s.jobs.Register("mail.install", s.jobMailInstall)
+	s.jobs.Register("mail.apply", s.jobMailApply)
+	s.jobs.Register("mail.webmail", s.jobWebmailInstall)
 	return s
 }
 

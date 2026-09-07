@@ -37,6 +37,14 @@ var tools = map[string][]string{
 	"chpasswd":        {"/usr/sbin/chpasswd"},
 	"systemctl":       {"/usr/bin/systemctl", "/bin/systemctl"},
 	"apachectl":       {"/usr/sbin/apachectl", "/usr/sbin/apache2ctl"},
+	"postfix":         {"/usr/sbin/postfix"},
+	"postmap":         {"/usr/sbin/postmap"},
+	"postconf":        {"/usr/sbin/postconf"},
+	"postqueue":       {"/usr/sbin/postqueue"},
+	"postsuper":       {"/usr/sbin/postsuper"},
+	"doveadm":         {"/usr/bin/doveadm"},
+	"doveconf":        {"/usr/bin/doveconf"},
+	"newaliases":      {"/usr/bin/newaliases", "/usr/sbin/newaliases"},
 }
 
 // envAllowed lists environment variable prefixes a tool may receive.

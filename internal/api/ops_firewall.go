@@ -153,6 +153,11 @@ func (s *Server) applyFirewall(ctx context.Context) (*apitypes.FirewallStatus, e
 	for _, p := range s.sshPorts(ctx) {
 		base[p] = true
 	}
+	// Почтовые порты открываются вместе с почтовым сервером: закрытый 25-й
+	// молча съедал бы входящую почту.
+	for _, p := range mailPortsFor(s.loadMailConfig(ctx)) {
+		base[p] = true
+	}
 	ports := make([]string, 0, len(base))
 	for p := range base {
 		ports = append(ports, strconv.Itoa(p))

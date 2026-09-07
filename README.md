@@ -56,6 +56,13 @@ mp site add app.example.com --user alex --mode proxy --backend http://127.0.0.1:
 mp db create shop --user alex --generate
 mp firewall enable && mp stack install fail2ban
 mp backup target add local1 --repo /var/backups/monopanel --schedule daily
+
+mp mail install --hostname mail.example.com   # postfix + dovecot + opendkim
+mp mail domain add example.com --user alex    # + ключ DKIM
+mp mail box add ivan@example.com --quota 2048
+mp mail domain dns example.com                # что прописать в DNS
+mp mail webmail webmail.example.com --user alex   # Roundcube
+
 mp                              # TUI-меню
 ```
 
@@ -79,6 +86,7 @@ mp                              # TUI-меню
 | Cron | `mp cron add\|list\|enable\|disable\|rm` | crontab пользователя целиком из БД, PATH с `~/data/bin` (php нужной версии) |
 | Real IP | `mp stack real-ip --cloudflare [--from CIDR]` | доверенные прокси для nginx `real_ip` (сети Cloudflare встроены): allow-list и логи видят адрес клиента, а не прокси |
 | Firewall | `mp firewall enable\|allow\|deny\|ban\|unban`, `mp stack install fail2ban` | nftables `inet monopanel`, policy drop, SSH/80/443/панель всегда открыты, unit `monopanel-firewall`; fail2ban с jail'ами sshd, nginx и панели |
+| Почта | `mp mail install\|status\|domain\|box\|alias\|dns\|webmail` | postfix + dovecot + opendkim: домены, ящики (пароли и квоты в панели, Maildir у `vmail`), алиасы и catch-all, IMAP/POP3/submission с TLS панели, подпись DKIM, sieve-фильтры; `mp mail domain dns` показывает нужные MX/SPF/DKIM/DMARC/PTR и проверяет их по публичным резолверам; вебпочта Roundcube ставится отдельным сайтом ([docs/06-mail.md](docs/06-mail.md)) |
 | Бэкапы | `mp backup target add\|run\|list\|snapshots\|restore` | restic (local/SFTP/S3/B2/REST), дампы MySQL, копия panel.db, retention, ежедневное расписание, восстановление в `<data>/restore/<snapshot>` или in-place |
 | Файлы | `mp files ls\|put\|get\|mkdir\|rm\|mv\|chmod\|extract\|size` | `monopanel fsop` через helper с необратимым сбросом привилегий, пути относительно домашнего каталога; в Web UI — файловый менеджер с редактором: обзор каталога, загрузка перетаскиванием, права, распаковка архивов и правка файлов в редакторе VS Code (Monaco: подсветка php/html/css/js/sql/yaml/ini, поиск и замена, мультикурсор, свёртка, F1 — палитра команд), вкладка «Файлы» в карточке сайта открывается сразу в его docroot |
 | SFTP / SSH | `mp user add`, `mp user set --shell\|--sftp-only --password` | SFTP-only = chroot в `/var/www/<login>` через `sshd_config.d/monopanel.conf`, пароль общий для панели и SFTP; `mp user rm <login> [--purge]` — удаление вместе с сайтами, базами, cron, app-сервисами и сертификатами |
@@ -88,9 +96,10 @@ mp                              # TUI-меню
 ### Чего пока нет
 
 Собственные сборки PHP (используются Sury/Remi), проверенная поддержка Apache и СУБД
-на EL, phpMyAdmin, дисковые квоты, cgroup-лимиты на сайт, почта, DNS-сервер, WAF,
+на EL, phpMyAdmin, дисковые квоты, cgroup-лимиты на сайт, DNS-сервер, WAF,
 несколько серверов из одной панели, apt/yum-репозиторий (пакеты выкладываются
-релизами, панель ставит их сама).
+релизами, панель ставит их сама). Почта работает на Debian/Ubuntu с dovecot 2.3;
+для EL и для dovecot 2.4 конфигурация ещё не написана, контент-фильтра (rspamd) нет.
 
 ## Как устроено
 
@@ -154,6 +163,7 @@ transient-юнит `monopanel-update.service`, который переживае
 | Web UI | Svelte 5 + SvelteKit 2 (static), TypeScript, Tailwind 4 — собирается в `web/build` и вшивается в бинарник; адаптивен: на телефоне меню выезжает, а таблицы становятся карточками |
 | CLI / TUI | `cobra`, Bubble Tea v2 + Lip Gloss v2 |
 | ACME | `lego` как библиотека |
+| Почта | postfix + dovecot (IMAP/POP3/LMTP/sieve) + opendkim, вебпочта Roundcube |
 | systemd | D-Bus (`go-systemd`) |
 | Упаковка | `nfpm` → .deb/.rpm, релизы с подписанными контрольными суммами |
 
@@ -226,6 +236,7 @@ scripts/release/      генерация ключа и подпись SHA256SUMS
 | [docs/03-web-stack.md](docs/03-web-stack.md) | Режимы nginx+php-fpm и nginx+Apache, файловая структура, шаблоны, изоляция и лимиты, TLS/ACME, HTTP/3, логи |
 | [docs/04-cli-tui-api.md](docs/04-cli-tui-api.md) | Команды CLI, экраны TUI, REST API, интеграция с биллингом (WHMCS) |
 | [docs/05-roadmap.md](docs/05-roadmap.md) | Этапы разработки, матрица CI, тестовые сценарии, риски |
+| [docs/06-mail.md](docs/06-mail.md) | Почта: postfix + dovecot + opendkim, путь письма, файлы и порты, DNS-записи, вебпочта, границы |
 
 Справочник API живёт в самой панели: `/api/v1/docs` (OpenAPI 3.1).
 

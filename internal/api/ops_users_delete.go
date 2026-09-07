@@ -120,6 +120,28 @@ func (s *Server) jobUserDelete(ctx context.Context, jc *jobs.Context) error {
 		jc.Logf("database %s dropped", db.Name)
 	}
 
+	jc.Progress(50, "mail")
+	// Домены каскадно уйдут вместе с аккаунтом, но письма на диске и карты
+	// postfix сами не исчезнут — их надо убрать до удаления строк.
+	mailDomains, err := s.db.ListMailDomains(ctx, u.ID)
+	if err != nil {
+		return fail(err)
+	}
+	for _, d := range mailDomains {
+		if _, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: []string{mailBase + "/" + d.Name, dkimDir + "/keys/" + d.Name}, Recursive: true}); err != nil {
+			jc.Logf("почтовый домен %s: файлы не удалены: %v", d.Name, err)
+		}
+		if err := s.db.DeleteMailDomain(ctx, d.ID); err != nil {
+			return fail(err)
+		}
+		jc.Logf("почтовый домен %s удалён (%d ящиков)", d.Name, d.Mailboxes)
+	}
+	if len(mailDomains) > 0 {
+		if err := s.applyMail(ctx, jc.Logf); err != nil {
+			jc.Logf("предупреждение: конфигурация почты не перегенерирована: %v", err)
+		}
+	}
+
 	jc.Progress(55, "app services and cron")
 	apps, err := s.db.ListApps(ctx, u.ID)
 	if err != nil {

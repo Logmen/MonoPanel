@@ -97,7 +97,7 @@ func newRoot() *cobra.Command {
 	pf.BoolVar(&g.insecure, "insecure", false, "не проверять TLS-сертификат панели")
 	pf.BoolVar(&g.json, "json", false, "машинный вывод JSON")
 	pf.BoolVar(&g.noWait, "no-wait", false, "не ждать завершения задач")
-	root.AddCommand(versionCmd(), apiCmd(), agentCmd(), helperCmd(), fsopCmd(), setupCmd(), statusCmd(), userCmd(), jobCmd(), tokenCmd(), serviceCmd(), stackCmd(), configCmd(), sslCmd(), webCmd(), phpCmd(), siteCmd(), dbCmd(), cronCmd(), firewallCmd(), doctorCmd(), logsCmd(), metricsCmd(), backupCmd(), webhookCmd(), filesCmd(), dnsProviderCmd(), appCmd(), updateCmd(), updateRunCmd())
+	root.AddCommand(versionCmd(), apiCmd(), agentCmd(), helperCmd(), fsopCmd(), setupCmd(), statusCmd(), userCmd(), jobCmd(), tokenCmd(), serviceCmd(), stackCmd(), configCmd(), sslCmd(), webCmd(), phpCmd(), siteCmd(), dbCmd(), cronCmd(), firewallCmd(), doctorCmd(), logsCmd(), metricsCmd(), backupCmd(), webhookCmd(), filesCmd(), dnsProviderCmd(), appCmd(), updateCmd(), updateRunCmd(), mailCmd())
 	return root
 }
 

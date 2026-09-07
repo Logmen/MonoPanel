@@ -336,6 +336,13 @@ func (s *Server) jobCertIssue(ctx context.Context, jc *jobs.Context) error {
 	}
 	jc.Logf("files: %s", res.CertPath)
 	s.reapplySitesForCert(context.WithoutCancel(ctx), jc.Logf, c)
+	if mc := s.loadMailConfig(ctx); mc.Installed && containsName(c.Names, mc.Hostname) {
+		if err := s.applyMailConfig(context.WithoutCancel(ctx), jc.Logf, true); err != nil {
+			jc.Logf("предупреждение: почтовые сервисы не подхватили сертификат: %v", err)
+		} else {
+			jc.Logf("postfix и dovecot переключены на этот сертификат")
+		}
+	}
 	if containsName(c.Names, s.cfg.Web.Hostname) {
 		if err := s.tls.Reload(); err != nil {
 			jc.Logf("warning: panel certificate reload failed: %v", err)
