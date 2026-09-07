@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -355,19 +356,52 @@ func newDKIMKey() (private, public string, err error) {
 	return private, base64.StdEncoding.EncodeToString(der), nil
 }
 
+// wrappedTLSPorts start the TLS handshake immediately, so waiting for a
+// greeting on them only burns the read timeout.
+var wrappedTLSPorts = map[int]bool{465: true, 993: true, 995: true}
+
 // probePort reports whether something answers on the loopback port and, for
 // SMTP-like services, what it says: the panel has to tell an administrator
 // that another daemon already owns port 25.
 func probePort(port int) (bool, string) {
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 700*time.Millisecond)
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 400*time.Millisecond)
 	if err != nil {
 		return false, ""
 	}
-	defer conn.Close()                                           //nolint:errcheck // проба порта, закрывать нечего
-	conn.SetReadDeadline(time.Now().Add(700 * time.Millisecond)) //nolint:errcheck // best effort: the banner is decoration
+	defer conn.Close() //nolint:errcheck // проба порта, закрывать нечего
+	if wrappedTLSPorts[port] {
+		return true, ""
+	}
+	conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond)) //nolint:errcheck // best effort: the banner is decoration
 	buf := make([]byte, 200)
 	n, _ := conn.Read(buf)
 	return true, strings.TrimSpace(string(buf[:n]))
+}
+
+// probeResult is one answered (or unanswered) port.
+type probeResult struct {
+	Open   bool
+	Banner string
+}
+
+// probePorts checks the ports at once: восемь последовательных проб с
+// ожиданием баннера превращали страницу почты в четыре секунды ожидания.
+func (s *Server) probePorts(ports []int) map[int]probeResult {
+	out := make(map[int]probeResult, len(ports))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, port := range ports {
+		wg.Add(1)
+		go func(port int) {
+			defer wg.Done()
+			open, banner := s.probe(port)
+			mu.Lock()
+			out[port] = probeResult{Open: open, Banner: banner}
+			mu.Unlock()
+		}(port)
+	}
+	wg.Wait()
+	return out
 }
 
 // hashMailPassword produces what dovecot's passwd-file expects. BLF-CRYPT is
@@ -417,8 +451,9 @@ func (s *Server) mailDomainFor(ctx context.Context, name string) (*store.MailDom
 	return d, nil
 }
 
-// mailWarnings collects what an administrator still has to do.
-func (s *Server) mailWarnings(ctx context.Context, c mailConfig, tls string) []string {
+// mailWarnings collects what an administrator still has to do. The probes are
+// passed in: the status page has already asked every port once.
+func (s *Server) mailWarnings(ctx context.Context, c mailConfig, tls string, probes map[int]probeResult) []string {
 	var out []string
 	if tls == store.CertKindSelfSigned {
 		out = append(out, "сертификат самоподписанный: почтовые клиенты будут ругаться, выпустите сертификат для "+c.Hostname)
@@ -428,7 +463,7 @@ func (s *Server) mailWarnings(ctx context.Context, c mailConfig, tls string) []s
 	if !c.Port25 {
 		out = append(out, "приём на 25 порту выключен: почта снаружи приходить не будет")
 	}
-	if missing := s.missingMailPorts(c); len(missing) > 0 {
+	if missing := missingMailPorts(c, probes); len(missing) > 0 {
 		out = append(out, "не слушают порты "+strings.Join(missing, ", ")+" — смотрите journalctl -u postfix -u dovecot")
 	}
 	if c.DKIM && s.secrets == nil {

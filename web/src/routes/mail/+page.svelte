@@ -3,6 +3,7 @@
   import { api, ApiError } from '$lib/api';
   import { auth, notify } from '$lib/state.svelte';
   import PageHead from '$lib/components/PageHead.svelte';
+  import Skeleton from '$lib/components/Skeleton.svelte';
   import JobLog from '$lib/components/JobLog.svelte';
   import Modal from '$lib/components/Modal.svelte';
   import Empty from '$lib/components/Empty.svelte';
@@ -15,6 +16,7 @@
   let aliases = $state<any[]>([]);
   let users = $state<any[]>([]);
   let error = $state('');
+  let loading = $state(true);
   let job = $state<number | null>(null);
   let tab = $state<'domains' | 'boxes' | 'aliases'>('domains');
   let created = $state<any>(null);
@@ -33,17 +35,21 @@
 
   const fail = (e: unknown) => { error = e instanceof ApiError ? e.text : String(e); notify(error, 'err'); };
 
+  // Всё разом: статус опрашивает почтовые порты, и ждать его, чтобы потом
+  // сходить ещё три раза подряд, — это лишняя секунда на пустом месте.
   async function load() {
     try {
-      st = await api('/mail');
+      const [status, d, b, a, u] = await Promise.all([
+        api('/mail'), api('/mail/domains'), api('/mail/mailboxes'), api('/mail/aliases'),
+        admin ? api('/users') : Promise.resolve([])
+      ]);
+      st = status;
       settings = { hostname: st.hostname ?? '', max_size_mb: st.max_size_mb || 50, pop3: !!st.pop3, dkim: !!st.dkim, port25: !!st.port25, rbl: (st.rbl ?? []).join(', ') };
-      if (st.installed) {
-        domains = await api('/mail/domains');
-        boxes = await api('/mail/mailboxes');
-        aliases = await api('/mail/aliases');
-      }
-      if (admin) users = ((await api('/users')) as any[]).filter((u) => u.role === 'user' && u.unix_uid);
-    } catch (e) { fail(e); }
+      domains = d as any[];
+      boxes = b as any[];
+      aliases = a as any[];
+      users = (u as any[]).filter((x) => x.role === 'user' && x.unix_uid);
+    } catch (e) { fail(e); } finally { loading = false; }
   }
   onMount(load);
 
@@ -115,7 +121,7 @@
   const markText = (s: string) => ({ ok: 'опубликовано', missing: 'нет записи', mismatch: 'не совпадает', unknown: 'не проверено' })[s] ?? s;
 </script>
 
-<PageHead title="Почта" sub={st?.installed ? `${st.hostname} · postfix ${st.versions?.postfix ?? ''} · dovecot ${st.versions?.dovecot ?? ''}` : 'IMAP, POP3, SMTP и вебпочта Roundcube'}>
+<PageHead title="Почта" sub={loading ? '' : st?.installed ? `${st.hostname} · postfix ${st.versions?.postfix ?? ''} · dovecot ${st.versions?.dovecot ?? ''}` : 'IMAP, POP3, SMTP и вебпочта Roundcube'}>
   {#if st?.installed && admin}
     <button class="btn" onclick={() => (showSettings = !showSettings)}><Icon name="settings" size={15} /> Настройки</button>
   {/if}
@@ -124,7 +130,9 @@
 {#if error}<p class="text-danger text-sm mb-3">{error}</p>{/if}
 {#if job}<div class="mb-4"><JobLog jobId={job} onfinish={() => { job = null; load(); }} /></div>{/if}
 
-{#if st && !st.installed}
+{#if loading}
+  <div class="card rise"><Skeleton rows={5} /></div>
+{:else if st && !st.installed}
   <div class="card mb-4 rise">
     <div class="text-sm mb-3">Почтовый сервер не установлен. Панель поставит <b>postfix</b> (SMTP), <b>dovecot</b> (IMAP/POP3, пароли, квоты) и <b>opendkim</b> (подпись писем), выпустит сертификат и откроет порты.</div>
     {#if admin}
@@ -140,7 +148,7 @@
   </div>
 {/if}
 
-{#if st?.installed}
+{#if st?.installed && !loading}
   {#if showSettings && admin}
     <form class="card mb-4 grid md:grid-cols-3 gap-3 items-end rise" onsubmit={saveSettings}>
       <div><label class="label" for="sh">Имя сервера</label><input id="sh" class="input font-mono" bind:value={settings.hostname} /></div>

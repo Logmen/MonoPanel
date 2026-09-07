@@ -166,16 +166,17 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 			jc.Logf("firewall: открыты порты %s", mailPortList(c))
 		}
 	}
+	probes := s.probePorts(allMailPorts())
 	open := []string{}
 	for _, mp := range mailPorts {
-		if ok, _ := s.probe(mp.Port); ok {
+		if probes[mp.Port].Open {
 			open = append(open, fmt.Sprintf("%d", mp.Port))
 		}
 	}
 	jc.Logf("слушают порты: %s", strings.Join(open, ", "))
 	// systemd отвечает «active» и когда мастер postfix не поднялся: у него
 	// юнит-обёртка. Верить можно только тому, что порт действительно открыт.
-	if missing := s.missingMailPorts(c); len(missing) > 0 {
+	if missing := missingMailPorts(c, probes); len(missing) > 0 {
 		return fmt.Errorf("не поднялись порты %s — смотрите journalctl -u postfix -u dovecot", strings.Join(missing, ", "))
 	}
 	jc.Progress(100, "почтовый сервер готов")
@@ -183,8 +184,8 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 }
 
 // missingMailPorts lists the listeners the settings promise but which nothing
-// answers on.
-func (s *Server) missingMailPorts(c mailConfig) []string {
+// answers on, out of probes already taken.
+func missingMailPorts(c mailConfig, probes map[int]probeResult) []string {
 	if !c.Installed {
 		return nil
 	}
@@ -194,12 +195,21 @@ func (s *Server) missingMailPorts(c mailConfig) []string {
 	}
 	missing := []string{}
 	for _, port := range mailPortsFor(c) {
-		if ok, _ := s.probe(port); !ok {
+		if !probes[port].Open {
 			missing = append(missing, fmt.Sprintf("%d/%s", port, names[port]))
 		}
 	}
 	sort.Strings(missing)
 	return missing
+}
+
+// allMailPorts is every port the panel knows about, managed or not.
+func allMailPorts() []int {
+	out := make([]int, 0, len(mailPorts))
+	for _, mp := range mailPorts {
+		out = append(out, mp.Port)
+	}
+	return out
 }
 
 // firstLine trims a service banner to its first line; TLS-wrapped ports answer
@@ -339,15 +349,16 @@ func (s *Server) mailStatus(ctx context.Context) apitypes.MailStatus {
 		for _, port := range mailPortsFor(c) {
 			managed[port] = true
 		}
+		probes := s.probePorts(allMailPorts())
 		for _, mp := range mailPorts {
-			open, banner := s.probe(mp.Port)
-			p := apitypes.MailPort{Port: mp.Port, Name: mp.Name, Open: open, Managed: managed[mp.Port]}
-			if open {
-				p.Owner = firstLine(banner)
+			r := probes[mp.Port]
+			p := apitypes.MailPort{Port: mp.Port, Name: mp.Name, Open: r.Open, Managed: managed[mp.Port]}
+			if r.Open {
+				p.Owner = firstLine(r.Banner)
 			}
 			out.Ports = append(out.Ports, p)
 		}
-		out.Warnings = s.mailWarnings(ctx, c, kind)
+		out.Warnings = s.mailWarnings(ctx, c, kind, probes)
 	}
 	return out
 }
