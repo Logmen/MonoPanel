@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNewerComparesVersions(t *testing.T) {
@@ -192,5 +193,39 @@ func TestReadStateSurvivesAMissingFile(t *testing.T) {
 	st, err = ReadState(dir)
 	if err != nil || st == nil || st.To != "0.6.0" {
 		t.Fatalf("state round trip: %+v %v", st, err)
+	}
+}
+
+// A slow link is not an error: a package that trickles in for longer than
+// any fixed deadline still arrives, while a body that stops sending is
+// given up after the idle period.
+func TestSaveToSlowLinkAndStall(t *testing.T) {
+	stall := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fl, _ := w.(http.Flusher)
+		for i := 0; i < 8; i++ {
+			w.Write([]byte("chunk-of-the-package\n")) //nolint:errcheck // test server
+			fl.Flush()
+			if stall && i == 2 {
+				time.Sleep(700 * time.Millisecond)
+			} else {
+				time.Sleep(60 * time.Millisecond)
+			}
+		}
+	}))
+	defer srv.Close()
+	c := &Client{Repo: "o/r", API: srv.URL, Idle: 300 * time.Millisecond}
+	dir := t.TempDir()
+	// 8 × 60 ms is longer than the idle period, but data keeps coming.
+	sum, err := c.SaveTo(context.Background(), Asset{ID: 1}, filepath.Join(dir, "a.deb"))
+	if err != nil || sum == "" {
+		t.Fatalf("slow link must succeed: %v", err)
+	}
+	stall = true
+	if _, err := c.SaveTo(context.Background(), Asset{ID: 1}, filepath.Join(dir, "b.deb")); err == nil {
+		t.Fatal("a stalled body must fail")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "b.deb")); err == nil {
+		t.Fatal("a failed download must not leave the file in place")
 	}
 }

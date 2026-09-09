@@ -78,6 +78,10 @@ type Client struct {
 	Token string
 	API   string // defaults to DefaultAPI
 	HTTP  *http.Client
+	// Idle is how long a response may send nothing before the request is
+	// given up (default one minute). There is no cap on the whole transfer:
+	// a package on a slow link takes as long as it takes.
+	Idle time.Duration
 }
 
 // ErrNoRelease means the repository has no release for the channel.
@@ -95,16 +99,53 @@ func (c *Client) base() string {
 	return DefaultAPI
 }
 
+// http is a client without an overall deadline: connecting and the first
+// byte are bounded by the transport, the body by the idle watch in get.
 func (c *Client) http() *http.Client {
 	if c.HTTP != nil {
 		return c.HTTP
 	}
-	return &http.Client{Timeout: 2 * time.Minute}
+	return &http.Client{Transport: &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		TLSHandshakeTimeout:   30 * time.Second,
+		ResponseHeaderTimeout: 2 * time.Minute,
+	}}
+}
+
+func (c *Client) idle() time.Duration {
+	if c.Idle > 0 {
+		return c.Idle
+	}
+	return time.Minute
+}
+
+// idleBody cancels the request when the body stops delivering data.
+type idleBody struct {
+	io.ReadCloser
+	timer  *time.Timer
+	idle   time.Duration
+	cancel context.CancelFunc
+}
+
+func (b *idleBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if n > 0 {
+		b.timer.Reset(b.idle)
+	}
+	return n, err
+}
+
+func (b *idleBody) Close() error {
+	b.timer.Stop()
+	b.cancel()
+	return b.ReadCloser.Close()
 }
 
 func (c *Client) get(ctx context.Context, path, accept string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base()+path, nil)
+	rctx, cancel := context.WithCancel(ctx)
+	req, err := http.NewRequestWithContext(rctx, http.MethodGet, c.base()+path, nil)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	req.Header.Set("Accept", accept)
@@ -114,8 +155,11 @@ func (c *Client) get(ctx context.Context, path, accept string) (*http.Response, 
 	}
 	res, err := c.http().Do(req)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
+	idle := c.idle()
+	res.Body = &idleBody{ReadCloser: res.Body, timer: time.AfterFunc(idle, cancel), idle: idle, cancel: cancel}
 	if res.StatusCode != http.StatusOK {
 		defer res.Body.Close()
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
