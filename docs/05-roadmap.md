@@ -100,6 +100,7 @@
 
 - [x] Режим `proxy` для Node/Python/Docker-приложений.
 - [x] Почта: postfix + dovecot + opendkim + Roundcube (Debian/Ubuntu).
+- [ ] Перенос между панелями: пакет переезда, прямой импорт панель→панель, адаптеры для сервера без панели и FASTPANEL — схема в [07-migration.md](07-migration.md).
 - [ ] Изолированные пулы с cgroup-лимитами, FTP, DNS (PowerDNS), WAF, reseller-роль, aarch64-сборка (кросс-компиляция готова: `make build-arm64`), multi-server.
 
 ## Матрица CI

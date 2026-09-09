@@ -237,6 +237,7 @@ scripts/release/      генерация ключа и подпись SHA256SUMS
 | [docs/04-cli-tui-api.md](docs/04-cli-tui-api.md) | Команды CLI, экраны TUI, REST API, интеграция с биллингом (WHMCS) |
 | [docs/05-roadmap.md](docs/05-roadmap.md) | Этапы разработки, матрица CI, тестовые сценарии, риски |
 | [docs/06-mail.md](docs/06-mail.md) | Почта: postfix + dovecot + opendkim, путь письма, файлы и порты, DNS-записи, вебпочта, границы |
+| [docs/07-migration.md](docs/07-migration.md) | Перенос между панелями (проект): пакет переезда, порядок с переключением DNS, адаптеры для чужих панелей |
 
 Справочник API живёт в самой панели: `/api/v1/docs` (OpenAPI 3.1).
 
