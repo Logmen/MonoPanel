@@ -5,6 +5,7 @@
   import JobLog from '$lib/components/JobLog.svelte';
   import PageHead from '$lib/components/PageHead.svelte';
   import Modal from '$lib/components/Modal.svelte';
+  import Confirm, { type Ask } from '$lib/components/Confirm.svelte';
   import Empty from '$lib/components/Empty.svelte';
   import Icon from '$lib/components/Icon.svelte';
   let certs = $state<any[]>([]);
@@ -17,11 +18,18 @@
   let imp = $state({ name: '', certificate: '', private_key: '' });
   let pform = $state({ name: '', type: 'cloudflare', creds: '' });
   let del = $state<any>(null);
+  let ask = $state<Ask | null>(null);
   const fail = (e: unknown) => { error = e instanceof ApiError ? e.text : String(e); notify(error, 'err'); };
   async function load() { try { certs = await api('/certificates'); providers = await api('/dns-providers'); tls = await api('/web/tls'); } catch (e: any) { error = e.text || String(e); } }
   onMount(load);
   async function issue(e: Event) { e.preventDefault(); error = ''; try { const r: any = await api('/certificates', { method: 'POST', json: { names: form.names.split(/[\s,]+/).filter(Boolean), email: form.email || undefined, staging: form.staging, dns: form.dns || undefined } }); job = r.job_id; mode = ''; } catch (e) { fail(e); } }
   async function doImport(e: Event) { e.preventDefault(); error = ''; try { const c: any = await api('/certificates/import', { method: 'POST', json: { name: imp.name || undefined, certificate: imp.certificate, private_key: imp.private_key } }); notify(`Сертификат ${c.name} импортирован`); imp = { name: '', certificate: '', private_key: '' }; mode = ''; await load(); } catch (e) { fail(e); } }
+  const askRenew = (c: any): Ask => ({
+    title: `Продлить сертификат ${c.name}?`,
+    note: 'Панель закажет новый сертификат прямо сейчас, не дожидаясь автопродления за 30 дней до конца. У Let\'s Encrypt есть лимиты — пять одинаковых сертификатов в неделю и пять неудачных проверок в час, — и ручные продления их расходуют. Действующий сертификат работает, пока новый не выпустится.',
+    action: 'Продлить',
+    run: () => renew(c.id)
+  });
   async function renew(id: number) { try { const r: any = await api(`/certificates/${id}/renew`, { method: 'POST' }); job = r.job_id; } catch (e) { fail(e); } }
   async function remove() { if (!del) return; try { await api(`/certificates/${del.id}`, { method: 'DELETE' }); del = null; await load(); } catch (e) { fail(e); } }
   async function addProvider(e: Event) { e.preventDefault(); error = ''; try { const credentials: Record<string, string> = {}; for (const l of pform.creds.split('\n')) { const [k, ...v] = l.split('='); if (k.trim()) credentials[k.trim()] = v.join('=').trim(); } await api('/dns-providers', { method: 'POST', json: { name: pform.name, type: pform.type, credentials } }); pform = { name: '', type: 'cloudflare', creds: '' }; mode = ''; await load(); } catch (e) { fail(e); } }
@@ -62,13 +70,15 @@
     <tbody>
       {#each certs as c, i}
         {@const d = c.not_after ? days(c.not_after) : 0}
-        <tr class="rise" style="--i:{i}"><td data-label="Имя" class="font-mono font-medium">{c.name}</td><td data-label="SAN" class="text-xs text-muted max-w-xs truncate" title={c.names.join(', ')}>{c.names.join(', ')}</td><td data-label="Статус"><span class="tag {c.status === 'valid' ? 'tag-ok' : c.status === 'error' ? 'tag-err' : 'tag-warn'}">{c.status}</span>{#if c.last_error}<div class="text-xs text-danger max-w-xs truncate" title={c.last_error}>{c.last_error}</div>{/if}</td><td data-label="Издатель" class="text-muted">{c.issuer || '—'}</td><td data-label="Истекает" class="text-xs"><span class="tag {d < 14 ? 'tag-err' : d < 30 ? 'tag-warn' : 'tag-muted'}">{daysLeft(c.not_after)}</span></td><td data-label="Авто">{c.auto_renew ? 'да' : 'нет'}</td><td data-label=""><div class="row-actions"><button class="btn btn-sm" onclick={() => renew(c.id)}><Icon name="refresh" size={13} /> продлить</button><button class="btn btn-danger btn-sm" onclick={() => (del = c)}><Icon name="trash" size={13} /></button></div></td></tr>
+        <tr class="rise" style="--i:{i}"><td data-label="Имя" class="font-mono font-medium">{c.name}</td><td data-label="SAN" class="text-xs text-muted max-w-xs truncate" title={c.names.join(', ')}>{c.names.join(', ')}</td><td data-label="Статус"><span class="tag {c.status === 'valid' ? 'tag-ok' : c.status === 'error' ? 'tag-err' : 'tag-warn'}">{c.status}</span>{#if c.last_error}<div class="text-xs text-danger max-w-xs truncate" title={c.last_error}>{c.last_error}</div>{/if}</td><td data-label="Издатель" class="text-muted">{c.issuer || '—'}</td><td data-label="Истекает" class="text-xs"><span class="tag {d < 14 ? 'tag-err' : d < 30 ? 'tag-warn' : 'tag-muted'}">{daysLeft(c.not_after)}</span></td><td data-label="Авто">{c.auto_renew ? 'да' : 'нет'}</td><td data-label=""><div class="row-actions"><button class="btn btn-sm" onclick={() => (ask = askRenew(c))}><Icon name="refresh" size={13} /> продлить</button><button class="btn btn-danger btn-sm" onclick={() => (del = c)}><Icon name="trash" size={13} /></button></div></td></tr>
       {/each}
       {#if !certs.length}<Empty text="Сертификатов нет." cols={7} />{/if}
     </tbody></table>
 </div>
 {#if providers.length}<div class="card rise text-sm"><div class="font-medium mb-1">DNS-провайдеры (DNS-01, wildcard)</div><ul class="font-mono text-xs text-muted">{#each providers as p}<li>{p.name} · {p.type}</li>{/each}</ul></div>{/if}
-<Modal open={!!del} title="Удалить сертификат {del?.name}?">
+<Confirm bind:ask />
+
+<Modal open={!!del} title="Удалить сертификат {del?.name}?" onclose={() => (del = null)}>
   <p>Файлы сертификата будут удалены; сайты, которые его используют, останутся без HTTPS до нового выпуска.</p>
   {#snippet footer()}<button class="btn" onclick={() => (del = null)}>Отмена</button><button class="btn btn-danger" onclick={remove}>Удалить</button>{/snippet}
 </Modal>

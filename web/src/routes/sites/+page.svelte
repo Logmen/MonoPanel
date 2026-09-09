@@ -47,6 +47,12 @@
       await load();
     } catch (e) { error = e instanceof ApiError ? e.text : String(e); }
   }
+  const askApply = (s: any): Ask => ({
+    title: `Перегенерировать конфигурацию ${s.domain}?`,
+    note: `Панель заново соберёт server-блок nginx и пул php-fpm из своего состояния и применит их: конфигурация проверяется, nginx и php-fpm её перечитывают. Ваши правки в sites/${s.domain}.d/*.conf останутся, а изменения, внесённые руками в сгенерированный блок, будут заменены. Если сайт ждёт сертификат, панель попробует заказать его ещё раз.`,
+    action: 'Применить',
+    run: () => action(s.domain, 'apply')
+  });
   const askSuspend = (s: any): Ask => s.status === 'suspended'
     ? { title: `Включить сайт ${s.domain}?`, action: 'Включить',
         note: 'Сайт снова начнёт отдавать своё содержимое вместо заглушки.',
@@ -100,7 +106,7 @@
           <td data-label="SSL"><span class="tag {s.certificate_id ? 'tag-ok' : 'tag-muted'}">{s.certificate_id ? 'https' : s.ssl}</span></td>
           <td data-label="Статус"><span class="tag {s.status === 'active' ? 'tag-ok' : s.status === 'error' ? 'tag-err' : 'tag-warn'}">{s.status}</span>{#if s.last_error}<div class="text-xs text-danger max-w-xs truncate" title={s.last_error}>{s.last_error}</div>{/if}</td>
           <td data-label=""><div class="row-actions">
-            <button class="btn btn-sm" onclick={() => action(s.domain, 'apply')} title="перегенерировать и применить"><Icon name="refresh" size={13} /></button>
+            <button class="btn btn-sm" onclick={() => (ask = askApply(s))} title="перегенерировать и применить"><Icon name="refresh" size={13} /></button>
             {#if admin}{#if s.status === 'suspended'}<button class="btn btn-sm" onclick={() => (ask = askSuspend(s))}><Icon name="play" size={13} /> включить</button>{:else}<button class="btn btn-sm" onclick={() => (ask = askSuspend(s))}><Icon name="stop" size={13} /> стоп</button>{/if}{/if}
             <button class="btn btn-danger btn-sm" onclick={() => { del = s; purge = false; }}><Icon name="trash" size={13} /></button>
           </div></td>
