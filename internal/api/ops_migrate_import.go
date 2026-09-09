@@ -113,8 +113,12 @@ func (s *Server) migrationPlan(ctx context.Context, req apitypes.MigrationSource
 		plan.Warnings = append(plan.Warnings, apitypes.MigrationIssue{Kind: kind, Target: target, Text: text, Fix: fix})
 	}
 
+	// Another OS family is fine: every configuration is rendered here from
+	// the state, with this server's PHP layout and service names. Only what
+	// the user wrote by hand (nginx directives, cron commands) may still
+	// point at the old paths.
 	if b.Family != "" && b.Family != string(s.profile.Family()) {
-		block("user", login, "источник на "+b.Family+", здесь "+string(s.profile.Family())+": пути PHP и имена сервисов не совпадут", "переносите между одинаковыми семействами ОС")
+		warn("user", login, "источник на "+b.Family+", здесь "+string(s.profile.Family())+": конфигурация будет перегенерирована под этот сервер", "проверьте свои директивы nginx и команды cron — в них могут быть пути старой ОС")
 	}
 	if _, err := s.db.GetUserByLogin(ctx, login); err == nil {
 		block("user", login, "аккаунт с таким логином уже есть", "примите под другим логином: --as <логин>")

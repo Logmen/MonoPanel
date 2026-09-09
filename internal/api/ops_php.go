@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -54,7 +55,7 @@ func (s *Server) registerPHP() {
 		if installed == nil {
 			installed = []*store.PHPVersion{}
 		}
-		return &phpListOutput{Body: apitypes.PHPVersions{Installed: installed, Available: osprofile.PHPVersions(s.profile)}}, nil
+		return &phpListOutput{Body: apitypes.PHPVersions{Installed: installed, Available: s.phpAvailable(ctx)}}, nil
 	})
 
 	huma.Register(s.api, huma.Operation{
@@ -66,7 +67,7 @@ func (s *Server) registerPHP() {
 		if !osprofile.ValidPHPVersion(v) {
 			return nil, huma.Error422UnprocessableEntity("unknown PHP branch " + v)
 		}
-		for _, info := range osprofile.PHPVersions(s.profile) {
+		for _, info := range s.phpAvailable(ctx) {
 			if info.Version == v && !info.Available {
 				return nil, huma.Error422UnprocessableEntity("PHP " + v + " is not available on this OS: " + info.Note)
 			}
@@ -113,8 +114,37 @@ func (s *Server) registerPHP() {
 	})
 }
 
+// phpRepoDistro is the setting value for an Ubuntu whose release the ondrej
+// PPA does not build for yet: only Ubuntu's own PHP packages are there, and
+// the PPA is probed again at the next installation.
+const phpRepoDistro = "distro"
+
+// ppaHasRelease reports whether ppa:ondrej/php publishes packages for an
+// Ubuntu codename. Tests replace it.
+var ppaHasRelease = func(ctx context.Context, codename string) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, "https://ppa.launchpadcontent.net/ondrej/php/ubuntu/dists/"+codename+"/Release", nil)
+	if err != nil {
+		return false, err
+	}
+	res, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		return false, err
+	}
+	res.Body.Close()
+	switch {
+	case res.StatusCode == http.StatusOK:
+		return true, nil
+	case res.StatusCode == http.StatusNotFound:
+		return false, nil
+	default:
+		return false, fmt.Errorf("HEAD %s: %s", req.URL, res.Status)
+	}
+}
+
 // ensurePHPRepo configures Sury (Debian), the ondrej PPA (Ubuntu) or Remi (EL)
-// once and remembers it in settings.
+// once and remembers it in settings. A fresh Ubuntu release has no PPA builds
+// for a while; then the panel stays with Ubuntu's own packages and looks
+// again next time instead of writing a source that apt cannot read.
 func (s *Server) ensurePHPRepo(ctx context.Context, jc *jobs.Context) error {
 	rel := s.profile.Release()
 	key := settingPHPRepo + "." + string(s.profile.Family())
@@ -126,6 +156,17 @@ func (s *Server) ensurePHPRepo(ctx context.Context, jc *jobs.Context) error {
 	case osprofile.FamilyDebian:
 		var files []agent.FileSpec
 		if strings.EqualFold(rel.ID, "ubuntu") {
+			if ok, err := ppaHasRelease(ctx, rel.Codename); err != nil {
+				jc.Logf("cannot check ppa:ondrej/php for %s (%v), trying it anyway", rel.Codename, err)
+			} else if !ok {
+				jc.Logf("ppa:ondrej/php has no packages for Ubuntu %s (%s) yet: using Ubuntu's own PHP", rel.VersionID, rel.Codename)
+				// An earlier attempt may have left the source behind, and
+				// with it every apt-get update fails.
+				if _, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: []string{"/etc/apt/sources.list.d/ondrej-php.list"}}); err != nil {
+					jc.Logf("cannot remove the stale PPA source: %v", err)
+				}
+				return s.db.SetSetting(ctx, key, phpRepoDistro)
+			}
 			keyPEM, err := fetchText(ctx, ondrejKeyURL)
 			if err != nil {
 				return fmt.Errorf("download ondrej PPA key: %w", err)
@@ -168,6 +209,65 @@ func (s *Server) ensurePHPRepo(ctx context.Context, jc *jobs.Context) error {
 	return s.db.SetSetting(ctx, key, "ready")
 }
 
+// phpPackagesExist fails with a readable reason when no repository carries
+// the branch: apt's own "Unable to locate package" says nothing about why.
+func (s *Server) phpPackagesExist(ctx context.Context, layout *osprofile.PHPLayout) error {
+	res, err := s.agent.Pkg(ctx, "available", layout.FPMPackage)
+	if err != nil {
+		return err
+	}
+	if _, ok := res.Available[layout.FPMPackage]; ok {
+		return nil
+	}
+	return fmt.Errorf("PHP %s is not available on this OS: %s", layout.Version, s.phpUnavailableNote(ctx, layout.Version))
+}
+
+// phpUnavailableNote explains a missing branch: on an Ubuntu the PPA does not
+// build for yet it names what Ubuntu itself ships.
+func (s *Server) phpUnavailableNote(ctx context.Context, version string) string {
+	rel := s.profile.Release()
+	if v, _ := s.db.GetSetting(ctx, settingPHPRepo+"."+string(s.profile.Family())); v == phpRepoDistro {
+		native := ""
+		if res, err := s.agent.Pkg(ctx, "available", "php"); err == nil {
+			// Ubuntu's meta package is versioned like 2:8.5+99ubuntu1.
+			if _, ver, ok := strings.Cut(res.Available["php"], ":"); ok {
+				native, _, _ = strings.Cut(ver, "+")
+			}
+		}
+		note := "ppa:ondrej/php has no packages for Ubuntu " + rel.VersionID + " (" + rel.Codename + ") yet"
+		if native != "" {
+			note += "; Ubuntu itself ships only PHP " + native
+		}
+		return note
+	}
+	return "no configured repository carries php" + version + " packages"
+}
+
+// phpAvailable is the availability matrix for this host. On an Ubuntu that
+// runs without the PPA it asks apt which branches actually exist.
+func (s *Server) phpAvailable(ctx context.Context) []osprofile.PHPVersionInfo {
+	list := osprofile.PHPVersions(s.profile)
+	if v, _ := s.db.GetSetting(ctx, settingPHPRepo+"."+string(s.profile.Family())); v != phpRepoDistro {
+		return list
+	}
+	pkgs := make([]string, 0, len(list))
+	for _, info := range list {
+		pkgs = append(pkgs, "php"+info.Version+"-fpm")
+	}
+	res, err := s.agent.Pkg(ctx, "available", pkgs...)
+	if err != nil {
+		return list
+	}
+	note := s.phpUnavailableNote(ctx, "")
+	for i := range list {
+		if _, ok := res.Available["php"+list[i].Version+"-fpm"]; !ok && list[i].Available {
+			list[i].Available = false
+			list[i].Note = note
+		}
+	}
+	return list
+}
+
 func (s *Server) phpFail(ctx context.Context, version string, err error) error {
 	_ = s.db.SetPHPStatus(context.WithoutCancel(ctx), version, store.PHPError, err.Error())
 	return err
@@ -182,7 +282,13 @@ func (s *Server) jobPHPInstall(ctx context.Context, jc *jobs.Context) error {
 	if layout == nil {
 		return s.phpFail(ctx, p.Version, errors.New("no PHP package source for this OS"))
 	}
+	if err := s.selinuxHostingPolicy(ctx, jc); err != nil {
+		return s.phpFail(ctx, p.Version, err)
+	}
 	if err := s.ensurePHPRepo(ctx, jc); err != nil {
+		return s.phpFail(ctx, p.Version, err)
+	}
+	if err := s.phpPackagesExist(ctx, layout); err != nil {
 		return s.phpFail(ctx, p.Version, err)
 	}
 	jc.Progress(20, "installing PHP "+p.Version+" packages")

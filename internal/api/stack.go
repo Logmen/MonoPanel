@@ -143,20 +143,46 @@ func fetchText(ctx context.Context, url string) (string, error) {
 	return string(b), err
 }
 
+// fetchBytes downloads a small file (a signing key, a release package). A
+// transient network failure or a 5xx is retried a few times: a TLS handshake
+// timeout to a vendor repository must not fail a whole installation.
 func fetchBytes(ctx context.Context, url string) ([]byte, error) {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(attempt*attempt) * 5 * time.Second):
+			}
+		}
+		b, retry, err := fetchOnce(ctx, url)
+		if err == nil {
+			return b, nil
+		}
+		lastErr = err
+		if !retry {
+			break
+		}
+	}
+	return nil, lastErr
+}
+
+func fetchOnce(ctx context.Context, url string) (body []byte, retry bool, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	res, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
 	if err != nil {
-		return nil, err
+		return nil, ctx.Err() == nil, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s: %s", url, res.Status)
+		return nil, res.StatusCode >= 500, fmt.Errorf("GET %s: %s", url, res.Status)
 	}
-	return io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	b, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	return b, err != nil, err
 }
 
 // installNginx adds the nginx.org repository, installs nginx, writes the
@@ -164,6 +190,9 @@ func fetchBytes(ctx context.Context, url string) ([]byte, error) {
 func (s *Server) installNginx(ctx context.Context, jc *jobs.Context) error {
 	rel := s.profile.Release()
 	web := s.profile.Web()
+	if err := s.selinuxHostingPolicy(ctx, jc); err != nil {
+		return err
+	}
 	jc.Progress(5, "nginx.org repository")
 	switch s.profile.Family() {
 	case osprofile.FamilyDebian:
@@ -253,7 +282,10 @@ func (s *Server) installNginx(ctx context.Context, jc *jobs.Context) error {
 		jc.Logf("default server for %s:80", ip)
 	}
 	apply, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{
-		Files: files, Validate: [][]string{web.NginxCheckArgv}, Reload: []string{web.NginxService}, Force: true, Origin: "stack:nginx",
+		// nginx -t (the validator) creates the pid file with the agent's
+		// SELinux label; nginx's confined domain could not open it.
+		Restore: []string{"/run/nginx.pid"},
+		Files:   files, Validate: [][]string{web.NginxCheckArgv}, Reload: []string{web.NginxService}, Force: true, Origin: "stack:nginx",
 	})
 	if err != nil {
 		return err

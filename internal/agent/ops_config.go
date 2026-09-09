@@ -75,6 +75,7 @@ func (s *Server) applyConfigSet(ctx context.Context, req *ApplyConfigSetRequest)
 		resp.Validated++
 	}
 	tx.commitHistory()
+	s.restorecon(ctx, append(append([]string{}, resp.Written...), req.Restore...)...)
 	s.log.Info("config applied", "origin", req.Origin, "written", len(resp.Written), "unchanged", len(resp.Unchanged))
 	if len(resp.Written) == 0 && !req.Force {
 		return resp, nil

@@ -33,3 +33,7 @@ func (noPackages) InstallArgv([]string) []string        { return nil }
 func (noPackages) RemoveArgv([]string) []string         { return nil }
 func (noPackages) QueryInstalledArgv([]string) []string { return nil }
 func (noPackages) ParseQuery(string) map[string]string  { return map[string]string{} }
+func (noPackages) AvailableArgv([]string) []string      { return nil }
+func (noPackages) ParseAvailable(string) map[string]string {
+	return map[string]string{}
+}

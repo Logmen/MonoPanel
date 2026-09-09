@@ -73,6 +73,61 @@ func (s *Server) mysqlExec(ctx context.Context, sql string) (string, error) {
 	return res.Output, nil
 }
 
+// mysqlExecWithPassword is mysqlExec for the one moment root still has a
+// password: the value travels in the environment, not on the command line.
+func (s *Server) mysqlExecWithPassword(ctx context.Context, password, sql string) (string, error) {
+	res, err := s.agent.Tool(ctx, &agent.ToolRequest{
+		Name: "mysql", Args: []string{"--protocol=socket", "--batch", "--skip-column-names", "--user=root", "--connect-expired-password"},
+		Env: []string{"MYSQL_PWD=" + password}, Stdin: sql, TimeoutSeconds: 120,
+	})
+	if err != nil {
+		return "", err
+	}
+	if res.ExitCode != 0 {
+		return res.Output, fmt.Errorf("mysql: %s", strings.TrimSpace(res.Output))
+	}
+	return res.Output, nil
+}
+
+// mysqlAdoptTemporaryRoot turns the expired temporary root password of the
+// EL packages into auth_socket. An expired password allows nothing but
+// ALTER USER on oneself, so a fresh password comes first; the EL builds ship
+// the auth_socket plugin without loading it, so the plugin comes second.
+// The fresh password lives in memory for these three statements only.
+func (s *Server) mysqlAdoptTemporaryRoot(ctx context.Context, temporary string) error {
+	fresh, err := auth.NewPassword(24) // every class: validate_password is on
+	if err != nil {
+		return err
+	}
+	if _, err := s.mysqlExecWithPassword(ctx, temporary, fmt.Sprintf("ALTER USER 'root'@'localhost' IDENTIFIED BY '%s';", sqlEscaper.Replace(fresh))); err != nil {
+		return err
+	}
+	if out, err := s.mysqlExecWithPassword(ctx, fresh, "INSTALL PLUGIN auth_socket SONAME 'auth_socket.so';"); err != nil && !strings.Contains(out, "already exists") {
+		return err
+	}
+	_, err = s.mysqlExecWithPassword(ctx, fresh, "ALTER USER 'root'@'localhost' IDENTIFIED WITH auth_socket; FLUSH PRIVILEGES;")
+	return err
+}
+
+// mysqlTemporaryPassword finds the password the EL package generated at the
+// first start ("A temporary password is generated for root@localhost: ...").
+func (s *Server) mysqlTemporaryPassword(ctx context.Context, layout osprofile.DBLayout) string {
+	if layout.ErrorLog == "" {
+		return ""
+	}
+	res, err := s.agent.ReadFile(ctx, layout.ErrorLog, 256*1024)
+	if err != nil {
+		return ""
+	}
+	password := ""
+	for _, line := range strings.Split(res.Content, "\n") {
+		if _, rest, ok := strings.Cut(line, "temporary password is generated for root@localhost: "); ok {
+			password = strings.TrimSpace(rest)
+		}
+	}
+	return password
+}
+
 func (s *Server) dbInstance(ctx context.Context) (*store.DBInstance, error) {
 	inst, err := s.db.GetDBInstance(ctx)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && inst.Status != store.DBReady) {
@@ -154,7 +209,7 @@ func (s *Server) registerDB() {
 		password := in.Body.Password
 		generated := false
 		if password == "" {
-			password, _ = auth.NewToken(15)
+			password, _ = auth.NewPassword(20)
 			generated = true
 		}
 		plugin := "caching_sha2_password"
@@ -231,7 +286,7 @@ func (s *Server) registerDB() {
 		password := in.Body.Password
 		generated := false
 		if password == "" {
-			password, _ = auth.NewToken(15)
+			password, _ = auth.NewPassword(20)
 			generated = true
 		}
 		sql := ""
@@ -477,10 +532,22 @@ func (s *Server) installDB(ctx context.Context, jc *jobs.Context, engine string)
 	var probe string
 	for i := 0; i < 15; i++ {
 		probe, err = s.mysqlExec(ctx, "SELECT VERSION();")
-		if err == nil {
+		// "Access denied" means the server is up and root has a password:
+		// no point in waiting for the socket any longer.
+		if err == nil || strings.Contains(probe, "Access denied") {
 			break
 		}
 		time.Sleep(2 * time.Second)
+	}
+	if err != nil {
+		// The EL packages initialise the server with a temporary root
+		// password (in the error log) instead of auth_socket.
+		if pw := s.mysqlTemporaryPassword(ctx, layout); pw != "" {
+			jc.Logf("the package set a temporary root password; switching root@localhost to auth_socket")
+			if err = s.mysqlAdoptTemporaryRoot(ctx, pw); err == nil {
+				probe, err = s.mysqlExec(ctx, "SELECT VERSION();")
+			}
+		}
 	}
 	if err != nil {
 		return fail(fmt.Errorf("cannot connect as root over the socket (%s); the package set a root password? %v", layout.Socket, err))

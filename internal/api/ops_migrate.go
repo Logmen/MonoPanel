@@ -204,9 +204,8 @@ func (s *Server) buildMigrationBundle(ctx context.Context, u *store.User, withSe
 		}
 		for _, d := range b.Databases {
 			for _, acc := range d.Users {
-				out, err := s.mysqlExec(ctx, fmt.Sprintf("SHOW CREATE USER '%s'@'%s';", acc.Name, acc.Host))
-				if err == nil {
-					sec.DBUsers[acc.Name+"@"+acc.Host] = strings.TrimSpace(out)
+				if create, err := s.showCreateUser(ctx, acc.Name, acc.Host); err == nil {
+					sec.DBUsers[acc.Name+"@"+acc.Host] = create
 				}
 			}
 		}
@@ -361,4 +360,22 @@ func (s *Server) registerMigrateSource() {
 			}
 		}}, nil
 	})
+}
+
+// showCreateUser returns a CREATE USER statement the target can replay. The
+// hash of caching_sha2_password holds a binary salt, which the text output
+// of the mysql client mangles; since 8.0.17 the server prints such hashes
+// as a hex literal when asked, and that survives any transport.
+func (s *Server) showCreateUser(ctx context.Context, name, host string) (string, error) {
+	show := fmt.Sprintf("SHOW CREATE USER '%s'@'%s';", name, host)
+	out, err := s.mysqlExec(ctx, "SET SESSION print_identified_with_as_hex = ON;\n"+show)
+	if err != nil {
+		// A server without the variable: plain text, fine for the
+		// printable hashes of mysql_native_password.
+		out, err = s.mysqlExec(ctx, show)
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
 }

@@ -38,6 +38,9 @@ var tools = map[string][]string{
 	"systemctl":       {"/usr/bin/systemctl", "/bin/systemctl"},
 	"apachectl":       {"/usr/sbin/apachectl", "/usr/sbin/apache2ctl"},
 	"postfix":         {"/usr/sbin/postfix"},
+	"semanage":        {"/usr/sbin/semanage"},
+	"setsebool":       {"/usr/sbin/setsebool"},
+	"restorecon":      {"/usr/sbin/restorecon"},
 	"postmap":         {"/usr/sbin/postmap"},
 	"postconf":        {"/usr/sbin/postconf"},
 	"postqueue":       {"/usr/sbin/postqueue"},
@@ -48,7 +51,7 @@ var tools = map[string][]string{
 }
 
 // envAllowed lists environment variable prefixes a tool may receive.
-var envAllowed = []string{"RESTIC_", "AWS_", "B2_", "AZURE_", "GOOGLE_", "OS_", "SWIFT_", "RCLONE_", "TZ="}
+var envAllowed = []string{"RESTIC_", "AWS_", "B2_", "AZURE_", "GOOGLE_", "OS_", "SWIFT_", "RCLONE_", "TZ=", "MYSQL_PWD="}
 
 func resolveTool(name string) (string, error) {
 	cands, ok := tools[name]

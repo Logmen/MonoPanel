@@ -39,6 +39,11 @@ type ApplyConfigSetRequest struct {
 	Restart  []string   `json:"restart,omitempty"`
 	// Force reloads even when no file changed.
 	Force bool `json:"force,omitempty"`
+	// Restore lists paths whose SELinux label is restored after validation
+	// and before the reload: a validator run by the agent creates files
+	// (nginx -t makes the pid file) with the agent's label, which the
+	// service's confined domain may not open. Ignored without SELinux.
+	Restore []string `json:"restore,omitempty"`
 	// Origin is recorded in logs/history (e.g. "site:example.com").
 	Origin string `json:"origin,omitempty"`
 }
@@ -101,14 +106,17 @@ type ServiceResponse struct {
 
 // PkgRequest drives the native package manager.
 type PkgRequest struct {
-	Action   string   `json:"action"` // update-index install remove query
+	Action   string   `json:"action"` // update-index install remove query available
 	Packages []string `json:"packages,omitempty"`
 }
 
-// PkgResponse returns output and installed versions.
+// PkgResponse returns output and installed versions; for "available" the
+// candidate versions the repositories offer (packages nobody carries are
+// simply absent).
 type PkgResponse struct {
 	Output    string            `json:"output,omitempty"`
 	Installed map[string]string `json:"installed,omitempty"`
+	Available map[string]string `json:"available,omitempty"`
 }
 
 // SystemInfoResponse is the host snapshot.

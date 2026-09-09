@@ -54,6 +54,11 @@ type Agent struct {
 	ToolOutput map[string]string
 	// StreamOutput answers agent.StreamOut by tool name.
 	StreamOutput map[string]string
+	// MissingPackages are absent from every repository: "available" leaves
+	// them out and "query" reports them as not installed.
+	MissingPackages map[string]bool
+	// ToolHook, when set, may answer a tool call itself (nil = default).
+	ToolHook func(req agent.ToolRequest) *agent.ToolResponse
 	// Dirs answers agent.ListDir: directory path -> names inside it.
 	DirEntries map[string][]string
 	// Shadow answers agent.UnixShadow: login -> password hash.
@@ -256,11 +261,16 @@ func (a *Agent) respond(path string, body []byte) any {
 	case "/v1/pkg":
 		var req agent.PkgRequest
 		json.Unmarshal(body, &req) //nolint:errcheck // test double
-		installed := map[string]string{}
+		versions := map[string]string{}
 		for _, p := range req.Packages {
-			installed[p] = "1.0-test"
+			if !a.MissingPackages[p] {
+				versions[p] = "1.0-test"
+			}
 		}
-		return agent.PkgResponse{Installed: installed, Output: "ok"}
+		if req.Action == "available" {
+			return agent.PkgResponse{Available: versions, Output: "ok"}
+		}
+		return agent.PkgResponse{Installed: versions, Output: "ok"}
 
 	case "/v1/dir/list":
 		var req agent.ListDirRequest
@@ -280,6 +290,11 @@ func (a *Agent) respond(path string, body []byte) any {
 		var req agent.ToolRequest
 		json.Unmarshal(body, &req) //nolint:errcheck // test double
 		a.tools = append(a.tools, req)
+		if a.ToolHook != nil {
+			if res := a.ToolHook(req); res != nil {
+				return *res
+			}
+		}
 		return agent.ToolResponse{ExitCode: 0, Output: a.ToolOutput[req.Name]}
 
 	case "/v1/stat":

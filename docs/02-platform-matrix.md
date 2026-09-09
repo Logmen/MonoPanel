@@ -29,6 +29,8 @@
 
 Вендоры добавляют новые релизы ОС с задержкой (MySQL и Percona для Ubuntu 26.04 и Debian 13 — проверить перед объявлением поддержки). Доступность пакетов по всей матрице проверяет еженедельный CI-job.
 
+Проверено на [площадке](08-testbed.md) 2026-09-09: Percona 8.4 есть для всех девяти ОС матрицы, nginx.org — тоже. У `ppa:ondrej/php` ещё нет сборок для Ubuntu 26.04 (resolute): панель это видит (HEAD на `dists/<codename>/Release`), не подключает несуществующий источник, ставит PHP из самой Ubuntu (там только 8.5) и в списке веток честно помечает остальные недоступными с причиной; при следующей установке PPA проверяется снова. На EL пакеты Percona/MySQL стартуют сервер с временным паролем root в `/var/log/mysqld.log`, а не с `auth_socket` — панель читает его и переводит root на сокет сама.
+
 ## 3. PHP
 
 ### 3.1 Матрица версий (состояние на 09.2026)
@@ -139,7 +141,11 @@ type Profile interface {
 
 ## 6. SELinux (EL9 / EL10)
 
-Панель работает в режиме **enforcing**; отключение SELinux — вне политики проекта. Пакет `monopanel-selinux` содержит модуль политики и `fcontext`-правила:
+Панель работает в режиме **enforcing**; отключение SELinux — вне политики проекта.
+
+Сделано (2026-09-09, проверено на площадке на AlmaLinux 9/10 и Rocky 9/10): при первой установке nginx или PHP панель один раз готовит хост под хостинг — ставит `policycoreutils-python-utils`, добавляет `fcontext` для сокетов FPM (`/var/run/monopanel(/.*)?` → `httpd_var_run_t`; semanage сам подсказывает написание при правиле эквивалентности `/run` ↔ `/var/run`, панель следует подсказке) и для логов сайтов (`/var/www/[^/]+/data/logs(/.*)?` → `httpd_log_t`), включает булевы `httpd_unified`, `httpd_can_network_connect`, `httpd_can_network_connect_db`, `httpd_can_sendmail`, `httpd_execmem`, `httpd_setrlimit` и делает `restorecon` по `/var/www`, `/run/monopanel`, `/etc/nginx`, `/var/log/nginx`. Агент после каждой записи конфигов и создания каталогов восстанавливает метки сам, а в наборе конфигов есть поле `restore`: `nginx -t`, которым агент проверяет конфигурацию, создаёт `/run/nginx.pid` с меткой агента (`var_run_t`), и nginx в домене `httpd_t` не мог его открыть — перед запуском файл перемечается. Панель сама пока unconfined (`unconfined_service_t`).
+
+Планируемый пакет `monopanel-selinux` с модулем политики и остальными `fcontext`-правилами:
 
 - Docroot `/var/www(/.*)?` → `httpd_sys_content_t` (уже в базовой политике). Каталоги для записи (`uploads`, `cache`, `tmp`, `logs`) → `httpd_sys_rw_content_t` через `semanage fcontext` + `restorecon` при создании сайта; пользователь может пометить произвольный каталог как «записываемый» из UI.
 - Сокеты FPM `/run/monopanel/php(/.*)?` → `httpd_var_run_t`.

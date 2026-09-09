@@ -165,7 +165,7 @@ func (s *Server) dirAllowed(p string) bool {
 	return false
 }
 
-func (s *Server) ensureDirs(_ context.Context, req *EnsureDirsRequest) (*EnsureDirsResponse, error) {
+func (s *Server) ensureDirs(ctx context.Context, req *EnsureDirsRequest) (*EnsureDirsResponse, error) {
 	resp := &EnsureDirsResponse{Created: []string{}}
 	for _, d := range req.Dirs {
 		p := filepath.Clean(d.Path)
@@ -181,6 +181,7 @@ func (s *Server) ensureDirs(_ context.Context, req *EnsureDirsRequest) (*EnsureD
 			resp.Created = append(resp.Created, p)
 		}
 	}
+	s.restorecon(ctx, resp.Created...)
 	return resp, nil
 }
 

@@ -76,6 +76,11 @@ type PackageManager interface {
 	QueryInstalledArgv(pkgs []string) []string
 	// ParseQuery turns QueryInstalledArgv output into package -> version.
 	ParseQuery(output string) map[string]string
+	// AvailableArgv asks the repositories which of the packages can be
+	// installed at all; ParseAvailable turns the output into package ->
+	// candidate version, leaving out packages no repository carries.
+	AvailableArgv(pkgs []string) []string
+	ParseAvailable(output string) map[string]string
 }
 
 // WebLayout holds web-server users, services, directories and check commands.

@@ -102,6 +102,14 @@ func (s *Server) pkg(ctx context.Context, req *PkgRequest) (*PkgResponse, error)
 		}
 		out, _ := runArgv(ctx, pm.Env(), pm.QueryInstalledArgv(req.Packages)...)
 		return &PkgResponse{Output: out, Installed: pm.ParseQuery(out)}, nil
+	case "available":
+		if len(req.Packages) == 0 {
+			return &PkgResponse{Available: map[string]string{}}, nil
+		}
+		// apt-cache / dnf repoquery exit non-zero for unknown names while
+		// still reporting the known ones, so the exit code is not an error.
+		out, _ := runArgv(ctx, pm.Env(), pm.AvailableArgv(req.Packages)...)
+		return &PkgResponse{Output: out, Available: pm.ParseAvailable(out)}, nil
 	default:
 		return nil, &Error{Status: http.StatusBadRequest, Message: "unknown action: " + req.Action}
 	}

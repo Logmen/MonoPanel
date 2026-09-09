@@ -39,6 +39,18 @@ func (dnfManager) RemoveArgv(pkgs []string) []string {
 func (dnfManager) QueryInstalledArgv(pkgs []string) []string {
 	return append([]string{"rpm", "-q", "--qf", "%{NAME} %{VERSION}-%{RELEASE}\n"}, pkgs...)
 }
+func (dnfManager) AvailableArgv(pkgs []string) []string {
+	return append([]string{"dnf", "-q", "repoquery", "--available", "--queryformat", "%{name} %{version}-%{release}\n"}, pkgs...)
+}
+func (dnfManager) ParseAvailable(out string) map[string]string {
+	res := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		if f := strings.Fields(line); len(f) == 2 {
+			res[f[0]] = f[1]
+		}
+	}
+	return res
+}
 func (dnfManager) ParseQuery(out string) map[string]string {
 	res := map[string]string{}
 	for _, line := range strings.Split(out, "\n") {

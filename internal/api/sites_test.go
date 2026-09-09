@@ -37,6 +37,10 @@ type siteFixture struct {
 
 func newSiteFixture(t *testing.T) *siteFixture { return newFixture(t, nil) }
 
+// fixtureOSRelease is the /etc/os-release the fixture's panel believes it
+// runs on; a test that needs another family sets it and restores it.
+var fixtureOSRelease = "ID=debian\nVERSION_ID=13\n"
+
 // newFixture is newSiteFixture with a say in the configuration, for tests that
 // need a pinned release key or another data directory.
 func newFixture(t *testing.T, tweak func(*config.Config)) *siteFixture {
@@ -62,7 +66,7 @@ func newFixture(t *testing.T, tweak func(*config.Config)) *siteFixture {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	rel, _ := osprofile.ParseOSRelease(strings.NewReader("ID=debian\nVERSION_ID=13\n"))
+	rel, _ := osprofile.ParseOSRelease(strings.NewReader(fixtureOSRelease))
 	profile, _ := osprofile.FromRelease(rel)
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	runner := jobs.NewRunner(db, 2, quiet)

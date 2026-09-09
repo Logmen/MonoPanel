@@ -310,7 +310,7 @@ func (s *Server) webmailDatabase(ctx context.Context, jc *jobs.Context, owner *s
 	if len(name) > 32 {
 		name = owner.Login + "_rc"
 	}
-	password, err = auth.NewToken(15)
+	password, err = auth.NewPassword(20)
 	if err != nil {
 		return "", "", err
 	}

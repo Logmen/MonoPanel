@@ -51,3 +51,28 @@ func (aptManager) ParseQuery(out string) map[string]string {
 	}
 	return res
 }
+func (aptManager) AvailableArgv(pkgs []string) []string {
+	return append([]string{"apt-cache", "policy"}, pkgs...)
+}
+
+// ParseAvailable reads `apt-cache policy` blocks: a "pkg:" line followed by
+// indented "Installed:" and "Candidate:" lines; "(none)" means no repository
+// has the package.
+func (aptManager) ParseAvailable(out string) map[string]string {
+	res := map[string]string{}
+	pkg := ""
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case line == "":
+			continue
+		case line[0] != ' ' && strings.HasSuffix(line, ":"):
+			pkg = strings.TrimSuffix(line, ":")
+		case pkg != "" && strings.HasPrefix(strings.TrimSpace(line), "Candidate:"):
+			v := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "Candidate:"))
+			if v != "" && v != "(none)" {
+				res[pkg] = v
+			}
+		}
+	}
+	return res
+}

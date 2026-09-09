@@ -400,7 +400,7 @@ func (s *Server) registerMail() {
 		}
 		password, generated := in.Body.Password, false
 		if password == "" {
-			password, _ = auth.NewToken(12)
+			password, _ = auth.NewPassword(16)
 			generated = true
 		}
 		hash, err := hashMailPassword(password)
@@ -446,7 +446,7 @@ func (s *Server) registerMail() {
 		password := in.Body.Password
 		generated := false
 		if in.Body.Password == "" && in.Body.Name == nil && in.Body.QuotaMB == nil && in.Body.Active == nil {
-			password, _ = auth.NewToken(12)
+			password, _ = auth.NewPassword(16)
 			generated = true
 		}
 		if password != "" {
