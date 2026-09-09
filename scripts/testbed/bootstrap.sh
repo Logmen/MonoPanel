@@ -32,12 +32,16 @@ case "$pkg" in
 *.deb)
 	log "installing $(basename "$pkg")"
 	apt-get -q update >/dev/null
-	apt-get -q -y install "$pkg" >/dev/null
+	# A development build (0.7.0~3-g…) sorts below the release it follows;
+	# on a test VM any direction is fine.
+	apt-get -q -y --allow-downgrades install "$pkg" >/dev/null
 	;;
 *.rpm)
 	log "installing $(basename "$pkg")"
-	# dnf refuses to reinstall the same version; upgrade or install as needed.
-	rpm -q monopanel >/dev/null 2>&1 && dnf -q -y reinstall "$pkg" >/dev/null 2>&1 || dnf -q -y install "$pkg" >/dev/null
+	# The same version cannot be installed twice, a lower one is a downgrade:
+	# take whichever dnf accepts.
+	rpm -q monopanel >/dev/null 2>&1 && dnf -q -y reinstall "$pkg" >/dev/null 2>&1 ||
+		dnf -q -y install "$pkg" >/dev/null 2>&1 || dnf -q -y downgrade "$pkg" >/dev/null
 	;;
 *)
 	log "installing binary"
@@ -79,7 +83,7 @@ if ! php_installed "$TB_PHP"; then
 			log "PHP $TB_PHP: $(grep -o 'is not available on this OS.*' "/tmp/bootstrap-$$.err" | head -1 | cut -c1-140)"
 			TB_PHP=$(mp php list --available --json | tr -d ' \n' | grep -o '"version":"[0-9.]*","support":"[a-z]*","available":true' | sed 's/"version":"\([0-9.]*\)".*/\1/' | sort -V | tail -1)
 			[ -n "$TB_PHP" ] || { echo "no PHP branch is available here" >&2; exit 1; }
-			step "mp php install $TB_PHP (newest available)" mp php install "$TB_PHP"
+			php_installed "$TB_PHP" || step "mp php install $TB_PHP (newest available)" mp php install "$TB_PHP"
 		else
 			echo "--- mp php install $TB_PHP failed ---" >&2; tail -40 "/tmp/bootstrap-$$.err" >&2; exit 1
 		fi
