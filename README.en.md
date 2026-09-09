@@ -3,8 +3,9 @@
 English · [Русский](README.md)
 
 A web hosting control panel for Debian/Ubuntu and the RHEL family: sites, PHP,
-databases, TLS, backups and firewall on a single server — from one static binary,
-with no runtime to install, no agents in other languages and no external services.
+databases, TLS, mail, backups, firewall and moving accounts between servers — from
+one static binary, with no runtime to install, no agents in other languages and no
+external services.
 
 [![ci](https://github.com/Logmen/MonoPanel/actions/workflows/ci.yml/badge.svg)](https://github.com/Logmen/MonoPanel/actions/workflows/ci.yml)
 [![release](https://img.shields.io/github/v/release/Logmen/MonoPanel)](https://github.com/Logmen/MonoPanel/releases)
@@ -20,8 +21,8 @@ all speak the same REST API — anything you can do with a mouse you can script.
 > are written in Russian; only the code, this file and the security policy are in
 > English. An English interface is on the roadmap, not in the product.
 
-Status: **0.6.0**, in daily use on a production server hosting several sites.
-Development moves quickly and breaking changes are possible before 1.0.
+Status: **0.7.0**, in daily use on a production server hosting several sites and
+mail. Development moves quickly and breaking changes are possible before 1.0.
 
 ## Install
 
@@ -40,8 +41,11 @@ certificate and the administrator account, then prints the panel's address and t
 password.
 
 Requires root, systemd and one of: Debian 12/13, Ubuntu 22.04/24.04/26.04,
-AlmaLinux/Rocky 9/10. Verified on Ubuntu 24.04; the others are supported by the
-OS-profile abstraction but the full matrix has not been run on VMs yet.
+AlmaLinux/Rocky 9/10. The whole matrix runs on a [testbed](docs/08-testbed.md):
+installing the panel, nginx, PHP and Percona and the e2e scenario pass on all nine.
+On EL, SELinux stays enforcing — the panel sets up the file contexts and booleans a
+hosting server needs. Ubuntu 26.04 has no `ppa:ondrej/php` builds yet, so PHP 8.5
+comes from Ubuntu itself there; the panel picks the PPA up on its own once it exists.
 
 ## Quick start
 
@@ -90,7 +94,7 @@ and the terminal menu.
 | Sites | `mp site add\|set\|apply\|suspend\|rm\|logs` | modes `fpm`, `apache` (loopback 8080 via mod_proxy_fcgi) and `proxy` (nginx → backend); one pool per site, ACLs for the `monopanel-web` group, placeholder page, automatic certificate, suspend serves a 503 page; per-site IP allow-list (`--allow`), HSTS when HTTPS is forced, custom directives in `sites/<domain>.d/*.conf`; `mp site nginx <domain> --set file` validates with `nginx -t` and rolls back; `mp site php <domain>` shows the effective PHP settings; CMS presets `--preset wordpress\|joomla\|bitrix\|opencart` (`mp site presets`) add routing and hardening (pretty URLs, Joomla `/api/`, Bitrix `urlrewrite.php`, OpenCart `_route_`, denied service directories, no PHP execution in uploads) plus sane PHP defaults |
 | App services | `mp app add\|set\|start\|stop\|restart\|logs\|rm` | a systemd unit `monopanel-app-<login>-<name>` running as the account (gunicorn, node, bots): command, working directory and env-file confined to the home directory, autostart, logs via journalctl |
 | Apache 2.4 | `mp stack install apache` | Debian/Ubuntu: mpm_event + proxy_fcgi, `conf-available/monopanel.conf` |
-| Databases | `mp stack install percona\|mysql`, `mp db create\|list\|passwd\|rm` | Percona Server / MySQL 8.4 LTS, root over `auth_socket`, tuning from available RAM, `mysql_native_password` only for PHP < 7.4, databases named `<login>_<name>` |
+| Databases | `mp stack install percona\|mysql`, `mp db create\|list\|passwd\|rm` | Percona Server / MySQL 8.4 LTS, root over `auth_socket` (on EL the panel moves it off the package's temporary password itself), tuning from available RAM, `mysql_native_password` only for PHP < 7.4, databases named `<login>_<name>`, generated passwords satisfy `validate_password` |
 | TLS | `mp ssl issue\|list\|renew\|rm`, `mp dns-provider add`, `mp web tls` | lego: HTTP-01 through the nginx webroot, DNS-01 (Cloudflare, Hetzner, DigitalOcean, Gandi, deSEC, Namecheap, RFC2136) for wildcards, renewal 30 days ahead, hot-swap of the panel's own certificate; `mp ssl import --cert --key` for certificates issued elsewhere |
 | Migration between panels | `mp migrate grant\|plan\|run` | a whole account moves to another MonoPanel server: the source issues a token scoped to one account and only ever reads, the target reports conflicts first (`plan` changes nothing) and then takes it — files and dumps stream straight through, and panel, SFTP, MySQL and mailbox passwords travel as hashes, so users never notice the move ([docs/07-migration.md](docs/07-migration.md)) |
 | Self-update | `mp update`, `mp update apply` | from this repository's releases: the panel finds a new version, downloads the package for its OS, verifies an ed25519 signature and installs it from a separate systemd unit, restoring the previous binary if the new one does not answer |
@@ -102,17 +106,19 @@ and the terminal menu.
 | Backups | `mp backup target add\|run\|list\|snapshots\|restore` | restic (local/SFTP/S3/B2/REST), MySQL dumps, a copy of panel.db, retention, a daily schedule, restore into `<data>/restore/<snapshot>` or in place |
 | Files | `mp files ls\|put\|get\|mkdir\|rm\|mv\|chmod\|extract\|size` | `monopanel fsop` behind a helper that drops privileges irreversibly; paths are relative to the account's home. The web UI has a file manager with an editor: browsing, drag-and-drop upload, permissions, archive extraction and editing in the VS Code editor (Monaco: highlighting for php/html/css/js/sql/yaml/ini, find and replace, multiple cursors, folding, F1 for the command palette); a site's Files tab opens at its docroot |
 | SFTP / SSH | `mp user add`, `mp user set --shell\|--sftp-only --password` | SFTP-only means a chroot into `/var/www/<login>` via `sshd_config.d/monopanel.conf`, with one password for the panel and SFTP; `mp user rm <login> [--purge]` removes sites, databases, cron, app services, certificates and the unix account together |
-| Metrics and logs | `mp metrics`, `mp site logs`, `mp logs <unit>`, `mp doctor` | a sampler every 10 s stored as one point per minute for 30 days, site and journald log tails through the agent, 25 doctor checks |
+| Metrics and logs | `mp metrics`, `mp site logs`, `mp logs <unit>`, `mp doctor` | a sampler every 10 s stored as one point per minute for 30 days, site and journald log tails through the agent; doctor checks services, configs, disk, certificates, DNS, jobs and file drift |
 | Security | `mp user totp-reset`, `mp webhook add` | TOTP 2FA (QR in the web UI), Bearer tokens, webhooks signed with HMAC-SHA256 on job events |
 
 ### Not there yet
 
-Own PHP builds (Sury/Remi are used instead), tested Apache and database support on
-EL, phpMyAdmin, disk quotas, per-site cgroup limits, a DNS server, a WAF,
-several servers from one panel, an apt/yum repository (packages ship as releases
-and the panel installs them itself). Mail runs on Debian/Ubuntu with dovecot 2.3;
-the configuration for EL and for dovecot 2.4 is not written yet, and there is no
-content filter (rspamd).
+Own PHP builds (Sury/Remi are used instead), tested Apache on EL, phpMyAdmin, disk
+quotas, per-site cgroup limits, a DNS server, a WAF, several servers from one panel,
+an apt/yum repository (packages ship as releases and the panel installs them itself).
+Mail runs on Debian/Ubuntu with dovecot 2.3; the configuration for EL and for dovecot
+2.4 (Debian 13, Ubuntu 26.04) is not written yet, and there is no content filter
+(rspamd). Moving accounts works only between two MonoPanel servers and without a
+resync before the DNS switch; adapters for other panels are planned
+([docs/07-migration.md](docs/07-migration.md)).
 
 ## How it works
 
@@ -143,14 +149,15 @@ The principles, briefly:
 
 ## Releases and updates
 
-A version is cut by tagging; CI does the rest. The tag `v0.6.0` builds `.deb` and
+A version is cut by tagging; CI does the rest. The tag `v0.7.0` builds `.deb` and
 `.rpm` for amd64 and arm64, signs the checksum list with an ed25519 key held as a
-repository secret and publishes the release.
+repository secret and publishes the release; the annotated tag's message becomes the
+release notes.
 
 ```bash
 make keygen                  # once: a signing key pair (the private half becomes the secret)
-make release VERSION=0.6.0   # tag and push; CI builds and publishes
-make packages VERSION=0.6.0  # the same artefacts locally, without publishing
+make release VERSION=0.7.0   # tag and push; CI builds and publishes
+make packages VERSION=0.7.0  # the same artefacts locally, without publishing
 ```
 
 On a server:
@@ -166,7 +173,8 @@ Checks run on a schedule (daily by default) and `--auto-apply` installs what the
 find. The panel does not install the package itself: the agent starts a transient
 `monopanel-update.service`, which survives the restart of both daemons and restores
 the previous binary if the new version fails to answer. While a key is pinned, an
-unsigned release will not install.
+unsigned release will not install. A slow link is fine: the package download has no
+overall deadline, only a stalled stream is given up.
 
 ## Stack
 
@@ -200,6 +208,7 @@ make help             # every target
 | `make web-check` | types and markup of the web UI (`svelte-check`) |
 | `scripts/check-templates.sh` | feeds the generated configuration to a real `nginx -t` and `apachectl -t` |
 | `make e2e` | a scenario against a live panel: account → site with a preset → database → removal |
+| `make testbed-matrix` | the same scenario on the nine testbed VMs (one per OS of the matrix) in parallel, each rolled back to a clean snapshot first; `make testbed-migrate SRC= DST=` moves a real account between two of them and checks what arrived |
 
 The fake agent (`internal/agent/agenttest`) listens on a unix socket and answers
 the privileged operations while recording everything the panel tried to do. A test
@@ -218,7 +227,9 @@ MONOPANEL_URL=https://panel:8443 MONOPANEL_TOKEN='…' make e2e
 CI on every push: tests with the race detector and coverage, the linter, template
 validation against real nginx and Apache, the web UI build with type checking, and
 binaries for amd64 and arm64. E2E runs on demand (`workflow_dispatch`) because it
-needs a live host.
+needs a live host. The OS matrix runs from a workstation against a Proxmox testbed
+([docs/08-testbed.md](docs/08-testbed.md)): the scripts live in `scripts/testbed/`, the
+host and network in the git-ignored `.dev/testbed.env`.
 
 ### Layout
 
@@ -238,12 +249,14 @@ web/                  SvelteKit application (build/ is embedded in the binary)
 web/static/monaco/    the VS Code editor (Monaco), trimmed build — see its README
 packaging/            nfpm.yaml, units, sysusers/tmpfiles, install.sh
 scripts/release/      key generation and SHA256SUMS signing for a release
+scripts/testbed/      the testbed: VMs on Proxmox, panel bootstrap, matrix and migration runs
 ```
 
 ## Documentation
 
 The design documents are in Russian, in [docs/](docs/): architecture, the platform
-matrix, the web stack, the CLI/TUI/API reference, the roadmap and the mail server.
+matrix, the web stack, the CLI/TUI/API reference, the roadmap, the mail server,
+moving accounts between panels and the testbed.
 The API reference is served by the panel itself at `/api/v1/docs` (OpenAPI 3.1).
 
 ## Security

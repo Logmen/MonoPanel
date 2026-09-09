@@ -3,8 +3,8 @@
 [English](README.en.md) · Русский
 
 Панель управления веб-сервером для Debian/Ubuntu и RHEL-семейства: сайты, PHP, базы,
-TLS, бэкапы и firewall на одном сервере — одним статическим бинарником, без рантайма,
-агентов на других языках и внешних зависимостей.
+TLS, почта, бэкапы, firewall и переезд между серверами — одним статическим бинарником,
+без рантайма, агентов на других языках и внешних зависимостей.
 
 [![ci](https://github.com/Logmen/MonoPanel/actions/workflows/ci.yml/badge.svg)](https://github.com/Logmen/MonoPanel/actions/workflows/ci.yml)
 [![release](https://img.shields.io/github/v/release/Logmen/MonoPanel)](https://github.com/Logmen/MonoPanel/releases)
@@ -16,8 +16,8 @@ nginx: если конфигурация сайта сломается, пане
 Web UI, CLI, TUI и интеграции работают через один и тот же REST API — то, что можно
 сделать мышкой, можно сделать и скриптом.
 
-Состояние: **0.6.0**, ежедневно используется на боевом сервере с несколькими сайтами.
-Разработка идёт быстро, ломающие изменения до 1.0 возможны.
+Состояние: **0.7.0**, ежедневно используется на боевом сервере с несколькими сайтами
+и почтой. Разработка идёт быстро, ломающие изменения до 1.0 возможны.
 
 ## Установка
 
@@ -34,8 +34,11 @@ mp setup
 администратора, после чего печатает адрес панели и пароль.
 
 Требуется root, systemd и одна из: Debian 12/13, Ubuntu 22.04/24.04/26.04,
-AlmaLinux/Rocky 9/10. Проверено на Ubuntu 24.04; остальные поддерживаются кодом
-(OS Profile), но полная матрица ещё не прогонялась на VM.
+AlmaLinux/Rocky 9/10. Вся матрица прогоняется на [тестовой площадке](docs/08-testbed.md):
+установка панели, nginx, PHP, Percona и сценарий e2e проходят на всех девяти ОС.
+На EL SELinux остаётся в enforcing — панель сама настраивает контексты и булевы под
+хостинг. Для Ubuntu 26.04 у `ppa:ondrej/php` пока нет сборок, поэтому там ставится
+PHP 8.5 из самой Ubuntu; как только PPA появится, панель подключит его сама.
 
 ## Быстрый старт
 
@@ -84,7 +87,7 @@ mp                              # TUI-меню
 | Сайты | `mp site add\|set\|apply\|suspend\|rm\|logs` | режимы `fpm`, `apache` (loopback 8080, mod_proxy_fcgi), `proxy` (nginx → backend); пул на сайт, ACL для `monopanel-web`, страница-заглушка, авто-сертификат, suspend = 503-заглушка; IP-allow-list на сайт (`--allow`), HSTS при принудительном HTTPS, свои директивы в `sites/<domain>.d/*.conf`; `mp site nginx <domain> --set файл` — свои директивы с проверкой `nginx -t` и откатом; `mp site php <domain>` — действующие PHP-параметры; пресеты CMS `--preset wordpress\|joomla\|bitrix\|opencart` (`mp site presets`): свои nginx-локации (ЧПУ, /api Joomla, urlrewrite Bitrix, `_route_` OpenCart, закрытые служебные каталоги, запрет PHP в uploads) и PHP-значения по умолчанию |
 | App-сервисы | `mp app add\|set\|start\|stop\|restart\|logs\|rm` | systemd-юнит `monopanel-app-<login>-<name>` от имени пользователя (gunicorn, node, боты): команда, workdir и env-file внутри домашнего каталога, автозапуск, журнал через journalctl |
 | Apache 2.4 | `mp stack install apache` | Debian/Ubuntu: mpm_event + proxy_fcgi, `conf-available/monopanel.conf` |
-| СУБД | `mp stack install percona\|mysql`, `mp db create\|list\|passwd\|rm` | Percona Server / MySQL 8.4 LTS, root по `auth_socket`, тюнинг по RAM, `mysql_native_password` только при PHP < 7.4, базы `<login>_<name>` |
+| СУБД | `mp stack install percona\|mysql`, `mp db create\|list\|passwd\|rm` | Percona Server / MySQL 8.4 LTS, root по `auth_socket` (на EL панель сама переводит его с временного пароля пакета), тюнинг по RAM, `mysql_native_password` только при PHP < 7.4, базы `<login>_<name>`, сгенерированные пароли проходят `validate_password` |
 | TLS | `mp ssl issue\|list\|renew\|rm`, `mp dns-provider add`, `mp web tls` | lego: HTTP-01 по webroot nginx, DNS-01 (Cloudflare, Hetzner, DigitalOcean, Gandi, deSEC, Namecheap, RFC2136) для wildcard, автопродление за 30 дней, hot-swap сертификата панели; `mp ssl import --cert --key` для готовых сертификатов |
 | Перенос между панелями | `mp migrate grant\|plan\|run` | аккаунт целиком переезжает на другой сервер с MonoPanel: источник выдаёт токен с областью на один аккаунт и только читает, приёмник разбирает конфликты (`plan` ничего не меняет) и забирает — файлы и дамп идут потоком насквозь, пароли панели, SFTP, MySQL и почты переезжают хешами, поэтому пользователи смены сервера не замечают ([docs/07-migration.md](docs/07-migration.md)) |
 | Обновление панели | `mp update`, `mp update apply` | релизы этого репозитория: панель находит новую версию, скачивает пакет для своей ОС, проверяет подпись ed25519 и ставит его отдельным systemd-юнитом с откатом на прежний бинарник, если новая версия не отвечает |
@@ -96,16 +99,18 @@ mp                              # TUI-меню
 | Бэкапы | `mp backup target add\|run\|list\|snapshots\|restore` | restic (local/SFTP/S3/B2/REST), дампы MySQL, копия panel.db, retention, ежедневное расписание, восстановление в `<data>/restore/<snapshot>` или in-place |
 | Файлы | `mp files ls\|put\|get\|mkdir\|rm\|mv\|chmod\|extract\|size` | `monopanel fsop` через helper с необратимым сбросом привилегий, пути относительно домашнего каталога; в Web UI — файловый менеджер с редактором: обзор каталога, загрузка перетаскиванием, права, распаковка архивов и правка файлов в редакторе VS Code (Monaco: подсветка php/html/css/js/sql/yaml/ini, поиск и замена, мультикурсор, свёртка, F1 — палитра команд), вкладка «Файлы» в карточке сайта открывается сразу в его docroot |
 | SFTP / SSH | `mp user add`, `mp user set --shell\|--sftp-only --password` | SFTP-only = chroot в `/var/www/<login>` через `sshd_config.d/monopanel.conf`, пароль общий для панели и SFTP; `mp user rm <login> [--purge]` — удаление вместе с сайтами, базами, cron, app-сервисами и сертификатами |
-| Метрики и логи | `mp metrics`, `mp site logs`, `mp logs <unit>`, `mp doctor` | сэмплер раз в 10 с → точки по минутам (30 дней), хвост логов сайтов и journald через агент, 25 проверок doctor |
+| Метрики и логи | `mp metrics`, `mp site logs`, `mp logs <unit>`, `mp doctor` | сэмплер раз в 10 с → точки по минутам (30 дней), хвост логов сайтов и journald через агент; doctor проверяет сервисы, конфиги, диск, сертификаты, DNS, задачи и дрейф файлов |
 | Безопасность | `mp user totp-reset`, `mp webhook add` | TOTP 2FA (QR в Web UI), Bearer-токены, webhooks с HMAC-SHA256 на события задач |
 
 ### Чего пока нет
 
-Собственные сборки PHP (используются Sury/Remi), проверенная поддержка Apache и СУБД
-на EL, phpMyAdmin, дисковые квоты, cgroup-лимиты на сайт, DNS-сервер, WAF,
-несколько серверов из одной панели, apt/yum-репозиторий (пакеты выкладываются
-релизами, панель ставит их сама). Почта работает на Debian/Ubuntu с dovecot 2.3;
-для EL и для dovecot 2.4 конфигурация ещё не написана, контент-фильтра (rspamd) нет.
+Собственные сборки PHP (используются Sury/Remi), проверенный Apache на EL, phpMyAdmin,
+дисковые квоты, cgroup-лимиты на сайт, DNS-сервер, WAF, несколько серверов из одной
+панели, apt/yum-репозиторий (пакеты выкладываются релизами, панель ставит их сама).
+Почта работает на Debian/Ubuntu с dovecot 2.3; для EL и для dovecot 2.4 (Debian 13,
+Ubuntu 26.04) конфигурация ещё не написана, контент-фильтра (rspamd) нет. Переезд пока
+только между двумя MonoPanel и без досинхронизации перед переключением DNS; адаптеры
+для чужих панелей — в планах ([docs/07-migration.md](docs/07-migration.md)).
 
 ## Как устроено
 
@@ -134,14 +139,15 @@ mp                              # TUI-меню
 
 ## Обновление панели
 
-Версия выпускается тегом; всё остальное делает CI. Тег `v0.6.0` собирает `.deb` и
+Версия выпускается тегом; всё остальное делает CI. Тег `v0.7.0` собирает `.deb` и
 `.rpm` под amd64 и arm64, подписывает список контрольных сумм ключом ed25519 из
-секрета репозитория и публикует релиз.
+секрета репозитория и публикует релиз; текст аннотированного тега становится
+описанием релиза.
 
 ```bash
 make keygen                  # один раз: ключ подписи (приватный — в секрет MONOPANEL_RELEASE_KEY)
-make release VERSION=0.6.0   # тег + push, дальше CI собирает и публикует
-make packages VERSION=0.6.0  # то же локально, без публикации
+make release VERSION=0.7.0   # тег + push, дальше CI собирает и публикует
+make packages VERSION=0.7.0  # то же локально, без публикации
 ```
 
 На сервере:
@@ -157,7 +163,8 @@ mp update apply                          # скачать, проверить, �
 обновление без участия человека. Устанавливает не сама панель: агент запускает
 transient-юнит `monopanel-update.service`, который переживает перезапуск API и агента
 и возвращает прежний бинарник, если новая версия не отвечает. Пока задан ключ,
-неподписанный релиз не установится.
+неподписанный релиз не установится. Медленный канал не помеха: у загрузки пакета нет
+общего таймаута, обрывается только застывший поток.
 
 ## Стек
 
@@ -194,6 +201,7 @@ make help             # все цели
 | `make web-check` | типы и разметка Web UI (`svelte-check`) |
 | `scripts/check-templates.sh` | скармливает сгенерированные конфиги настоящим `nginx -t` и `apachectl -t` |
 | `make e2e` | сценарий на живой панели: пользователь → сайт с пресетом → база → удаление |
+| `make testbed-matrix` | тот же сценарий на девяти VM площадки (по одной на каждую ОС матрицы) параллельно, с откатом к чистому снимку; `make testbed-migrate SRC= DST=` — настоящий переезд аккаунта между двумя из них с проверкой |
 
 Фейковый агент (`internal/agent/agenttest`) поднимает unix-сокет и отвечает на операции
 привилегированного агента, записывая всё, что панель попыталась сделать. Тест видит
@@ -212,6 +220,9 @@ MONOPANEL_URL=https://panel:8443 MONOPANEL_TOKEN='…' make e2e
 CI на каждый push: тесты с детектором гонок и покрытием, линтер, проверка шаблонов
 реальными nginx и Apache, сборка Web UI с проверкой типов, сборка бинарника под amd64
 и arm64. E2E запускается вручную (`workflow_dispatch`) — ему нужен доступ к живому хосту.
+Матрица ОС гоняется с рабочего места на площадке Proxmox
+([docs/08-testbed.md](docs/08-testbed.md)): скрипты в `scripts/testbed/`, адрес хоста и
+сеть — в git-игнорируемом `.dev/testbed.env`.
 
 ### Структура
 
@@ -231,6 +242,7 @@ web/                  SvelteKit-приложение (build/ вшивается 
 web/static/monaco/    редактор VS Code (Monaco), урезанная сборка — см. его README
 packaging/            nfpm.yaml, units, sysusers/tmpfiles, install.sh
 scripts/release/      генерация ключа и подпись SHA256SUMS для релиза
+scripts/testbed/      площадка: VM на Proxmox, bootstrap панели, прогон матрицы и переезда
 ```
 
 ## Документация
