@@ -16,7 +16,7 @@ DEV_SSH  ?= ssh
 DEV_SCP  ?= scp
 GOLANGCI_VERSION ?= v2.13.2
 
-.PHONY: build build-arm64 test test-race test-short cover cover-html lint vet fmt fmt-check check web web-check web-stub e2e deb rpm packages arch-artifacts sign release keygen deploy-dev clean help
+.PHONY: build build-arm64 test test-race test-short cover cover-html lint vet fmt fmt-check check web web-check web-stub e2e deb rpm packages arch-artifacts sign release keygen deploy-dev clean help testbed-up testbed-reset testbed-down testbed-status testbed-deploy testbed-e2e testbed-matrix testbed-migrate
 
 help: ## Show the available targets
 	@grep -hE '^[a-z0-9-]+:.*##' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*## "} {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -135,3 +135,34 @@ deploy-dev: build
 
 clean:
 	rm -rf dist
+
+# Testbed: one VM per supported distribution on a Proxmox host, built from the
+# official cloud images (scripts/testbed/). The host and the network live in
+# the git-ignored .dev/testbed.env. VM=<name> picks a distribution, e.g.
+# debian13, ubuntu2404, alma10; without it every VM is meant.
+testbed-up: ## Create the missing testbed VMs and boot them (VM=<name> for one)
+	scripts/testbed/testbed.sh up $(VM)
+
+testbed-reset: ## Roll the testbed VMs back to the clean snapshot
+	scripts/testbed/testbed.sh reset $(VM)
+
+testbed-down: ## Destroy the testbed VMs
+	scripts/testbed/testbed.sh down $(VM)
+
+testbed-status: ## Show the testbed VMs
+	scripts/testbed/testbed.sh status
+
+testbed-deploy: ## Build the package, install the panel and the stack on VM=<name>
+	@[ -n "$(VM)" ] || { echo "make testbed-deploy VM=debian13"; exit 2; }
+	scripts/testbed/testbed.sh deploy $(VM)
+
+testbed-e2e: ## Run the end-to-end tests against VM=<name>
+	@[ -n "$(VM)" ] || { echo "make testbed-e2e VM=debian13"; exit 2; }
+	scripts/testbed/testbed.sh e2e $(VM)
+
+testbed-matrix: ## reset + deploy + e2e on every testbed VM in parallel, then a summary
+	scripts/testbed/testbed.sh matrix $(VM)
+
+testbed-migrate: ## Move an account from SRC=<name> to DST=<name> and verify it arrived
+	@[ -n "$(SRC)" ] && [ -n "$(DST)" ] || { echo "make testbed-migrate SRC=ubuntu2404 DST=debian13"; exit 2; }
+	scripts/testbed/testbed.sh migrate $(SRC) $(DST)
