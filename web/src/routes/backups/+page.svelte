@@ -6,6 +6,7 @@
   import PageHead from '$lib/components/PageHead.svelte';
   import Empty from '$lib/components/Empty.svelte';
   import Icon from '$lib/components/Icon.svelte';
+  import Modal from '$lib/components/Modal.svelte';
   let targets = $state<any[]>([]);
   let runs = $state<any[]>([]);
   let snaps = $state<{ target: string; list: any[] } | null>(null);
@@ -21,7 +22,18 @@
   async function create(e: Event) { e.preventDefault(); error = ''; try { const env: Record<string, string> = {}; for (const l of form.env.split('\n')) { const [k, ...v] = l.split('='); if (k.trim()) env[k.trim()] = v.join('=').trim(); } created = await api('/backups/targets', { method: 'POST', json: { ...form, env, password: form.password || undefined } }); showForm = false; await load(); } catch (e) { fail(e); } }
   async function start(e: Event) { e.preventDefault(); error = ''; try { const r: any = await api('/backups/run', { method: 'POST', json: run }); job = r.job_id; } catch (e) { fail(e); } }
   async function showSnaps(name: string) { try { snaps = { target: name, list: await api(`/backups/targets/${name}/snapshots`) }; } catch (e) { fail(e); } }
-  async function restore(id: string) { if (!snaps) return; const inc = prompt('Пути для восстановления через запятую (пусто = всё) — в /var/lib/monopanel/restore/' + id); if (inc === null) return; try { const r: any = await api('/backups/restore', { method: 'POST', json: { target: snaps.target, snapshot: id, include: (inc || '').split(',').map((s) => s.trim()).filter(Boolean) } }); job = r.job_id; } catch (e) { fail(e); } }
+  // Восстановление спрашивает пути отдельным окном: системный prompt() не
+  // умеет объяснить, куда именно ляжет снимок.
+  let rest = $state<{ id: string; include: string } | null>(null);
+  async function restore() {
+    if (!rest || !snaps) return;
+    const { id, include } = rest;
+    rest = null;
+    try {
+      const r: any = await api('/backups/restore', { method: 'POST', json: { target: snaps.target, snapshot: id, include: include.split(',').map((s) => s.trim()).filter(Boolean) } });
+      job = r.job_id;
+    } catch (e) { fail(e); }
+  }
 </script>
 
 <PageHead title="Бэкапы" sub="restic: local, SFTP, S3, B2, REST · дампы баз, файлы сайтов и панель">
@@ -58,7 +70,7 @@
 {#if snaps}
   <div class="card mb-4 rise"><div class="flex justify-between mb-2"><span class="font-medium">Снимки: {snaps.target}</span><button class="btn btn-sm" onclick={() => (snaps = null)}>закрыть</button></div>
     <table class="tbl"><thead><tr><th>ID</th><th>Время</th><th>Теги</th><th>Пути</th><th></th></tr></thead><tbody>
-      {#each snaps.list as s}<tr><td data-label="ID" class="font-mono">{s.short_id}</td><td data-label="Время" class="text-xs">{when(s.time)}</td><td data-label="Теги" class="text-xs">{s.tags.join(', ')}</td><td data-label="Пути" class="text-xs font-mono">{s.paths.join(' ')}</td><td data-label="" class="text-right"><button class="btn btn-sm" onclick={() => restore(s.short_id)}>восстановить</button></td></tr>{/each}
+      {#each snaps.list as s}<tr><td data-label="ID" class="font-mono">{s.short_id}</td><td data-label="Время" class="text-xs">{when(s.time)}</td><td data-label="Теги" class="text-xs">{s.tags.join(', ')}</td><td data-label="Пути" class="text-xs font-mono">{s.paths.join(' ')}</td><td data-label="" class="text-right"><button class="btn btn-sm" onclick={() => (rest = { id: s.short_id, include: '' })}>восстановить</button></td></tr>{/each}
       {#if !snaps.list.length}<Empty text="Снимков нет." cols={5} />{/if}
     </tbody></table></div>
 {/if}
@@ -68,3 +80,15 @@
     {#if !runs.length}<Empty text="Бэкапов ещё не было." cols={7} />{/if}
   </tbody></table>
 </div>
+
+<Modal open={!!rest} title="Восстановить снимок {rest?.id}?" onclose={() => (rest = null)}>
+  <p class="text-muted">Файлы снимка распакуются в <span class="font-mono">/var/lib/monopanel/restore/{rest?.id}</span> — ничего работающего не перезаписывается, забрать нужное оттуда можно руками. Задача может идти долго: снимок читается из репозитория целиком.</p>
+  <div>
+    <label class="label" for="rinc">Пути (через запятую)</label>
+    <input id="rinc" class="input font-mono" bind:value={rest!.include} placeholder="пусто — весь снимок" />
+  </div>
+  {#snippet footer()}
+    <button class="btn" onclick={() => (rest = null)}>Отмена</button>
+    <button class="btn btn-primary" onclick={restore}>Восстановить</button>
+  {/snippet}
+</Modal>

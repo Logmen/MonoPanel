@@ -5,6 +5,7 @@
   import { auth, notify, theme, setTheme, type ThemeMode } from '$lib/state.svelte';
   import PageHead from '$lib/components/PageHead.svelte';
   import Icon from '$lib/components/Icon.svelte';
+  import Confirm, { type Ask } from '$lib/components/Confirm.svelte';
   let totp = $state<any>(null);
   let setup = $state<any>(null);
   let qr = $state('');
@@ -20,6 +21,7 @@
   let updating = $state('');
   let error = $state('');
   let msg = $state('');
+  let ask = $state<Ask | null>(null);
   const admin = $derived(auth.me?.role === 'admin');
   const fail = (e: unknown) => { error = e instanceof ApiError ? e.text : String(e); notify(error, 'err'); };
   async function load() { try { totp = await api('/auth/totp'); tokens = await api('/tokens'); if (admin) { hooks = await api('/webhooks'); realip = await api('/stack/nginx/real-ip'); realipFrom = (realip.from || []).join(', '); setUpdate(await api('/system/update')); } } catch (e: any) { error = e.text || String(e); } }
@@ -27,8 +29,13 @@
   async function saveUpdate(e: Event) { e.preventDefault(); try { setUpdate(await api('/system/update', { method: 'PUT', json: { ...updForm, token: updForm.token || undefined } })); notify('настройки обновлений сохранены'); } catch (e) { fail(e); } }
   async function checkUpdate() { updating = 'проверяем репозиторий…'; try { setUpdate(await api('/system/update/check', { method: 'POST', json: {} })); notify(upd.available ? 'доступна версия ' + upd.latest : 'установлена последняя версия'); } catch (e) { fail(e); } finally { updating = ''; } }
   // Установка перезапускает саму панель: ждём, пока она ответит новой версией, и перезагружаем страницу.
+  const askUpdate = (): Ask => ({
+    title: `Обновить панель до ${upd.latest}?`,
+    note: 'Пакет скачается и поставится отдельной задачей systemd: панель и агент перезапустятся, страница сама перезагрузится через минуту-две. Сайты, почта и базы продолжают работать всё это время; если новая версия не ответит, панель откатится на прежнюю.',
+    action: 'Обновить',
+    run: () => applyUpdate()
+  });
   async function applyUpdate() {
-    if (!confirm(`Обновить панель до ${upd.latest}? Панель перезапустится, сайты продолжат работать.`)) return;
     try { await api('/system/update/apply', { method: 'POST', json: {} }); } catch (e) { fail(e); return; }
     updating = 'устанавливаем ' + upd.latest + '…';
     const deadline = Date.now() + 240000;
@@ -47,8 +54,20 @@
   async function enableTotp(e: Event) { e.preventDefault(); error = ''; try { await api('/auth/totp/enable', { method: 'POST', json: { code } }); setup = null; code = ''; notify('2FA включена'); await load(); } catch (e) { fail(e); } }
   async function disableTotp() { const p = prompt('Пароль для отключения 2FA:'); if (!p) return; try { await api('/auth/totp/disable', { method: 'POST', json: { password: p } }); notify('2FA выключена'); await load(); } catch (e) { fail(e); } }
   async function createToken() { const name = prompt('Название токена:', 'api'); if (!name) return; try { const r: any = await api('/tokens', { method: 'POST', json: { name } }); newToken = r.token; await load(); } catch (e) { fail(e); } }
+  const askRevoke = (t: any): Ask => ({
+    title: `Отозвать токен «${t.name}»?`,
+    note: 'Всё, что ходит в API с этим токеном — скрипты, интеграции, другой сервер — получит 401 сразу после отзыва. Вернуть тот же токен нельзя, только выпустить новый.',
+    danger: true, action: 'Отозвать',
+    run: () => revoke(t.id)
+  });
   async function revoke(id: number) { await api(`/tokens/${id}`, { method: 'DELETE' }); await load(); }
   async function addHook(e: Event) { e.preventDefault(); try { const r: any = await api('/webhooks', { method: 'POST', json: { url: hook.url, events: hook.events.split(',').map((s) => s.trim()).filter(Boolean) } }); msg = 'секрет webhook: ' + r.secret; hook.url = ''; await load(); } catch (e) { fail(e); } }
+  const askHook = (h: any): Ask => ({
+    title: 'Удалить webhook?',
+    note: `${h.url} перестанет получать события (${h.events.join(', ')}). Секрет подписи пропадёт вместе с ним — новый webhook получит другой.`,
+    danger: true, action: 'Удалить',
+    run: () => rmHook(h.id)
+  });
   async function rmHook(id: string) { await api(`/webhooks/${id}`, { method: 'DELETE' }); await load(); }
   async function saveRealIP() { try { realip = await api('/stack/nginx/real-ip', { method: 'PUT', json: { cloudflare: realip.cloudflare, from: realipFrom.split(/[\s,]+/).filter(Boolean) } }); realipFrom = (realip.from || []).join(', '); notify('nginx real_ip обновлён'); } catch (e) { fail(e); } }
   const modes: [ThemeMode, string, string][] = [['system', 'monitor', 'Как в системе'], ['light', 'sun', 'Светлая'], ['dark', 'moon', 'Тёмная']];
@@ -80,7 +99,7 @@
   <div class="card rise" style="--i:2">
     <div class="flex justify-between items-center mb-2"><span class="font-medium">API-токены</span><button class="btn btn-sm" onclick={createToken}><Icon name="plus" size={13} /> создать</button></div>
     {#if newToken}<div class="text-xs font-mono break-all mb-2 p-2 code select-all">{newToken}<div class="text-muted">показан один раз</div></div>{/if}
-    <ul class="text-sm divide-y divide-line">{#each tokens as t}<li class="flex justify-between items-center py-1.5"><span>{t.name} <span class="text-xs text-muted">{t.last_used_at ? 'использован ' + when(t.last_used_at) : 'не использовался'}</span></span><button class="btn btn-danger btn-sm" onclick={() => revoke(t.id)}>отозвать</button></li>{/each}</ul>
+    <ul class="text-sm divide-y divide-line">{#each tokens as t}<li class="flex justify-between items-center py-1.5"><span>{t.name} <span class="text-xs text-muted">{t.last_used_at ? 'использован ' + when(t.last_used_at) : 'не использовался'}</span></span><button class="btn btn-danger btn-sm" onclick={() => (ask = askRevoke(t))}>отозвать</button></li>{/each}</ul>
     <p class="text-xs text-muted mt-2 font-mono">mp --server https://{location.host} --token … status</p>
   </div>
   {#if admin}
@@ -101,7 +120,7 @@
         </div>
         <div class="flex gap-2">
           <button class="btn btn-sm" onclick={checkUpdate} disabled={!!updating || !upd?.settings?.repo}><Icon name="refresh" size={13} /> проверить</button>
-          {#if upd?.available}<button class="btn btn-primary btn-sm" onclick={applyUpdate} disabled={!!updating}>обновить до {upd.latest}</button>{/if}
+          {#if upd?.available}<button class="btn btn-primary btn-sm" onclick={() => (ask = askUpdate())} disabled={!!updating}>обновить до {upd.latest}</button>{/if}
         </div>
       </div>
       {#if updating}<p class="text-sm text-accent-ink mb-3">{updating}</p>{/if}
@@ -125,7 +144,9 @@
     <div class="card md:col-span-2 rise" style="--i:5">
       <div class="font-medium mb-2">Webhooks (HMAC-SHA256)</div>
       <form class="flex flex-wrap gap-2 items-end mb-3" onsubmit={addHook}><div class="flex-1 min-w-64"><label class="label" for="hu">URL</label><input id="hu" class="input" bind:value={hook.url} required /></div><div><label class="label" for="he">События</label><input id="he" class="input font-mono" bind:value={hook.events} /></div><button class="btn btn-primary">Добавить</button></form>
-      <ul class="text-sm divide-y divide-line">{#each hooks as h}<li class="flex justify-between items-center py-1.5 font-mono text-xs"><span>{h.url} · {h.events.join(',')}</span><button class="btn btn-danger btn-sm" onclick={() => rmHook(h.id)}>удалить</button></li>{/each}</ul>
+      <ul class="text-sm divide-y divide-line">{#each hooks as h}<li class="flex justify-between items-center py-1.5 font-mono text-xs"><span>{h.url} · {h.events.join(',')}</span><button class="btn btn-danger btn-sm" onclick={() => (ask = askHook(h))}>удалить</button></li>{/each}</ul>
     </div>
   {/if}
 </div>
+
+<Confirm bind:ask />

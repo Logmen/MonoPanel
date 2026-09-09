@@ -5,6 +5,7 @@
   import JobLog from '$lib/components/JobLog.svelte';
   import PageHead from '$lib/components/PageHead.svelte';
   import Modal from '$lib/components/Modal.svelte';
+  import Confirm, { type Ask } from '$lib/components/Confirm.svelte';
   import Empty from '$lib/components/Empty.svelte';
   import Icon from '$lib/components/Icon.svelte';
   let engine = $state<any>(null);
@@ -15,6 +16,7 @@
   let job = $state<number | null>(null);
   let showForm = $state(false);
   let del = $state<any>(null);
+  let ask = $state<Ask | null>(null);
   let form = $state({ name: '', user: '', password: '' });
   const admin = $derived(auth.me?.role === 'admin');
   const fail = (e: unknown) => { error = e instanceof ApiError ? e.text : String(e); notify(error, 'err'); };
@@ -25,6 +27,12 @@
   async function installEngine(c: string) { error = ''; try { const r: any = await api('/stack/install', { method: 'POST', json: { component: c } }); job = r.job_id; } catch (e) { fail(e); } }
   async function create(e: Event) { e.preventDefault(); error = ''; try { const body: any = { ...form }; if (!admin) delete body.user; if (!body.password) delete body.password; created = await api('/databases', { method: 'POST', json: body }); form.name = ''; showForm = false; await load(); } catch (e) { fail(e); } }
   async function drop() { if (!del) return; try { await api(`/databases/${del.name}`, { method: 'DELETE' }); notify(`База ${del.name} удалена`); del = null; await load(); } catch (e) { fail(e); } }
+  const askPassword = (name: string): Ask => ({
+    title: `Сгенерировать новый пароль для ${name}?`,
+    note: 'Старый перестанет работать сразу — сайт, который ходит в базу с ним, начнёт отдавать ошибку, пока новый пароль не пропишут в его конфиге. Пароль показывается один раз.',
+    action: 'Сгенерировать',
+    run: () => passwd(name)
+  });
   async function passwd(name: string) { try { const r: any = await api(`/databases/${name}/password`, { method: 'POST', json: {} }); created = { database: { name }, password: r.password, reset: true }; } catch (e) { fail(e); } }
 </script>
 
@@ -49,12 +57,13 @@
   <div class="card overflow-x-auto p-0 rise">
     <table class="tbl"><thead><tr><th>База</th><th>Владелец</th><th>Аккаунты</th><th>Размер</th><th></th></tr></thead>
       <tbody>
-        {#each dbs as d, i}<tr class="rise" style="--i:{i}"><td data-label="База" class="font-mono font-medium">{d.name}</td><td data-label="Владелец">{d.login}</td><td data-label="Аккаунты" class="font-mono text-xs text-muted">{d.users.map((u: any) => u.name + '@' + u.host + ' (' + u.auth_plugin + ')').join(', ')}</td><td data-label="Размер" class="tabular-nums">{bytes(d.size_bytes)}</td><td data-label=""><div class="row-actions"><button class="btn btn-sm" onclick={() => passwd(d.name)}><Icon name="key" size={13} /> пароль</button><button class="btn btn-danger btn-sm" onclick={() => (del = d)}><Icon name="trash" size={13} /></button></div></td></tr>{/each}
+        {#each dbs as d, i}<tr class="rise" style="--i:{i}"><td data-label="База" class="font-mono font-medium">{d.name}</td><td data-label="Владелец">{d.login}</td><td data-label="Аккаунты" class="font-mono text-xs text-muted">{d.users.map((u: any) => u.name + '@' + u.host + ' (' + u.auth_plugin + ')').join(', ')}</td><td data-label="Размер" class="tabular-nums">{bytes(d.size_bytes)}</td><td data-label=""><div class="row-actions"><button class="btn btn-sm" onclick={() => (ask = askPassword(d.name))}><Icon name="key" size={13} /> пароль</button><button class="btn btn-danger btn-sm" onclick={() => (del = d)}><Icon name="trash" size={13} /></button></div></td></tr>{/each}
         {#if !dbs.length}<Empty text="Баз пока нет." cols={5} />{/if}
       </tbody></table>
   </div>
 {/if}
-<Modal open={!!del} title="Удалить базу {del?.name}?">
+<Confirm bind:ask />
+<Modal open={!!del} title="Удалить базу {del?.name}?" onclose={() => (del = null)}>
   <p>Данные и аккаунты базы будут удалены безвозвратно.</p>
   {#snippet footer()}<button class="btn" onclick={() => (del = null)}>Отмена</button><button class="btn btn-danger" onclick={drop}>Удалить</button>{/snippet}
 </Modal>

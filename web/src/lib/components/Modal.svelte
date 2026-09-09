@@ -2,8 +2,11 @@
   import type { Snippet } from 'svelte';
   import { fade, scale } from 'svelte/transition';
   import { dur } from '$lib/state.svelte';
-  let { open = $bindable(false), title = '', children, footer }: { open?: boolean; title?: string; children?: Snippet; footer?: Snippet } = $props();
-  function close() { open = false; }
+  // onclose нужен там, где открытость выводится из состояния снаружи
+  // (open={!!del}): без него Esc и клик по фону гасят окно, а состояние
+  // остаётся — и та же кнопка второй раз уже ничего не открывает.
+  let { open = $bindable(false), title = '', children, footer, onclose }: { open?: boolean; title?: string; children?: Snippet; footer?: Snippet; onclose?: () => void } = $props();
+  function close() { open = false; onclose?.(); }
   function key(e: KeyboardEvent) { if (e.key === 'Escape') close(); }
 </script>
 

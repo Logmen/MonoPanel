@@ -6,6 +6,7 @@
   import Skeleton from '$lib/components/Skeleton.svelte';
   import JobLog from '$lib/components/JobLog.svelte';
   import Modal from '$lib/components/Modal.svelte';
+  import Confirm, { type Ask } from '$lib/components/Confirm.svelte';
   import Empty from '$lib/components/Empty.svelte';
   import Icon from '$lib/components/Icon.svelte';
 
@@ -24,6 +25,9 @@
   let dnsLoading = $state(false);
   let del = $state<{ kind: string; name: string; note: string } | null>(null);
   let purge = $state(false);
+  // Кнопки в строке — иконки без подписи, поэтому каждая сначала объясняет,
+  // что именно сейчас произойдёт.
+  let ask = $state<Ask | null>(null);
 
   let install = $state({ hostname: '' });
   let domainForm = $state({ name: '', user: '', lenient: false });
@@ -94,9 +98,20 @@
   async function newPassword(address: string) {
     try { const r: any = await api(`/mail/mailboxes/${address}`, { method: 'PATCH', json: {} }); created = { mailbox: { address }, password: r.password, reset: true }; } catch (e) { fail(e); }
   }
+  const askPassword = (b: any): Ask => ({
+    title: `Сгенерировать новый пароль для ${b.address}?`,
+    note: 'Старый перестанет работать сразу: почтовые клиенты и вебпочта попросят ввести новый. Новый пароль показывается один раз — скопируйте его.',
+    action: 'Сгенерировать',
+    run: () => newPassword(b.address)
+  });
   async function toggleBox(b: any) {
     try { await api(`/mail/mailboxes/${b.address}`, { method: 'PATCH', json: { active: !b.active } }); await load(); } catch (e) { fail(e); }
   }
+  const askToggleBox = (b: any): Omit<Ask, 'run'> => b.active
+    ? { title: `Выключить ящик ${b.address}?`, danger: true, action: 'Выключить',
+        note: 'Почта на него перестанет приниматься — отправитель получит отказ, войти в IMAP и POP3 будет нельзя. Письма на диске останутся, включить ящик можно обратно.' }
+    : { title: `Включить ящик ${b.address}?`, action: 'Включить',
+        note: 'Ящик снова начнёт принимать почту и пускать в IMAP и POP3.' };
   async function remove() {
     if (!del) return;
     try {
@@ -113,9 +128,22 @@
   async function toggleLenient(d: any) {
     try { await api(`/mail/domains/${d.name}`, { method: 'PATCH', json: { lenient: !d.lenient } }); await load(); } catch (e) { fail(e); }
   }
+  const askLenient = (d: any): Omit<Ask, 'run'> => d.lenient
+    ? { title: `Вернуть строгие проверки для ${d.name}?`, action: 'Вернуть',
+        note: 'Письма от отправителей с несуществующим доменом и неправильным HELO снова будут отклоняться на входе.' }
+    : { title: `Сделать ${d.name} доменом-приёмником?`, action: 'Сделать приёмником',
+        note: 'Панель перестанет отклонять письма с несуществующим доменом отправителя и неправильным HELO — они дойдут до ящика. Это нужно диагностическим приёмникам; обычному домену такая поблажка только добавит спама.' };
   async function rotateDKIM(name: string) {
     try { await api(`/mail/domains/${name}/dkim`, { method: 'POST', json: {} }); notify('новый ключ выпущен — обновите TXT-запись'); await load(); await showDNS(name); } catch (e) { fail(e); }
   }
+  const askDKIM = (d: any): Ask => ({
+    title: `Выпустить новый ключ DKIM для ${d.name}?`,
+    note: d.dkim_selector
+      ? 'Старый ключ перестанет подписывать письма сразу, а получатели проверяют подпись по TXT-записи в DNS. Пока вы не пропишете новую запись, подпись сходиться не будет — окно с записями откроется сразу после выпуска.'
+      : 'У домена появится ключ, и письма начнут подписываться. Получатели проверяют подпись по TXT-записи в DNS — пропишите её сразу, иначе подпись будет не сходиться.',
+    action: 'Выпустить',
+    run: () => rotateDKIM(d.name)
+  });
   async function installWebmail(e: Event) {
     e.preventDefault(); error = '';
     try { const r: any = await api('/mail/webmail', { method: 'POST', json: { ...webmailForm, port: Number(webmailForm.port) || 0 } }); job = r.job_id; } catch (e) { fail(e); }
@@ -247,8 +275,8 @@
               <td data-label="DKIM" class="font-mono text-xs text-muted">{d.dkim_selector || '—'}</td>
               <td data-label=""><div class="row-actions">
                 <button class="btn btn-sm" onclick={() => showDNS(d.name)}><Icon name="globe" size={13} /> DNS</button>
-                <button class="btn btn-sm" onclick={() => rotateDKIM(d.name)} title="выпустить новый ключ DKIM"><Icon name="key" size={13} /></button>
-                <button class="btn btn-sm" onclick={() => toggleLenient(d)} title={d.lenient ? 'вернуть строгие проверки отправителя' : 'домен-приёмник: принимать письма и от криво настроенных отправителей'}><Icon name="shield" size={13} /></button>
+                <button class="btn btn-sm" onclick={() => (ask = askDKIM(d))} title="выпустить новый ключ DKIM"><Icon name="key" size={13} /></button>
+                <button class="btn btn-sm" onclick={() => (ask = { ...askLenient(d), run: () => toggleLenient(d) })} title={d.lenient ? 'вернуть строгие проверки отправителя' : 'домен-приёмник: принимать письма и от криво настроенных отправителей'}><Icon name="shield" size={13} /></button>
                 <button class="btn btn-danger btn-sm" onclick={() => (del = { kind: 'domain', name: d.name, note: 'Домен, его ящики и все письма будут удалены.' })}><Icon name="trash" size={13} /></button>
               </div></td>
             </tr>
@@ -273,8 +301,8 @@
               <td data-label="Квота" class="tabular-nums">{b.quota_mb ? b.quota_mb + ' МБ' : 'без лимита'}</td>
               <td data-label="Состояние"><span class={b.active ? 'text-ok' : 'text-muted'}>{b.active ? 'активен' : 'выключен'}</span></td>
               <td data-label=""><div class="row-actions">
-                <button class="btn btn-sm" onclick={() => newPassword(b.address)}><Icon name="key" size={13} /> пароль</button>
-                <button class="btn btn-sm" onclick={() => toggleBox(b)}>{b.active ? 'выключить' : 'включить'}</button>
+                <button class="btn btn-sm" onclick={() => (ask = askPassword(b))}><Icon name="key" size={13} /> пароль</button>
+                <button class="btn btn-sm" onclick={() => (ask = { ...askToggleBox(b), run: () => toggleBox(b) })}>{b.active ? 'выключить' : 'включить'}</button>
                 <button class="btn btn-danger btn-sm" onclick={() => (del = { kind: 'box', name: b.address, note: 'Ящик перестанет принимать почту.' })}><Icon name="trash" size={13} /></button>
               </div></td>
             </tr>
@@ -326,8 +354,10 @@
   {#snippet footer()}<button class="btn" onclick={() => (dns = null)}>Закрыть</button>{/snippet}
 </Modal>
 
-<Modal open={!!del} title="Удалить {del?.name}?">
-  <p>{del?.note}</p>
+<Confirm bind:ask />
+
+<Modal open={!!del} title="Удалить {del?.name}?" onclose={() => { del = null; purge = false; }}>
+  <p class="text-muted">{del?.note}</p>
   {#if del?.kind === 'box'}<label class="flex items-center gap-2"><input type="checkbox" bind:checked={purge} /> удалить и письма с диска</label>{/if}
   {#snippet footer()}<button class="btn" onclick={() => { del = null; purge = false; }}>Отмена</button><button class="btn btn-danger" onclick={remove}>Удалить</button>{/snippet}
 </Modal>

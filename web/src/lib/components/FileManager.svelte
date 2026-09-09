@@ -4,6 +4,7 @@
   import { notify, theme } from '$lib/state.svelte';
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
+  import Confirm, { type Ask } from './Confirm.svelte';
 
   let { user, start = '/', sites = [] }: { user: string; start?: string; sites?: { domain: string; docroot?: string }[] } = $props();
 
@@ -39,18 +40,10 @@
   let askRun: (v: string) => Promise<void> = async () => {};
 
   // Подтверждения — тем же модальным окном, что и в остальной панели.
-  let confirmOpen = $state(false);
-  let confirmTitle = $state('');
-  let confirmText = $state('');
-  let confirmLabel = $state('Удалить');
-  let confirmRun: () => void = () => {};
+  let ask = $state<Ask | null>(null);
 
   function askConfirm(title: string, text: string, label: string, run: () => void) {
-    confirmTitle = title;
-    confirmText = text;
-    confirmLabel = label;
-    confirmRun = run;
-    confirmOpen = true;
+    ask = { title, note: text, action: label, danger: true, run };
   }
 
   // Режимы подсветки, которые лежат в web/static/monaco; всё остальное —
@@ -489,13 +482,7 @@
   </div>
 {/if}
 
-<Modal bind:open={confirmOpen} title={confirmTitle}>
-  <p>{confirmText}</p>
-  {#snippet footer()}
-    <button class="btn" onclick={() => (confirmOpen = false)}>Отмена</button>
-    <button class="btn btn-danger" onclick={() => { confirmOpen = false; confirmRun(); }}>{confirmLabel}</button>
-  {/snippet}
-</Modal>
+<Confirm bind:ask />
 
 <Modal bind:open={askOpen} title={askTitle}>
   <form id="fm-ask" onsubmit={askSubmit}>

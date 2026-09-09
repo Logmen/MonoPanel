@@ -6,13 +6,21 @@
   import PageHead from '$lib/components/PageHead.svelte';
   import Skeleton from '$lib/components/Skeleton.svelte';
   import Icon from '$lib/components/Icon.svelte';
+  import Confirm, { type Ask } from '$lib/components/Confirm.svelte';
   let data = $state<any>(null);
   let job = $state<number | null>(null);
   let error = $state('');
   async function load() { try { data = await api('/php/versions'); } catch (e: any) { error = e.text || String(e); } }
   onMount(load);
   async function install(v: string) { error = ''; try { const r: any = await api('/php/versions', { method: 'POST', json: { version: v } }); job = r.job_id; } catch (e) { error = e instanceof ApiError ? e.text : String(e); notify(error, 'err'); } }
-  async function remove(v: string) { if (!confirm('Удалить PHP ' + v + '?')) return; error = ''; try { const r: any = await api(`/php/versions/${v}`, { method: 'DELETE' }); job = r.job_id; } catch (e) { error = e instanceof ApiError ? e.text : String(e); notify(error, 'err'); } }
+  let ask = $state<Ask | null>(null);
+  const askRemove = (v: string): Ask => ({
+    title: `Удалить PHP ${v}?`,
+    note: `Пакеты ветки ${v} и её php-fpm будут удалены с сервера. Сайты, которые на ней работают, перестанут отвечать — сначала переведите их на другую версию.`,
+    danger: true, action: 'Удалить',
+    run: () => remove(v)
+  });
+  async function remove(v: string) { error = ''; try { const r: any = await api(`/php/versions/${v}`, { method: 'DELETE' }); job = r.job_id; } catch (e) { error = e instanceof ApiError ? e.text : String(e); notify(error, 'err'); } }
   const installed = $derived(Object.fromEntries((data?.installed || []).map((p: any) => [p.version, p])));
 
   // Расширения ветки: php-fpm — один мастер на версию, поэтому включение и
@@ -35,8 +43,19 @@
     }
   }
 
-  async function setExt(version: string, name: string, enabled: boolean, critical: boolean) {
-    if (!enabled && critical && !confirm(`${name} нужен типовому сайту. Выключить для всех сайтов на PHP ${version}?`)) return;
+  // Выключение спрашивают всегда: мастер php-fpm один на версию, поэтому
+  // расширение уходит сразу у всех сайтов ветки. Включение — нет: оно ничего
+  // не ломает, а перезапуск php-fpm виден в тосте.
+  const askExt = (version: string, e: any): Ask => ({
+    title: `Выключить ${e.name} на PHP ${version}?`,
+    note: e.critical
+      ? `${e.name} нужен типовому сайту. Расширение выключится у всех сайтов ветки ${version} сразу — те, что им пользуются, начнут отдавать ошибку.`
+      : `Расширение выключится у всех сайтов ветки ${version} сразу: мастер php-fpm один на версию. php-fpm ${version} будет перезапущен.`,
+    danger: true, action: 'Выключить',
+    run: () => setExt(version, e.name, false)
+  });
+
+  async function setExt(version: string, name: string, enabled: boolean) {
     extBusy = version + name;
     try {
       const r: any = await api(`/php/versions/${version}/extensions`, { method: 'POST', json: { name, enabled } });
@@ -74,7 +93,7 @@
               </button>
             {/if}
           </td>
-          <td data-label="" class="text-right">{#if p?.status === 'installed'}<button class="btn btn-danger btn-sm" onclick={() => remove(a.version)}><Icon name="trash" size={13} /></button>{:else if a.available}<button class="btn btn-sm" onclick={() => install(a.version)}><Icon name="plus" size={13} /> установить</button>{/if}</td>
+          <td data-label="" class="text-right">{#if p?.status === 'installed'}<button class="btn btn-danger btn-sm" onclick={() => (ask = askRemove(a.version))}><Icon name="trash" size={13} /></button>{:else if a.available}<button class="btn btn-sm" onclick={() => install(a.version)}><Icon name="plus" size={13} /> установить</button>{/if}</td>
         </tr>
         {#if openExt === a.version}
           <tr>
@@ -89,7 +108,7 @@
                       class="tag {e.enabled ? 'tag-ok' : 'tag-muted'} cursor-pointer transition-opacity {extBusy === a.version + e.name ? 'opacity-50' : ''}"
                       disabled={!!extBusy}
                       title={e.critical ? 'нужен типовому сайту' : e.enabled ? 'выключить' : 'включить'}
-                      onclick={() => setExt(a.version, e.name, !e.enabled, e.critical)}
+                      onclick={() => (e.enabled ? (ask = askExt(a.version, e)) : setExt(a.version, e.name, true))}
                     >
                       <Icon name={e.enabled ? 'check' : 'x'} size={11} />
                       {e.name}{#if e.critical}<span class="opacity-60">*</span>{/if}
@@ -106,3 +125,5 @@
   </table>
   {/if}
 </div>
+
+<Confirm bind:ask />

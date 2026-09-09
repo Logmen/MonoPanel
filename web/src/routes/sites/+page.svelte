@@ -5,6 +5,7 @@
   import JobLog from '$lib/components/JobLog.svelte';
   import PageHead from '$lib/components/PageHead.svelte';
   import Modal from '$lib/components/Modal.svelte';
+  import Confirm, { type Ask } from '$lib/components/Confirm.svelte';
   import Empty from '$lib/components/Empty.svelte';
   import Skeleton from '$lib/components/Skeleton.svelte';
   import Icon from '$lib/components/Icon.svelte';
@@ -15,6 +16,7 @@
   let job = $state<number | null>(null);
   let showForm = $state(false);
   let del = $state<any>(null);
+  let ask = $state<Ask | null>(null);
   let purge = $state(false);
   let presets = $state<any[]>([]);
   let form = $state({ domain: '', user: '', www: true, mode: 'fpm', php_version: '', ssl: 'auto', backend: '', preset: '' });
@@ -45,6 +47,13 @@
       await load();
     } catch (e) { error = e instanceof ApiError ? e.text : String(e); }
   }
+  const askSuspend = (s: any): Ask => s.status === 'suspended'
+    ? { title: `Включить сайт ${s.domain}?`, action: 'Включить',
+        note: 'Сайт снова начнёт отдавать своё содержимое вместо заглушки.',
+        run: () => action(s.domain, 'unsuspend') }
+    : { title: `Остановить сайт ${s.domain}?`, danger: true, action: 'Остановить',
+        note: 'Все посетители начнут получать заглушку 503. Файлы, база, сертификат и почта остаются на месте — сайт можно включить обратно этой же кнопкой.',
+        run: () => action(s.domain, 'suspend') };
   async function action(domain: string, act: string) {
     error = '';
     try {
@@ -92,7 +101,7 @@
           <td data-label="Статус"><span class="tag {s.status === 'active' ? 'tag-ok' : s.status === 'error' ? 'tag-err' : 'tag-warn'}">{s.status}</span>{#if s.last_error}<div class="text-xs text-danger max-w-xs truncate" title={s.last_error}>{s.last_error}</div>{/if}</td>
           <td data-label=""><div class="row-actions">
             <button class="btn btn-sm" onclick={() => action(s.domain, 'apply')} title="перегенерировать и применить"><Icon name="refresh" size={13} /></button>
-            {#if admin}{#if s.status === 'suspended'}<button class="btn btn-sm" onclick={() => action(s.domain, 'unsuspend')}><Icon name="play" size={13} /> включить</button>{:else}<button class="btn btn-sm" onclick={() => action(s.domain, 'suspend')}><Icon name="stop" size={13} /> стоп</button>{/if}{/if}
+            {#if admin}{#if s.status === 'suspended'}<button class="btn btn-sm" onclick={() => (ask = askSuspend(s))}><Icon name="play" size={13} /> включить</button>{:else}<button class="btn btn-sm" onclick={() => (ask = askSuspend(s))}><Icon name="stop" size={13} /> стоп</button>{/if}{/if}
             <button class="btn btn-danger btn-sm" onclick={() => { del = s; purge = false; }}><Icon name="trash" size={13} /></button>
           </div></td>
         </tr>
@@ -102,7 +111,8 @@
   </table>
   {/if}
 </div>
-<Modal open={!!del} title="Удалить сайт {del?.domain}?">
+<Confirm bind:ask />
+<Modal open={!!del} title="Удалить сайт {del?.domain}?" onclose={() => (del = null)}>
   <p>Конфигурация nginx и пул php-fpm будут удалены. Сертификат остаётся.</p>
   <label class="flex items-center gap-2"><input type="checkbox" bind:checked={purge} /> удалить и файлы сайта</label>
   {#snippet footer()}<button class="btn" onclick={() => (del = null)}>Отмена</button><button class="btn btn-danger" onclick={() => action(del.domain, 'delete')}>Удалить</button>{/snippet}

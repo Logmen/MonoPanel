@@ -6,6 +6,7 @@
   import JobLog from '$lib/components/JobLog.svelte';
   import PageHead from '$lib/components/PageHead.svelte';
   import Modal from '$lib/components/Modal.svelte';
+  import Confirm, { type Ask } from '$lib/components/Confirm.svelte';
   import Skeleton from '$lib/components/Skeleton.svelte';
   import Icon from '$lib/components/Icon.svelte';
   let users = $state<any[] | null>(null);
@@ -17,6 +18,7 @@
   let cronForm = $state({ schedule: '*/5 * * * *', command: '' });
   let appForm = $state({ name: '', command: '', workdir: '', env_file: '' });
   let del = $state<any>(null);
+  let ask = $state<Ask | null>(null);
   let purge = $state(false);
   let confirmLogin = $state('');
   let pw = $state<{ login: string; value: string } | null>(null);
@@ -40,6 +42,33 @@
     if (!del || confirmLogin !== del.login) return;
     try { const res: any = await api(`/users/${del.login}?purge=${purge}`, { method: 'DELETE' }); job = res.job_id; notify(`Удаляю ${del.login}…`); del = null; confirmLogin = ''; } catch (e) { fail(e); }
   }
+  const askShell = (u: any): Ask => u.shell
+    ? { title: `Оставить ${u.login} только SFTP?`, action: 'Оставить SFTP',
+        note: 'Вход по SSH закроется, аккаунт останется с доступом к своим файлам по SFTP в пределах домашнего каталога. Уже открытые сессии не разрываются.',
+        run: () => patch(u.login, { shell: false }) }
+    : { title: `Разрешить ${u.login} вход по SSH?`, action: 'Разрешить',
+        note: 'Аккаунт получит настоящую командную оболочку на сервере вместо SFTP-хранилища в своём каталоге.',
+        run: () => patch(u.login, { shell: true }) };
+  const askStatus = (u: any): Ask => u.status === 'active'
+    ? { title: `Заблокировать ${u.login}?`, danger: true, action: 'Заблокировать',
+        note: 'Аккаунт перестанет пускать в панель и по SFTP/SSH. Сайты, базы и cron продолжат работать — это блокировка входа, а не остановка хозяйства.',
+        run: () => patch(u.login, { status: 'suspended' }) }
+    : { title: `Разблокировать ${u.login}?`, action: 'Разблокировать',
+        note: 'Вход в панель и по SFTP/SSH снова заработает.',
+        run: () => patch(u.login, { status: 'active' }) };
+  const askCron = (j: any): Ask => ({
+    title: 'Удалить задание cron?',
+    note: `Расписание «${j.schedule}» и команда пропадут из crontab пользователя. Восстановить его можно только заново.`,
+    danger: true, action: 'Удалить',
+    run: () => rmCron(j.id)
+  });
+  const askApp = (a: any, act: string): Ask => act === 'delete'
+    ? { title: `Удалить app-сервис ${a.app.name}?`, danger: true, action: 'Удалить',
+        note: 'Systemd-юнит будет остановлен и удалён. Файлы приложения в каталоге пользователя останутся на месте.',
+        run: () => appAction(a.app.name, 'delete') }
+    : { title: `Остановить ${a.app.name}?`, danger: true, action: 'Остановить',
+        note: 'Процесс будет остановлен, и всё, что на него завязано (сайт в режиме proxy, бот, очередь), перестанет отвечать до запуска.',
+        run: () => appAction(a.app.name, 'stop') };
   async function openPanel(login: string, kind: 'cron' | 'apps') {
     try { panel = { login, kind, items: await api(kind === 'cron' ? `/users/${login}/cron` : `/users/${login}/apps`) }; } catch (e) { fail(e); }
   }
@@ -80,10 +109,10 @@
           <td><div class="row-actions">
             <button class="btn btn-sm" onclick={() => (pw = { login: u.login, value: '' })} title="сменить пароль"><Icon name="key" size={13} /></button>
             {#if u.role === 'user'}
-              <button class="btn btn-sm" onclick={() => patch(u.login, { shell: !u.shell })}>{u.shell ? '→ SFTP-only' : '→ shell'}</button>
+              <button class="btn btn-sm" onclick={() => (ask = askShell(u))}>{u.shell ? '→ SFTP-only' : '→ shell'}</button>
               <button class="btn btn-sm" onclick={() => openPanel(u.login, 'cron')}><Icon name="clock" size={13} /> cron</button>
               <button class="btn btn-sm" onclick={() => openPanel(u.login, 'apps')}><Icon name="box" size={13} /> apps</button>
-              <button class="btn btn-sm" onclick={() => patch(u.login, { status: u.status === 'active' ? 'suspended' : 'active' })}>{u.status === 'active' ? 'заблокировать' : 'разблокировать'}</button>
+              <button class="btn btn-sm" onclick={() => (ask = askStatus(u))}>{u.status === 'active' ? 'заблокировать' : 'разблокировать'}</button>
             {/if}
             {#if u.login !== auth.me?.login}<button class="btn btn-danger btn-sm" onclick={() => { del = u; purge = false; confirmLogin = ''; }} title="удалить"><Icon name="trash" size={13} /></button>{/if}
           </div></td>
@@ -104,7 +133,7 @@
         <button class="btn btn-primary">Добавить</button>
       </form>
       <table class="tbl"><thead><tr><th>ID</th><th>Расписание</th><th>Команда</th><th></th></tr></thead><tbody>
-        {#each panel.items as j}<tr><td data-label="ID">{j.id}</td><td data-label="Расписание" class="font-mono">{j.schedule}{#if !j.enabled} <span class="tag tag-muted">off</span>{/if}</td><td data-label="Команда" class="font-mono text-xs">{j.command}</td><td data-label="" class="text-right"><button class="btn btn-danger btn-sm" onclick={() => rmCron(j.id)}><Icon name="trash" size={13} /></button></td></tr>{/each}
+        {#each panel.items as j}<tr><td data-label="ID">{j.id}</td><td data-label="Расписание" class="font-mono">{j.schedule}{#if !j.enabled} <span class="tag tag-muted">off</span>{/if}</td><td data-label="Команда" class="font-mono text-xs">{j.command}</td><td data-label="" class="text-right"><button class="btn btn-danger btn-sm" onclick={() => (ask = askCron(j))}><Icon name="trash" size={13} /></button></td></tr>{/each}
         {#if !panel.items.length}<tr><td colspan="4" class="text-muted text-center py-4">Заданий нет.</td></tr>{/if}
       </tbody></table>
     {:else}
@@ -118,7 +147,7 @@
         {#each panel.items as a}
           {@const st = a.service?.active_state || a.app.status}
           <tr><td data-label="Имя" class="font-mono">{a.app.name}</td><td data-label="Состояние"><span class="tag {st === 'active' ? 'tag-ok' : st === 'failed' ? 'tag-err' : 'tag-muted'}">{#if st === 'active'}<span class="dot dot-live"></span>{/if}{st}{a.service ? '/' + a.service.sub_state : ''}</span>{#if !a.app.enabled}<span class="tag tag-muted ml-1">автозапуск off</span>{/if}</td><td data-label="Команда" class="font-mono text-xs max-w-md truncate" title={a.app.command}>{a.app.command}</td>
-          <td><div class="row-actions"><button class="btn btn-sm" onclick={() => appAction(a.app.name, 'restart')} title="перезапустить"><Icon name="refresh" size={13} /></button>{#if st === 'active'}<button class="btn btn-sm" onclick={() => appAction(a.app.name, 'stop')}><Icon name="stop" size={13} /></button>{:else}<button class="btn btn-sm" onclick={() => appAction(a.app.name, 'start')}><Icon name="play" size={13} /></button>{/if}<button class="btn btn-danger btn-sm" onclick={() => confirm('Удалить app-сервис ' + a.app.name + '? Файлы останутся.') && appAction(a.app.name, 'delete')}><Icon name="trash" size={13} /></button></div></td></tr>
+          <td><div class="row-actions"><button class="btn btn-sm" onclick={() => appAction(a.app.name, 'restart')} title="перезапустить"><Icon name="refresh" size={13} /></button>{#if st === 'active'}<button class="btn btn-sm" onclick={() => (ask = askApp(a, 'stop'))} title="остановить"><Icon name="stop" size={13} /></button>{:else}<button class="btn btn-sm" onclick={() => appAction(a.app.name, 'start')}><Icon name="play" size={13} /></button>{/if}<button class="btn btn-danger btn-sm" onclick={() => (ask = askApp(a, 'delete'))} title="удалить"><Icon name="trash" size={13} /></button></div></td></tr>
         {/each}
         {#if !panel.items.length}<tr><td colspan="4" class="text-muted text-center py-4">App-сервисов нет.</td></tr>{/if}
       </tbody></table>
@@ -126,13 +155,15 @@
   </div>
 {/if}
 
-<Modal open={!!pw} title="Новый пароль для {pw?.login}">
+<Confirm bind:ask />
+
+<Modal open={!!pw} title="Новый пароль для {pw?.login}" onclose={() => (pw = null)}>
   <p class="text-muted">Пароль панели и SFTP/SSH, не короче 8 символов.</p>
   {#if pw}<input class="input font-mono" type="text" bind:value={pw.value} autocomplete="new-password" onkeydown={(e) => e.key === 'Enter' && setPassword()} />{/if}
   {#snippet footer()}<button class="btn" onclick={() => (pw = null)}>Отмена</button><button class="btn btn-primary" onclick={setPassword}>Сохранить</button>{/snippet}
 </Modal>
 
-<Modal open={!!del} title="Удалить пользователя {del?.login}?">
+<Modal open={!!del} title="Удалить пользователя {del?.login}?" onclose={() => { del = null; confirmLogin = ''; }}>
   <p>Будут удалены сайты, базы данных, cron, app-сервисы, сертификаты сайтов и unix-аккаунт{#if del?.role === 'admin'} (это администратор панели){/if}.</p>
   {#if del?.unix_uid}
     <label class="flex items-start gap-2 p-2 rounded-md border {purge ? 'border-danger/50 bg-danger-soft' : 'border-line'} transition-colors"><input type="checkbox" bind:checked={purge} class="mt-0.5" /><span>удалить и все файлы в <code class="font-mono">/var/www/{del.login}</code><br /><span class="text-xs text-muted">без галочки каталог останется на диске</span></span></label>
