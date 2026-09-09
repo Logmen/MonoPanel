@@ -121,6 +121,8 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 		s.registerPHPExtensions()
 		s.registerUpdate()
 		s.registerMail()
+		s.registerMigrateSource()
+		s.registerMigrateImport()
 	})
 	r.Handle("/*", s.uiHandler())
 	s.router = r
@@ -139,6 +141,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	s.jobs.Register("mail.install", s.jobMailInstall)
 	s.jobs.Register("mail.apply", s.jobMailApply)
 	s.jobs.Register("mail.webmail", s.jobWebmailInstall)
+	s.jobs.Register("migrate.run", s.jobMigrateRun)
 	return s
 }
 

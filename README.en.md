@@ -68,6 +68,11 @@ mp mail domain add example.com --user alex    # with a DKIM key
 mp mail box add ivan@example.com --quota 2048
 mp mail domain dns example.com                # what to publish in DNS
 mp mail webmail webmail.example.com --user alex --port 2096   # Roundcube
+
+# move an account in from another MonoPanel server
+mp migrate grant user:alex                        # on the old server
+mp migrate plan --source https://old:8443 --token … --scope user:alex
+mp migrate run  --source https://old:8443 --token … --scope user:alex
 mp                              # terminal menu
 ```
 
@@ -87,6 +92,7 @@ and the terminal menu.
 | Apache 2.4 | `mp stack install apache` | Debian/Ubuntu: mpm_event + proxy_fcgi, `conf-available/monopanel.conf` |
 | Databases | `mp stack install percona\|mysql`, `mp db create\|list\|passwd\|rm` | Percona Server / MySQL 8.4 LTS, root over `auth_socket`, tuning from available RAM, `mysql_native_password` only for PHP < 7.4, databases named `<login>_<name>` |
 | TLS | `mp ssl issue\|list\|renew\|rm`, `mp dns-provider add`, `mp web tls` | lego: HTTP-01 through the nginx webroot, DNS-01 (Cloudflare, Hetzner, DigitalOcean, Gandi, deSEC, Namecheap, RFC2136) for wildcards, renewal 30 days ahead, hot-swap of the panel's own certificate; `mp ssl import --cert --key` for certificates issued elsewhere |
+| Migration between panels | `mp migrate grant\|plan\|run` | a whole account moves to another MonoPanel server: the source issues a token scoped to one account and only ever reads, the target reports conflicts first (`plan` changes nothing) and then takes it — files and dumps stream straight through, and panel, SFTP, MySQL and mailbox passwords travel as hashes, so users never notice the move ([docs/07-migration.md](docs/07-migration.md)) |
 | Self-update | `mp update`, `mp update apply` | from this repository's releases: the panel finds a new version, downloads the package for its OS, verifies an ed25519 signature and installs it from a separate systemd unit, restoring the previous binary if the new one does not answer |
 | API tokens | `mp token create\|list\|revoke` | a token belongs to an account; an administrator can mint one for another account (`--user`), and root on the local socket gets one for the single administrator with no flags |
 | Cron | `mp cron add\|list\|enable\|disable\|rm` | the account's crontab is rendered whole from the database, with `~/data/bin` on PATH (the site's PHP version) |

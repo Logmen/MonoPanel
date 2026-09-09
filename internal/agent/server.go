@@ -60,6 +60,11 @@ func (s *Server) Handler() http.Handler {
 	r.Post("/v1/service", handle(s.service))
 	r.Post("/v1/pkg", handle(s.pkg))
 	r.Post("/v1/panel/install", handle(s.installPanel))
+	r.Post("/v1/chown", handle(s.chown))
+	r.Post("/v1/user/shadow", handle(s.unixShadow))
+	// Потоки идут мимо handle(): у них тело — это данные, а не JSON.
+	r.Post("/v1/stream/out", s.streamOut)
+	r.Post("/v1/stream/in", s.streamIn)
 	return r
 }
 

@@ -1,14 +1,17 @@
 package agent
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/user"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -101,7 +104,11 @@ func (s *Server) setUnixPassword(ctx context.Context, req *SetUnixPasswordReques
 	if len(req.Password) < 8 || strings.ContainsAny(req.Password, "\n:") {
 		return nil, &Error{Status: http.StatusBadRequest, Message: "password must be at least 8 characters without ':' or newlines"}
 	}
-	res, err := s.tool(ctx, &ToolRequest{Name: "chpasswd", Stdin: fmt.Sprintf("%s:%s\n", req.Login, req.Password), TimeoutSeconds: 30})
+	args := []string{}
+	if req.Encrypted {
+		args = append(args, "-e")
+	}
+	res, err := s.tool(ctx, &ToolRequest{Name: "chpasswd", Args: args, Stdin: fmt.Sprintf("%s:%s\n", req.Login, req.Password), TimeoutSeconds: 30})
 	if err != nil {
 		return nil, err
 	}
@@ -109,6 +116,42 @@ func (s *Server) setUnixPassword(ctx context.Context, req *SetUnixPasswordReques
 		return nil, &Error{Message: "chpasswd failed", Output: res.Output}
 	}
 	return &struct{}{}, nil
+}
+
+// unixShadow returns the password hash of a client account so a migration can
+// carry it to another server. Only accounts the panel itself creates qualify:
+// system users and root are never readable this way.
+func (s *Server) unixShadow(_ context.Context, req *UnixShadowRequest) (*UnixShadowResponse, error) {
+	if !nameRe.MatchString(req.Login) || req.Login == "root" {
+		return nil, &Error{Status: http.StatusBadRequest, Message: "invalid login"}
+	}
+	u, err := user.Lookup(req.Login)
+	if err != nil {
+		return nil, &Error{Status: http.StatusNotFound, Message: "no such user"}
+	}
+	uid, _ := strconv.Atoi(u.Uid)
+	root := filepath.Clean(s.cfg.WWWRoot)
+	if uid < 1000 || !strings.HasPrefix(filepath.Clean(u.HomeDir), root+"/") {
+		return nil, &Error{Status: http.StatusForbidden, Message: "only accounts of the panel can be exported"}
+	}
+	f, err := os.Open("/etc/shadow")
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		fields := strings.Split(sc.Text(), ":")
+		if len(fields) > 1 && fields[0] == req.Login {
+			hash := fields[1]
+			// "!" и "*" — это «пароля нет», переносить нечего.
+			if hash == "" || strings.HasPrefix(hash, "!") || hash == "*" {
+				return &UnixShadowResponse{}, nil
+			}
+			return &UnixShadowResponse{Hash: hash}, nil
+		}
+	}
+	return &UnixShadowResponse{}, sc.Err()
 }
 
 // listDirAllowed limits directory listing to configuration the panel manages.

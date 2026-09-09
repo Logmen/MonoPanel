@@ -3,7 +3,9 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 
@@ -158,6 +160,17 @@ func (c *Client) SetUnixPassword(ctx context.Context, login, password string) er
 	return c.call(ctx, "/v1/user/password", &SetUnixPasswordRequest{Login: login, Password: password}, nil)
 }
 
+// SetUnixPasswordHash restores an already hashed password (a migration).
+func (c *Client) SetUnixPasswordHash(ctx context.Context, login, hash string) error {
+	return c.call(ctx, "/v1/user/password", &SetUnixPasswordRequest{Login: login, Password: hash, Encrypted: true}, nil)
+}
+
+// UnixShadow returns the password hash of a client account.
+func (c *Client) UnixShadow(ctx context.Context, login string) (*UnixShadowResponse, error) {
+	var r UnixShadowResponse
+	return &r, c.call(ctx, "/v1/user/shadow", &UnixShadowRequest{Login: login}, &r)
+}
+
 // RunAsUser runs a file operation as a client via the helper.
 func (c *Client) RunAsUser(ctx context.Context, req *RunAsUserRequest) (*RunAsUserResponse, error) {
 	var r RunAsUserResponse
@@ -182,4 +195,74 @@ func (c *Client) InstallPanel(ctx context.Context, req *InstallPanelRequest) (*I
 func (c *Client) ListDir(ctx context.Context, path string) (*ListDirResponse, error) {
 	var r ListDirResponse
 	return &r, c.call(ctx, "/v1/dir/list", &ListDirRequest{Path: path}, &r)
+}
+
+// StreamOut runs a streaming tool and copies its stdout into dst. The exit
+// status arrives in a trailer: the response is already on its way when the
+// tool fails, so there is no status code left to use.
+func (c *Client) StreamOut(ctx context.Context, req *StreamRequest, dst io.Writer) error {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://agent/v1/stream/out", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	hreq.Header.Set("Content-Type", "application/json")
+	res, err := c.http.Do(hreq)
+	if err != nil {
+		return &Error{Message: "agent unreachable at " + c.socket, Output: err.Error()}
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 400 {
+		e := &Error{Status: res.StatusCode}
+		_ = json.NewDecoder(res.Body).Decode(e)
+		if e.Message == "" {
+			e.Message = "agent: " + res.Status
+		}
+		return e
+	}
+	if _, err := io.Copy(dst, res.Body); err != nil {
+		return err
+	}
+	if code := res.Trailer.Get("X-Exit-Code"); code != "" && code != "0" {
+		return &Error{Message: req.Name + " exited with " + code, Output: res.Trailer.Get("X-Error")}
+	}
+	return nil
+}
+
+// StreamIn feeds src to a streaming tool's stdin (tar -x, mysql).
+func (c *Client) StreamIn(ctx context.Context, req *StreamRequest, src io.Reader) (*StreamResponse, error) {
+	spec, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://agent/v1/stream/in", src)
+	if err != nil {
+		return nil, err
+	}
+	hreq.Header.Set("Content-Type", "application/octet-stream")
+	hreq.Header.Set("X-Stream-Spec", base64.StdEncoding.EncodeToString(spec))
+	res, err := c.http.Do(hreq)
+	if err != nil {
+		return nil, &Error{Message: "agent unreachable at " + c.socket, Output: err.Error()}
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 400 {
+		e := &Error{Status: res.StatusCode}
+		_ = json.NewDecoder(res.Body).Decode(e)
+		if e.Message == "" {
+			e.Message = "agent: " + res.Status
+		}
+		return nil, e
+	}
+	var out StreamResponse
+	return &out, json.NewDecoder(res.Body).Decode(&out)
+}
+
+// Chown fixes ownership of a client's tree after a root-side extraction.
+func (c *Client) Chown(ctx context.Context, req *ChownRequest) (*ChownResponse, error) {
+	var r ChownResponse
+	return &r, c.call(ctx, "/v1/chown", req, &r)
 }

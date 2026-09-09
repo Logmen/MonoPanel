@@ -63,6 +63,11 @@ mp mail box add ivan@example.com --quota 2048
 mp mail domain dns example.com                # что прописать в DNS
 mp mail webmail webmail.example.com --user alex --port 2096   # Roundcube
 
+# переезд аккаунта с другого сервера с MonoPanel
+mp migrate grant user:alex                        # на старом сервере
+mp migrate plan --source https://old:8443 --token … --scope user:alex
+mp migrate run  --source https://old:8443 --token … --scope user:alex
+
 mp                              # TUI-меню
 ```
 
@@ -81,6 +86,7 @@ mp                              # TUI-меню
 | Apache 2.4 | `mp stack install apache` | Debian/Ubuntu: mpm_event + proxy_fcgi, `conf-available/monopanel.conf` |
 | СУБД | `mp stack install percona\|mysql`, `mp db create\|list\|passwd\|rm` | Percona Server / MySQL 8.4 LTS, root по `auth_socket`, тюнинг по RAM, `mysql_native_password` только при PHP < 7.4, базы `<login>_<name>` |
 | TLS | `mp ssl issue\|list\|renew\|rm`, `mp dns-provider add`, `mp web tls` | lego: HTTP-01 по webroot nginx, DNS-01 (Cloudflare, Hetzner, DigitalOcean, Gandi, deSEC, Namecheap, RFC2136) для wildcard, автопродление за 30 дней, hot-swap сертификата панели; `mp ssl import --cert --key` для готовых сертификатов |
+| Перенос между панелями | `mp migrate grant\|plan\|run` | аккаунт целиком переезжает на другой сервер с MonoPanel: источник выдаёт токен с областью на один аккаунт и только читает, приёмник разбирает конфликты (`plan` ничего не меняет) и забирает — файлы и дамп идут потоком насквозь, пароли панели, SFTP, MySQL и почты переезжают хешами, поэтому пользователи смены сервера не замечают ([docs/07-migration.md](docs/07-migration.md)) |
 | Обновление панели | `mp update`, `mp update apply` | релизы этого репозитория: панель находит новую версию, скачивает пакет для своей ОС, проверяет подпись ed25519 и ставит его отдельным systemd-юнитом с откатом на прежний бинарник, если новая версия не отвечает |
 | API-токены | `mp token create\|list\|revoke` | токен принадлежит аккаунту; администратор выпускает его и для другого аккаунта (`--user`), root по локальному сокету — для единственного администратора без флагов |
 | Cron | `mp cron add\|list\|enable\|disable\|rm` | crontab пользователя целиком из БД, PATH с `~/data/bin` (php нужной версии) |
@@ -237,7 +243,7 @@ scripts/release/      генерация ключа и подпись SHA256SUMS
 | [docs/04-cli-tui-api.md](docs/04-cli-tui-api.md) | Команды CLI, экраны TUI, REST API, интеграция с биллингом (WHMCS) |
 | [docs/05-roadmap.md](docs/05-roadmap.md) | Этапы разработки, матрица CI, тестовые сценарии, риски |
 | [docs/06-mail.md](docs/06-mail.md) | Почта: postfix + dovecot + opendkim, путь письма, файлы и порты, DNS-записи, вебпочта, границы |
-| [docs/07-migration.md](docs/07-migration.md) | Перенос между панелями (проект): пакет переезда, порядок с переключением DNS, адаптеры для чужих панелей |
+| [docs/07-migration.md](docs/07-migration.md) | Перенос между панелями: что уже работает, порядок с переключением DNS, пакет переезда и адаптеры для чужих панелей (проект) |
 
 Справочник API живёт в самой панели: `/api/v1/docs` (OpenAPI 3.1).
 

@@ -8,7 +8,9 @@
 package agenttest
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -50,8 +52,16 @@ type Agent struct {
 	ReadFile map[string]string
 	// ToolOutput answers agent.Tool by tool name.
 	ToolOutput map[string]string
+	// StreamOutput answers agent.StreamOut by tool name.
+	StreamOutput map[string]string
 	// Dirs answers agent.ListDir: directory path -> names inside it.
 	DirEntries map[string][]string
+	// Shadow answers agent.UnixShadow: login -> password hash.
+	Shadow map[string]string
+	// Streams records the streaming calls (tar, mysqldump) with the bytes that
+	// went through them: перенос аккаунта — это два потока, и тест должен
+	// видеть, что они были и куда шли.
+	streams []Stream
 
 	srv *httptest.Server
 }
@@ -68,14 +78,16 @@ func Start(t *testing.T) *Agent {
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	a := &Agent{
-		Socket:     filepath.Join(dir, "agent.sock"),
-		files:      map[string]agent.FileSpec{},
-		units:      map[string]string{},
-		Fail:       map[string]string{},
-		Stat:       map[string]bool{},
-		ReadFile:   map[string]string{},
-		ToolOutput: map[string]string{},
-		DirEntries: map[string][]string{},
+		Socket:       filepath.Join(dir, "agent.sock"),
+		files:        map[string]agent.FileSpec{},
+		units:        map[string]string{},
+		Fail:         map[string]string{},
+		Stat:         map[string]bool{},
+		ReadFile:     map[string]string{},
+		ToolOutput:   map[string]string{},
+		StreamOutput: map[string]string{},
+		DirEntries:   map[string][]string{},
+		Shadow:       map[string]string{},
 	}
 	ln, err := net.Listen("unix", a.Socket)
 	if err != nil {
@@ -87,10 +99,53 @@ func Start(t *testing.T) *Agent {
 	return a
 }
 
+// Stream is one recorded streaming call.
+type Stream struct {
+	Direction string // out | in
+	Name      string
+	Args      []string
+	Bytes     int
+}
+
+// Streams returns the recorded streaming calls.
+func (a *Agent) Streams() []Stream {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]Stream{}, a.streams...)
+}
+
 // Client returns an agent client wired to this fake.
 func (a *Agent) Client() *agent.Client { return agent.NewClient(a.Socket) }
 
 func (a *Agent) handle(w http.ResponseWriter, r *http.Request) {
+	// Потоки не JSON: у /v1/stream/out тело ответа — данные, у /v1/stream/in
+	// данные приходят телом запроса.
+	switch r.URL.Path {
+	case "/v1/stream/out":
+		var req agent.StreamRequest
+		body, _ := readAll(r)
+		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		a.mu.Lock()
+		a.calls = append(a.calls, Call{Path: r.URL.Path, Body: body})
+		a.streams = append(a.streams, Stream{Direction: "out", Name: req.Name, Args: req.Args})
+		out := a.StreamOutput[req.Name]
+		a.mu.Unlock()
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Write([]byte(out)) //nolint:errcheck // test double
+		return
+	case "/v1/stream/in":
+		n, _ := io.Copy(io.Discard, r.Body)
+		spec, _ := base64.StdEncoding.DecodeString(r.Header.Get("X-Stream-Spec"))
+		var req agent.StreamRequest
+		json.Unmarshal(spec, &req) //nolint:errcheck // test double
+		a.mu.Lock()
+		a.calls = append(a.calls, Call{Path: r.URL.Path, Body: spec})
+		a.streams = append(a.streams, Stream{Direction: "in", Name: req.Name, Args: req.Args, Bytes: int(n)})
+		a.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(agent.StreamResponse{}) //nolint:errcheck // test double
+		return
+	}
 	body, _ := readAll(r)
 	a.mu.Lock()
 	a.calls = append(a.calls, Call{Path: r.URL.Path, Body: body})
@@ -245,6 +300,17 @@ func (a *Agent) respond(path string, body []byte) any {
 		json.Unmarshal(body, &req) //nolint:errcheck // test double
 		c := a.ReadFile[req.Path]
 		return agent.ReadFileResponse{Content: c, Size: int64(len(c))}
+
+	case "/v1/chown":
+		return agent.ChownResponse{Changed: 1}
+
+	case "/v1/user/shadow":
+		var req agent.UnixShadowRequest
+		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		if h, ok := a.Shadow[req.Login]; ok {
+			return agent.UnixShadowResponse{Hash: h}
+		}
+		return agent.UnixShadowResponse{}
 
 	case "/v1/system/info":
 		return map[string]any{"hostname": "test-host", "cpus": 2}

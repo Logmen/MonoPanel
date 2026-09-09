@@ -354,7 +354,7 @@ func tokenCmd() *cobra.Command {
 	}}
 	create.Flags().StringVar(&req.Name, "name", "cli", "название токена")
 	create.Flags().StringVar(&req.User, "user", "", "аккаунт, от имени которого выпустить токен (для администратора; по сокету от root — единственный администратор)")
-	create.Flags().StringVar(&scopes, "scopes", "", "scope через запятую (пока информационно)")
+	create.Flags().StringVar(&scopes, "scopes", "", "scope через запятую; migrate:user:<логин> ограничивает токен переездом, остальные — пометки")
 	create.Flags().IntVar(&req.ExpiresInDays, "expires", 0, "срок в днях (0 = бессрочно)")
 	var listUser string
 	list := &cobra.Command{Use: "list", Short: "токены аккаунта (по умолчанию свои)", RunE: func(cmd *cobra.Command, _ []string) error {

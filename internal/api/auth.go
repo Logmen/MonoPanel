@@ -45,6 +45,13 @@ func (s *Server) authMiddleware(ctx huma.Context, next func(huma.Context)) {
 			huma.WriteErr(s.api, ctx, http.StatusForbidden, "administrator role required") //nolint:errcheck // the error response itself is best effort
 			return
 		}
+		// Токен переезда не должен уметь ничего, кроме отдачи того аккаунта,
+		// ради которого его выпустили. Прочие области панель по-прежнему
+		// считает пометками: токены с ними выпускались как обычные.
+		if !scopeAllowsOperation(p.Scopes, op) {
+			huma.WriteErr(s.api, ctx, http.StatusForbidden, "token scope does not allow this operation") //nolint:errcheck // the error response itself is best effort
+			return
+		}
 		if p.Via == "session" && !isSafeMethod(ctx.Method()) && !sameOrigin(ctx) {
 			huma.WriteErr(s.api, ctx, http.StatusForbidden, "cross-site request rejected") //nolint:errcheck // the error response itself is best effort
 			return
@@ -105,6 +112,24 @@ func (s *Server) authenticate(ctx huma.Context) *principal {
 		return &principal{Principal: apitypes.Principal{UserID: u.ID, Login: u.Login, Role: u.Role, Via: "session"}, SessionID: sess.ID}
 	}
 	return nil
+}
+
+// scopeAllowsOperation decides what a scoped token may reach. Only migration
+// scopes are enforced: "migrate:user:alex" opens the read-only endpoints under
+// /migrate and closes everything else. The match against the requested account
+// happens in the handler, which sees the query. Scopes the panel does not know
+// stay what they always were — a label on the token.
+func scopeAllowsOperation(scopes []string, op *huma.Operation) bool {
+	migration := false
+	for _, sc := range scopes {
+		if strings.HasPrefix(sc, migrateScopePrefix) {
+			migration = true
+		}
+	}
+	if !migration {
+		return true
+	}
+	return strings.HasPrefix(op.Path, "/migrate") && op.Method == http.MethodGet
 }
 
 // loginLimiter is a tiny per-IP fixed-window limiter for the login endpoint.

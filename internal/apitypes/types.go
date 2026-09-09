@@ -732,3 +732,104 @@ type WebmailRequest struct {
 	// не нужны ни своя запись в DNS, ни свой сертификат.
 	Port int `json:"port,omitempty" minimum:"0" maximum:"65535"`
 }
+
+// MigrationBundle is what one panel hands to another: the declarative state
+// of an account. Files and database dumps travel separately as streams — this
+// is the part that tells the receiving panel what to build.
+type MigrationBundle struct {
+	Panel     string    `json:"panel" doc:"Версия панели-источника"`
+	Hostname  string    `json:"hostname"`
+	Family    string    `json:"family" doc:"Семейство ОС источника: debian | rhel"`
+	Scope     string    `json:"scope" doc:"user:<login>"`
+	Generated time.Time `json:"generated"`
+
+	User         *store.User         `json:"user"`
+	Sites        []*store.Site       `json:"sites"`
+	SiteNginx    map[string]string   `json:"site_nginx,omitempty" doc:"Свои директивы nginx на сайт"`
+	Databases    []*store.Database   `json:"databases"`
+	Cron         []*store.CronJob    `json:"cron"`
+	Apps         []*store.App        `json:"apps"`
+	MailDomains  []*store.MailDomain `json:"mail_domains"`
+	Mailboxes    []*store.Mailbox    `json:"mailboxes"`
+	MailAliases  []*store.MailAlias  `json:"mail_aliases"`
+	Certificates []MigrationCert     `json:"certificates"`
+
+	// Secrets travel only over an authenticated channel and only when the
+	// receiving side asks for the full state: без них пришлось бы менять всем
+	// пароли, а с ними переезд остаётся незаметным для пользователей.
+	Secrets *MigrationSecrets `json:"secrets,omitempty"`
+
+	Sizes MigrationSizes `json:"sizes"`
+	Notes []string       `json:"notes,omitempty" doc:"Что не переносится и почему"`
+}
+
+// MigrationSecrets carries hashes, never plaintext: панель и сама не знает
+// паролей своих пользователей.
+type MigrationSecrets struct {
+	PanelPassword string            `json:"panel_password,omitempty" doc:"argon2id-хеш пароля панели"`
+	UnixShadow    string            `json:"unix_shadow,omitempty" doc:"Хеш unix-пароля из shadow"`
+	Mailboxes     map[string]string `json:"mailboxes,omitempty" doc:"Адрес → хеш {BLF-CRYPT}"`
+	DKIM          map[string]string `json:"dkim,omitempty" doc:"Домен → приватный ключ PEM"`
+	DBUsers       map[string]string `json:"db_users,omitempty" doc:"'user'@'host' → строка аутентификации MySQL"`
+}
+
+// MigrationCert is a certificate with its files, so HTTPS не рвётся в момент
+// переключения DNS: ACME сможет выпустить свой только после него.
+type MigrationCert struct {
+	Name      string     `json:"name"`
+	Names     []string   `json:"names"`
+	Kind      string     `json:"kind"`
+	AutoRenew bool       `json:"auto_renew"`
+	NotAfter  *time.Time `json:"not_after,omitempty"`
+	Cert      string     `json:"cert,omitempty"`
+	Key       string     `json:"key,omitempty"`
+}
+
+// MigrationSizes is what the receiving side needs to know before it starts.
+type MigrationSizes struct {
+	FilesBytes int64            `json:"files_bytes"`
+	MailBytes  int64            `json:"mail_bytes"`
+	Databases  map[string]int64 `json:"databases,omitempty"`
+}
+
+// MigrationGrantRequest opens a source panel for one migration.
+type MigrationGrantRequest struct {
+	Scope string `json:"scope" doc:"user:<login>"`
+	Hours int    `json:"hours,omitempty" minimum:"1" maximum:"168" doc:"Срок жизни токена, по умолчанию 24"`
+}
+
+// MigrationGrantResponse is shown once: the token is stored hashed.
+type MigrationGrantResponse struct {
+	Token     string    `json:"token"`
+	Scope     string    `json:"scope"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Command   string    `json:"command" doc:"Готовая команда для целевой панели"`
+}
+
+// MigrationSourceRequest points the target panel at a source.
+type MigrationSourceRequest struct {
+	Source string `json:"source" doc:"https://исходная-панель:8443"`
+	Token  string `json:"token" doc:"Токен, выданный источником"`
+	Scope  string `json:"scope" doc:"user:<login>"`
+	As     string `json:"as,omitempty" pattern:"^[a-z_][a-z0-9_-]{0,31}$" doc:"Принять под другим логином, если этот занят"`
+	// Insecure принимает самоподписанный сертификат источника: у переезжающей
+	// панели он часто ещё не выпущен.
+	Insecure bool `json:"insecure,omitempty"`
+}
+
+// MigrationPlan is the dry-run: что приедет и что этому мешает.
+type MigrationPlan struct {
+	Bundle    *MigrationBundle `json:"bundle"`
+	Login     string           `json:"login" doc:"Под каким логином аккаунт появится здесь"`
+	Conflicts []MigrationIssue `json:"conflicts"`
+	Warnings  []MigrationIssue `json:"warnings"`
+	OK        bool             `json:"ok" doc:"Можно запускать перенос"`
+}
+
+// MigrationIssue is one thing that blocks or complicates the move.
+type MigrationIssue struct {
+	Kind   string `json:"kind" doc:"user | site | database | php | mail | disk | cert"`
+	Target string `json:"target,omitempty"`
+	Text   string `json:"text"`
+	Fix    string `json:"fix,omitempty"`
+}

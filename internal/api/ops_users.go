@@ -202,7 +202,14 @@ func (s *Server) jobUserProvision(ctx context.Context, jc *jobs.Context) error {
 	if err := jc.Unmarshal(&p); err != nil {
 		return err
 	}
-	jc.Progress(10, "groups")
+	return s.provisionUser(ctx, p, jc.Logf, jc.Progress)
+}
+
+// provisionUser creates the unix side of an account: groups, user, home
+// layout, SFTP chroot. Переезд между панелями делает ровно то же самое, только
+// без своей задачи, поэтому тело живёт отдельно от обработчика.
+func (s *Server) provisionUser(ctx context.Context, p userProvisionPayload, logf func(string, ...any), progress func(int, string)) error {
+	progress(10, "groups")
 	for _, g := range []string{s.cfg.WebGroup, sftpGroup} {
 		if _, err := s.agent.EnsureGroup(ctx, &agent.EnsureGroupRequest{Name: g, System: true}); err != nil {
 			return err
@@ -215,24 +222,24 @@ func (s *Server) jobUserProvision(ctx context.Context, jc *jobs.Context) error {
 		shell = "/bin/bash"
 		groups, remove = nil, []string{sftpGroup}
 	}
-	jc.Progress(30, "unix user")
+	progress(30, "unix user")
 	u, err := s.agent.EnsureUnixUser(ctx, &agent.EnsureUnixUserRequest{Login: p.Login, Home: home, Shell: shell, UpdateShell: true, CreateHome: true, Groups: groups, RemoveGroups: remove, Comment: "MonoPanel user"})
 	if err != nil {
 		return err
 	}
-	jc.Logf("unix user %s: uid=%d gid=%d created=%v shell=%s home=%s", p.Login, u.UID, u.GID, u.Created, shell, u.Home)
+	logf("unix user %s: uid=%d gid=%d created=%v shell=%s home=%s", p.Login, u.UID, u.GID, u.Created, shell, u.Home)
 	if p.PasswordEnc != "" && s.secrets != nil {
 		if pw, err := s.secrets.Decrypt(p.PasswordEnc); err == nil {
 			if err := s.agent.SetUnixPassword(ctx, p.Login, pw); err != nil {
 				return err
 			}
-			jc.Logf("SFTP/SSH password set")
+			logf("SFTP/SSH password set")
 		}
 	}
 	if err := s.ensureSSHConfig(ctx); err != nil {
 		return fmt.Errorf("sshd configuration: %w", err)
 	}
-	jc.Progress(60, "home layout")
+	progress(60, "home layout")
 	data := filepath.Join(home, "data")
 	homeOwner, homeMode := p.Login, uint32(0o710)
 	if !p.Shell {
@@ -254,14 +261,14 @@ func (s *Server) jobUserProvision(ctx context.Context, jc *jobs.Context) error {
 	if err != nil {
 		return err
 	}
-	jc.Logf("directories created: %d; mode: %s", len(res.Created), map[bool]string{true: "SSH shell", false: "SFTP-only (chroot " + home + ")"}[p.Shell])
-	jc.Progress(90, "saving")
+	logf("directories created: %d; mode: %s", len(res.Created), map[bool]string{true: "SSH shell", false: "SFTP-only (chroot " + home + ")"}[p.Shell])
+	progress(90, "saving")
 	if err := s.db.SetUserUnix(ctx, p.UserID, u.UID, u.GID, u.Home); err != nil {
 		return err
 	}
 	if err := s.db.SetUserStatus(ctx, p.UserID, store.UserActive); err != nil {
 		return err
 	}
-	jc.Progress(100, "user ready")
+	progress(100, "user ready")
 	return nil
 }

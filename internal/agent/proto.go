@@ -265,9 +265,24 @@ type ReadFileResponse struct {
 }
 
 // SetUnixPasswordRequest sets a login password (chpasswd) for SFTP/SSH.
+// Encrypted passes an already hashed password (chpasswd -e): переезд между
+// панелями переносит хеш, а не пароль, поэтому пользователь входит тем же.
 type SetUnixPasswordRequest struct {
-	Login    string `json:"login"`
-	Password string `json:"password"`
+	Login     string `json:"login"`
+	Password  string `json:"password"`
+	Encrypted bool   `json:"encrypted,omitempty"`
+}
+
+// UnixShadowRequest asks for the password hash of a client account.
+type UnixShadowRequest struct {
+	Login string `json:"login"`
+}
+
+// UnixShadowResponse carries the hash from shadow(5). It is a hash, not a
+// password, but it is still worth exactly one offline attack — the panel hands
+// it over only for a migration.
+type UnixShadowResponse struct {
+	Hash string `json:"hash"`
 }
 
 // RemoveUnixUserRequest deletes a client's unix account: processes of the

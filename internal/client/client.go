@@ -941,3 +941,21 @@ func (c *Client) InstallWebmail(ctx context.Context, req apitypes.WebmailRequest
 	var out apitypes.JobRef
 	return &out, c.do(ctx, http.MethodPost, "/mail/webmail", req, &out)
 }
+
+// MigrateGrant opens this panel for one migration and returns the token once.
+func (c *Client) MigrateGrant(ctx context.Context, req apitypes.MigrationGrantRequest) (*apitypes.MigrationGrantResponse, error) {
+	var out apitypes.MigrationGrantResponse
+	return &out, c.do(ctx, http.MethodPost, "/migrate/grant", req, &out)
+}
+
+// MigratePlan asks what would arrive from another panel and what stands in the way.
+func (c *Client) MigratePlan(ctx context.Context, req apitypes.MigrationSourceRequest) (*apitypes.MigrationPlan, error) {
+	var out apitypes.MigrationPlan
+	return &out, c.do(ctx, http.MethodPost, "/migrate/plan", req, &out)
+}
+
+// MigrateRun takes the account over.
+func (c *Client) MigrateRun(ctx context.Context, req apitypes.MigrationSourceRequest) (*apitypes.JobRef, error) {
+	var out apitypes.JobRef
+	return &out, c.do(ctx, http.MethodPost, "/migrate/run", req, &out)
+}
