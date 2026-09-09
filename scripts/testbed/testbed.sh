@@ -9,6 +9,9 @@
 #   TB_GATEWAY=192.0.2.1              # optional, default .1
 #   TB_IP_BASE=200                    # VM n gets TB_PREFIX.(TB_IP_BASE+n)
 #   TB_SSH_KEY_FILE=~/.ssh/id_ed25519 # private key; its .pub goes to root@vm
+#   TB_ZONE=example.com               # optional: Cloudflare zone for VM names
+#   TB_DNS_LABEL=tb                   # VM n is <name>.tb.example.com (+ wildcard)
+#   TB_CF_TOKEN=…                     # Cloudflare API token, Zone:DNS:Edit on the zone
 #
 #   testbed.sh up|reset|down [name...]   VMs on the Proxmox host
 #   testbed.sh status | names            what exists
@@ -17,6 +20,7 @@
 #   testbed.sh e2e <name>                make e2e against the VM
 #   testbed.sh matrix [name...]          reset + deploy + e2e for each VM, summary
 #   testbed.sh migrate <src> <dst>       move an account between two VMs and verify
+#   testbed.sh dns [up|down|list]        A records for the VMs in the Cloudflare zone
 set -euo pipefail
 export PATH="$HOME/go/bin:$HOME/.local/go/bin:$HOME/.local/node/bin:$PATH"
 
@@ -80,6 +84,8 @@ deploy() {
 	local name=$1 how=${2:-} vm ip family pkg
 	vm="mp-$name"
 	ip=$(ssh "$vm" 'hostname -I | cut -d" " -f1')
+	addr=$ip
+	[ -z "${TB_ZONE:-}" ] || addr="$name.${TB_DNS_LABEL:-tb}.$TB_ZONE"
 	family=$(ssh "$vm" '. /etc/os-release; case " $ID $ID_LIKE " in *debian*|*ubuntu*) echo deb;; *) echo rpm;; esac')
 	log "$vm ($ip, $family): $([ -n "${TB_PREBUILT:-}" ] && echo "deploying" || echo "building")"
 	if [ "$how" = "--binary" ]; then
@@ -95,8 +101,9 @@ deploy() {
 		pkg="/tmp/$pkg"
 	fi
 	scp -q "$root/scripts/testbed/bootstrap.sh" "$vm:/tmp/bootstrap.sh"
+	# The Cloudflare token travels on stdin, not on a command line.
 	# shellcheck disable=SC2029
-	ssh "$vm" "TB_PHP=${TB_PHP:-} TB_DB=${TB_DB:-} TB_EXTRA=${TB_EXTRA:-} bash /tmp/bootstrap.sh $pkg $ip"
+	ssh "$vm" "TB_CF_TOKEN=\$(head -1) TB_PHP=${TB_PHP:-} TB_DB=${TB_DB:-} TB_EXTRA=${TB_EXTRA:-} bash /tmp/bootstrap.sh $pkg $addr" <<<"${TB_CF_TOKEN:-}"
 }
 
 e2e() {
@@ -141,5 +148,14 @@ deploy) [ $# -ge 1 ] || { echo "usage: testbed.sh deploy <name> [--binary]" >&2;
 e2e) [ $# -eq 1 ] || { echo "usage: testbed.sh e2e <name>" >&2; exit 2; }; e2e "$1" ;;
 matrix) [ $# -gt 0 ] || set -- $(remote names); matrix "$@" ;;
 migrate) [ $# -eq 2 ] || { echo "usage: testbed.sh migrate <source> <target>" >&2; exit 2; }; exec "$root/scripts/testbed/migrate.sh" "$1" "$2" ;;
-*) echo "usage: testbed.sh up|reset|down [name...] | status | ssh-config | deploy <name> | e2e <name> | matrix [name...] | migrate <src> <dst>" >&2; exit 2 ;;
+dns)
+	[ -n "${TB_ZONE:-}" ] && [ -n "${TB_CF_TOKEN:-}" ] || { echo "set TB_ZONE and TB_CF_TOKEN in $env_file" >&2; exit 2; }
+	export TB_ZONE TB_CF_TOKEN TB_DNS_LABEL
+	case "${1:-up}" in
+	up) exec python3 "$root/scripts/testbed/cfdns.py" up $(remote list | awk '{print $1, $3}' | tr '\n' ' ') ;;
+	down | list) exec python3 "$root/scripts/testbed/cfdns.py" "$1" ;;
+	*) echo "usage: testbed.sh dns [up|down|list]" >&2; exit 2 ;;
+	esac
+	;;
+*) echo "usage: testbed.sh up|reset|down [name...] | status | ssh-config | deploy <name> | e2e <name> | matrix [name...] | migrate <src> <dst> | dns [up|down|list]" >&2; exit 2 ;;
 esac

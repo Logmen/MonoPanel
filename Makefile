@@ -16,7 +16,7 @@ DEV_SSH  ?= ssh
 DEV_SCP  ?= scp
 GOLANGCI_VERSION ?= v2.13.2
 
-.PHONY: build build-arm64 test test-race test-short cover cover-html lint vet fmt fmt-check check web web-check web-stub e2e deb rpm packages arch-artifacts sign release keygen deploy-dev clean help testbed-up testbed-reset testbed-down testbed-status testbed-deploy testbed-e2e testbed-matrix testbed-migrate
+.PHONY: build build-arm64 test test-race test-short cover cover-html lint vet fmt fmt-check check web web-check web-stub e2e deb rpm packages arch-artifacts sign release keygen deploy-dev clean help testbed-up testbed-reset testbed-down testbed-status testbed-deploy testbed-e2e testbed-matrix testbed-migrate testbed-dns
 
 help: ## Show the available targets
 	@grep -hE '^[a-z0-9-]+:.*##' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*## "} {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -162,6 +162,9 @@ testbed-e2e: ## Run the end-to-end tests against VM=<name>
 
 testbed-matrix: ## reset + deploy + e2e on every testbed VM in parallel, then a summary
 	scripts/testbed/testbed.sh matrix $(VM)
+
+testbed-dns: ## Create the VMs' A records in the Cloudflare zone from .dev/testbed.env
+	scripts/testbed/testbed.sh dns up
 
 testbed-migrate: ## Move an account from SRC=<name> to DST=<name> and verify it arrived
 	@[ -n "$(SRC)" ] && [ -n "$(DST)" ] || { echo "make testbed-migrate SRC=ubuntu2404 DST=debian13"; exit 2; }

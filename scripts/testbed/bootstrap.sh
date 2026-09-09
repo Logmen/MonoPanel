@@ -6,9 +6,12 @@
 # way a user would, and finishes with `mp doctor`. Idempotent: on a second run
 # the package is upgraded and installed components are left alone.
 #
-#   TB_PHP    PHP branch to install (default 8.4)
-#   TB_DB     database engine: percona (default), mysql or none
-#   TB_EXTRA  extra components, space-separated: apache fail2ban firewall mail
+#   TB_PHP      PHP branch to install (default 8.4)
+#   TB_DB       database engine: percona (default), mysql or none
+#   TB_EXTRA    extra components, space-separated: apache fail2ban firewall mail
+#   TB_CF_TOKEN Cloudflare API token: registered as DNS provider "cf" for DNS-01
+#               certificates (the VMs are on a private network, HTTP-01 cannot
+#               reach them); the token is not echoed anywhere
 set -euo pipefail
 
 pkg=${1:?package or binary}
@@ -93,6 +96,14 @@ for x in $TB_EXTRA; do
 	*) echo "unknown extra: $x" >&2; exit 2 ;;
 	esac
 done
+
+# ---------------------------------------------------------- dns-01 ----
+if [ -n "${TB_CF_TOKEN:-}" ]; then
+	if ! mp dns-provider list --json 2>/dev/null | tr -d ' \n' | grep -q '"name":"cf"'; then
+		log "mp dns-provider add cf (cloudflare)"
+		mp dns-provider add cf --type cloudflare --cred "CLOUDFLARE_DNS_API_TOKEN=$TB_CF_TOKEN" >/dev/null
+	fi
+fi
 
 # -------------------------------------------------------------- report ----
 log "mp doctor"
