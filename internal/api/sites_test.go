@@ -224,7 +224,7 @@ func TestSitePresetsRenderExpectedRules(t *testing.T) {
 			}
 			// Bitrix runs without open_basedir and with a large opcache; every
 			// other preset keeps the confinement.
-			if c.preset == "bitrix" && (strings.Contains(pool, "open_basedir") || !strings.Contains(pool, "php_value[opcache.max_accelerated_files] = 100000")) {
+			if c.preset == "bitrix" && (strings.Contains(pool, "open_basedir") || !strings.Contains(pool, "php_value[opcache.max_accelerated_files] = 100000") || !strings.Contains(pool, "php_value[session.cookie_secure] = On")) {
 				t.Errorf("bitrix pool: open_basedir must be off and opcache sized:\n%s", pool)
 			}
 			if c.preset != "bitrix" && !strings.Contains(pool, "php_admin_value[open_basedir]") {
