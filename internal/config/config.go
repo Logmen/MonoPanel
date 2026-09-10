@@ -100,7 +100,11 @@ var DefaultAllowedWritePrefixes = []string{
 	"/etc/sysconfig/memcached",
 	"/etc/sphinxsearch/",
 	"/etc/default/sphinxsearch",
-	"/etc/manticoresearch/",
+	"/var/lib/sphinxsearch/data/", // index files of Debian's sphinxsearch, dropped on a schema change
+	"/etc/sphinx/",
+	"/opt/monopanel/",
+	"/var/lib/sphinx/",
+	"/var/log/sphinx/",
 	"/usr/local/bin/composer",
 	"/usr/local/lib/monopanel/",
 	"/etc/my.cnf.d/",

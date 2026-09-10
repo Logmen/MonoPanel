@@ -160,3 +160,16 @@ type Profile interface {
 - Собственная таблица `inet monopanel` в nftables (через `google/nftables`, без парсинга текстового вывода): цепочка `input` с правилами панели (ssh, 80/443, 8443, 3306 при удалённом доступе, ftp по флагу), rate-limit на ssh и 8443, чёрный/белый списки из UI, geo-блокировки (по спискам). Правила сохраняются в `/etc/nftables.d/monopanel.nft` для восстановления при загрузке.
 - EL: firewalld не удаляется. Пока панель им не управляет: если он запущен (образы Oracle Linux поставляются с ним, Alma и Rocky — нет), `mp setup` открывает в нём порт панели, установка nginx — 80 и 443, установка почты — её порты (`firewall-cmd --permanent` + `--reload`); `mp firewall enable` останавливает и выключает firewalld, дальше таблицу ведёт панель. Управление зоной через D-Bus и выбор при `mp setup` — позже. Ubuntu: ufw аналогично.
 - fail2ban: jail'ы `sshd`, `monopanel` (лог панели), `nginx-http-auth`, `nginx-botsearch`, `mysqld-auth`, позже `proftpd`/`postfix`; действие — `nftables-multiport` в таблице панели, чтобы баны были видны в UI.
+
+## 8. Sphinx для 1С-Битрикс
+
+Расширение `sphinx` ставит поисковый сервер, который Битрикс ждёт в «Настройки → Поиск → Sphinx» (соединение `127.0.0.1:9306`, индекс `bitrix`). Что выяснилось на стенде:
+
+- **Debian/Ubuntu**: пакет `sphinxsearch` (2.2.11) из дистрибутива, конфиг по эталону Битрикса «for 2.X» (`rt_field`/`rt_attr_*`), `/etc/default/sphinxsearch` с `START=yes`. Юнит сгенерирован из SysV-скрипта: `systemctl enable` его не принимает («generated»), панель это игнорирует — rc-ссылки пакета и так запускают демон.
+- **EL**: пакета нет. Manticore не подходит: его `SHOW TABLES` отдаёт колонку `Table`, а `search/tools/sphinx.php` читает `$res['Index']` — Битрикс отвечает «Указанный индекс не найден». Ставится сборка Sphinx 3.9.1 с sphinxsearch.com (tar.gz, контрольная сумма зашита в панель), пользователь `sphinx`, `/opt/monopanel/sphinx`, юнит `monopanel-sphinx.service`, конфиг `/etc/sphinx/sphinx.conf`.
+- **Sphinx 3 молча игнорирует написание 2.x** (`rt_attr_timestamp` и остальные `rt_attr_*`): индекс поднимался без `date_change`/`date_to`/`date_from`. Конфиг для 3.x повторяет эталон Битрикса «for 3.X»: `field`, `attr_uint`, `attr_string`, `attr_uint_set`, даты как `attr_uint` (Битрикс принимает `uint` и `timestamp`).
+- **Существующий индекс на диске главнее конфига**: searchd пишет `attribute count mismatch … EXISTING INDEX TAKES PRECEDENCE` и оставляет старую схему. Поэтому после установки панель делает `DESCRIBE bitrix`, и если не хватает колонок из списка Битрикса — останавливает демон, удаляет `bitrix.*` и binlog из каталога данных и запускает заново (Битрикс наполнит индекс переиндексацией). Удаление расширения тоже убирает файлы индекса.
+- `systemctl restart` возвращается раньше, чем searchd начинает слушать порты: проверка `SHOW TABLES` повторяется до 15 с, пока клиент отвечает «Can't connect».
+- Символ `_` нельзя ставить одновременно в `charset_table` и `blend_chars` — индекс не поднимается (NOT SERVING).
+- sphinxsearch.com отдаёт архив (40 МБ) медленно, до полутора минут: загрузки панели ограничены не общим таймаутом, а простоем (минута без данных).
+

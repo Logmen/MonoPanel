@@ -34,6 +34,9 @@ linters:
         - fmt.Sscanf
         - fmt.Fprintf
         - fmt.Fprintln
+    misspell:
+      ignore-rules:
+        - searchd  # the Sphinx daemon, not a typo of "searched"
     staticcheck:
       checks:
         - all

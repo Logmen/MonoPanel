@@ -32,14 +32,16 @@ func ToolPackages(p Profile, tool string) []string {
 	return nil
 }
 
-// SphinxLayout is the full-text search server for 1C-Bitrix: Sphinx 2.2 from
-// the distribution on Debian/Ubuntu (the version Bitrix documents), Manticore
-// Search from its own repository on EL, which has no Sphinx package. Both
-// speak SphinxQL on the same port, and Bitrix talks to either the same way.
+// SphinxLayout is the full-text search server for 1C-Bitrix. Debian and
+// Ubuntu package Sphinx 2.2 (the version Bitrix documented for years); EL has
+// no package, and Manticore's SHOW TABLES no longer answers the way Bitrix
+// checks the index, so there the panel installs the sphinxsearch.com build
+// of Sphinx 3 — the version Bitrix's own reference configuration targets.
 type SphinxLayout struct {
-	Engine       string   `json:"engine"` // sphinx | manticore
-	RepoPackage  string   `json:"repo_package,omitempty"`
-	Packages     []string `json:"packages"`
+	Engine       string   `json:"engine"` // sphinx (packaged 2.2) | sphinx3 (tarball)
+	Packages     []string `json:"packages,omitempty"`
+	InstallDir   string   `json:"install_dir,omitempty"` // tarball build
+	UnitFile     string   `json:"unit_file,omitempty"`   // tarball build: the panel's unit
 	Service      string   `json:"service"`
 	ConfFile     string   `json:"conf_file"`
 	Template     string   `json:"template"`
@@ -53,9 +55,9 @@ type SphinxLayout struct {
 // Sphinx returns the search server layout for a profile.
 func Sphinx(p Profile) SphinxLayout {
 	if p.Family() == FamilyRHEL {
-		return SphinxLayout{Engine: "manticore", RepoPackage: "https://repo.manticoresearch.com/manticore-repo.noarch.rpm", Packages: []string{"manticore"},
-			Service: "manticore.service", ConfFile: "/etc/manticoresearch/manticore.conf", Template: "sphinx/manticore.conf.tmpl",
-			User: "manticore", DataDir: "/var/lib/manticore", LogDir: "/var/log/manticore", PidFile: "/var/run/manticore/searchd.pid"}
+		return SphinxLayout{Engine: "sphinx3", InstallDir: "/opt/monopanel/sphinx", UnitFile: "/etc/systemd/system/monopanel-sphinx.service",
+			Service: "monopanel-sphinx.service", ConfFile: "/etc/sphinx/sphinx.conf", Template: "sphinx/sphinx3.conf.tmpl",
+			User: "sphinx", DataDir: "/var/lib/sphinx", LogDir: "/var/log/sphinx", PidFile: "/run/sphinx/searchd.pid"}
 	}
 	return SphinxLayout{Engine: "sphinx", Packages: []string{"sphinxsearch"}, Service: "sphinxsearch.service", ConfFile: "/etc/sphinxsearch/sphinx.conf", Template: "sphinx/sphinx.conf.tmpl",
 		DefaultsFile: "/etc/default/sphinxsearch", User: "sphinxsearch", DataDir: "/var/lib/sphinxsearch/data", LogDir: "/var/log/sphinxsearch", PidFile: "/run/sphinxsearch/searchd.pid"}

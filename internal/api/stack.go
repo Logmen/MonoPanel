@@ -182,12 +182,28 @@ func fetchBytesN(ctx context.Context, url string, limit int64) ([]byte, error) {
 	return nil, lastErr
 }
 
+// fetchClient has no overall deadline: a 40 MB Sphinx tarball from a slow
+// mirror takes minutes, and the job's context bounds the whole install.
+// Connecting and waiting for headers are bounded here; the body is watched
+// for stalls instead (fetchIdle).
+var fetchClient = &http.Client{Transport: &http.Transport{
+	Proxy:                 http.ProxyFromEnvironment,
+	DialContext:           (&net.Dialer{Timeout: 15 * time.Second}).DialContext,
+	TLSHandshakeTimeout:   15 * time.Second,
+	ResponseHeaderTimeout: 30 * time.Second,
+}}
+
+// fetchIdle is how long a download may deliver nothing before it is cut off.
+var fetchIdle = time.Minute
+
 func fetchOnce(ctx context.Context, url string, limit int64) (body []byte, retry bool, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	rctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	req, err := http.NewRequestWithContext(rctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, false, err
 	}
-	res, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	res, err := fetchClient.Do(req)
 	if err != nil {
 		return nil, ctx.Err() == nil, err
 	}
@@ -195,8 +211,27 @@ func fetchOnce(ctx context.Context, url string, limit int64) (body []byte, retry
 	if res.StatusCode != http.StatusOK {
 		return nil, res.StatusCode >= 500, fmt.Errorf("GET %s: %s", url, res.Status)
 	}
-	b, err := io.ReadAll(io.LimitReader(res.Body, limit))
+	stall := time.AfterFunc(fetchIdle, cancel)
+	defer stall.Stop()
+	b, err := io.ReadAll(io.LimitReader(&stallReader{r: res.Body, timer: stall}, limit))
+	if err != nil && rctx.Err() != nil && ctx.Err() == nil {
+		err = fmt.Errorf("GET %s: no data for %s: %w", url, fetchIdle, err)
+	}
 	return b, err != nil, err
+}
+
+// stallReader pushes the stall timer back whenever data arrives.
+type stallReader struct {
+	r     io.Reader
+	timer *time.Timer
+}
+
+func (r *stallReader) Read(p []byte) (int, error) {
+	n, err := r.r.Read(p)
+	if n > 0 {
+		r.timer.Reset(fetchIdle)
+	}
+	return n, err
 }
 
 // installNginx adds the nginx.org repository, installs nginx, writes the

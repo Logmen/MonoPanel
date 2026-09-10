@@ -141,6 +141,10 @@ type Sphinx struct {
 	DataDir string
 	LogDir  string
 	PidFile string
+	// For the systemd unit of the sphinxsearch.com build on EL.
+	User       string
+	InstallDir string
+	ConfFile   string
 }
 
 // Firewall feeds nftables/monopanel.nft.tmpl: pre-rendered rule lines.

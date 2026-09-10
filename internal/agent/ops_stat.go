@@ -164,6 +164,9 @@ var listDirAllowed = []*regexp.Regexp{
 	regexp.MustCompile(`^/etc/php/[0-9]+\.[0-9]+/mods-available$`),
 	regexp.MustCompile(`^/etc/php/[0-9]+\.[0-9]+/(fpm|cli)/conf\.d$`),
 	regexp.MustCompile(`^/etc/opt/remi/php[0-9]+/php\.d$`),
+	// the search index files of the Sphinx extension (recreated on a schema change)
+	regexp.MustCompile(`^/var/lib/sphinx$`),
+	regexp.MustCompile(`^/var/lib/sphinxsearch/data$`),
 }
 
 func (s *Server) listDir(_ context.Context, req *ListDirRequest) (*ListDirResponse, error) {

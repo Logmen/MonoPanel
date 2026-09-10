@@ -2,11 +2,14 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"net/http"
 	"strings"
 	"testing"
 
+	"monopanel/internal/agent"
 	"monopanel/internal/store"
 )
 
@@ -174,7 +177,7 @@ func TestComposerNeedsPHP(t *testing.T) {
 // both get the bitrix real-time index and a local SphinxQL listener.
 func TestSphinxInstall(t *testing.T) {
 	f := newSiteFixture(t)
-	f.agent.ToolOutput["mysql"] = "bitrix\n"
+	sphinxAnswers(f, func() string { return sphinxSchema() })
 	if job := f.stackJob(t, http.MethodPost, "/stack/install", map[string]any{"component": "sphinx"}); job.Status != store.JobDone {
 		t.Fatalf("sphinx on Debian: %s %s", job.Status, job.Error)
 	}
@@ -198,40 +201,97 @@ func TestSphinxInstall(t *testing.T) {
 	}
 }
 
+// sphinxAnswers makes the fake mysql client answer SphinxQL the way searchd
+// does: the served index list, and for DESCRIBE the schema describe() returns.
+func sphinxAnswers(f *siteFixture, describe func() string) {
+	f.agent.ToolHook = func(req agent.ToolRequest) *agent.ToolResponse {
+		if req.Name != "mysql" || len(req.Args) == 0 {
+			return nil
+		}
+		if strings.HasPrefix(req.Args[len(req.Args)-1], "DESCRIBE") {
+			return &agent.ToolResponse{Output: describe()}
+		}
+		return &agent.ToolResponse{Output: "bitrix\trt\n"}
+	}
+}
+
+// sphinxSchema is DESCRIBE bitrix as searchd prints it, minus the columns named.
+func sphinxSchema(without ...string) string {
+	skip := map[string]bool{}
+	for _, w := range without {
+		skip[w] = true
+	}
+	var b strings.Builder
+	b.WriteString("id\tbigint\t\t\n")
+	for _, c := range sphinxColumns {
+		if !skip[c] {
+			b.WriteString(c + "\tuint\t\t\n")
+		}
+	}
+	return b.String()
+}
+
+// stubSphinxTarball serves a fake sphinxsearch.com tarball with a wrong pinned checksum.
+func stubSphinxTarball(t *testing.T) [32]byte {
+	t.Helper()
+	tarball := []byte("not really a tarball")
+	prevDownload, prevSum := sphinxDownload, sphinx3SHA256
+	sphinxDownload = func(context.Context, string) ([]byte, error) { return tarball, nil }
+	sphinx3SHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
+	t.Cleanup(func() { sphinxDownload, sphinx3SHA256 = prevDownload, prevSum })
+	return sha256.Sum256(tarball)
+}
+
 func TestSphinxInstallOnEL(t *testing.T) {
 	withOSRelease(t, "ID=rocky\nVERSION_ID=9.6\nID_LIKE=\"rhel centos fedora\"\n")
+	sum := stubSphinxTarball(t)
 	f := newSiteFixture(t)
-	// The daemon is asked whether it serves the index; a daemon that does
-	// not answer with it fails the install.
-	if job := f.stackJob(t, http.MethodPost, "/stack/install", map[string]any{"component": "sphinx"}); job.Status != store.JobFailed || !strings.Contains(job.Error, "bitrix index") {
-		t.Fatalf("an index that is not served must fail the install: %s %s", job.Status, job.Error)
+	f.agent.DirEntries["/var/lib/sphinx"] = []string{"bitrix.meta", "bitrix.ram", "bitrix.binlog.0000"}
+	sphinxAnswers(f, func() string { return sphinxSchema() })
+
+	// A tarball that does not match the pinned checksum is refused.
+	if job := f.stackJob(t, http.MethodPost, "/stack/install", map[string]any{"component": "sphinx"}); job.Status != store.JobFailed || !strings.Contains(job.Error, "checksum") {
+		t.Fatalf("bad checksum must fail: %s %s", job.Status, job.Error)
 	}
-	f.agent.ToolOutput["mysql"] = "bitrix\n"
+	sphinx3SHA256 = hex.EncodeToString(sum[:])
 	if job := f.stackJob(t, http.MethodPost, "/stack/install", map[string]any{"component": "sphinx"}); job.Status != store.JobDone {
-		t.Fatalf("manticore on EL: %s %s", job.Status, job.Error)
+		t.Fatalf("sphinx 3 on EL: %s %s", job.Status, job.Error)
 	}
-	repo, pkg := false, false
+	user, unpacked := false, false
 	for _, c := range f.agent.Calls() {
-		if c.Path != "/v1/pkg" {
-			continue
-		}
-		if strings.Contains(string(c.Body), "manticore-repo.noarch.rpm") {
-			repo = true
-		}
-		if strings.Contains(string(c.Body), `"manticore"`) {
-			pkg = true
+		if c.Path == "/v1/user/ensure" && strings.Contains(string(c.Body), `"login":"sphinx"`) && strings.Contains(string(c.Body), `"system":true`) {
+			user = true
 		}
 	}
-	if !repo || !pkg {
-		t.Fatalf("manticore repository and package must be installed: repo=%v pkg=%v", repo, pkg)
+	for _, st := range f.agent.Streams() {
+		if st.Name == "tar" && strings.Contains(strings.Join(st.Args, " "), "-C /opt/monopanel/sphinx") {
+			unpacked = true
+		}
 	}
-	conf, _ := f.agent.File("/etc/manticoresearch/manticore.conf")
-	if !strings.Contains(conf, "index bitrix") || strings.Contains(conf, "workers =") || strings.Contains(conf, "docinfo") || !strings.Contains(conf, "path = /var/lib/manticore/bitrix") {
-		t.Fatalf("manticore.conf:\n%s", conf)
+	if !user || !unpacked {
+		t.Fatalf("sphinx user and unpacking: user=%v unpacked=%v", user, unpacked)
+	}
+	conf, _ := f.agent.File("/etc/sphinx/sphinx.conf")
+	for _, want := range []string{"index bitrix", "path = /var/lib/sphinx/bitrix", "field = title", "attr_uint = date_change", "attr_uint_set = site", "attr_string = module"} {
+		if !strings.Contains(conf, want) {
+			t.Fatalf("sphinx.conf (3.x) lacks %q:\n%s", want, conf)
+		}
+	}
+	// Sphinx 3 silently drops the rt_attr_* spellings (the timestamps vanished on a real host).
+	if strings.Contains(conf, "rt_attr_") || strings.Contains(conf, "workers =") || strings.Contains(conf, "docinfo") {
+		t.Fatalf("sphinx.conf (3.x) must use the 3.x directives:\n%s", conf)
+	}
+	unit, _ := f.agent.File("/etc/systemd/system/monopanel-sphinx.service")
+	if !strings.Contains(unit, "ExecStart=/opt/monopanel/sphinx/bin/"+sphinxDaemon+" --config /etc/sphinx/sphinx.conf --nodetach") || !strings.Contains(unit, "User=sphinx") {
+		t.Fatalf("unit:\n%s", unit)
+	}
+	if act := f.agent.UnitAction("monopanel-sphinx.service"); act != "enable" {
+		t.Fatalf("monopanel-sphinx.service: %q", act)
 	}
 	if _, ok := f.agent.File("/etc/default/sphinxsearch"); ok {
 		t.Fatal("Debian's defaults file has no place on EL")
 	}
+	f.agent.Stat["/opt/monopanel/sphinx/bin/"+sphinxDaemon] = false
 	var list []struct {
 		Name      string
 		Installed bool
@@ -239,8 +299,73 @@ func TestSphinxInstallOnEL(t *testing.T) {
 	}
 	f.call(http.MethodGet, "/stack", nil, http.StatusOK, &list)
 	for _, c := range list {
-		if c.Name == "sphinx" && (!c.Installed || !strings.HasPrefix(c.Version, "manticore ")) {
+		if c.Name == "sphinx" && (!c.Installed || c.Version != "sphinx 3.9.1") {
 			t.Fatalf("sphinx in the listing: %+v", c)
 		}
+	}
+	if job := f.stackJob(t, http.MethodDelete, "/stack/sphinx", nil); job.Status != store.JobDone {
+		t.Fatalf("remove: %s %s", job.Status, job.Error)
+	}
+	removed := false
+	for _, c := range f.agent.Calls() {
+		if c.Path == "/v1/paths/remove" && strings.Contains(string(c.Body), "/opt/monopanel/sphinx") && strings.Contains(string(c.Body), "monopanel-sphinx.service") {
+			removed = true
+		}
+	}
+	if !removed {
+		t.Fatal("binaries and unit were not removed")
+	}
+	// The index files go too: a stale index would dictate the schema of the next install.
+	if gone := strings.Join(f.agent.Removed(), " "); !strings.Contains(gone, "/var/lib/sphinx/bitrix.meta") || !strings.Contains(gone, "/var/lib/sphinx/bitrix.binlog.0000") {
+		t.Fatalf("index files kept on removal: %s", gone)
+	}
+}
+
+// An index left on disk by an older configuration keeps its schema (searchd:
+// "attribute count mismatch … EXISTING INDEX TAKES PRECEDENCE"), so the
+// install recreates it and checks again.
+func TestSphinxRecreatesStaleIndex(t *testing.T) {
+	withOSRelease(t, "ID=ol\nVERSION_ID=9.6\nID_LIKE=\"fedora\"\n")
+	sum := stubSphinxTarball(t)
+	sphinx3SHA256 = hex.EncodeToString(sum[:])
+	f := newSiteFixture(t)
+	f.agent.DirEntries["/var/lib/sphinx"] = []string{"bitrix.meta", "bitrix.ram", "bitrix.lock", "bitrix.binlog.0000", "bitrix.binlog.meta", "searchd.log"}
+	describes := 0
+	sphinxAnswers(f, func() string {
+		describes++
+		if describes == 1 {
+			return sphinxSchema("date_change", "date_to", "date_from")
+		}
+		return sphinxSchema()
+	})
+	job := f.stackJob(t, http.MethodPost, "/stack/install", map[string]any{"component": "sphinx"})
+	if job.Status != store.JobDone {
+		t.Fatalf("sphinx over a stale index: %s %s", job.Status, job.Error)
+	}
+	gone := strings.Join(f.agent.Removed(), " ")
+	for _, want := range []string{"/var/lib/sphinx/bitrix.meta", "/var/lib/sphinx/bitrix.ram", "/var/lib/sphinx/bitrix.binlog.0000"} {
+		if !strings.Contains(gone, want) {
+			t.Fatalf("stale index file %s kept: %s", want, gone)
+		}
+	}
+	if strings.Contains(gone, "searchd.log") {
+		t.Fatalf("only the index files go: %s", gone)
+	}
+	if describes != 2 {
+		t.Fatalf("the schema must be checked again after recreating the index: %d", describes)
+	}
+	if act := f.agent.UnitAction("monopanel-sphinx.service"); act != "start" {
+		t.Fatalf("searchd must be started again after the index is dropped: %q", act)
+	}
+
+	// With the schema already right nothing is touched.
+	f.agent.ToolHook = nil
+	sphinxAnswers(f, func() string { return sphinxSchema() })
+	before := len(f.agent.Removed())
+	if job := f.stackJob(t, http.MethodPost, "/stack/install", map[string]any{"component": "sphinx"}); job.Status != store.JobDone {
+		t.Fatalf("reinstall: %s %s", job.Status, job.Error)
+	}
+	if len(f.agent.Removed()) != before {
+		t.Fatalf("a matching index must be kept: %v", f.agent.Removed()[before:])
 	}
 }
