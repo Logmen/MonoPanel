@@ -317,6 +317,9 @@ func (a *Agent) respond(path string, body []byte) any {
 		var req agent.ReadFileRequest
 		json.Unmarshal(body, &req) //nolint:errcheck // test double
 		c := a.ReadFile[req.Path]
+		if f, ok := a.files[req.Path]; ok {
+			c = f.Content
+		}
 		return agent.ReadFileResponse{Content: c, Size: int64(len(c))}
 
 	case "/v1/chown":

@@ -222,6 +222,14 @@ func TestSitePresetsRenderExpectedRules(t *testing.T) {
 			if c.preset == "bitrix" && !strings.Contains(pool, "php_value[short_open_tag] = On") {
 				t.Errorf("bitrix pool missing short_open_tag:\n%s", pool)
 			}
+			// Bitrix runs without open_basedir and with a large opcache; every
+			// other preset keeps the confinement.
+			if c.preset == "bitrix" && (strings.Contains(pool, "open_basedir") || !strings.Contains(pool, "php_value[opcache.max_accelerated_files] = 100000")) {
+				t.Errorf("bitrix pool: open_basedir must be off and opcache sized:\n%s", pool)
+			}
+			if c.preset != "bitrix" && !strings.Contains(pool, "php_admin_value[open_basedir]") {
+				t.Errorf("%s pool lost open_basedir:\n%s", c.preset, pool)
+			}
 		})
 	}
 }

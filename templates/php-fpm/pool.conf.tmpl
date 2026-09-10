@@ -23,7 +23,9 @@ clear_env = no
 env[PATH]   = {{ .BinDir }}:/usr/local/bin:/usr/bin:/bin
 env[HOME]   = {{ .Home }}
 env[TMPDIR] = {{ .TmpDir }}
+{{- if .OpenBasedir }}
 php_admin_value[open_basedir]      = {{ .DataDir }}
+{{- end }}
 php_admin_value[upload_tmp_dir]    = {{ .TmpDir }}
 php_admin_value[session.save_path] = {{ .TmpDir }}/sess
 php_admin_value[sys_temp_dir]      = {{ .TmpDir }}

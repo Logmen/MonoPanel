@@ -670,6 +670,7 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 		StartServers: max(2, maxChildren/4), MinSpare: max(1, maxChildren/4), MaxSpare: max(2, maxChildren/2), TerminateTimeout: terminate,
 		Home: l.home, DataDir: l.data, TmpDir: path.Join(l.data, "tmp"), LogDir: path.Join(l.data, "logs"), BinDir: path.Join(l.data, "bin"),
 		SendmailFrom: "noreply@" + site.Domain, DisableFunctions: disable, Values: values,
+		OpenBasedir: site.Preset != presetBitrix,
 	}
 	poolConf := ""
 	if !proxy {

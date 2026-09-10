@@ -54,8 +54,9 @@ func (s *Server) readFile(_ context.Context, req *ReadFileRequest) (*ReadFileRes
 		allowed = len(parts) == 4 && parts[1] == "data" && parts[2] == "logs" && strings.HasSuffix(parts[3], ".log")
 	}
 	// /var/log/mysqld.log is the EL server log, where the package leaves
-	// the temporary root password.
-	for _, pre := range []string{"/var/log/nginx/", "/var/log/apache2/", "/var/log/httpd/", "/var/log/mysql/", "/var/log/mysqld.log", "/var/log/php", s.cfg.LogDir + "/"} {
+	// the temporary root password; the PHP configuration directories hold
+	// the extension ini files the panel switches on and off.
+	for _, pre := range []string{"/var/log/nginx/", "/var/log/apache2/", "/var/log/httpd/", "/var/log/mysql/", "/var/log/mysqld.log", "/var/log/php", "/etc/php/", "/etc/opt/remi/", s.cfg.LogDir + "/"} {
 		if strings.HasPrefix(p, pre) {
 			allowed = true
 		}

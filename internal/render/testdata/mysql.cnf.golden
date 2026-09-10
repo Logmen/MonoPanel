@@ -15,6 +15,15 @@ local_infile = OFF
 # Strict mode refuses tables whose row size exceeds the InnoDB limit and
 # imports from older servers; CMS installers and dumps hit both, so it is off.
 innodb_strict_mode = OFF
+# READ-COMMITTED and a lenient sql_mode are what 1C-Bitrix requires and what
+# WordPress, Joomla and OpenCart run on anyway.
+transaction_isolation = READ-COMMITTED
+sql_mode = NO_ENGINE_SUBSTITUTION
+max_allowed_packet = 64M
+thread_cache_size = 32
+sort_buffer_size = 2M
+join_buffer_size = 2M
+read_rnd_buffer_size = 1M
 performance_schema = ON
 disable_log_bin
 slow_query_log = ON

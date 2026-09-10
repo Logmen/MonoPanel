@@ -26,7 +26,7 @@ var sitePresets = []apitypes.SitePreset{
 	{ID: "", Name: "Универсальный PHP", Description: "index.php front controller, статика через nginx; подходит для Laravel, Symfony и любого PHP-приложения."},
 	{ID: presetWordPress, Name: "WordPress", Description: "ЧПУ-ссылки, /wp-admin, xmlrpc.php закрыт, запрет PHP в wp-content/uploads, лимиты загрузки 128M."},
 	{ID: presetJoomla, Name: "Joomla", Description: "SEF-ссылки, /api для Joomla 4+, закрыты configuration.php, cache/logs/tmp, запрет PHP в images/media."},
-	{ID: presetBitrix, Name: "1С-Битрикс", Description: "urlrewrite.php, правила BitrixVM для bitrix/ и upload/, short_open_tag, max_input_vars 20000, лимиты 256M, memory 512M."},
+	{ID: presetBitrix, Name: "1С-Битрикс", Description: "urlrewrite.php, правила BitrixVM для bitrix/ и upload/, short_open_tag, max_input_vars 20000, лимиты 256M, memory 512M, opcache на 100000 файлов, без open_basedir."},
 	{ID: presetOpenCart, Name: "OpenCart", Description: "SEO URL через _route_, sitemap/googlebase, закрыты system/ и storage/, .tpl/.twig/.log не отдаются."},
 }
 
@@ -38,7 +38,8 @@ var presetIni = map[string]map[string]string{
 	presetBitrix: {
 		"memory_limit": "512M", "upload_max_filesize": "256M", "post_max_size": "256M", "max_execution_time": "600", "max_input_vars": "20000",
 		"short_open_tag": "On", "mbstring.internal_encoding": "UTF-8", "default_charset": "UTF-8", "opcache.revalidate_freq": "0",
-		"realpath_cache_size": "4096k", "pcre.backtrack_limit": "1000000", "pcre.recursion_limit": "14000",
+		"realpath_cache_size": "4096k", "realpath_cache_ttl": "3600", "opcache.max_accelerated_files": "100000",
+		"pcre.backtrack_limit": "1000000", "pcre.recursion_limit": "14000",
 	},
 	presetOpenCart: {"upload_max_filesize": "64M", "post_max_size": "64M", "max_execution_time": "300"},
 }

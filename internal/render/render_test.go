@@ -26,7 +26,7 @@ func examplePool() Pool {
 		Name: "example.com", User: "alex", Group: "alex", Socket: "/run/monopanel/php/example.com.sock", ListenGroup: "monopanel-web",
 		PM: "ondemand", MaxChildren: 8, TerminateTimeout: 150, Home: "/var/www/alex", DataDir: "/var/www/alex/data",
 		TmpDir: "/var/www/alex/data/tmp", LogDir: "/var/www/alex/data/logs", BinDir: "/var/www/alex/data/bin",
-		SendmailFrom: "noreply@example.com", DisableFunctions: DefaultDisableFunctions,
+		SendmailFrom: "noreply@example.com", DisableFunctions: DefaultDisableFunctions, OpenBasedir: true,
 		Values: []KV{{"memory_limit", "256M"}, {"upload_max_filesize", "64M"}, {"post_max_size", "64M"}, {"max_execution_time", "120"}, {"date.timezone", "Europe/Moscow"}, {"display_errors", "Off"}},
 	}
 }

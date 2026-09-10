@@ -105,6 +105,9 @@ type Pool struct {
 	SendmailFrom     string
 	DisableFunctions string
 	Values           []KV
+	// OpenBasedir confines PHP to the site's data directory; Bitrix asks for
+	// it to be off (its checker flags it, updates and modules reach outside).
+	OpenBasedir bool
 }
 
 // DefaultDisableFunctions is the per-site default; "allow exec" clears it.
