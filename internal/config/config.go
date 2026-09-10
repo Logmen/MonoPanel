@@ -98,6 +98,9 @@ var DefaultAllowedWritePrefixes = []string{
 	"/var/log/mysql/", // slow log directory on EL, made by the panel
 	"/etc/memcached.conf",
 	"/etc/sysconfig/memcached",
+	"/etc/sphinxsearch/",
+	"/etc/default/sphinxsearch",
+	"/etc/manticoresearch/",
 	"/usr/local/bin/composer",
 	"/usr/local/lib/monopanel/",
 	"/etc/my.cnf.d/",

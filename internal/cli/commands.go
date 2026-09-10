@@ -454,7 +454,7 @@ func serviceCmd() *cobra.Command {
 }
 
 func stackCmd() *cobra.Command {
-	c := &cobra.Command{Use: "stack", Short: "компоненты веб-стека и расширения (nginx, apache, php, mysql, memcached, jpegoptim, git, composer)"}
+	c := &cobra.Command{Use: "stack", Short: "компоненты веб-стека и расширения (nginx, apache, php, mysql, memcached, jpegoptim, git, composer, sphinx)"}
 	list := &cobra.Command{Use: "list", Short: "установленные компоненты", RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
@@ -481,7 +481,7 @@ func stackCmd() *cobra.Command {
 		table([]string{"COMPONENT", "VERSION", "STATE"}, rows)
 		return nil
 	}}
-	install := &cobra.Command{Use: "install <component>", Short: "установить компонент: nginx, apache, percona, mysql, fail2ban, memcached, jpegoptim, git, composer (PHP: mp php install)", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	install := &cobra.Command{Use: "install <component>", Short: "установить компонент: nginx, apache, percona, mysql, fail2ban, memcached, jpegoptim, git, composer, sphinx (PHP: mp php install)", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -492,7 +492,7 @@ func stackCmd() *cobra.Command {
 		}
 		return followJob(cmd, cl, ref.JobID)
 	}}
-	remove := &cobra.Command{Use: "remove <component>", Short: "удалить расширение: memcached, jpegoptim, git, composer", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	remove := &cobra.Command{Use: "remove <component>", Short: "удалить расширение: memcached, jpegoptim, git, composer, sphinx", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err

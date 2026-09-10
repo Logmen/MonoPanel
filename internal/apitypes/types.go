@@ -110,7 +110,7 @@ type StackComponent struct {
 
 // StackInstallRequest installs a component.
 type StackInstallRequest struct {
-	Component string `json:"component" enum:"nginx,apache,percona,mysql,fail2ban,memcached,jpegoptim,git,composer"`
+	Component string `json:"component" enum:"nginx,apache,percona,mysql,fail2ban,memcached,jpegoptim,git,composer,sphinx"`
 }
 
 // MemcachedSettings is the panel's memcached configuration.

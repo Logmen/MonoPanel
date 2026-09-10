@@ -35,13 +35,14 @@
     memcached: { title: 'Memcached', text: 'кеш в памяти для сайтов; слушает только 127.0.0.1:11211, у ветки PHP должно быть включено расширение memcached (для 1С-Битрикс — memcache)' },
     jpegoptim: { title: 'Jpegoptim', text: 'утилита сжатия JPEG без потерь и с потерями; её зовут скрипты и CMS' },
     git: { title: 'Git', text: 'система контроля версий: деплой сайтов из репозитория, composer ставит пакеты из git' },
-    composer: { title: 'Composer', text: 'менеджер пакетов PHP; ставится с getcomposer.org с проверкой контрольной суммы и работает на новейшей ветке PHP панели' }
+    composer: { title: 'Composer', text: 'менеджер пакетов PHP; ставится с getcomposer.org с проверкой контрольной суммы и работает на новейшей ветке PHP панели' },
+    sphinx: { title: 'Sphinx', text: 'полнотекстовый поиск для 1С-Битрикс: на Debian/Ubuntu — Sphinx 2.2 из дистрибутива, на EL — Manticore Search; индекс bitrix, SphinxQL на 127.0.0.1:9306. В Битриксе: Настройки → Поиск → Sphinx, строка подключения 127.0.0.1:9306' }
   };
   const groups: [string, string[]][] = [
     ['Веб-серверы', ['nginx', 'apache']],
     ['База данных', ['percona', 'mysql']],
     ['Защита', ['fail2ban']],
-    ['Расширения', ['memcached', 'jpegoptim', 'git', 'composer']]
+    ['Расширения', ['memcached', 'jpegoptim', 'git', 'composer', 'sphinx']]
   ];
   const byName = $derived(Object.fromEntries((stack ?? []).map((c: any) => [c.name, c])) as Record<string, any>);
   const dbInstalled = $derived(!!(byName.percona?.installed || byName.mysql?.installed));
@@ -51,6 +52,7 @@
     title: `Установить ${info[name]?.title ?? name}?`,
     note: name === 'composer' ? 'composer.phar скачается с getcomposer.org, контрольная сумма сверится с опубликованной. Запускаться будет на новейшей установленной ветке PHP; повторная установка обновляет его.' :
       name === 'memcached' ? 'Пакет установится, сервис поднимется на 127.0.0.1:11211 с настройками ниже. Сайтам ещё понадобится расширение memcached у их ветки PHP (страница PHP).' :
+      name === 'sphinx' ? 'Установится сервер поиска с готовым индексом bitrix (все атрибуты по документации Битрикса) и SphinxQL на 127.0.0.1:9306. На EL подключится репозиторий Manticore.' :
       name === 'percona' || name === 'mysql' ? 'Подключится репозиторий вендора, установится сервер, root перейдёт на auth_socket, конфигурация подберётся по объёму памяти.' :
       'Подключится репозиторий, если нужен, установятся пакеты и, если есть, сервис. Займёт от нескольких секунд до пары минут.',
     action: 'Установить',
@@ -60,6 +62,7 @@
     title: `Удалить ${info[name]?.title ?? name}?`,
     note: name === 'memcached' ? 'Сервис остановится, пакет удалится. Сайты, которые держат в нём кеш и сессии, начнут получать ошибки подключения.' :
       name === 'composer' ? 'Файлы composer будут удалены; проекты на сервере продолжат работать, но обновлять зависимости будет нечем.' :
+      name === 'sphinx' ? 'Сервис поиска остановится, пакет удалится; данные индекса останутся на диске. Битрикс, переключённый на Sphinx, вернётся к поиску по базе только после смены настройки.' :
       'Пакет будет удалён с сервера.',
     danger: true, action: 'Удалить',
     run: async () => { const r: any = await api(`/stack/${name}`, { method: 'DELETE' }); job = r.job_id; }

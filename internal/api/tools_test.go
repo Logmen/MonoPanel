@@ -168,3 +168,79 @@ func TestComposerNeedsPHP(t *testing.T) {
 		t.Fatalf("composer without PHP: %s %s", job.Status, job.Error)
 	}
 }
+
+// Sphinx for Bitrix: on Debian the distribution's Sphinx 2.2 with the
+// daemon switched on in /etc/default, on EL Manticore from its repository;
+// both get the bitrix real-time index and a local SphinxQL listener.
+func TestSphinxInstall(t *testing.T) {
+	f := newSiteFixture(t)
+	f.agent.ToolOutput["mysql"] = "bitrix\n"
+	if job := f.stackJob(t, http.MethodPost, "/stack/install", map[string]any{"component": "sphinx"}); job.Status != store.JobDone {
+		t.Fatalf("sphinx on Debian: %s %s", job.Status, job.Error)
+	}
+	conf, _ := f.agent.File("/etc/sphinxsearch/sphinx.conf")
+	for _, want := range []string{"index bitrix", "type = rt", "rt_attr_multi = site", "rt_attr_timestamp = date_change", "listen = 127.0.0.1:9306:mysql41", "path = /var/lib/sphinxsearch/data/bitrix", "workers = threads"} {
+		if !strings.Contains(conf, want) {
+			t.Fatalf("sphinx.conf lacks %q:\n%s", want, conf)
+		}
+	}
+	if d, _ := f.agent.File("/etc/default/sphinxsearch"); !strings.Contains(d, "START=yes") {
+		t.Fatalf("/etc/default/sphinxsearch: %q", d)
+	}
+	if act := f.agent.UnitAction("sphinxsearch.service"); act != "enable" {
+		t.Fatalf("sphinxsearch.service: %q", act)
+	}
+	if job := f.stackJob(t, http.MethodDelete, "/stack/sphinx", nil); job.Status != store.JobDone {
+		t.Fatalf("remove: %s %s", job.Status, job.Error)
+	}
+	if act := f.agent.UnitAction("sphinxsearch.service"); act != "disable" {
+		t.Fatalf("sphinxsearch.service after removal: %q", act)
+	}
+}
+
+func TestSphinxInstallOnEL(t *testing.T) {
+	withOSRelease(t, "ID=rocky\nVERSION_ID=9.6\nID_LIKE=\"rhel centos fedora\"\n")
+	f := newSiteFixture(t)
+	// The daemon is asked whether it serves the index; a daemon that does
+	// not answer with it fails the install.
+	if job := f.stackJob(t, http.MethodPost, "/stack/install", map[string]any{"component": "sphinx"}); job.Status != store.JobFailed || !strings.Contains(job.Error, "bitrix index") {
+		t.Fatalf("an index that is not served must fail the install: %s %s", job.Status, job.Error)
+	}
+	f.agent.ToolOutput["mysql"] = "bitrix\n"
+	if job := f.stackJob(t, http.MethodPost, "/stack/install", map[string]any{"component": "sphinx"}); job.Status != store.JobDone {
+		t.Fatalf("manticore on EL: %s %s", job.Status, job.Error)
+	}
+	repo, pkg := false, false
+	for _, c := range f.agent.Calls() {
+		if c.Path != "/v1/pkg" {
+			continue
+		}
+		if strings.Contains(string(c.Body), "manticore-repo.noarch.rpm") {
+			repo = true
+		}
+		if strings.Contains(string(c.Body), `"manticore"`) {
+			pkg = true
+		}
+	}
+	if !repo || !pkg {
+		t.Fatalf("manticore repository and package must be installed: repo=%v pkg=%v", repo, pkg)
+	}
+	conf, _ := f.agent.File("/etc/manticoresearch/manticore.conf")
+	if !strings.Contains(conf, "index bitrix") || strings.Contains(conf, "workers =") || strings.Contains(conf, "docinfo") || !strings.Contains(conf, "path = /var/lib/manticore/bitrix") {
+		t.Fatalf("manticore.conf:\n%s", conf)
+	}
+	if _, ok := f.agent.File("/etc/default/sphinxsearch"); ok {
+		t.Fatal("Debian's defaults file has no place on EL")
+	}
+	var list []struct {
+		Name      string
+		Installed bool
+		Version   string
+	}
+	f.call(http.MethodGet, "/stack", nil, http.StatusOK, &list)
+	for _, c := range list {
+		if c.Name == "sphinx" && (!c.Installed || !strings.HasPrefix(c.Version, "manticore ")) {
+			t.Fatalf("sphinx in the listing: %+v", c)
+		}
+	}
+}

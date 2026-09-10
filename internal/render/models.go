@@ -133,6 +133,16 @@ type Memcached struct {
 	User     string
 }
 
+// Sphinx feeds sphinx/sphinx.conf.tmpl and sphinx/manticore.conf.tmpl: the
+// Bitrix real-time index and a local SphinxQL listener.
+type Sphinx struct {
+	Index   string
+	Listen  string
+	DataDir string
+	LogDir  string
+	PidFile string
+}
+
 // Firewall feeds nftables/monopanel.nft.tmpl: pre-rendered rule lines.
 type Firewall struct {
 	Policy string

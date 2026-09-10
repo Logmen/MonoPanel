@@ -6,5 +6,5 @@ import "embed"
 
 // FS holds nginx/, apache/, php-fpm/, php/, site/, mail/ and systemd/ templates.
 //
-//go:embed nginx apache php-fpm php site mysql nftables fail2ban cron systemd mail memcached
+//go:embed nginx apache php-fpm php site mysql nftables fail2ban cron systemd mail memcached sphinx
 var FS embed.FS
