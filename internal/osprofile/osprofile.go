@@ -106,6 +106,9 @@ type Profile interface {
 	NologinShell() string
 	CronPackage() string
 	SSHService() string
+	// EPELPackage is the package that enables EPEL, the source of fail2ban
+	// and of Remi's dependencies on EL; empty where EPEL does not apply.
+	EPELPackage() string
 }
 
 // Detect reads /etc/os-release and returns the matching profile.

@@ -199,10 +199,10 @@ func (s *Server) ensurePHPRepo(ctx context.Context, jc *jobs.Context) error {
 		}
 		logTail(jc, res.Output, 2)
 	case osprofile.FamilyRHEL:
-		if _, err := s.agent.Pkg(ctx, "install", "epel-release", fmt.Sprintf(remiReleaseURL, rel.MajorVersion())); err != nil {
+		if _, err := s.agent.Pkg(ctx, "install", s.profile.EPELPackage(), fmt.Sprintf(remiReleaseURL, rel.MajorVersion())); err != nil {
 			return err
 		}
-		jc.Logf("repository: remi-release-%s + EPEL", rel.MajorVersion())
+		jc.Logf("repository: remi-release-%s + %s", rel.MajorVersion(), s.profile.EPELPackage())
 	default:
 		return errors.New("no PHP package source for this OS")
 	}

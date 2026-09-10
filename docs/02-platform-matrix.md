@@ -29,7 +29,7 @@
 
 Вендоры добавляют новые релизы ОС с задержкой (MySQL и Percona для Ubuntu 26.04 и Debian 13 — проверить перед объявлением поддержки). Доступность пакетов по всей матрице проверяет еженедельный CI-job.
 
-Проверено на [площадке](08-testbed.md) 2026-09-09: Percona 8.4 есть для всех девяти ОС матрицы, nginx.org — тоже. У `ppa:ondrej/php` ещё нет сборок для Ubuntu 26.04 (resolute): панель это видит (HEAD на `dists/<codename>/Release`), не подключает несуществующий источник, ставит PHP из самой Ubuntu (там только 8.5) и в списке веток честно помечает остальные недоступными с причиной; при следующей установке PPA проверяется снова. На EL пакеты Percona/MySQL стартуют сервер с временным паролем root в `/var/log/mysqld.log`, а не с `auth_socket` — панель читает его и переводит root на сокет сама.
+Проверено на [площадке](08-testbed.md) 2026-09-09: Percona 8.4 есть для всех девяти ОС матрицы, nginx.org — тоже. У `ppa:ondrej/php` ещё нет сборок для Ubuntu 26.04 (resolute): панель это видит (HEAD на `dists/<codename>/Release`), не подключает несуществующий источник, ставит PHP из самой Ubuntu (там только 8.5) и в списке веток честно помечает остальные недоступными с причиной; при следующей установке PPA проверяется снова. На EL пакеты Percona/MySQL стартуют сервер с временным паролем root в `/var/log/mysqld.log`, а не с `auth_socket` — панель читает его и переводит root на сокет сама. Oracle Linux (2026-09-10): EPEL включается пакетом `oracle-epel-release-el9`, а на OL10 — официальным `epel-release` из dl.fedoraproject.org, потому что пакет Oracle не предоставляет `epel-release = 10`, которого требует `remi-release-10`; образы Oracle идут с включённым firewalld.
 
 ## 3. PHP
 
@@ -158,5 +158,5 @@ type Profile interface {
 ## 7. Firewall и защита от перебора
 
 - Собственная таблица `inet monopanel` в nftables (через `google/nftables`, без парсинга текстового вывода): цепочка `input` с правилами панели (ssh, 80/443, 8443, 3306 при удалённом доступе, ftp по флагу), rate-limit на ssh и 8443, чёрный/белый списки из UI, geo-блокировки (по спискам). Правила сохраняются в `/etc/nftables.d/monopanel.nft` для восстановления при загрузке.
-- EL: firewalld не удаляется. `mp setup` предлагает выбор: управлять через firewalld (D-Bus API, зона `monopanel`) или отключить firewalld и вести собственную таблицу. Ubuntu: ufw аналогично.
+- EL: firewalld не удаляется. Пока панель им не управляет: если он запущен (образы Oracle Linux поставляются с ним, Alma и Rocky — нет), `mp setup` открывает в нём порт панели, установка nginx — 80 и 443, установка почты — её порты (`firewall-cmd --permanent` + `--reload`); `mp firewall enable` останавливает и выключает firewalld, дальше таблицу ведёт панель. Управление зоной через D-Bus и выбор при `mp setup` — позже. Ubuntu: ufw аналогично.
 - fail2ban: jail'ы `sshd`, `monopanel` (лог панели), `nginx-http-auth`, `nginx-botsearch`, `mysqld-auth`, позже `proftpd`/`postfix`; действие — `nftables-multiport` в таблице панели, чтобы баны были видны в UI.

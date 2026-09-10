@@ -1,6 +1,9 @@
 package osprofile
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // apt-cache policy: a package no repository carries says "(none)".
 func TestAptParseAvailable(t *testing.T) {
@@ -32,5 +35,24 @@ func TestDnfParseAvailable(t *testing.T) {
 	got := dnfManager{}.ParseAvailable("php84-php-fpm 8.4.12-1.el9.remi\nnginx 1.30.4-1.el9.ngx\n")
 	if got["php84-php-fpm"] != "8.4.12-1.el9.remi" || got["nginx"] != "1.30.4-1.el9.ngx" || len(got) != 2 {
 		t.Errorf("dnf parse: %v", got)
+	}
+}
+
+// Oracle Linux names its EPEL package after itself; the others use epel-release.
+func TestEPELPackage(t *testing.T) {
+	for _, tc := range []struct{ release, want string }{
+		{"ID=ol\nVERSION_ID=9.8\nID_LIKE=fedora\n", "oracle-epel-release-el9"},
+		{"ID=ol\nVERSION_ID=10.1\nID_LIKE=fedora\n", "https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm"},
+		{"ID=rocky\nVERSION_ID=10.1\nID_LIKE=\"rhel centos fedora\"\n", "epel-release"},
+		{"ID=debian\nVERSION_ID=13\n", ""},
+	} {
+		rel, _ := ParseOSRelease(strings.NewReader(tc.release))
+		p, err := FromRelease(rel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := p.EPELPackage(); got != tc.want {
+			t.Errorf("%q: EPELPackage = %q, want %q", tc.release, got, tc.want)
+		}
 	}
 }

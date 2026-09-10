@@ -194,6 +194,9 @@ func (s *Server) applyFirewall(ctx context.Context) (*apitypes.FirewallStatus, e
 	if check.ExitCode != 0 {
 		return nil, fmt.Errorf("nft check failed: %s", strings.TrimSpace(check.Output))
 	}
+	if err := s.firewalldRetire(ctx); err != nil {
+		return nil, err
+	}
 	load, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "nft", Args: []string{"-f", nftRulesPath}})
 	if err != nil {
 		return nil, err
@@ -395,8 +398,8 @@ func (s *Server) registerFirewall() {
 func (s *Server) installFail2ban(ctx context.Context, jc *jobs.Context) error {
 	jc.Progress(10, "installing fail2ban")
 	pkgs := []string{"fail2ban", "python3-systemd"}
-	if s.profile.Family() == "rhel" {
-		pkgs = []string{"epel-release", "fail2ban", "python3-systemd"}
+	if epel := s.profile.EPELPackage(); epel != "" {
+		pkgs = append([]string{epel}, pkgs...)
 	}
 	res, err := s.agent.Pkg(ctx, "install", pkgs...)
 	if err != nil {

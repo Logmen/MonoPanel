@@ -209,3 +209,79 @@ func TestPerconaInstallOnELTakesTheTemporaryRootPassword(t *testing.T) {
 		}
 	}
 }
+
+// On Oracle Linux the PHP repository step must ask for Oracle's EPEL package,
+// not for epel-release, which no Oracle repository carries.
+func TestPHPInstallOnOracleLinuxUsesOracleEPEL(t *testing.T) {
+	withOSRelease(t, "ID=ol\nVERSION_ID=9.8\nID_LIKE=fedora\n")
+	f := newSiteFixture(t)
+	var ref struct {
+		JobID int64 `json:"job_id"`
+	}
+	f.call(http.MethodPost, "/php/versions", map[string]any{"version": "8.3"}, http.StatusAccepted, &ref)
+	if job := f.waitJob(ref.JobID); job.Status != store.JobDone {
+		t.Fatalf("php install on OL: %s %s", job.Status, job.Error)
+	}
+	epel := false
+	for _, c := range f.agent.Calls() {
+		if c.Path != "/v1/pkg" {
+			continue
+		}
+		if strings.Contains(string(c.Body), `"epel-release"`) {
+			t.Fatalf("epel-release requested on Oracle Linux: %s", c.Body)
+		}
+		if strings.Contains(string(c.Body), "oracle-epel-release-el9") {
+			epel = true
+		}
+	}
+	if !epel {
+		t.Fatal("oracle-epel-release-el9 was not installed")
+	}
+}
+
+// An image that ships firewalld enabled (Oracle Linux) allows only ssh:
+// installing nginx must open 80 and 443 there, and hosts without firewalld
+// must not be touched.
+func TestNginxInstallOpensFirewalld(t *testing.T) {
+	withOSRelease(t, "ID=ol\nVERSION_ID=9.8\nID_LIKE=fedora\n")
+	f := newSiteFixture(t)
+	f.agent.ToolHook = func(req agentReq) *agentRes {
+		if req.Name == "firewall-cmd" && len(req.Args) == 1 && req.Args[0] == "--state" {
+			return &agentRes{ExitCode: 0, Output: "running\n"}
+		}
+		return nil
+	}
+	var ref struct {
+		JobID int64 `json:"job_id"`
+	}
+	f.call(http.MethodPost, "/stack/install", map[string]any{"component": "nginx"}, http.StatusAccepted, &ref)
+	if job := f.waitJob(ref.JobID); job.Status != store.JobDone {
+		t.Fatalf("nginx install: %s %s", job.Status, job.Error)
+	}
+	opened, reloaded := false, false
+	for _, tool := range f.agent.Tools() {
+		if tool.Name != "firewall-cmd" {
+			continue
+		}
+		args := strings.Join(tool.Args, " ")
+		if strings.Contains(args, "--permanent") && strings.Contains(args, "--add-port=80/tcp") && strings.Contains(args, "--add-port=443/tcp") {
+			opened = true
+		}
+		if strings.Contains(args, "--reload") {
+			reloaded = true
+		}
+	}
+	if !opened || !reloaded {
+		t.Fatalf("firewalld not opened for nginx: opened=%v reloaded=%v", opened, reloaded)
+	}
+
+	// Without firewalld (the default fake answers "" to --state) nothing is added.
+	g := newSiteFixture(t)
+	g.call(http.MethodPost, "/stack/install", map[string]any{"component": "nginx"}, http.StatusAccepted, &ref)
+	g.waitJob(ref.JobID)
+	for _, tool := range g.agent.Tools() {
+		if tool.Name == "firewall-cmd" && strings.Contains(strings.Join(tool.Args, " "), "--add-port") {
+			t.Fatalf("firewalld touched although it is not running: %v", tool.Args)
+		}
+	}
+}

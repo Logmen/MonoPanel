@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -290,6 +291,11 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 	if err := sd.DaemonReload(ctx); err != nil {
 		return nil, err
 	}
+	if opened, err := openFirewalld(cfg.Web.Listen); err != nil {
+		step("предупреждение: firewalld: %v", err)
+	} else if opened != "" {
+		step("firewalld: открыт порт %s", opened)
+	}
 	if opts.Start {
 		step("запуск сервисов")
 		for _, u := range []string{"monopanel-agent.service", "monopanel-api.service"} {
@@ -356,4 +362,28 @@ func chownTree(root, owner, group, skip string) error {
 		_, err = agent.EnsureDirOwner(p, owner, group)
 		return err
 	})
+}
+
+// openFirewalld lets the panel port through a running firewalld — some EL
+// images (Oracle Linux) ship it enabled with only ssh allowed. Returns the
+// port it opened, or "" when there is no firewalld to talk to.
+func openFirewalld(listen string) (string, error) {
+	if _, err := os.Stat("/usr/bin/firewall-cmd"); err != nil {
+		return "", nil //nolint:nilerr // no firewall-cmd means no firewalld: nothing to open
+	}
+	// A non-zero exit means "not running"; its text is all that matters.
+	state, _ := exec.Command("/usr/bin/firewall-cmd", "--state").CombinedOutput()
+	if !strings.Contains(string(state), "running") {
+		return "", nil
+	}
+	_, port, err := net.SplitHostPort(listen)
+	if err != nil || port == "" {
+		return "", fmt.Errorf("listen address %q has no port", listen)
+	}
+	for _, args := range [][]string{{"-q", "--permanent", "--add-port=" + port + "/tcp"}, {"-q", "--reload"}} {
+		if out, err := exec.Command("/usr/bin/firewall-cmd", args...).CombinedOutput(); err != nil {
+			return "", fmt.Errorf("firewall-cmd %s: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))
+		}
+	}
+	return port + "/tcp", nil
 }

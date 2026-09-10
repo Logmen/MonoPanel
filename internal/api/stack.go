@@ -292,6 +292,7 @@ func (s *Server) installNginx(ctx context.Context, jc *jobs.Context) error {
 	}
 	jc.Logf("configuration: %d written, %d unchanged, validated with %s", len(apply.Written), len(apply.Unchanged), web.NginxCheckArgv[0])
 
+	s.firewalldOpen(ctx, jc, "80/tcp", "443/tcp")
 	jc.Progress(90, "enabling service")
 	if _, err := s.agent.Service(ctx, web.NginxService, "enable"); err != nil {
 		return err

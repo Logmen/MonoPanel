@@ -11,6 +11,7 @@ func (p *debianProfile) MAC() string              { return "apparmor" }
 func (p *debianProfile) NologinShell() string     { return "/usr/sbin/nologin" }
 func (p *debianProfile) CronPackage() string      { return "cron" }
 func (p *debianProfile) SSHService() string       { return "ssh.service" }
+func (p *debianProfile) EPELPackage() string      { return "" }
 
 func (p *debianProfile) Web() WebLayout {
 	return WebLayout{

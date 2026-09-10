@@ -19,6 +19,7 @@ func (p *genericProfile) Packages() PackageManager { return noPackages{} }
 func (p *genericProfile) MAC() string              { return "none" }
 func (p *genericProfile) NologinShell() string     { return "/usr/sbin/nologin" }
 func (p *genericProfile) CronPackage() string      { return "cron" }
+func (p *genericProfile) EPELPackage() string      { return "" }
 func (p *genericProfile) SSHService() string       { return "ssh.service" }
 func (p *genericProfile) Web() WebLayout {
 	return (&debianProfile{rel: p.rel}).Web()

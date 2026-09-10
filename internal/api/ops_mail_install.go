@@ -166,6 +166,11 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 			jc.Logf("firewall: открыты порты %s", mailPortList(c))
 		}
 	}
+	tcp := []string{}
+	for _, p := range firewallMailPorts(c) {
+		tcp = append(tcp, fmt.Sprintf("%d/tcp", p))
+	}
+	s.firewalldOpen(ctx, jc, tcp...)
 	probes := s.probePorts(allMailPorts())
 	open := []string{}
 	for _, mp := range mailPorts {

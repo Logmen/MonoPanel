@@ -12,6 +12,21 @@ func (p *rhelProfile) NologinShell() string     { return "/sbin/nologin" }
 func (p *rhelProfile) CronPackage() string      { return "cronie" }
 func (p *rhelProfile) SSHService() string       { return "sshd.service" }
 
+// EPELPackage: Oracle Linux carries EPEL in its own repositories and names
+// the enabling package differently; a plain `epel-release` does not exist there.
+func (p *rhelProfile) EPELPackage() string {
+	if p.rel.ID == "ol" {
+		// Oracle's package for EL9 is fine; the EL10 one does not provide
+		// "epel-release = 10", which remi-release requires, while the
+		// official EPEL package installs on Oracle Linux unchanged.
+		if versionLess(p.rel.MajorVersion(), "10") {
+			return "oracle-epel-release-el" + p.rel.MajorVersion()
+		}
+		return "https://dl.fedoraproject.org/pub/epel/epel-release-latest-" + p.rel.MajorVersion() + ".noarch.rpm"
+	}
+	return "epel-release"
+}
+
 func (p *rhelProfile) Web() WebLayout {
 	return WebLayout{
 		NginxUser:       "nginx",

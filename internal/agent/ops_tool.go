@@ -41,6 +41,7 @@ var tools = map[string][]string{
 	"semanage":        {"/usr/sbin/semanage"},
 	"setsebool":       {"/usr/sbin/setsebool"},
 	"restorecon":      {"/usr/sbin/restorecon"},
+	"firewall-cmd":    {"/usr/bin/firewall-cmd"},
 	"postmap":         {"/usr/sbin/postmap"},
 	"postconf":        {"/usr/sbin/postconf"},
 	"postqueue":       {"/usr/sbin/postqueue"},
