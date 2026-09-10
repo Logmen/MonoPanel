@@ -353,6 +353,9 @@ func phpExtCmd() *cobra.Command {
 			if e.Enabled {
 				state = "включено"
 			}
+			if !e.Installed {
+				state, note = "не установлено", "включение поставит "+e.Package
+			}
 			if e.Critical {
 				note = "нужен типовому сайту"
 			}

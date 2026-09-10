@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"path"
 	"regexp"
@@ -85,10 +86,34 @@ func (s *Server) phpModules(ctx context.Context, version string) ([]apitypes.PHP
 			continue
 		}
 		name := strings.TrimSuffix(e.Name, ".ini")
-		out = append(out, apitypes.PHPExtension{Name: name, Enabled: enabled[name], Critical: criticalExtensions[name]})
+		out = append(out, apitypes.PHPExtension{Name: name, Enabled: enabled[name], Critical: criticalExtensions[name], Installed: true})
 	}
+	out = s.withOfferedExtensions(out, version)
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// withOfferedExtensions adds the branch's optional packages nobody installed
+// yet (memcache, redis, imagick …), so they can be switched on from the
+// same list: enabling one installs its package first.
+func (s *Server) withOfferedExtensions(list []apitypes.PHPExtension, version string) []apitypes.PHPExtension {
+	layout := osprofile.PHP(s.profile, version)
+	if layout == nil {
+		return list
+	}
+	have := map[string]bool{}
+	for _, e := range list {
+		have[e.Name] = true
+	}
+	for _, pkg := range layout.ExtraPackages {
+		name := extensionName(pkg, version)
+		if name == "" || have[name] {
+			continue
+		}
+		have[name] = true
+		list = append(list, apitypes.PHPExtension{Name: name, Package: pkg})
+	}
+	return list
 }
 
 func (s *Server) registerPHPExtensions() {
@@ -120,14 +145,24 @@ func (s *Server) registerPHPExtensions() {
 		if err != nil {
 			return nil, err
 		}
-		known := false
-		for _, m := range mods {
-			if m.Name == in.Body.Name {
-				known = true
+		var ext *apitypes.PHPExtension
+		for i := range mods {
+			if mods[i].Name == in.Body.Name {
+				ext = &mods[i]
 			}
 		}
-		if !known {
+		if ext == nil {
 			return nil, huma.Error422UnprocessableEntity("нет такого расширения у PHP " + in.Version + ": " + in.Body.Name)
+		}
+		if !ext.Installed {
+			if !in.Body.Enabled {
+				return nil, huma.Error422UnprocessableEntity(in.Body.Name + " не установлено — выключать нечего")
+			}
+			// The package brings the ini along (and on Debian enables it).
+			if _, err := s.agent.Pkg(ctx, "install", ext.Package); err != nil {
+				return nil, huma.Error502BadGateway(fmt.Sprintf("установка %s: %v", ext.Package, err))
+			}
+			s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "php.extension.install", Target: in.Version + ":" + in.Body.Name, IP: requestInfo(ctx).IP, Details: map[string]any{"package": ext.Package}})
 		}
 
 		if s.profile.Family() == osprofile.FamilyRHEL {
@@ -199,8 +234,9 @@ func (s *Server) phpModulesEL(ctx context.Context, version string) ([]apitypes.P
 				}
 			}
 		}
-		out = append(out, apitypes.PHPExtension{Name: name, Enabled: enabled, Critical: criticalExtensions[name]})
+		out = append(out, apitypes.PHPExtension{Name: name, Enabled: enabled, Critical: criticalExtensions[name], Installed: true})
 	}
+	out = s.withOfferedExtensions(out, version)
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }

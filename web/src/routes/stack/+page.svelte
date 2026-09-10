@@ -32,7 +32,7 @@
     percona: { title: 'Percona Server 8.4', text: 'СУБД для сайтов; базы и пользователи создаются из панели' },
     mysql: { title: 'MySQL 8.4', text: 'СУБД для сайтов; базы и пользователи создаются из панели' },
     fail2ban: { title: 'fail2ban', text: 'баны за перебор паролей: sshd, панель, nginx; работает вместе с firewall панели' },
-    memcached: { title: 'Memcached', text: 'кеш в памяти для сайтов; слушает только 127.0.0.1:11211, у ветки PHP должно быть включено расширение memcached' },
+    memcached: { title: 'Memcached', text: 'кеш в памяти для сайтов; слушает только 127.0.0.1:11211, у ветки PHP должно быть включено расширение memcached (для 1С-Битрикс — memcache)' },
     jpegoptim: { title: 'Jpegoptim', text: 'утилита сжатия JPEG без потерь и с потерями; её зовут скрипты и CMS' },
     git: { title: 'Git', text: 'система контроля версий: деплой сайтов из репозитория, composer ставит пакеты из git' },
     composer: { title: 'Composer', text: 'менеджер пакетов PHP; ставится с getcomposer.org с проверкой контрольной суммы и работает на новейшей ветке PHP панели' }

@@ -16,7 +16,13 @@ func TestPHPExtensionsListAndToggle(t *testing.T) {
 
 	var out apitypes.PHPExtensions
 	f.call(http.MethodGet, "/php/versions/8.4/extensions", nil, http.StatusOK, &out)
-	if len(out.Extensions) != 3 {
+	installed := 0
+	for _, e := range out.Extensions {
+		if e.Installed {
+			installed++
+		}
+	}
+	if installed != 3 { // README is not an extension; the offered extras are not installed
 		t.Fatalf("не .ini попал в список: %+v", out.Extensions)
 	}
 	state := map[string]apitypes.PHPExtension{}
@@ -78,8 +84,13 @@ func TestPHPExtensionsOnEL(t *testing.T) {
 	for _, e := range out.Extensions {
 		got[e.Name] = e.Enabled
 	}
-	if len(out.Extensions) != 3 || !got["opcache"] || !got["imagick"] || got["memcached"] {
+	if !got["opcache"] || !got["imagick"] || got["memcached"] {
 		t.Fatalf("EL extensions: %+v", out.Extensions)
+	}
+	for _, e := range out.Extensions {
+		if e.Name == "memcache" && e.Enabled {
+			t.Fatalf("memcache is only offered on this host: %+v", e)
+		}
 	}
 
 	f.call(http.MethodPost, "/php/versions/8.4/extensions", map[string]any{"name": "imagick", "enabled": false}, http.StatusOK, &out)
@@ -100,4 +111,49 @@ func TestPHPExtensionsOnEL(t *testing.T) {
 		t.Fatalf("memcached.ini after switching on must lose the marker:\n%s", ini)
 	}
 	f.call(http.MethodPost, "/php/versions/8.4/extensions", map[string]any{"name": "nosuch", "enabled": true}, http.StatusUnprocessableEntity, nil)
+}
+
+// Optional extensions the repository offers but nobody installed show up in
+// the list; switching one on installs its package first.
+func TestPHPOfferedExtensionInstalls(t *testing.T) {
+	f := newSiteFixture(t)
+	f.agent.DirEntries["/etc/php/8.4/mods-available"] = []string{"opcache.ini", "imagick.ini"}
+	f.agent.DirEntries["/etc/php/8.4/fpm/conf.d"] = []string{"10-opcache.ini", "20-imagick.ini"}
+	var out struct {
+		Extensions []struct {
+			Name      string
+			Enabled   bool
+			Installed bool
+			Package   string
+		}
+	}
+	f.call(http.MethodGet, "/php/versions/8.4/extensions", nil, http.StatusOK, &out)
+	var memcache *struct {
+		Name      string
+		Enabled   bool
+		Installed bool
+		Package   string
+	}
+	for i := range out.Extensions {
+		if out.Extensions[i].Name == "memcache" {
+			memcache = &out.Extensions[i]
+		}
+		if out.Extensions[i].Name == "imagick" && !out.Extensions[i].Installed {
+			t.Fatalf("imagick is installed: %+v", out.Extensions[i])
+		}
+	}
+	if memcache == nil || memcache.Installed || memcache.Enabled || memcache.Package != "php8.4-memcache" {
+		t.Fatalf("memcache must be offered as not installed: %+v", memcache)
+	}
+	f.call(http.MethodPost, "/php/versions/8.4/extensions", map[string]any{"name": "memcache", "enabled": false}, http.StatusUnprocessableEntity, nil)
+	f.call(http.MethodPost, "/php/versions/8.4/extensions", map[string]any{"name": "memcache", "enabled": true}, http.StatusOK, &out)
+	installed := false
+	for _, c := range f.agent.Calls() {
+		if c.Path == "/v1/pkg" && strings.Contains(string(c.Body), `"install"`) && strings.Contains(string(c.Body), "php8.4-memcache") {
+			installed = true
+		}
+	}
+	if !installed {
+		t.Fatal("switching an offered extension on must install its package")
+	}
 }

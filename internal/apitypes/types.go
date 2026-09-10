@@ -638,6 +638,10 @@ type PHPExtension struct {
 	Name     string `json:"name"`
 	Enabled  bool   `json:"enabled"`
 	Critical bool   `json:"critical,omitempty" doc:"Без него типовой сайт перестанет работать"`
+	// Installed is false for an extension the branch's repository offers but
+	// nobody installed yet; switching it on installs Package first.
+	Installed bool   `json:"installed"`
+	Package   string `json:"package,omitempty"`
 }
 
 // PHPExtensions is the extension list of one branch.

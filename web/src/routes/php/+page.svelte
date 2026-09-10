@@ -55,12 +55,15 @@
     run: () => setExt(version, e.name, false)
   });
 
+  // After an offered extension was installed the branch has one package more.
+  const installedNow = (version: string, name: string) => { const e = exts[version]?.find((x) => x.name === name); if (e && !e.installed) load(); };
   async function setExt(version: string, name: string, enabled: boolean) {
     extBusy = version + name;
     try {
       const r: any = await api(`/php/versions/${version}/extensions`, { method: 'POST', json: { name, enabled } });
       exts = { ...exts, [version]: r.extensions };
       notify(`${name}: ${enabled ? 'включено' : 'выключено'}, php-fpm ${version} перезапущен`);
+      installedNow(version, name);
     } catch (e) {
       error = e instanceof ApiError ? e.text : String(e);
       notify(error, 'err');
@@ -89,7 +92,7 @@
             {#if p?.status === 'installed'}
               <button class="inline-flex items-center gap-1 hover:text-ink transition-colors" onclick={() => toggleExt(a.version)}>
                 <Icon name="chevron" size={13} class="transition-transform {openExt === a.version ? 'rotate-90' : ''}" />
-                {exts[a.version] ? exts[a.version].filter((e) => e.enabled).length + ' из ' + exts[a.version].length : (p.extensions?.length ?? 0) + ' пакетов'}
+                {exts[a.version] ? exts[a.version].filter((e) => e.enabled).length + ' из ' + exts[a.version].filter((e) => e.installed).length : (p.extensions?.length ?? 0) + ' пакетов'}
               </button>
             {/if}
           </td>
@@ -101,16 +104,16 @@
               {#if !exts[a.version]}
                 <p class="text-sm text-muted py-2">читаем список…</p>
               {:else}
-                <p class="text-xs text-muted mb-2">Действует на все сайты ветки {a.version}: php-fpm один на версию. После переключения он перезапускается.</p>
+                <p class="text-xs text-muted mb-2">Действует на все сайты ветки {a.version}: php-fpm один на версию. После переключения он перезапускается. Пунктирные — есть в репозитории, но не установлены: клик ставит пакет и включает.</p>
                 <div class="flex flex-wrap gap-1.5">
                   {#each exts[a.version] as e}
                     <button
-                      class="tag {e.enabled ? 'tag-ok' : 'tag-muted'} cursor-pointer transition-opacity {extBusy === a.version + e.name ? 'opacity-50' : ''}"
+                      class="tag {e.enabled ? 'tag-ok' : 'tag-muted'} cursor-pointer transition-opacity {extBusy === a.version + e.name ? 'opacity-50' : ''} {e.installed ? '' : 'border-dashed opacity-70'}"
                       disabled={!!extBusy}
-                      title={e.critical ? 'нужен типовому сайту' : e.enabled ? 'выключить' : 'включить'}
+                      title={!e.installed ? `установить ${e.package} и включить` : e.critical ? 'нужен типовому сайту' : e.enabled ? 'выключить' : 'включить'}
                       onclick={() => (e.enabled ? (ask = askExt(a.version, e)) : setExt(a.version, e.name, true))}
                     >
-                      <Icon name={e.enabled ? 'check' : 'x'} size={11} />
+                      <Icon name={e.enabled ? 'check' : e.installed ? 'x' : 'plus'} size={11} />
                       {e.name}{#if e.critical}<span class="opacity-60">*</span>{/if}
                     </button>
                   {/each}

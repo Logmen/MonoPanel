@@ -87,7 +87,7 @@ func ValidPHPVersion(v string) bool {
 // PHPExtensions is the standard extension set (see docs/02 §3.2), in the
 // vendor-neutral names used for package lists below.
 var phpCoreExt = []string{"mysql", "mbstring", "intl", "gd", "curl", "zip", "xml", "soap", "bcmath", "opcache", "readline", "sqlite3"}
-var phpExtraExt = []string{"gmp", "imagick", "redis", "apcu", "igbinary", "memcached", "xsl", "ldap", "imap", "mcrypt", "sodium"}
+var phpExtraExt = []string{"gmp", "imagick", "redis", "apcu", "igbinary", "memcached", "memcache", "xsl", "ldap", "imap", "mcrypt", "sodium"}
 
 func suryLayout(v string) PHPLayout {
 	base := "/etc/php/" + v
@@ -153,7 +153,7 @@ func remiLayout(v string) PHPLayout {
 	}
 	l.FPMCheckArgv = []string{l.FPMBinary, "-t", "-y", l.FPMConf}
 	l.CorePackages = []string{short + "-php-fpm", short + "-php-cli", short + "-php-mysqlnd", short + "-php-mbstring", short + "-php-intl", short + "-php-gd", short + "-php-pecl-zip", short + "-php-xml", short + "-php-soap", short + "-php-bcmath", short + "-php-opcache", short + "-php-pdo", short + "-php-process"}
-	l.ExtraPackages = []string{short + "-php-gmp", short + "-php-pecl-imagick", short + "-php-pecl-redis6", short + "-php-pecl-apcu", short + "-php-pecl-igbinary", short + "-php-pecl-memcached", short + "-php-ldap", short + "-php-sodium"}
+	l.ExtraPackages = []string{short + "-php-gmp", short + "-php-pecl-imagick", short + "-php-pecl-redis6", short + "-php-pecl-apcu", short + "-php-pecl-igbinary", short + "-php-pecl-memcached", short + "-php-pecl-memcache", short + "-php-ldap", short + "-php-sodium"}
 	return l
 }
 
