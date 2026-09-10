@@ -224,8 +224,13 @@ func TestSitePresetsRenderExpectedRules(t *testing.T) {
 			}
 			// Bitrix runs without open_basedir and with a large opcache; every
 			// other preset keeps the confinement.
-			if c.preset == "bitrix" && (strings.Contains(pool, "open_basedir") || !strings.Contains(pool, "php_value[opcache.max_accelerated_files] = 100000") || !strings.Contains(pool, "php_value[session.cookie_secure] = On")) {
+			if c.preset == "bitrix" && (strings.Contains(pool, "open_basedir") || !strings.Contains(pool, "php_value[opcache.max_accelerated_files] = 100000")) {
 				t.Errorf("bitrix pool: open_basedir must be off and opcache sized:\n%s", pool)
+			}
+			// The secure-only session cookie appears with HTTPS only (see
+			// TestBitrixSecureCookieFollowsTLS); this site is on HTTP.
+			if c.preset == "bitrix" && strings.Contains(pool, "session.cookie_secure") {
+				t.Errorf("bitrix pool on HTTP must not force a secure cookie:\n%s", pool)
 			}
 			if c.preset != "bitrix" && !strings.Contains(pool, "php_admin_value[open_basedir]") {
 				t.Errorf("%s pool lost open_basedir:\n%s", c.preset, pool)
@@ -505,5 +510,24 @@ func (f *siteFixture) call(method, path string, body any, wantStatus int, out an
 		if err := json.Unmarshal(raw, out); err != nil {
 			f.t.Fatalf("%s %s: decode %v: %s", method, path, err, raw)
 		}
+	}
+}
+
+// The Bitrix preset sets session.cookie_secure only once the site serves
+// HTTPS: a secure-only cookie on an HTTP site would never come back.
+func TestBitrixSecureCookieFollowsTLS(t *testing.T) {
+	f := newSiteFixture(t)
+	later := time.Now().Add(60 * 24 * time.Hour)
+	if err := f.db.UpsertCertificate(f.ctx, &store.Certificate{Name: "shop.example.com", Names: []string{"shop.example.com"}, Kind: store.CertKindACME, Status: store.CertValid,
+		CertPath: "/var/lib/monopanel/certs/shop.example.com/fullchain.pem", KeyPath: "/var/lib/monopanel/certs/shop.example.com/privkey.pem", NotAfter: &later}); err != nil {
+		t.Fatal(err)
+	}
+	site := f.createSite(map[string]any{"domain": "shop.example.com", "user": "alex", "php_version": "8.4", "ssl": "auto", "preset": "bitrix"})
+	if site.CertificateID == nil {
+		t.Fatalf("site did not pick the certificate up: %+v", site)
+	}
+	pool, _ := f.agent.File("/etc/php/8.4/fpm/pool.d/shop.example.com.conf")
+	if !strings.Contains(pool, "php_value[session.cookie_secure] = On") {
+		t.Fatalf("bitrix pool with HTTPS must set session.cookie_secure:\n%s", pool)
 	}
 }

@@ -127,9 +127,9 @@ func (s *Server) registerSiteNginx() {
 			out.Allowed = append(out.Allowed, k)
 		}
 		sort.Strings(out.Allowed)
-		for _, kv := range s.poolValues(ctx, site) {
+		for _, kv := range s.poolValues(ctx, site, s.certForSite(ctx, site) != nil) {
 			src := "default"
-			if _, ok := presetIni[site.Preset][kv.Key]; ok {
+			if _, ok := presetIni[site.Preset][kv.Key]; ok || (site.Preset == presetBitrix && kv.Key == "session.cookie_secure") {
 				src = "preset"
 			}
 			if _, ok := site.PHPIni[kv.Key]; ok {

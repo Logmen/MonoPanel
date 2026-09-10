@@ -39,7 +39,7 @@ var presetIni = map[string]map[string]string{
 		"memory_limit": "512M", "upload_max_filesize": "256M", "post_max_size": "256M", "max_execution_time": "600", "max_input_vars": "20000",
 		"short_open_tag": "On", "mbstring.internal_encoding": "UTF-8", "default_charset": "UTF-8", "opcache.revalidate_freq": "0",
 		"realpath_cache_size": "4096k", "realpath_cache_ttl": "3600", "opcache.max_accelerated_files": "100000",
-		"pcre.backtrack_limit": "1000000", "pcre.recursion_limit": "14000", "session.cookie_secure": "On",
+		"pcre.backtrack_limit": "1000000", "pcre.recursion_limit": "14000",
 	},
 	presetOpenCart: {"upload_max_filesize": "64M", "post_max_size": "64M", "max_execution_time": "300"},
 }

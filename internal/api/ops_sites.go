@@ -650,7 +650,7 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 	}
 
 	jc.Progress(55, "rendering configuration")
-	values := s.poolValues(ctx, site)
+	values := s.poolValues(ctx, site, tls)
 	terminate := 150
 	if v, ok := site.PHPIni["max_execution_time"]; ok {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -841,7 +841,7 @@ func modeLabel(mode string) string {
 }
 
 // poolValues merges panel defaults with the site's php_ini into ordered php_value lines.
-func (s *Server) poolValues(ctx context.Context, site *store.Site) []render.KV {
+func (s *Server) poolValues(ctx context.Context, site *store.Site, tls bool) []render.KV {
 	tz, _ := s.db.GetSetting(ctx, settingTZ)
 	if tz == "" {
 		tz = "UTC"
@@ -850,7 +850,15 @@ func (s *Server) poolValues(ctx context.Context, site *store.Site) []render.KV {
 		{Key: "memory_limit", Value: "256M"}, {Key: "upload_max_filesize", Value: "64M"}, {Key: "post_max_size", Value: "64M"},
 		{Key: "max_execution_time", Value: "120"}, {Key: "date.timezone", Value: tz}, {Key: "display_errors", Value: "Off"},
 	}
-	preset := presetIni[site.Preset]
+	preset := map[string]string{}
+	for k, v := range presetIni[site.Preset] {
+		preset[k] = v
+	}
+	// A secure-only session cookie needs HTTPS to exist: on a site that is
+	// still on HTTP the login would not stick.
+	if site.Preset == presetBitrix && tls {
+		preset["session.cookie_secure"] = "On"
+	}
 	seen := map[string]bool{}
 	out := make([]render.KV, 0, len(defaults)+len(preset)+len(site.PHPIni))
 	for _, kv := range defaults {
