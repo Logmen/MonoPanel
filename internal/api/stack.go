@@ -273,13 +273,13 @@ func (s *Server) installNginx(ctx context.Context, jc *jobs.Context) error {
 	for name, content := range snippets {
 		files = append(files, agent.FileSpec{Path: path.Join(confDir, "monopanel", "snippets", name), Content: content, Mode: 0o644})
 	}
-	for _, ip := range localIPv4s() {
-		conf, err := s.render.Render("nginx/ip-default.conf.tmpl", render.IPDefault{IP: ip})
-		if err != nil {
-			return err
-		}
-		files = append(files, agent.FileSpec{Path: path.Join(confDir, "monopanel", "http.d", "ip-"+ip+".conf"), Content: conf, Mode: 0o644})
-		jc.Logf("default server for %s:80", ip)
+	defaults, err := s.defaultServerFiles()
+	if err != nil {
+		return err
+	}
+	files = append(files, defaults...)
+	for _, f := range defaults {
+		jc.Logf("default server: %s", path.Base(f.Path))
 	}
 	apply, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{
 		// nginx -t (the validator) creates the pid file with the agent's
@@ -398,4 +398,39 @@ func (s *Server) installApache(ctx context.Context, jc *jobs.Context) error {
 	}
 	jc.Progress(100, "apache ready")
 	return nil
+}
+
+// defaultServerFiles renders one default server per local address: ACME
+// challenges, a redirect of the panel's own name to the panel port, 444 for
+// everything else.
+func (s *Server) defaultServerFiles() ([]agent.FileSpec, error) {
+	confDir := s.profile.Web().NginxConfDir
+	files := []agent.FileSpec{}
+	for _, ip := range localIPv4s() {
+		conf, err := s.render.Render("nginx/ip-default.conf.tmpl", render.IPDefault{IP: ip, PanelHost: s.cfg.Web.Hostname, PanelPort: s.panelPort()})
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, agent.FileSpec{Path: path.Join(confDir, "monopanel", "http.d", "ip-"+ip+".conf"), Content: conf, Mode: 0o644})
+	}
+	return files, nil
+}
+
+// refreshDefaultServers re-renders the default servers at startup when nginx
+// is installed, so a changed panel hostname (mp config set web.hostname
+// --restart) or a new address reaches nginx; unchanged files reload nothing.
+func (s *Server) refreshDefaultServers(ctx context.Context) {
+	q, err := s.agent.Pkg(ctx, "query", "nginx")
+	if err != nil || q.Installed["nginx"] == "" {
+		return
+	}
+	files, err := s.defaultServerFiles()
+	if err != nil {
+		s.log.Warn("default servers", "err", err)
+		return
+	}
+	web := s.profile.Web()
+	if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Validate: [][]string{web.NginxCheckArgv}, Reload: []string{web.NginxService}, Origin: "stack:nginx"}); err != nil {
+		s.log.Warn("default servers", "err", err)
+	}
 }

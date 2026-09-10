@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"monopanel/internal/agent"
+	"monopanel/internal/config"
 	"monopanel/internal/store"
 )
 
@@ -283,5 +284,27 @@ func TestNginxInstallOpensFirewalld(t *testing.T) {
 		if tool.Name == "firewall-cmd" && strings.Contains(strings.Join(tool.Args, " "), "--add-port") {
 			t.Fatalf("firewalld touched although it is not running: %v", tool.Args)
 		}
+	}
+}
+
+// http://<panel hostname>/ must lead to the panel: the default server
+// redirects that one name to the panel port and keeps 444 for the rest.
+func TestNginxDefaultServerRedirectsPanelHostname(t *testing.T) {
+	f := newFixture(t, func(c *config.Config) { c.Web.Hostname = "panel.example.com"; c.Web.Listen = ":8443" })
+	var ref struct {
+		JobID int64 `json:"job_id"`
+	}
+	f.call(http.MethodPost, "/stack/install", map[string]any{"component": "nginx"}, http.StatusAccepted, &ref)
+	if job := f.waitJob(ref.JobID); job.Status != store.JobDone {
+		t.Fatalf("nginx install: %s %s", job.Status, job.Error)
+	}
+	found := false
+	for _, c := range f.agent.Calls() {
+		if c.Path == "/v1/config/apply" && strings.Contains(string(c.Body), "ip-") && strings.Contains(string(c.Body), `if ($host = \"panel.example.com\") { return 301 https://$host:8443$request_uri; }`) && strings.Contains(string(c.Body), "return 444;") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("default server does not redirect the panel hostname to the panel port")
 	}
 }

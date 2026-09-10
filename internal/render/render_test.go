@@ -40,7 +40,7 @@ func TestGolden(t *testing.T) {
 		must   []string
 	}{
 		{"nginx-main.conf", "nginx/nginx.conf.tmpl", NginxMain{User: "nginx"}, []string{"user  nginx;", "include /etc/nginx/monopanel/sites/*.conf;"}},
-		{"nginx-ip-default.conf", "nginx/ip-default.conf.tmpl", IPDefault{IP: "203.0.113.10", TLS: true, HTTP3: true, CertPath: "/c.pem", KeyPath: "/k.pem"}, []string{"quic reuseport", "default_server"}},
+		{"nginx-ip-default.conf", "nginx/ip-default.conf.tmpl", IPDefault{IP: "203.0.113.10", TLS: true, HTTP3: true, CertPath: "/c.pem", KeyPath: "/k.pem", PanelHost: "panel.example.com", PanelPort: 8443}, []string{"quic reuseport", "default_server"}},
 		{"nginx-site-fpm.conf", "nginx/site.conf.tmpl", exampleSite("fpm"), []string{"fastcgi_pass unix:/run/monopanel/php/example.com.sock;", "return 301 https://$host$request_uri;", "listen 203.0.113.10:443 quic;", "if ($host = www.example.com)", "add_header Strict-Transport-Security \"max-age=31536000\" always;"}},
 		{"nginx-site-proxy.conf", "nginx/site.conf.tmpl", func() Site { s := exampleSite("proxy"); s.Backend = "http://127.0.0.1:3000"; return s }(), []string{"proxy_pass http://127.0.0.1:3000;", "proxy-app.conf"}},
 		{"nginx-site-apache.conf", "nginx/site.conf.tmpl", exampleSite("apache"), []string{"proxy_pass http://127.0.0.1:8080;", "try_files $uri @apache;", "proxy-apache.conf"}},

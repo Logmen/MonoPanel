@@ -3,7 +3,14 @@ server {
     listen {{ .IP }}:80 default_server;
     server_name _;
     include monopanel/snippets/acme.conf;
-    location / { return 444; }
+    location / {
+{{- if .PanelHost }}
+        # The panel's own name without the port leads to the panel; a site
+        # with that name would match before this block and win.
+        if ($host = "{{ .PanelHost }}") { return 301 https://$host:{{ .PanelPort }}$request_uri; }
+{{- end }}
+        return 444;
+    }
 }
 {{- if .TLS }}
 

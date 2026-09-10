@@ -46,7 +46,6 @@
 /etc/nginx/monopanel/sites/<domain>.conf       сгенерированный server{} сайта
 /etc/nginx/monopanel/sites/<domain>.d/*.conf   пользовательские include внутри server{} — не перезаписываются
 /etc/nginx/conf.d/                             свободная зона администратора (панель не трогает)
-
 /etc/apache2|httpd/monopanel/httpd.conf        Listen 127.0.0.1:8080, mpm_event, remoteip, глобальные настройки
 /etc/apache2|httpd/monopanel/sites/<domain>.conf
 /etc/apache2|httpd/monopanel/sites/<domain>.d/*.conf
@@ -99,6 +98,8 @@ server {
 Режим B отличается блоками location: статика по regex расширений отдаётся nginx (переключатель `static_by_nginx`), всё остальное — `proxy_pass http://127.0.0.1:8080` со сниппетом `proxy-apache.conf` (`proxy_http_version 1.1`, `Host`, `X-Real-IP`, `X-Forwarded-Proto`, `X-Forwarded-For`, буферы, таймауты).
 
 HTTP/3: `listen … quic reuseport` допускается один раз на IP:порт, поэтому панель держит на каждый IP отдельный default-server (`http.d/ip-<ip>.conf`) с `reuseport`, а сайты объявляют `quic` без него. Default-server также отдаёт ACME-challenge и заглушку для неизвестных доменов.
+
+Сервер по умолчанию на каждом адресе (`http.d/ip-<адрес>.conf`) принимает ACME-проверки, имя самой панели без порта перенаправляет на её HTTPS-порт (`http://panel.example.com/` → `https://panel.example.com:8443/`), а всё остальное закрывает без ответа (444). Если у имени панели есть свой сайт, побеждает сайт: точное `server_name` в nginx старше блока по умолчанию. Файлы перегенерируются при старте API, так что смена `web.hostname` доезжает до nginx после `--restart`.
 
 ## 4. Шаблон Apache (режим B)
 

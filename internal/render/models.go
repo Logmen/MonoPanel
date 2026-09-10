@@ -14,6 +14,9 @@ type IPDefault struct {
 	HTTP3    bool
 	CertPath string
 	KeyPath  string
+	// PanelHost and PanelPort make http://<panel host>/ lead to the panel.
+	PanelHost string
+	PanelPort int
 }
 
 // Site feeds nginx/site.conf.tmpl and apache/site.conf.tmpl.

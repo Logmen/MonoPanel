@@ -42,6 +42,21 @@ func (s *Server) Run(ctx context.Context) error {
 	_ = os.Chmod(sock, 0o666)
 	unixSrv := &http.Server{Handler: s.Handler(), ConnContext: peercred.ConnContext, ReadHeaderTimeout: 10 * time.Second}
 
+	// The agent may still be starting; a few tries cover the unit ordering.
+	go func() {
+		for attempt := 0; attempt < 6; attempt++ {
+			if _, err := s.agent.Pkg(ctx, "query", "nginx"); err == nil {
+				s.refreshDefaultServers(ctx)
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Second):
+			}
+		}
+	}()
+
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		s.log.Info("api listening", "https", s.cfg.Web.Listen, "socket", sock)
