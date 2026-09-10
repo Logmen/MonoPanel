@@ -112,7 +112,7 @@ systemd: monopanel-php-fpm@8.4.service
 | Apache: проверка | `apache2ctl -t` | `apachectl -t` |
 | PHP (этап 1) | `/etc/php/X.Y/fpm/{php.ini,pool.d/}`, бинарь `php-fpmX.Y`, сервис `phpX.Y-fpm.service`, CLI `phpX.Y` | `/etc/opt/remi/phpXY/{php.ini,php-fpm.d/}`, бинарь `/opt/remi/phpXY/root/usr/sbin/php-fpm`, сервис `phpXY-php-fpm.service`, CLI `phpXY` |
 | PHP (этап 2) | `/opt/monopanel/php/X.Y` | `/opt/monopanel/php/X.Y` |
-| Конфиг СУБД панели | `/etc/mysql/mysql.conf.d/zz-monopanel.cnf` (MySQL) / `/etc/mysql/conf.d/zz-monopanel.cnf` (Percona) | `/etc/my.cnf.d/zz-monopanel.cnf` |
+| Конфиг СУБД панели | `/etc/mysql/mysql.conf.d/zz-monopanel.cnf` (MySQL) / `/etc/mysql/conf.d/zz-monopanel.cnf` (Percona) | `/etc/my.cnf.d/zz-monopanel.cnf`; у Percona на EL `/etc/my.cnf` ничего не включает, и `mysqld` читает только `/etc/my.cnf`, `/etc/mysql/my.cnf`, `/usr/etc/my.cnf` — панель пишет `/etc/mysql/my.cnf` с `!includedir /etc/my.cnf.d/` (найдено площадкой 2026-09-10: до этого настройки панели на EL не применялись) |
 | Сервис СУБД | `mysql.service` | `mysqld.service` |
 | MAC | AppArmor (профили для nginx/php не поставляются, вмешательство не требуется) | SELinux enforcing — см. §6 |
 | Firewall | nftables напрямую (ufw при наличии — отключить или сосуществовать по выбору) | firewalld (nftables-backend) — см. §7 |

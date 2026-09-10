@@ -95,6 +95,7 @@ var DefaultAllowedWritePrefixes = []string{
 	"/etc/php/",
 	"/etc/opt/remi/",
 	"/etc/mysql/",
+	"/var/log/mysql/", // slow log directory on EL, made by the panel
 	"/etc/my.cnf.d/",
 	"/etc/apt/sources.list.d/",
 	"/etc/apt/preferences.d/",

@@ -340,3 +340,33 @@ func TestDBEngineTuneRewritesConfig(t *testing.T) {
 		t.Fatalf("mysql must be restarted after tune (a reload does not reread the config): %q", act)
 	}
 }
+
+// Percona's my.cnf on EL includes nothing, so the panel's settings would be
+// ignored there: the config writer adds /etc/mysql/my.cnf, which mysqld reads
+// by default, with an !includedir for the panel's directory.
+func TestDBConfigOnELPerconaIsIncluded(t *testing.T) {
+	withOSRelease(t, "ID=ol\nVERSION_ID=9.8\nID_LIKE=fedora\n")
+	f := newSiteFixture(t)
+	if err := f.db.UpsertDBInstance(f.ctx, &store.DBInstance{Engine: "percona", Version: "8.4.11", Socket: "/var/lib/mysql/mysql.sock", Service: "mysqld.service", Status: store.DBReady}); err != nil {
+		t.Fatal(err)
+	}
+	f.call(http.MethodPost, "/db/engine/tune", nil, http.StatusOK, nil)
+	include := false
+	for _, c := range f.agent.Calls() {
+		if c.Path == "/v1/config/apply" && strings.Contains(string(c.Body), `"/etc/mysql/my.cnf"`) && strings.Contains(string(c.Body), "!includedir /etc/my.cnf.d/") && strings.Contains(string(c.Body), "/etc/my.cnf.d/zz-monopanel.cnf") {
+			include = true
+		}
+	}
+	if !include {
+		t.Fatal("no /etc/mysql/my.cnf with !includedir /etc/my.cnf.d/ was written for Percona on EL")
+	}
+	logdir := false
+	for _, c := range f.agent.Calls() {
+		if c.Path == "/v1/dirs/ensure" && strings.Contains(string(c.Body), `"/var/log/mysql"`) && strings.Contains(string(c.Body), `"mysql"`) {
+			logdir = true
+		}
+	}
+	if !logdir {
+		t.Fatal("/var/log/mysql for the slow log was not created for mysql on EL")
+	}
+}
