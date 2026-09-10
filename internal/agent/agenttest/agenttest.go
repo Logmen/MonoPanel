@@ -190,8 +190,11 @@ func (a *Agent) respond(path string, body []byte) any {
 			a.files[f.Path] = f
 			written = append(written, f.Path)
 		}
-		for _, u := range append(append([]string{}, req.Reload...), req.Restart...) {
+		for _, u := range req.Reload {
 			a.units[u] = "reload"
+		}
+		for _, u := range req.Restart {
+			a.units[u] = "restart"
 		}
 		return agent.ApplyConfigSetResponse{Written: written, Validated: len(req.Validate), Reloaded: req.Reload}
 

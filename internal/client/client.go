@@ -435,6 +435,12 @@ func (c *Client) DeleteSite(ctx context.Context, domain string, purge bool) (*ap
 	return &out, c.do(ctx, http.MethodDelete, "/sites/"+domain+q, nil, &out)
 }
 
+// DBEngineTune re-renders the MySQL configuration and restarts the server.
+func (c *Client) DBEngineTune(ctx context.Context) (*apitypes.DBEngineStatus, error) {
+	var out apitypes.DBEngineStatus
+	return &out, c.do(ctx, http.MethodPost, "/db/engine/tune", nil, &out)
+}
+
 // DBEngine returns the database server status.
 func (c *Client) DBEngine(ctx context.Context) (*apitypes.DBEngineStatus, error) {
 	var out apitypes.DBEngineStatus

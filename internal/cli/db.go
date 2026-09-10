@@ -119,6 +119,26 @@ func dbCmd() *cobra.Command {
 		return nil
 	}}
 	passwd.Flags().StringVar(&newPassword, "password", "", "новый пароль (иначе генерируется)")
+	tune := &cobra.Command{Use: "tune", Short: "перегенерировать zz-monopanel.cnf под этот хост и текущие умолчания панели и перезапустить сервер БД", RunE: func(cmd *cobra.Command, _ []string) error {
+		cl, err := newClient()
+		if err != nil {
+			return err
+		}
+		st, err := cl.DBEngineTune(cmd.Context())
+		if err != nil {
+			return err
+		}
+		if g.json {
+			return printJSON(st)
+		}
+		state := "?"
+		if st.Service != nil {
+			state = st.Service.ActiveState
+		}
+		fmt.Printf("конфигурация перезаписана, %s %s: %s\n", st.Instance.Engine, st.Instance.Version, state)
+		return nil
+	}}
+	engine.AddCommand(tune)
 	c.AddCommand(engine, create, list, rm, passwd)
 	return c
 }

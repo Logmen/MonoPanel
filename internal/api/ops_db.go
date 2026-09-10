@@ -157,6 +157,31 @@ func (s *Server) registerDB() {
 		return out, nil
 	})
 
+	// The generated zz-monopanel.cnf changes with the panel's defaults and
+	// with the host (RAM, legacy PHP); this re-renders it and restarts the
+	// server, so an existing installation picks the current defaults up.
+	huma.Register(s.api, huma.Operation{
+		OperationID: "db-engine-tune", Method: http.MethodPost, Path: "/db/engine/tune", Summary: "Re-render the panel's MySQL configuration for this host and restart the server", Tags: []string{"db"},
+		Security: secured, Metadata: adminOnly,
+	}, func(ctx context.Context, _ *struct{}) (*dbEngineOutput, error) {
+		p := principalFrom(ctx)
+		inst, err := s.dbInstance(ctx)
+		if err != nil {
+			return nil, huma.Error422UnprocessableEntity(err.Error())
+		}
+		inst.NativePassword = s.anyLegacyPHP(ctx)
+		if err := s.writeDBConfig(ctx, inst, true); err != nil {
+			return nil, err
+		}
+		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "db.engine.tune", Target: inst.Engine, IP: requestInfo(ctx).IP})
+		out := &dbEngineOutput{}
+		out.Body.Installed, out.Body.Instance = true, inst
+		if st, err := s.agent.Service(ctx, inst.Service, "status"); err == nil {
+			out.Body.Service = &st.Status
+		}
+		return out, nil
+	})
+
 	huma.Register(s.api, huma.Operation{
 		OperationID: "databases-list", Method: http.MethodGet, Path: "/databases", Summary: "List databases (admins: all, users: own)", Tags: []string{"db"}, Security: secured,
 	}, func(ctx context.Context, _ *struct{}) (*databasesOutput, error) {

@@ -308,3 +308,35 @@ func TestNginxDefaultServerRedirectsPanelHostname(t *testing.T) {
 		t.Fatal("default server does not redirect the panel hostname to the panel port")
 	}
 }
+
+// mp db engine tune re-renders the panel's MySQL configuration with the
+// current defaults (innodb_strict_mode off among them) and restarts the server.
+func TestDBEngineTuneRewritesConfig(t *testing.T) {
+	f := newSiteFixture(t)
+	if status, _ := f.do(http.MethodPost, "/db/engine/tune", nil); status != http.StatusUnprocessableEntity {
+		t.Fatalf("tune without an engine: %d", status)
+	}
+	if err := f.db.UpsertDBInstance(f.ctx, &store.DBInstance{Engine: "percona", Version: "8.4.11", Socket: "/var/run/mysqld/mysqld.sock", Service: "mysql.service", Status: store.DBReady}); err != nil {
+		t.Fatal(err)
+	}
+	var st struct {
+		Installed bool
+		Instance  struct{ Engine string }
+	}
+	f.call(http.MethodPost, "/db/engine/tune", nil, http.StatusOK, &st)
+	if !st.Installed || st.Instance.Engine != "percona" {
+		t.Fatalf("tune: %+v", st)
+	}
+	written := false
+	for _, c := range f.agent.Calls() {
+		if c.Path == "/v1/config/apply" && strings.Contains(string(c.Body), "zz-monopanel.cnf") && strings.Contains(string(c.Body), "innodb_strict_mode = OFF") {
+			written = true
+		}
+	}
+	if !written {
+		t.Fatal("zz-monopanel.cnf with innodb_strict_mode = OFF was not written")
+	}
+	if act := f.agent.UnitAction("mysql.service"); act != "restart" {
+		t.Fatalf("mysql must be restarted after tune (a reload does not reread the config): %q", act)
+	}
+}

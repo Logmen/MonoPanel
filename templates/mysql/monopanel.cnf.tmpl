@@ -12,6 +12,9 @@ table_open_cache = 4000
 tmp_table_size = 64M
 max_heap_table_size = 64M
 local_infile = OFF
+# Strict mode refuses tables whose row size exceeds the InnoDB limit and
+# imports from older servers; CMS installers and dumps hit both, so it is off.
+innodb_strict_mode = OFF
 performance_schema = ON
 disable_log_bin
 slow_query_log = ON
