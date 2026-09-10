@@ -96,6 +96,10 @@ var DefaultAllowedWritePrefixes = []string{
 	"/etc/opt/remi/",
 	"/etc/mysql/",
 	"/var/log/mysql/", // slow log directory on EL, made by the panel
+	"/etc/memcached.conf",
+	"/etc/sysconfig/memcached",
+	"/usr/local/bin/composer",
+	"/usr/local/lib/monopanel/",
 	"/etc/my.cnf.d/",
 	"/etc/apt/sources.list.d/",
 	"/etc/apt/preferences.d/",

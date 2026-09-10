@@ -435,6 +435,24 @@ func (c *Client) DeleteSite(ctx context.Context, domain string, purge bool) (*ap
 	return &out, c.do(ctx, http.MethodDelete, "/sites/"+domain+q, nil, &out)
 }
 
+// StackRemove uninstalls a tool (memcached, jpegoptim, git, composer).
+func (c *Client) StackRemove(ctx context.Context, component string) (*apitypes.JobRef, error) {
+	var out apitypes.JobRef
+	return &out, c.do(ctx, http.MethodDelete, "/stack/"+url.PathEscape(component), nil, &out)
+}
+
+// MemcachedSettings reads the panel's memcached configuration.
+func (c *Client) MemcachedSettings(ctx context.Context) (*apitypes.MemcachedSettings, error) {
+	var out apitypes.MemcachedSettings
+	return &out, c.do(ctx, http.MethodGet, "/stack/memcached", nil, &out)
+}
+
+// SetMemcachedSettings stores and applies the memcached configuration.
+func (c *Client) SetMemcachedSettings(ctx context.Context, req apitypes.MemcachedUpdate) (*apitypes.MemcachedSettings, error) {
+	var out apitypes.MemcachedSettings
+	return &out, c.do(ctx, http.MethodPut, "/stack/memcached", req, &out)
+}
+
 // DBEngineTune re-renders the MySQL configuration and restarts the server.
 func (c *Client) DBEngineTune(ctx context.Context) (*apitypes.DBEngineStatus, error) {
 	var out apitypes.DBEngineStatus

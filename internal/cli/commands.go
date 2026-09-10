@@ -454,7 +454,7 @@ func serviceCmd() *cobra.Command {
 }
 
 func stackCmd() *cobra.Command {
-	c := &cobra.Command{Use: "stack", Short: "компоненты веб-стека (nginx, apache, php, mysql)"}
+	c := &cobra.Command{Use: "stack", Short: "компоненты веб-стека и расширения (nginx, apache, php, mysql, memcached, jpegoptim, git, composer)"}
 	list := &cobra.Command{Use: "list", Short: "установленные компоненты", RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
@@ -481,7 +481,7 @@ func stackCmd() *cobra.Command {
 		table([]string{"COMPONENT", "VERSION", "STATE"}, rows)
 		return nil
 	}}
-	install := &cobra.Command{Use: "install <component>", Short: "установить компонент: nginx, apache, percona, mysql, fail2ban (PHP: mp php install)", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	install := &cobra.Command{Use: "install <component>", Short: "установить компонент: nginx, apache, percona, mysql, fail2ban, memcached, jpegoptim, git, composer (PHP: mp php install)", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -492,7 +492,55 @@ func stackCmd() *cobra.Command {
 		}
 		return followJob(cmd, cl, ref.JobID)
 	}}
-	c.AddCommand(list, install, stackRealIPCmd())
+	remove := &cobra.Command{Use: "remove <component>", Short: "удалить расширение: memcached, jpegoptim, git, composer", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		cl, err := newClient()
+		if err != nil {
+			return err
+		}
+		ref, err := cl.StackRemove(cmd.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		return followJob(cmd, cl, ref.JobID)
+	}}
+	var mem apitypes.MemcachedUpdate
+	memcached := &cobra.Command{Use: "memcached", Short: "настройки memcached: без флагов показать, с флагами изменить и применить", RunE: func(cmd *cobra.Command, _ []string) error {
+		cl, err := newClient()
+		if err != nil {
+			return err
+		}
+		var st *apitypes.MemcachedSettings
+		if cmd.Flags().Changed("memory-mb") || cmd.Flags().Changed("max-conn") {
+			cur, cerr := cl.MemcachedSettings(cmd.Context())
+			if cerr != nil {
+				return cerr
+			}
+			if !cmd.Flags().Changed("memory-mb") {
+				mem.MemoryMB = cur.MemoryMB
+			}
+			if !cmd.Flags().Changed("max-conn") {
+				mem.MaxConnections = cur.MaxConnections
+			}
+			st, err = cl.SetMemcachedSettings(cmd.Context(), mem)
+		} else {
+			st, err = cl.MemcachedSettings(cmd.Context())
+		}
+		if err != nil {
+			return err
+		}
+		if g.json {
+			return printJSON(st)
+		}
+		state := "не установлен"
+		if st.Installed {
+			state = "установлен, 127.0.0.1:11211"
+		}
+		fmt.Printf("memcached: %s\nпамять:    %d MB\nсоединений: %d\n", state, st.MemoryMB, st.MaxConnections)
+		return nil
+	}}
+	memcached.Flags().IntVar(&mem.MemoryMB, "memory-mb", 128, "размер кеша в МБ")
+	memcached.Flags().IntVar(&mem.MaxConnections, "max-conn", 1024, "одновременных соединений")
+	c.AddCommand(list, install, remove, memcached, stackRealIPCmd())
 	return c
 }
 

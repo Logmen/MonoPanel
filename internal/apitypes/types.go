@@ -102,11 +102,28 @@ type StackComponent struct {
 	Installed bool            `json:"installed"`
 	Version   string          `json:"version,omitempty"`
 	Service   *systemd.Status `json:"service,omitempty"`
+	// Kind groups the listing: web, db, php, security, tool.
+	Kind string `json:"kind,omitempty"`
+	// Removable components can be uninstalled from the panel (the tools).
+	Removable bool `json:"removable,omitempty"`
 }
 
 // StackInstallRequest installs a component.
 type StackInstallRequest struct {
-	Component string `json:"component" enum:"nginx,apache,percona,mysql,fail2ban"`
+	Component string `json:"component" enum:"nginx,apache,percona,mysql,fail2ban,memcached,jpegoptim,git,composer"`
+}
+
+// MemcachedSettings is the panel's memcached configuration.
+type MemcachedSettings struct {
+	Installed      bool `json:"installed"`
+	MemoryMB       int  `json:"memory_mb" minimum:"16" maximum:"65536" doc:"Cache size in MB (-m)"`
+	MaxConnections int  `json:"max_connections" minimum:"64" maximum:"65536" doc:"Simultaneous connections (-c)"`
+}
+
+// MemcachedUpdate changes the memcached configuration.
+type MemcachedUpdate struct {
+	MemoryMB       int `json:"memory_mb" minimum:"16" maximum:"65536" doc:"Cache size in MB (-m)"`
+	MaxConnections int `json:"max_connections" minimum:"64" maximum:"65536" doc:"Simultaneous connections (-c)"`
 }
 
 // JobRef points at an asynchronous job.

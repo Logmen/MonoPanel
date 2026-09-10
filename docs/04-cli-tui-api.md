@@ -39,6 +39,9 @@ mp php ext list | enable | disable 8.4 imagick
 mp php ini 8.4 [key=value …]         # глобальный ini версии
 mp php default 8.5                   # системный /usr/bin/php
 
+mp stack install|remove memcached|jpegoptim|git|composer   # расширения; composer нужна ветка PHP
+mp stack memcached [--memory-mb 256] [--max-conn 2048]    # без флагов — показать
+
 mp db create <name> --user <login> [--db-user …] [--password … | --generate] [--remote]
 mp db list | rm | passwd | dump | restore …
 mp db engine status | tune | restart

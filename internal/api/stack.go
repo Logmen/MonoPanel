@@ -46,7 +46,7 @@ func (s *Server) registerStack() {
 		out := &stackOutput{Body: []apitypes.StackComponent{}}
 		web := s.profile.Web()
 		q, err := s.agent.Pkg(actx, "query", "nginx")
-		comp := apitypes.StackComponent{Name: "nginx"}
+		comp := apitypes.StackComponent{Name: "nginx", Kind: "web"}
 		if err == nil {
 			if v, ok := q.Installed["nginx"]; ok {
 				comp.Installed, comp.Version = true, v
@@ -60,7 +60,7 @@ func (s *Server) registerStack() {
 		if s.profile.Family() == osprofile.FamilyRHEL {
 			apachePkg = "httpd"
 		}
-		ac := apitypes.StackComponent{Name: "apache"}
+		ac := apitypes.StackComponent{Name: "apache", Kind: "web"}
 		if q, err := s.agent.Pkg(actx, "query", apachePkg); err == nil {
 			if v, ok := q.Installed[apachePkg]; ok {
 				ac.Installed, ac.Version = true, v
@@ -71,7 +71,7 @@ func (s *Server) registerStack() {
 		}
 		out.Body = append(out.Body, ac)
 		if inst, err := s.db.GetDBInstance(ctx); err == nil {
-			dc := apitypes.StackComponent{Name: inst.Engine, Installed: inst.Status == store.DBReady, Version: inst.Version}
+			dc := apitypes.StackComponent{Name: inst.Engine, Installed: inst.Status == store.DBReady, Version: inst.Version, Kind: "db"}
 			if dc.Installed {
 				if st, err := s.agent.Service(actx, inst.Service, "status"); err == nil {
 					dc.Service = &st.Status
@@ -83,7 +83,7 @@ func (s *Server) registerStack() {
 		}
 		if versions, err := s.db.ListPHPVersions(ctx); err == nil {
 			for _, v := range versions {
-				pc := apitypes.StackComponent{Name: "php-" + v.Version, Installed: v.Status == store.PHPInstalled, Version: v.PackageVersion}
+				pc := apitypes.StackComponent{Name: "php-" + v.Version, Installed: v.Status == store.PHPInstalled, Version: v.PackageVersion, Kind: "php"}
 				if pc.Installed {
 					if st, err := s.agent.Service(actx, v.FPMService, "status"); err == nil {
 						pc.Service = &st.Status
@@ -92,6 +92,7 @@ func (s *Server) registerStack() {
 				out.Body = append(out.Body, pc)
 			}
 		}
+		out.Body = append(out.Body, s.toolComponents(actx)...)
 		return out, nil
 	})
 
@@ -122,6 +123,12 @@ func (s *Server) jobStackInstall(ctx context.Context, jc *jobs.Context) error {
 		return s.installDB(ctx, jc, p.Component)
 	case "fail2ban":
 		return s.installFail2ban(ctx, jc)
+	case "memcached":
+		return s.installMemcached(ctx, jc)
+	case "jpegoptim", "git":
+		return s.installToolPackages(ctx, jc, p.Component)
+	case "composer":
+		return s.installComposer(ctx, jc)
 	}
 	return fmt.Errorf("unknown component %q", p.Component)
 }
@@ -147,6 +154,11 @@ func fetchText(ctx context.Context, url string) (string, error) {
 // transient network failure or a 5xx is retried a few times: a TLS handshake
 // timeout to a vendor repository must not fail a whole installation.
 func fetchBytes(ctx context.Context, url string) ([]byte, error) {
+	return fetchBytesN(ctx, url, 1<<20)
+}
+
+// fetchBytesN is fetchBytes with its own size limit (composer.phar is a few MB).
+func fetchBytesN(ctx context.Context, url string, limit int64) ([]byte, error) {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
@@ -156,7 +168,7 @@ func fetchBytes(ctx context.Context, url string) ([]byte, error) {
 			case <-time.After(time.Duration(attempt*attempt) * 5 * time.Second):
 			}
 		}
-		b, retry, err := fetchOnce(ctx, url)
+		b, retry, err := fetchOnce(ctx, url, limit)
 		if err == nil {
 			return b, nil
 		}
@@ -168,7 +180,7 @@ func fetchBytes(ctx context.Context, url string) ([]byte, error) {
 	return nil, lastErr
 }
 
-func fetchOnce(ctx context.Context, url string) (body []byte, retry bool, err error) {
+func fetchOnce(ctx context.Context, url string, limit int64) (body []byte, retry bool, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, false, err
@@ -181,7 +193,7 @@ func fetchOnce(ctx context.Context, url string) (body []byte, retry bool, err er
 	if res.StatusCode != http.StatusOK {
 		return nil, res.StatusCode >= 500, fmt.Errorf("GET %s: %s", url, res.Status)
 	}
-	b, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	b, err := io.ReadAll(io.LimitReader(res.Body, limit))
 	return b, err != nil, err
 }
 

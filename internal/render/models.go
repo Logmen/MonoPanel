@@ -121,6 +121,15 @@ type MySQLConf struct {
 	NativePassword bool
 }
 
+// Memcached feeds memcached/memcached.conf.tmpl (Debian) and
+// memcached/sysconfig.tmpl (EL).
+type Memcached struct {
+	MemoryMB int
+	MaxConn  int
+	Listen   string
+	User     string
+}
+
 // Firewall feeds nftables/monopanel.nft.tmpl: pre-rendered rule lines.
 type Firewall struct {
 	Policy string

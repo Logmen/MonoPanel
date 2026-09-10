@@ -369,6 +369,11 @@ func (a *Agent) File(path string) (string, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	f, ok := a.files[path]
+	if ok && f.Content == "" && f.ContentBase64 != "" {
+		if raw, err := base64.StdEncoding.DecodeString(f.ContentBase64); err == nil {
+			return string(raw), true
+		}
+	}
 	return f.Content, ok
 }
 

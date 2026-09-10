@@ -7,7 +7,8 @@
   // перехода; на широких это обычная колонка слева.
   let { open = false, onclose }: { open?: boolean; onclose?: () => void } = $props();
   const items: [string, string, string][] = [
-    ['/', 'Дашборд', 'home'], ['/sites', 'Сайты', 'globe'], ['/users', 'Пользователи', 'users'], ['/php', 'PHP', 'code'], ['/databases', 'Базы данных', 'db'],
+    ['/', 'Дашборд', 'home'], ['/sites', 'Сайты', 'globe'], ['/users', 'Пользователи', 'users'], ['/php', 'PHP', 'code'],
+    ['/stack', 'Расширения', 'box'], ['/databases', 'Базы данных', 'db'],
     ['/mail', 'Почта', 'mail'], ['/files', 'Файлы', 'file'], ['/ssl', 'SSL', 'shield'], ['/jobs', 'Задачи', 'tasks'], ['/firewall', 'Firewall', 'fire'], ['/backups', 'Бэкапы', 'archive'], ['/settings', 'Настройки', 'settings']
   ];
   const admin = $derived(auth.me?.role === 'admin');
