@@ -7,6 +7,7 @@
   import JobLog from '$lib/components/JobLog.svelte';
   import PageHead from '$lib/components/PageHead.svelte';
   import Icon from '$lib/components/Icon.svelte';
+  import Modal from '$lib/components/Modal.svelte';
   import FileManager from '$lib/components/FileManager.svelte';
   const domain = $derived(page.params.domain!);
   const admin = $derived(auth.me?.role === 'admin');
@@ -17,6 +18,11 @@
   let logType = $state('access');
   let log = $state<any>(null);
   let job = $state<number | null>(null);
+  // Certificate of this site and the order dialog (HTTP-01 or DNS-01).
+  let certs = $state<any[]>([]);
+  let providers = $state<any[]>([]);
+  let tlsOpen = $state(false);
+  let tform = $state({ staging: false, dns: '' });
   let error = $state('');
   let aliases = $state('');
   let allow = $state('');
@@ -39,7 +45,12 @@
     overrides = Object.entries(site.php_ini || {}).map(([key, value]) => ({ key, value: String(value) }));
     php = ((await api('/php/versions')) as any).installed.filter((v: any) => v.status === 'installed');
     presets = await api('/sites/presets');
+    const [c, d] = await Promise.all([api('/certificates'), api('/dns-providers')]);
+    certs = c as any[];
+    providers = d as any[];
   }
+  const cert = $derived(site ? (certs.find((c) => c.id === site.certificate_id) ?? certs.find((c) => c.name === site.domain) ?? null) : null);
+  async function issueTLS(e: Event) { e.preventDefault(); error = ''; try { const r: any = await api(`/sites/${domain}/tls/issue`, { method: 'POST', json: { staging: tform.staging, dns: tform.dns || undefined } }); job = r.job_id; tlsOpen = false; site.ssl = 'auto'; } catch (e: any) { error = e.text || String(e); notify(error, 'err'); } }
   onMount(() => { load().catch((e) => (error = e.text || String(e))); });
   $effect(() => { if (tab === 'php' && !phpInfo) loadPHP(); if (tab === 'nginx' && !nginx) loadNginx(); if (tab === 'logs' && !log) loadLog(); });
 
@@ -123,7 +134,13 @@
       <div><label class="label" for="php">PHP</label><select id="php" class="input" bind:value={site.php_version}>{#each php as v}<option value={v.version}>{v.version}</option>{/each}</select></div>{/if}
       {#if site.mode !== 'proxy'}<div><label class="label" for="pr">Пресет CMS</label><select id="pr" class="input" bind:value={site.preset}>{#each presets as p}<option value={p.id}>{p.name}</option>{/each}</select></div>{/if}
       <div><label class="label" for="dr">Подкаталог docroot</label><input id="dr" class="input" bind:value={site.docroot} placeholder="public" /></div>
-      <div><label class="label" for="ssl">SSL</label><select id="ssl" class="input" bind:value={site.ssl}><option value="auto">auto (Let's Encrypt)</option><option value="none">none</option></select></div>
+      <div><label class="label" for="ssl">SSL</label><select id="ssl" class="input" bind:value={site.ssl}><option value="auto">auto (Let's Encrypt)</option><option value="none">none</option></select>
+        <div class="text-xs mt-1 flex flex-wrap items-center gap-2">
+          {#if cert}<span class="tag {cert.status === 'valid' ? 'tag-ok' : cert.status === 'error' ? 'tag-err' : 'tag-warn'}">{cert.status}</span><span class="text-muted">{cert.issuer || cert.name}{cert.not_after ? ` · до ${new Date(cert.not_after).toLocaleDateString()}` : ''}</span>{:else}<span class="text-muted">сертификата нет</span>{/if}
+          <button type="button" class="btn btn-sm" onclick={() => { tform = { staging: false, dns: '' }; tlsOpen = true; }}><Icon name="plus" size={12} /> выпустить</button>
+        </div>
+        {#if cert?.last_error}<div class="text-xs text-danger mt-1 break-words">{cert.last_error}</div>{/if}
+      </div>
       <div><label class="label" for="rw">www</label><select id="rw" class="input" bind:value={site.redirect_www}><option value="none">как есть</option><option value="to_root">www → без www</option><option value="to_www">без www → www</option></select></div>
       <div><label class="label" for="pm">php-fpm pm</label><select id="pm" class="input" bind:value={site.fpm_pm}><option value="ondemand">ondemand</option><option value="dynamic">dynamic</option><option value="static">static</option></select></div>
       <div><label class="label" for="mc">max_children</label><input id="mc" class="input" type="number" min="1" bind:value={site.fpm_max_children} /></div>
@@ -216,3 +233,12 @@
     </div>
   {/if}
 {/if}
+
+<Modal open={tlsOpen} title="Сертификат для {domain}" onclose={() => (tlsOpen = false)}>
+  <form id="site-tls" class="grid gap-3" onsubmit={issueTLS}>
+    <p class="text-sm text-muted">Будут покрыты {[domain, ...aliases.split(',').map((s) => s.trim()).filter(Boolean)].join(', ')}. Сайт переключится на HTTPS, как только сертификат выпустится.</p>
+    <div><label class="label" for="td">Проверка</label><select id="td" class="input" bind:value={tform.dns}><option value="">HTTP-01: домен должен вести на этот сервер, порт 80 открыт</option>{#each providers as p}<option value={p.name}>DNS-01: {p.name} ({p.type}) — работает и до переключения DNS</option>{/each}</select></div>
+    <label class="text-sm flex items-center gap-1"><input type="checkbox" bind:checked={tform.staging} /> staging (тестовый, недоверенный — для проверки настройки)</label>
+  </form>
+  {#snippet footer()}<button class="btn" onclick={() => (tlsOpen = false)}>Отмена</button><button class="btn btn-primary" form="site-tls">Выпустить</button>{/snippet}
+</Modal>

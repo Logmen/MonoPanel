@@ -163,7 +163,7 @@ func sslCmd() *cobra.Command {
 		}
 		return cl.DeleteCertificate(cmd.Context(), c.ID)
 	}}
-	c.AddCommand(issue, sslImportCmd(), list, show, renew, rm)
+	c.AddCommand(issue, sslImportCmd(), list, show, renew, rm, sslPanelCmd())
 	return c
 }
 

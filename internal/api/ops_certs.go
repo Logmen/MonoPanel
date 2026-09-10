@@ -65,6 +65,7 @@ func (s *Server) registerCerts() {
 		if list == nil {
 			list = []*store.Certificate{}
 		}
+		s.decorateCertUsage(ctx, list)
 		return &certsOutput{Body: list}, nil
 	})
 
@@ -72,71 +73,11 @@ func (s *Server) registerCerts() {
 		OperationID: "certificates-issue", Method: http.MethodPost, Path: "/certificates", Summary: "Order an ACME certificate (async, HTTP-01)", Tags: []string{"ssl"},
 		Security: secured, Metadata: adminOnly, DefaultStatus: http.StatusAccepted,
 	}, func(ctx context.Context, in *issueCertInput) (*certJobOutput, error) {
-		p := principalFrom(ctx)
-		names := make([]string, 0, len(in.Body.Names))
-		seen := map[string]bool{}
-		if in.Body.DNS != "" {
-			if _, err := s.db.GetDNSProvider(ctx, in.Body.DNS); err != nil {
-				return nil, huma.Error422UnprocessableEntity("unknown DNS provider " + in.Body.DNS)
-			}
-		}
-		for _, n := range in.Body.Names {
-			n = acme.NormalizeName(n)
-			var err error
-			if in.Body.DNS != "" {
-				err = acme.ValidateNameDNS(n)
-			} else {
-				err = acme.ValidateName(n)
-			}
-			if err != nil {
-				return nil, huma.Error422UnprocessableEntity(err.Error())
-			}
-			if !seen[n] {
-				seen[n] = true
-				names = append(names, n)
-			}
-		}
-		directory := acme.LetsEncrypt
-		if in.Body.Staging {
-			directory = acme.LetsEncryptStaging
-		}
-		if in.Body.Directory != "" {
-			directory = in.Body.Directory
-		}
-		email := in.Body.Email
-		if email != "" {
-			s.db.SetSetting(ctx, settingACMEEmail, email)
-		} else {
-			email, _ = s.db.GetSetting(ctx, settingACMEEmail)
-		}
-		c, err := s.db.GetCertificateByName(ctx, names[0])
-		if errors.Is(err, store.ErrNotFound) {
-			c = &store.Certificate{Name: names[0], AutoRenew: true}
-		} else if err != nil {
-			return nil, err
-		}
-		c.Names, c.Kind, c.DirectoryURL, c.Email, c.DNSProvider = names, store.CertKindACME, directory, email, in.Body.DNS
-		c.KeyType = in.Body.KeyType
-		if c.KeyType == "" {
-			c.KeyType = "ec256"
-		}
-		if in.Body.AutoRenew != nil {
-			c.AutoRenew = *in.Body.AutoRenew
-		}
-		c.Status, c.LastError = store.CertPending, ""
-		if p.UserID != 0 {
-			uid := p.UserID
-			c.UserID = &uid
-		}
-		if err := s.db.UpsertCertificate(ctx, c); err != nil {
-			return nil, err
-		}
-		job, err := s.jobs.Enqueue(ctx, "cert.issue", certIssuePayload{CertID: c.ID}, jobs.WithLockKey("cert:"+c.Name), jobs.WithRequestedBy(p.Login))
+		c, jobID, err := s.issueCertificate(ctx, principalFrom(ctx), in.Body)
 		if err != nil {
 			return nil, err
 		}
-		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "cert.issue", Target: c.Name, IP: requestInfo(ctx).IP, Details: map[string]any{"names": names, "directory": directory}})
-		return &certJobOutput{Status: http.StatusAccepted, Body: apitypes.CertificateWithJob{Certificate: c, JobID: job.ID}}, nil
+		return &certJobOutput{Status: http.StatusAccepted, Body: apitypes.CertificateWithJob{Certificate: c, JobID: jobID}}, nil
 	})
 
 	huma.Register(s.api, huma.Operation{
@@ -185,6 +126,9 @@ func (s *Server) registerCerts() {
 			return nil, huma.Error404NotFound("certificate not found")
 		}
 		if err != nil {
+			return nil, err
+		}
+		if err := s.certInUse(ctx, c); err != nil {
 			return nil, err
 		}
 		if err := s.acme.Remove(c.Name); err != nil {
@@ -446,4 +390,74 @@ func publicLookup(ctx context.Context, name string) ([]string, error) {
 		return nil, lastErr
 	}
 	return addrs, nil
+}
+
+// issueCertificate validates the names, records (or refreshes) the certificate
+// and enqueues the order. Both the free-form endpoint and the panel's own
+// certificate go through here.
+func (s *Server) issueCertificate(ctx context.Context, p *principal, req apitypes.IssueCertificateRequest) (*store.Certificate, int64, error) {
+	names := make([]string, 0, len(req.Names))
+	seen := map[string]bool{}
+	if req.DNS != "" {
+		if _, err := s.db.GetDNSProvider(ctx, req.DNS); err != nil {
+			return nil, 0, huma.Error422UnprocessableEntity("unknown DNS provider " + req.DNS)
+		}
+	}
+	for _, n := range req.Names {
+		n = acme.NormalizeName(n)
+		var err error
+		if req.DNS != "" {
+			err = acme.ValidateNameDNS(n)
+		} else {
+			err = acme.ValidateName(n)
+		}
+		if err != nil {
+			return nil, 0, huma.Error422UnprocessableEntity(err.Error())
+		}
+		if !seen[n] {
+			seen[n] = true
+			names = append(names, n)
+		}
+	}
+	directory := acme.LetsEncrypt
+	if req.Staging {
+		directory = acme.LetsEncryptStaging
+	}
+	if req.Directory != "" {
+		directory = req.Directory
+	}
+	email := req.Email
+	if email != "" {
+		s.db.SetSetting(ctx, settingACMEEmail, email)
+	} else {
+		email, _ = s.db.GetSetting(ctx, settingACMEEmail)
+	}
+	c, err := s.db.GetCertificateByName(ctx, names[0])
+	if errors.Is(err, store.ErrNotFound) {
+		c = &store.Certificate{Name: names[0], AutoRenew: true}
+	} else if err != nil {
+		return nil, 0, err
+	}
+	c.Names, c.Kind, c.DirectoryURL, c.Email, c.DNSProvider = names, store.CertKindACME, directory, email, req.DNS
+	c.KeyType = req.KeyType
+	if c.KeyType == "" {
+		c.KeyType = "ec256"
+	}
+	if req.AutoRenew != nil {
+		c.AutoRenew = *req.AutoRenew
+	}
+	c.Status, c.LastError = store.CertPending, ""
+	if p.UserID != 0 {
+		uid := p.UserID
+		c.UserID = &uid
+	}
+	if err := s.db.UpsertCertificate(ctx, c); err != nil {
+		return nil, 0, err
+	}
+	job, err := s.jobs.Enqueue(ctx, "cert.issue", certIssuePayload{CertID: c.ID}, jobs.WithLockKey("cert:"+c.Name), jobs.WithRequestedBy(p.Login))
+	if err != nil {
+		return nil, 0, err
+	}
+	s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "cert.issue", Target: c.Name, IP: requestInfo(ctx).IP, Details: map[string]any{"names": names, "directory": directory}})
+	return c, job.ID, nil
 }

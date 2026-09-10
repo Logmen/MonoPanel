@@ -148,6 +148,36 @@ type TLSInfo struct {
 	Certificate acme.CertInfo `json:"certificate"`
 }
 
+// PanelTLS is the panel's own certificate: what it serves now, the stored
+// record behind it (an order in progress, an error) and the DNS providers
+// available for DNS-01.
+type PanelTLS struct {
+	TLSInfo
+	Record       *store.Certificate `json:"record,omitempty" doc:"Stored certificate named after the panel hostname, if any"`
+	DNSProviders []string           `json:"dns_providers"`
+}
+
+// PanelTLSIssueRequest orders a certificate for the panel hostname.
+type PanelTLSIssueRequest struct {
+	Email   string `json:"email,omitempty" format:"email" doc:"ACME account contact; remembered for later orders"`
+	Staging bool   `json:"staging,omitempty" doc:"Let's Encrypt staging directory (untrusted test certificate)"`
+	DNS     string `json:"dns,omitempty" doc:"DNS provider name for DNS-01; without it HTTP-01 via the nginx webroot"`
+	KeyType string `json:"key_type,omitempty" enum:"ec256,rsa2048" default:"ec256"`
+}
+
+// PanelTLSImportRequest installs an existing certificate for the panel hostname.
+type PanelTLSImportRequest struct {
+	Certificate string `json:"certificate" minLength:"1" doc:"PEM: leaf certificate followed by intermediates"`
+	PrivateKey  string `json:"private_key" minLength:"1" doc:"PEM private key"`
+}
+
+// SiteTLSIssueRequest orders a certificate for a site (domain and aliases).
+type SiteTLSIssueRequest struct {
+	Staging bool   `json:"staging,omitempty" doc:"Let's Encrypt staging directory (untrusted test certificate)"`
+	DNS     string `json:"dns,omitempty" doc:"DNS provider name for DNS-01; without it HTTP-01 via the nginx webroot"`
+	Email   string `json:"email,omitempty" format:"email"`
+}
+
 // PHPInstallRequest installs a PHP branch.
 type PHPInstallRequest struct {
 	Version string `json:"version" pattern:"^[578]\\.[0-9]$" doc:"Branch such as 8.4"`

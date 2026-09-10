@@ -348,6 +348,35 @@ func (c *Client) WebTLS(ctx context.Context) (*apitypes.TLSInfo, error) {
 	return &out, c.do(ctx, http.MethodGet, "/web/tls", nil, &out)
 }
 
+// PanelTLS is the panel's own certificate with the record behind it.
+func (c *Client) PanelTLS(ctx context.Context) (*apitypes.PanelTLS, error) {
+	var out apitypes.PanelTLS
+	return &out, c.do(ctx, http.MethodGet, "/ssl/panel", nil, &out)
+}
+
+// PanelTLSIssue orders a certificate for the panel hostname.
+func (c *Client) PanelTLSIssue(ctx context.Context, req apitypes.PanelTLSIssueRequest) (*apitypes.CertificateWithJob, error) {
+	var out apitypes.CertificateWithJob
+	return &out, c.do(ctx, http.MethodPost, "/ssl/panel/issue", req, &out)
+}
+
+// PanelTLSImport installs an existing certificate for the panel hostname.
+func (c *Client) PanelTLSImport(ctx context.Context, req apitypes.PanelTLSImportRequest) (*store.Certificate, error) {
+	var out store.Certificate
+	return &out, c.do(ctx, http.MethodPost, "/ssl/panel/import", req, &out)
+}
+
+// PanelTLSReset drops the panel's certificate: back to self-signed.
+func (c *Client) PanelTLSReset(ctx context.Context) error {
+	return c.do(ctx, http.MethodDelete, "/ssl/panel", nil, nil)
+}
+
+// SiteTLSIssue orders a certificate for a site and switches it to HTTPS.
+func (c *Client) SiteTLSIssue(ctx context.Context, domain string, req apitypes.SiteTLSIssueRequest) (*apitypes.CertificateWithJob, error) {
+	var out apitypes.CertificateWithJob
+	return &out, c.do(ctx, http.MethodPost, "/sites/"+url.PathEscape(domain)+"/tls/issue", req, &out)
+}
+
 // PHPVersions lists installed and available PHP branches.
 func (c *Client) PHPVersions(ctx context.Context) (*apitypes.PHPVersions, error) {
 	var out apitypes.PHPVersions

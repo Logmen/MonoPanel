@@ -38,12 +38,16 @@ type Certificate struct {
 	Status       string     `json:"status"`
 	LastError    string     `json:"last_error,omitempty"`
 	LastAttempt  *time.Time `json:"last_attempt,omitempty"`
-	CertPath     string     `json:"cert_path,omitempty"`
-	KeyPath      string     `json:"key_path,omitempty"`
-	ChainPath    string     `json:"chain_path,omitempty"`
-	DNSProvider  string     `json:"dns_provider,omitempty"`
-	CreatedAt    Time       `json:"created_at"`
-	UpdatedAt    Time       `json:"updated_at"`
+	// UsedByPanel and UsedBySites are computed by the API for listings:
+	// a certificate somebody serves cannot simply be deleted.
+	UsedByPanel bool     `json:"used_by_panel"`
+	UsedBySites []string `json:"used_by_sites"`
+	CertPath    string   `json:"cert_path,omitempty"`
+	KeyPath     string   `json:"key_path,omitempty"`
+	ChainPath   string   `json:"chain_path,omitempty"`
+	DNSProvider string   `json:"dns_provider,omitempty"`
+	CreatedAt   Time     `json:"created_at"`
+	UpdatedAt   Time     `json:"updated_at"`
 }
 
 const certCols = `id, user_id, name, names, kind, directory_url, key_type, email, issuer, serial, not_before, not_after, auto_renew, status, last_error, last_attempt, cert_path, key_path, chain_path, created_at, updated_at, dns_provider`

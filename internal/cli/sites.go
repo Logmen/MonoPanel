@@ -335,7 +335,7 @@ func siteCmd() *cobra.Command {
 		table([]string{"PRESET", "NAME", "DESCRIPTION"}, rows)
 		return nil
 	}}
-	c.AddCommand(add, list, show, set, rm, siteLogsCmd(), siteNginxCmd(), sitePHPCmd(), presets)
+	c.AddCommand(add, list, show, set, rm, siteLogsCmd(), siteNginxCmd(), sitePHPCmd(), siteTLSCmd(), presets)
 	return c
 }
 
@@ -394,5 +394,25 @@ func phpExtCmd() *cobra.Command {
 			return show(st)
 		}})
 	}
+	return c
+}
+
+// siteTLSCmd orders a certificate for a site's names and switches it to HTTPS.
+func siteTLSCmd() *cobra.Command {
+	var req apitypes.SiteTLSIssueRequest
+	c := &cobra.Command{Use: "tls <domain>", Short: "выпустить сертификат для сайта (домен и алиасы) и включить HTTPS; --dns для DNS-01", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		cl, err := newClient()
+		if err != nil {
+			return err
+		}
+		res, err := cl.SiteTLSIssue(cmd.Context(), args[0], req)
+		if err != nil {
+			return err
+		}
+		return followJob(cmd, cl, res.JobID)
+	}}
+	c.Flags().StringVar(&req.DNS, "dns", "", "DNS-провайдер для DNS-01 (когда порт 80 недоступен снаружи)")
+	c.Flags().BoolVar(&req.Staging, "staging", false, "staging-директория Let's Encrypt (тестовый сертификат)")
+	c.Flags().StringVar(&req.Email, "email", "", "e-mail аккаунта ACME (запоминается)")
 	return c
 }

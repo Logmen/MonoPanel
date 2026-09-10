@@ -44,6 +44,9 @@ mp db list | rm | passwd | dump | restore …
 mp db engine status | tune | restart
 
 mp ssl list [--expiring 30d] | renew --all | account show | register
+mp ssl panel                          # сертификат самой панели: что отдаётся и запись за ним
+mp ssl panel issue [--dns cf] [--staging] | import --cert … --key … | self-signed
+mp site tls <domain> [--dns cf] [--staging]   # сертификат сайта (домен + алиасы), сайт переключается на HTTPS
 mp dns-provider add cloudflare --token … --user <login>
 
 mp backup target add local|sftp|s3 … | list
