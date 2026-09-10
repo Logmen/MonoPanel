@@ -41,8 +41,9 @@ certificate and the administrator account, then prints the panel's address and t
 password.
 
 Requires root, systemd and one of: Debian 12/13, Ubuntu 22.04/24.04/26.04,
-AlmaLinux/Rocky 9/10. The whole matrix runs on a [testbed](docs/08-testbed.md):
-installing the panel, nginx, PHP and Percona and the e2e scenario pass on all nine.
+AlmaLinux, Rocky Linux or Oracle Linux 9/10. The whole matrix runs on a
+[testbed](docs/08-testbed.md): installing the panel, nginx, PHP and Percona and the
+e2e scenario pass on all eleven.
 On EL, SELinux stays enforcing — the panel sets up the file contexts and booleans a
 hosting server needs. Ubuntu 26.04 has no `ppa:ondrej/php` builds yet, so PHP 8.5
 comes from Ubuntu itself there; the panel picks the PPA up on its own once it exists.

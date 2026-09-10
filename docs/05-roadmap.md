@@ -118,7 +118,7 @@
 |---|---|---|---|
 | Debian 12, 13 | A, B | 5.6, 7.4, 8.2, 8.5 | Percona 8.4, MySQL 8.4 |
 | Ubuntu 22.04, 24.04, 26.04 | A, B | 7.4, 8.3, 8.5 | Percona 8.4 |
-| AlmaLinux 9, 10; Rocky Linux 9, 10 | A, B | 7.4, 8.4, 8.5 (+ 5.6 на EL9) | Percona 8.4, MySQL 8.4 |
+| AlmaLinux, Rocky Linux, Oracle Linux 9, 10 | A, B | 7.4, 8.4, 8.5 (+ 5.6 на EL9) | Percona 8.4, MySQL 8.4 |
 
 Раннер: VM (libvirt / cloud-образы + cloud-init). Контейнеров недостаточно для SELinux, nftables, квот и systemd-слайсов.
 

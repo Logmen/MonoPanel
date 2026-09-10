@@ -52,6 +52,36 @@ remote() {
 	ssh "$PVE_HOST" "$vars bash -s -- $(printf '%q ' "$@")" <"$root/scripts/testbed/pve.sh"
 }
 
+# wait_cloud_init blocks until a VM accepts root over ssh and cloud-init
+# reports done: the key arrives early in cloud-init, the final stage may still
+# be installing packages. "done with recoverable errors" (exit 2) is accepted.
+wait_cloud_init() {
+	local name=$1 code
+	for _ in $(seq 1 120); do
+		if ssh -o BatchMode=yes -o ConnectTimeout=5 "mp-$name" true >/dev/null 2>&1; then
+			ssh -o BatchMode=yes "mp-$name" 'cloud-init status --wait >/dev/null 2>&1; echo $?' 2>/dev/null | grep -qE '^[02]$' && { log "mp-$name: cloud-init done"; return; }
+			code=$(ssh -o BatchMode=yes "mp-$name" 'cloud-init status 2>&1 | head -1')
+			echo "mp-$name: cloud-init: $code" >&2
+			return 1
+		fi
+		sleep 5
+	done
+	echo "mp-$name: no ssh in 10 minutes" >&2
+	return 1
+}
+
+# wait_ssh blocks until a VM accepts root over ssh: after a rollback the
+# guest agent may answer before sshd is up (Oracle's images start it early).
+wait_ssh() {
+	local name=$1
+	for _ in $(seq 1 60); do
+		ssh -o BatchMode=yes -o ConnectTimeout=5 "mp-$name" true >/dev/null 2>&1 && return
+		sleep 5
+	done
+	echo "mp-$name: no ssh in 5 minutes" >&2
+	return 1
+}
+
 # ssh_config writes one Host stanza per VM. Rebuilt VMs get new host keys, so
 # they live in their own known_hosts file that is simply removed on `down`.
 ssh_config() {
@@ -121,7 +151,7 @@ matrix() {
 	for n in "${names[@]}"; do
 		(
 			exec >"$logs/$n.log" 2>&1
-			[ -n "${TB_NO_RESET:-}" ] || remote reset "$n"
+			[ -n "${TB_NO_RESET:-}" ] || { remote reset "$n"; wait_ssh "$n"; }
 			deploy "$n"
 			e2e "$n"
 		) &
@@ -140,8 +170,19 @@ matrix() {
 cmd=${1:-status}; shift || true
 # shellcheck disable=SC2046 # VM names are single words
 case "$cmd" in
-up) remote up "$@"; ssh_config ;;
-reset | down) remote "$cmd" "$@"; [ "$cmd" = down ] && [ $# -eq 0 ] && rm -f "$HOME/.ssh/known_hosts.monopanel-testbed"; true ;;
+up)
+	[ $# -gt 0 ] || set -- $(remote names)
+	remote up "$@"
+	ssh_config
+	for n in "$@"; do wait_cloud_init "$n"; done
+	remote snapshot "$@"
+	;;
+reset)
+	[ $# -gt 0 ] || set -- $(remote names)
+	remote reset "$@"
+	for n in "$@"; do wait_ssh "$n"; done
+	;;
+down) remote down "$@"; [ $# -eq 0 ] && rm -f "$HOME/.ssh/known_hosts.monopanel-testbed"; true ;;
 status | names | list) remote "$cmd" ;;
 ssh-config) ssh_config ;;
 deploy) [ $# -ge 1 ] || { echo "usage: testbed.sh deploy <name> [--binary]" >&2; exit 2; }; deploy "$@" ;;

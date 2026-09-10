@@ -8,7 +8,9 @@
 # (scripts/testbed/testbed.sh) pipes it over ssh with the settings from
 # .dev/testbed.env, so nothing site-specific lives in the repository.
 #
-#   pve.sh up [name...]      create the VMs that are missing, boot them, snapshot
+#   pve.sh up [name...]      create the VMs that are missing and boot them
+#   pve.sh snapshot [name...] take the clean snapshot (the wrapper calls it once
+#                            cloud-init is through, which only ssh can tell)
 #   pve.sh reset [name...]   roll back to the clean snapshot and boot
 #   pve.sh down [name...]    destroy the VMs (and their images stay cached)
 #   pve.sh status            vmid, name, ip, state, snapshot, uptime
@@ -53,6 +55,9 @@ DISTROS=(
 	"7 alma10     https://repo.almalinux.org/almalinux/10/cloud/x86_64/images/AlmaLinux-10-GenericCloud-latest.x86_64.qcow2"
 	"8 rocky9     https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2"
 	"9 rocky10    https://dl.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2"
+	# Oracle names its images by update and build; check yum.oracle.com/oracle-linux-templates.html for newer ones.
+	"10 ol9       https://yum.oracle.com/templates/OracleLinux/OL9/u8/x86_64/OL9U8_x86_64-kvm-b293.qcow2"
+	"11 ol10      https://yum.oracle.com/templates/OracleLinux/OL10/u1/x86_64/OL10U1_x86_64-kvm-b291.qcow2"
 )
 
 log() { printf '\033[36m[%s]\033[0m %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
@@ -115,9 +120,12 @@ ensure_snippets() {
 #
 # The user-data: root with our key, the guest agent, nothing else. The network
 # comes from Proxmox (--ipconfig0), which is kept when only `user` is custom.
-# The agent is enabled last, so "agent answers" means "runcmd is through"; on
-# EL the agent ships with guest-exec blocked (/etc/sysconfig/qemu-ga); that
-# is lifted, but SELinux still refuses the exec, so on EL only the ping counts.
+# The agent is (re)started last: some images (Oracle Linux) ship it running
+# already, so a ping alone would not mean "runcmd is through". On EL the agent
+# ships with guest-exec blocked (/etc/sysconfig/qemu-ga); the block is lifted
+# by runcmd and the restart makes it take, but SELinux still refuses the exec
+# itself — so on EL "Permission denied" from guest-exec is the ready signal,
+# while "has been disabled" means the old agent is still running.
 write_snippet() {
 	local name=$1 h
 	h=$(host "$name")
@@ -146,7 +154,8 @@ runcmd:
   - chmod 600 /root/.ssh/authorized_keys
   - systemctl restart sshd || systemctl restart ssh
   - '[ ! -f /etc/sysconfig/qemu-ga ] || sed -i -E "s/^FILTER_RPC_ARGS=.*/FILTER_RPC_ARGS=\"\"/" /etc/sysconfig/qemu-ga'
-  - systemctl enable --now qemu-guest-agent
+  - systemctl enable qemu-guest-agent
+  - systemctl restart qemu-guest-agent
 YAML
 }
 
@@ -180,25 +189,18 @@ create() {
 		--nameserver "$TB_DNS" --searchdomain "$TB_DOMAIN" >/dev/null
 }
 
-# wait_ready blocks until the guest agent answers (it is enabled by the last
-# runcmd line) and then asks cloud-init itself, where guest-exec is allowed.
+# wait_ready blocks until the guest agent answers. That is all the host can
+# see: guest-exec is blocked by the agent's filter on EL and by SELinux even
+# when unblocked, and Oracle's images ship the agent running before cloud-init
+# is through. Whether cloud-init finished is checked over ssh by the wrapper.
 wait_ready() {
-	local name=$1 id out
+	local name=$1 id
 	id=$(vmid "$name")
 	for _ in $(seq 1 120); do
-		qm agent "$id" ping >/dev/null 2>&1 && break
+		qm agent "$id" ping >/dev/null 2>&1 && { log "$name: guest agent answers"; return; }
 		sleep 5
 	done
-	qm agent "$id" ping >/dev/null 2>&1 || die "$name: guest agent did not come up in 10 minutes"
-	out=$(qm guest exec "$id" --timeout 900 -- cloud-init status --wait 2>&1 || true)
-	if grep -q '"exitcode" *: *[02]' <<<"$out"; then
-		log "$name: cloud-init done"
-	elif grep -q '"exitcode"' <<<"$out"; then
-		echo "$out" >&2
-		die "$name: cloud-init did not finish cleanly"
-	else
-		log "$name: agent up (guest-exec unavailable: ${out:0:80})"
-	fi
+	die "$name: guest agent did not come up in 10 minutes"
 }
 
 snapshot_clean() {
@@ -221,9 +223,13 @@ up() {
 		[ "$(qm status "$(vmid "$n")" | awk '{print $2}')" = running ] || { log "$n: starting"; qm start "$(vmid "$n")" >/dev/null; }
 	done
 	for n in "$@"; do wait_ready "$n"; done
+}
+
+snapshot() {
+	local n
 	for n in "$@"; do snapshot_clean "$n"; done
 	for n in "$@"; do wait_ready "$n"; done
-	log "ready: $*"
+	log "clean: $*"
 }
 
 reset() {
@@ -272,12 +278,12 @@ list() { local n; for n in $(names); do echo "$n $(vmid "$n") $(ip "$n")"; done;
 
 cmd=${1:-status}; shift || true
 case "$cmd" in
-up | reset | down)
+up | snapshot | reset | down)
 	# shellcheck disable=SC2046 # the names are single words
 	[ $# -gt 0 ] || set -- $(names)
 	for n in "$@"; do row "$n" >/dev/null; done
 	"$cmd" "$@"
 	;;
 status | list | names) "$cmd" ;;
-*) die "usage: pve.sh up|reset|down [name...] | status | list | names" ;;
+*) die "usage: pve.sh up|snapshot|reset|down [name...] | status | list | names" ;;
 esac
