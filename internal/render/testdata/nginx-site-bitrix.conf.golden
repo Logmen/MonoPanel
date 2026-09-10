@@ -32,21 +32,45 @@ server {
     # --- preset: 1C-Bitrix ---
     location = /favicon.ico { log_not_found off; access_log off; }
     location = /robots.txt  { allow all; log_not_found off; access_log off; }
+
+    # core, caches, settings and the click-tracking scripts are never served directly
+    location ~* ^/bitrix/(?:rk|redirect)\.php$ { deny all; return 404; }
     location ~* ^/bitrix/(?:modules|local_cache|stack_cache|managed_cache|php_interface)/ { deny all; return 404; }
     location ~* ^/local/(?:modules|php_interface)/ { deny all; return 404; }
+    location ~* ^/bitrix/html_pages/\.(?:config\.php|enabled)$ { deny all; return 404; }
     location ~* ^/upload/1c_[^/]+/ { deny all; return 404; }
-    location ~* ^/(?:upload|bitrix/images|bitrix/tmp)/.*\.(?:php|phtml|phar|pl|py|sh|cgi)$ { deny all; return 403; }
-    location ~* ^/bitrix/(?:cache|html_pages)/.*\.(?:php|phtml|phar)$ { deny all; return 403; }
+    location ~* /\.\./ { deny all; return 404; }
+    location ~* ^/(?:upload|bitrix/images|bitrix/tmp)/.*\.(?:php[3-6]?|phtml|phar|pl|py|sh|cgi|asp|aspx|dll|exe|shtml?|fcgi?|fpl|asmx|pht|psp)$ { deny all; return 403; }
 
-    location ~* \.(?:css|js|mjs|map|jpe?g|png|gif|webp|avif|svg|ico|woff2?|ttf|eot|otf|mp4|webm|mp3|pdf|zip|gz)$ {
+    # merged assets in the cache are public, the rest of the cache is not
+    location ~* ^/bitrix/cache/(?:css/.+\.css|js/.+\.js)$ { expires 30d; access_log off; }
+    location ~* ^/bitrix/cache/ { deny all; return 404; }
+
+    # protected downloads are handed over by PHP (X-Accel-Redirect)
+    location ^~ /upload/support/not_image { internal; }
+    # composite pages: PHP hands the file over, the browser must not cache it
+    location ~* @.*\.html$ { internal; expires -1y; add_header X-Bitrix-Composite "Nginx (file)"; }
+    location ~* ^/bitrix/components/bitrix/player/mediaplayer/player$ { add_header Access-Control-Allow-Origin *; }
+
+    location ~* \.(?:css|js|mjs|map|jpe?g|png|gif|webp|avif|svg|ico|woff2?|ttf|eot|otf|mp4|webm|mp3|ogg|mpeg|avi|pdf|zip|gz|bz2|rar|swf)$ {
         try_files $uri =404;
         include monopanel/snippets/static-cache.conf;
         add_header Strict-Transport-Security "max-age=31536000" always;
         add_header Alt-Svc 'h3=":443"; ma=86400' always;
     }
-    location / { try_files $uri $uri/ /bitrix/urlrewrite.php$is_args$args; }
+    location / { try_files $uri $uri/ @bitrix; }
+    location @bitrix {
+        include /etc/nginx/fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME $document_root/bitrix/urlrewrite.php;
+        fastcgi_param HTTPS $https if_not_empty;
+        fastcgi_buffers 16 16k;
+        fastcgi_buffer_size 32k;
+        fastcgi_read_timeout 300s;
+        fastcgi_send_timeout 300s;
+        fastcgi_pass unix:/run/monopanel/php/example.com.sock;
+    }
     location ~ \.php$ {
-        try_files $uri =404;
+        try_files $uri @bitrix;
         include monopanel/snippets/fastcgi.conf;
         fastcgi_pass unix:/run/monopanel/php/example.com.sock;
     }

@@ -195,7 +195,7 @@ func TestSitePresetsRenderExpectedRules(t *testing.T) {
 	}{
 		{"wordpress", []string{"location = /xmlrpc.php  { deny all; return 403; }", "wp-content/(?:uploads|files|cache|upgrade)", "try_files $uri $uri/ /index.php?$args;"}, ""},
 		{"joomla", []string{"location /api/ { try_files $uri $uri/ /api/index.php?$args; }", "configuration\\.php"}, ""},
-		{"bitrix", []string{"/bitrix/urlrewrite.php$is_args$args", "local_cache"}, "/index.php?$args"},
+		{"bitrix", []string{"location / { try_files $uri $uri/ @bitrix; }", "SCRIPT_FILENAME $document_root/bitrix/urlrewrite.php", "local_cache", "X-Bitrix-Composite"}, "/index.php?$args"},
 		{"opencart", []string{"_route_=$1", "location ~* ^/(?:system|storage|vendor)/"}, ""},
 	}
 	for _, c := range cases {

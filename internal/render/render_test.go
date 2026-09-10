@@ -63,7 +63,7 @@ func TestGolden(t *testing.T) {
 		{"php-fpm-pool.conf", "php-fpm/pool.conf.tmpl", examplePool(), []string{"[example.com]", "listen.group = monopanel-web", "php_value[memory_limit] = 256M", "pm = ondemand"}},
 	}
 	presets := []string{"nginx/presets/wordpress.conf.tmpl", "nginx/presets/joomla.conf.tmpl", "nginx/presets/bitrix.conf.tmpl", "nginx/presets/opencart.conf.tmpl"}
-	for _, pr := range []struct{ id, must string }{{"wordpress", "location = /xmlrpc.php"}, {"joomla", "location /api/ { try_files $uri $uri/ /api/index.php?$args; }"}, {"bitrix", "/bitrix/urlrewrite.php$is_args$args"}, {"opencart", "rewrite ^/(.+)$ /index.php?_route_=$1 last;"}} {
+	for _, pr := range []struct{ id, must string }{{"wordpress", "location = /xmlrpc.php"}, {"joomla", "location /api/ { try_files $uri $uri/ /api/index.php?$args; }"}, {"bitrix", "SCRIPT_FILENAME $document_root/bitrix/urlrewrite.php"}, {"opencart", "rewrite ^/(.+)$ /index.php?_route_=$1 last;"}} {
 		pr := pr
 		cases = append(cases, struct {
 			golden string
