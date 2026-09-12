@@ -181,6 +181,69 @@ transient-юнит `monopanel-update.service`, который переживае
 неподписанный релиз не установится. Медленный канал не помеха: у загрузки пакета нет
 общего таймаута, обрывается только застывший поток.
 
+## Переезд
+
+Аккаунт переезжает целиком: unix-пользователь с прежним паролем, сайты, базы с
+прежними паролями, cron, сертификаты. Перенос запускается на **новом** сервере,
+источник только читается — там не меняется ни один файл, и старый сервер остаётся
+запасным, пока DNS не переключён. `plan` ничего не создаёт и показывает, что
+приедет и что мешает: занятый логин (`--as <логин>`), домен или база, которые
+здесь уже есть, ветка PHP, которой нет (`mp php install 8.2`), нехватка места.
+
+**С другого сервера с MonoPanel.** На старом сервере выдаётся токен — на один
+аккаунт, только на чтение, со сроком жизни:
+
+```bash
+mp migrate grant user:alex                                             # на старом сервере
+mp migrate plan --source https://old:8443 --token … --scope user:alex   # на новом: разбор
+mp migrate run  --source https://old:8443 --token … --scope user:alex   # на новом: перенос
+```
+
+**С BitrixVM / bitrix-env 7–9.** Нужен ssh на старый сервер под root: ключом
+(`--key`, по умолчанию `~/.ssh/id_ed25519` того, кто запускает `mp`) или паролем
+(`--password-stdin`). Основной сайт BitrixVM живёт под `server_name _`, имя ему
+даёт `--domain`; дополнительные сайты из `/home/bitrix/ext_www` приезжают под
+своими именами. Аккаунт один — `bitrix`, здесь его можно принять под другим
+логином (`--as`).
+
+```bash
+mp migrate plan --from bitrixvm --source root@old.example.com --domain shop.example.com
+mp migrate run  --from bitrixvm --source root@old.example.com --domain shop.example.com
+```
+
+Реквизиты базы берутся из `bitrix/.settings.php` (или `dbconn.php`), аккаунт MySQL
+заводится с тем же паролем; пути `/home/bitrix` переписываются в `dbconn.php`,
+`.settings*.php`, командах cron и симлинках link-сайтов. Кеш Битрикса, push-сервер,
+memcached и msmtp окружения не едут (`mp stack install memcached`, если нужен).
+Работает и с bitrix-env 7 на CentOS 7: дамп MySQL 5.7 по пути приводится к
+MySQL 8.
+
+**С FASTPANEL 2.** Тот же ssh под root. Без `--scope` разбор перечислит аккаунты
+панели:
+
+```bash
+mp migrate plan --from fastpanel --source root@old.example.com                 # кто есть на источнике
+mp migrate run  --from fastpanel --source root@old.example.com --scope user:shop [--as shop2]
+```
+
+Приезжают сайты с их версией PHP и режимом (php-fpm или Apache), docroot,
+алиасами и allow-списками, базы с прежними хешами паролей, сертификаты
+(загруженные и Let's Encrypt), cron. Почта FASTPANEL не переносится — разбор
+скажет, сколько ящиков заводить заново.
+
+**После переноса** (любой источник):
+
+1. Проверить сайт по адресу нового сервера, не трогая DNS:
+   `curl --resolve shop.example.com:80:<новый IP> http://shop.example.com/`.
+2. Аккаунту с чужой панели задать пароль веб-панели: `mp user set <логин> --generate`
+   (unix-пароль для SFTP уже прежний).
+3. Переключить DNS. Перевезённые сертификаты работают сразу, дальше их продлевает
+   панель; сайту без сертификата — `mp ssl issue <домен>`.
+
+Если у старого сервера сломан DNS (мёртвый nameserver в `resolv.conf`), каждая
+ssh-команда разбора занимает секунды — почините `resolv.conf` там. Что именно
+переносится и что нет: [docs/07-migration.md](docs/07-migration.md).
+
 ## Стек
 
 | Слой | Выбор |
@@ -216,7 +279,7 @@ make help             # все цели
 | `make web-check` | типы и разметка Web UI (`svelte-check`) |
 | `scripts/check-templates.sh` | скармливает сгенерированные конфиги настоящим `nginx -t` и `apachectl -t` |
 | `make e2e` | сценарий на живой панели: пользователь → сайт с пресетом → база → удаление |
-| `make testbed-matrix` | тот же сценарий на девяти VM площадки (по одной на каждую ОС матрицы) параллельно, с откатом к чистому снимку; `make testbed-migrate SRC= DST=` — настоящий переезд аккаунта между двумя из них с проверкой |
+| `make testbed-matrix` | тот же сценарий на одиннадцати VM площадки (по одной на каждую ОС матрицы) параллельно, с откатом к чистому снимку; `make testbed-migrate SRC= DST=` — настоящий переезд аккаунта между двумя из них с проверкой |
 
 Фейковый агент (`internal/agent/agenttest`) поднимает unix-сокет и отвечает на операции
 привилегированного агента, записывая всё, что панель попыталась сделать. Тест видит
@@ -270,7 +333,7 @@ scripts/testbed/      площадка: VM на Proxmox, bootstrap панели,
 | [docs/04-cli-tui-api.md](docs/04-cli-tui-api.md) | Команды CLI, экраны TUI, REST API, интеграция с биллингом (WHMCS) |
 | [docs/05-roadmap.md](docs/05-roadmap.md) | Этапы разработки, матрица CI, тестовые сценарии, риски |
 | [docs/06-mail.md](docs/06-mail.md) | Почта: postfix + dovecot + opendkim, путь письма, файлы и порты, DNS-записи, вебпочта, границы |
-| [docs/07-migration.md](docs/07-migration.md) | Перенос между панелями: что уже работает, порядок с переключением DNS, пакет переезда и адаптеры для чужих панелей (проект) |
+| [docs/07-migration.md](docs/07-migration.md) | Переезд: между двумя MonoPanel и с BitrixVM/FASTPANEL по ssh — что переносится и как, порядок с переключением DNS, пакет переезда и остальные адаптеры (проект) |
 | [docs/08-testbed.md](docs/08-testbed.md) | Тестовая площадка: по машине на каждый дистрибутив матрицы на Proxmox, прогон e2e и переноса между панелями, что она нашла |
 
 Справочник API живёт в самой панели: `/api/v1/docs` (OpenAPI 3.1).

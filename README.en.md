@@ -191,6 +191,69 @@ the previous binary if the new version fails to answer. While a key is pinned, a
 unsigned release will not install. A slow link is fine: the package download has no
 overall deadline, only a stalled stream is given up.
 
+## Moving in
+
+An account moves as a whole: the unix user with its password, the sites, the
+databases with their passwords, cron, certificates. The move runs on the **new**
+server and only ever reads the source — not one file changes there, so the old
+server stays a fallback until DNS is switched. `plan` creates nothing and says what
+would arrive and what stands in the way: a login already taken (`--as <login>`),
+a domain or database that already exists here, a missing PHP branch
+(`mp php install 8.2`), too little disk.
+
+**From another MonoPanel server.** The old server issues a token — for one
+account, read-only, with a lifetime:
+
+```bash
+mp migrate grant user:alex                                             # on the old server
+mp migrate plan --source https://old:8443 --token … --scope user:alex   # on the new one: dry run
+mp migrate run  --source https://old:8443 --token … --scope user:alex   # on the new one: move
+```
+
+**From BitrixVM / bitrix-env 7–9.** Needs root ssh to the old server: a key
+(`--key`, default `~/.ssh/id_ed25519` of whoever runs `mp`) or a password
+(`--password-stdin`). The main BitrixVM site answers to `server_name _`, so
+`--domain` names it; the extra sites in `/home/bitrix/ext_www` come under their
+own names. There is one account, `bitrix`; take it under another login with `--as`.
+
+```bash
+mp migrate plan --from bitrixvm --source root@old.example.com --domain shop.example.com
+mp migrate run  --from bitrixvm --source root@old.example.com --domain shop.example.com
+```
+
+Database credentials come from `bitrix/.settings.php` (or `dbconn.php`) and the
+MySQL account is recreated with the same password; `/home/bitrix` paths are
+rewritten in `dbconn.php`, `.settings*.php`, cron commands and the symlinks of link
+sites. The Bitrix cache, the push server, memcached and msmtp of the environment do
+not travel (`mp stack install memcached` if needed). Works from bitrix-env 7 on
+CentOS 7 too: the MySQL 5.7 dump is adjusted for MySQL 8 on the way.
+
+**From FASTPANEL 2.** The same root ssh. Without `--scope` the dry run lists the
+panel's accounts:
+
+```bash
+mp migrate plan --from fastpanel --source root@old.example.com                 # who is on the source
+mp migrate run  --from fastpanel --source root@old.example.com --scope user:shop [--as shop2]
+```
+
+Sites arrive with their PHP version and mode (php-fpm or Apache), docroot, aliases
+and allow-lists, databases with their password hashes, certificates (uploaded and
+Let's Encrypt), cron. FASTPANEL mail does not move — the dry run says how many
+mailboxes to recreate.
+
+**After the move** (any source):
+
+1. Check the site on the new server without touching DNS:
+   `curl --resolve shop.example.com:80:<new IP> http://shop.example.com/`.
+2. Give an account from a foreign panel a web-panel password: `mp user set <login>
+   --generate` (the unix password for SFTP is already the old one).
+3. Switch DNS. The certificates that came along work at once and the panel renews
+   them; a site without one gets `mp ssl issue <domain>`.
+
+If DNS is broken on the old server (a dead nameserver in `resolv.conf`), every ssh
+command of the dry run takes seconds — fix `resolv.conf` there. What moves and what
+does not, in detail: [docs/07-migration.md](docs/07-migration.md) (in Russian).
+
 ## Stack
 
 | Layer | Choice |
@@ -223,7 +286,7 @@ make help             # every target
 | `make web-check` | types and markup of the web UI (`svelte-check`) |
 | `scripts/check-templates.sh` | feeds the generated configuration to a real `nginx -t` and `apachectl -t` |
 | `make e2e` | a scenario against a live panel: account → site with a preset → database → removal |
-| `make testbed-matrix` | the same scenario on the nine testbed VMs (one per OS of the matrix) in parallel, each rolled back to a clean snapshot first; `make testbed-migrate SRC= DST=` moves a real account between two of them and checks what arrived |
+| `make testbed-matrix` | the same scenario on the eleven testbed VMs (one per OS of the matrix) in parallel, each rolled back to a clean snapshot first; `make testbed-migrate SRC= DST=` moves a real account between two of them and checks what arrived |
 
 The fake agent (`internal/agent/agenttest`) listens on a unix socket and answers
 the privileged operations while recording everything the panel tried to do. A test
