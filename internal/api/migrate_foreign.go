@@ -150,7 +150,9 @@ func (f *foreignSource) dump(ctx context.Context, _, db string) (io.ReadCloser, 
 		}
 	}
 	cmd := strings.Replace(strings.Replace(f.mysql, "mysql", "mysqldump", 1), "mariadb", "mariadb-dump", 1)
-	return f.conn.stream(ctx, cmd+" --single-transaction --quick --routines --triggers --events --databases "+shq(db))
+	// A 5.x server writes NO_AUTO_CREATE_USER into the sql_mode of every
+	// routine and trigger; MySQL 8 refuses the whole dump over it.
+	return f.conn.stream(ctx, cmd+" --single-transaction --quick --routines --triggers --events --databases "+shq(db)+" | sed -e 's/NO_AUTO_CREATE_USER,//g; s/,NO_AUTO_CREATE_USER//g'")
 }
 
 // ------------------------------------------------------------- files ----

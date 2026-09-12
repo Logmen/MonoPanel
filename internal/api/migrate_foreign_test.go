@@ -447,6 +447,9 @@ func TestMigrationFromBitrixVM(t *testing.T) {
 			t.Errorf("tar на источнике без %q: %s", want, tarCmd)
 		}
 	}
+	if dump := remote.command("mysqldump "); !strings.Contains(dump, "--databases 'sitemanager'") || !strings.Contains(dump, "NO_AUTO_CREATE_USER") {
+		t.Errorf("дамп без фильтра sql_mode для MySQL 5.7: %s", dump)
+	}
 	var tarIn, mysqlIn bool
 	for _, st := range target.agent.Streams() {
 		if st.Direction == "in" && st.Name == "tar" && st.Bytes > 0 {

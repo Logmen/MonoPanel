@@ -63,9 +63,13 @@ DISTROS=(
 # Sources for the foreign-panel migration tests (docs/07 §6): a machine per
 # panel we import from. They are not part of the matrix, so `names` skips
 # them; address them by name (testbed.sh up fastpanel bitrixvm).
+# A fourth word holds options: bios=seabios for images without an EFI
+# partition (the CentOS 7 cloud image).
 SOURCES=(
 	"12 fastpanel https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
 	"13 bitrixvm  https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2"
+	# EOL source: CentOS 7 with bitrix-env 7, the way old Bitrix servers still run.
+	"14 bitrixvm7 https://cloud.centos.org/centos/7/images/CentOS-7-x86_64-GenericCloud-2211.qcow2 bios=seabios"
 )
 
 log() { printf '\033[36m[%s]\033[0m %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
@@ -81,6 +85,7 @@ row() {
 }
 num() { row "$1" | awk '{print $1}'; }
 url() { row "$1" | awk '{print $3}'; }
+opt() { row "$1" | awk '{print $4}' | tr ' ' '\n' | sed -n "s/^$2=//p"; }
 vmid() { echo $((TB_VMID_BASE + $(num "$1"))); }
 ip() { echo "$TB_PREFIX.$((TB_IP_BASE + $(num "$1")))"; }
 host() { echo "mp-$1"; }
@@ -150,6 +155,11 @@ users:
   - name: root
     ssh_authorized_keys:
       - $TB_SSH_KEY
+bootcmd:
+  # CentOS 7 is past its end of life: its mirrors are gone, the packages live on vault.centos.org.
+  - '[ ! -f /etc/centos-release ] || ! grep -q " 7\." /etc/centos-release || sed -i "s|^mirrorlist=|#mirrorlist=|; s|^#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|" /etc/yum.repos.d/CentOS-*.repo'
+  # The CentOS 7 image leaves a dead libvirt nameserver first in resolv.conf; every lookup then waits 5 s and ssh logins take 40 s.
+  - '[ ! -f /etc/centos-release ] || sed -i "/^nameserver 192.168.122.1/d" /etc/resolv.conf'
 package_update: true
 packages:
   - qemu-guest-agent
@@ -180,13 +190,15 @@ create() {
 	fi
 	image=$(fetch_image "$name")
 	write_snippet "$name"
-	log "$name: creating vm $id ($h, $(ip "$name"))"
-	qm create "$id" --name "$h" --ostype l26 --machine q35 --bios ovmf \
+	local bios
+	bios=$(opt "$name" bios); bios=${bios:-ovmf}
+	log "$name: creating vm $id ($h, $(ip "$name"), $bios)"
+	qm create "$id" --name "$h" --ostype l26 --machine q35 --bios "$bios" \
 		--cpu host --cores "$TB_CORES" --memory "$TB_MEMORY" \
 		--scsihw virtio-scsi-single --net0 "virtio,bridge=$TB_BRIDGE" \
 		--serial0 socket --vga serial0 --agent enabled=1,fstrim_cloned_disks=1 \
 		--onboot 1 --tags monopanel-testbed >/dev/null
-	qm set "$id" --efidisk0 "$TB_STORAGE:1,efitype=4m,pre-enrolled-keys=0" >/dev/null
+	[ "$bios" = seabios ] || qm set "$id" --efidisk0 "$TB_STORAGE:1,efitype=4m,pre-enrolled-keys=0" >/dev/null
 	if ! qm set "$id" --scsi0 "$TB_STORAGE:0,import-from=$image,discard=on,ssd=1,iothread=1" >/dev/null; then
 		# A half-made VM would be skipped by the next run; remove it.
 		qm destroy "$id" --purge >/dev/null 2>&1 || true

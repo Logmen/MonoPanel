@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # The source machines for the foreign-panel migration (docs/07 §6): a
-# BitrixVM (bitrix-env 9 on AlmaLinux 9) and a FASTPANEL 2 (Debian 12), each
-# on its own VM of the testbed (scripts/testbed/pve.sh, SOURCES table).
+# BitrixVM (bitrix-env 9 on AlmaLinux 9), the same on its last legs
+# (bitrixvm7: bitrix-env 7 on CentOS 7, both past end of life) and a
+# FASTPANEL 2 (Debian 12), each on its own VM of the testbed
+# (scripts/testbed/pve.sh, SOURCES table).
 #
-#   sources.sh install bitrixvm|fastpanel        put the panel on a fresh VM (testbed.sh up <name> first)
-#   sources.sh seed bitrixvm|fastpanel [FROM]    populate it with sites taken from a MonoPanel VM
-#                                                (FROM defaults to alma9; needs `testbed.sh cms FROM` there)
-#   sources.sh migrate bitrixvm|fastpanel DST    mp migrate plan + run from the MonoPanel VM DST, with checks
+#   sources.sh install bitrixvm|bitrixvm7|fastpanel        put the panel on a fresh VM (testbed.sh up <name> first)
+#   sources.sh seed bitrixvm|bitrixvm7|fastpanel [FROM]    populate it with sites taken from a MonoPanel VM
+#                                                          (FROM defaults to alma9; needs `testbed.sh cms FROM` there)
+#   sources.sh migrate bitrixvm|bitrixvm7|fastpanel DST    mp migrate plan + run from the MonoPanel VM DST, with checks
 #
 # Passwords the seeding invents land in .dev/sources.txt (git-ignored).
 # FASTPANEL's API and UI refuse to work without a licence from its billing
@@ -35,26 +37,58 @@ recall() { sed -n "s/^$1: //p" "$secrets" | tail -1; }
 
 # ------------------------------------------------------------- install ----
 
+# install_bitrixvm puts bitrix-env on NAME: 9 on AlmaLinux 9 (bitrixvm) or
+# 7 on CentOS 7 (bitrixvm7). Both installers refuse to run with SELinux on:
+# they switch the config to disabled and ask for a reboot, so each runs
+# twice around one.
 install_bitrixvm() {
-	local h pw
-	h=$(vm bitrixvm)
-	pw=$(recall "bitrixvm mysql root password")
-	[ -n "$pw" ] || { pw=$(password 'Aa1!'); remember "bitrixvm mysql root password: $pw"; }
-	# The installer refuses to run with SELinux on: it switches the config
-	# to disabled and asks for a reboot, so run it twice around one.
-	ssh -o BatchMode=yes "$h" "hostnamectl set-hostname $(fqdn bitrixvm); grep -q '$(fqdn bitrixvm)' /etc/hosts || echo '$(ip_of bitrixvm) $(fqdn bitrixvm)' >> /etc/hosts; dnf -y -q install wget >/dev/null; wget -q http://repo.bitrix.info/dnf/bitrix-env-9.sh -O /root/bitrix-env-9.sh; chmod +x /root/bitrix-env-9.sh; /root/bitrix-env-9.sh -s -M '$pw' >/dev/null 2>&1 || true; getenforce"
+	local name=$1 h pw script
+	h=$(vm "$name")
+	pw=$(recall "$name mysql root password")
+	[ -n "$pw" ] || { pw=$(password 'Aa1!'); remember "$name mysql root password: $pw"; }
+	if [ "$name" = bitrixvm7 ]; then
+		script=/root/bitrix-env.sh
+		prepare_centos7 "$h"
+		ssh -o BatchMode=yes "$h" "curl -sSL https://repos.1c-bitrix.ru/yum/bitrix-env.sh -o $script; chmod +x $script; $script -s -M '$pw' >/dev/null 2>&1 || true"
+	else
+		script=/root/bitrix-env-9.sh
+		ssh -o BatchMode=yes "$h" "hostnamectl set-hostname $(fqdn "$name"); grep -q '$(fqdn "$name")' /etc/hosts || echo '$(ip_of "$name") $(fqdn "$name")' >> /etc/hosts; dnf -y -q install wget >/dev/null; wget -q http://repo.bitrix.info/dnf/bitrix-env-9.sh -O $script; chmod +x $script; $script -s -M '$pw' >/dev/null 2>&1 || true"
+	fi
 	if [ "$(ssh -o BatchMode=yes "$h" getenforce)" != Disabled ]; then
-		log "bitrixvm: rebooting to disable SELinux (the installer insists)"
+		log "$name: rebooting to disable SELinux (the installer insists)"
 		ssh -o BatchMode=yes "$h" systemctl reboot || true
 		sleep 20
 		for _ in $(seq 1 40); do ssh -o BatchMode=yes -o ConnectTimeout=5 "$h" true 2>/dev/null && break; sleep 5; done
 	fi
-	log "bitrixvm: installing bitrix-env 9 (takes ~15 minutes)"
-	ssh -o BatchMode=yes "$h" "/root/bitrix-env-9.sh -s -p -H $(fqdn bitrixvm) -M '$pw'" >/dev/null 2>&1 || true
+	log "$name: installing bitrix-env (takes ~15 minutes)"
+	ssh -o BatchMode=yes "$h" "$script -s -p -H $(fqdn "$name") -M '$pw'" >/dev/null 2>&1 || true
 	ssh -o BatchMode=yes "$h" 'rpm -q bitrix-env' || die "bitrix-env did not install; see /opt/webdir/logs on the VM"
 	# The management pool: without it bx-sites cannot manage sites.
-	ssh -o BatchMode=yes "$h" "grep -q bitrix-hosts /etc/ansible/hosts 2>/dev/null || /opt/webdir/bin/wrapper_ansible_conf -a create -H $(fqdn bitrixvm) -I \$(ip -o -4 route get 1.1.1.1 | sed -n 's/.* dev \([^ ]*\).*/\1/p') -o json" >/dev/null
-	log "bitrixvm: ready"
+	ssh -o BatchMode=yes "$h" "grep -q bitrix-hosts /etc/ansible/hosts 2>/dev/null || /opt/webdir/bin/wrapper_ansible_conf -a create -H $(fqdn "$name") -I \$(ip -o -4 route get 1.1.1.1 | sed -n 's/.* dev \([^ ]*\).*/\1/p') -o json" >/dev/null
+	log "$name: ready ($(ssh -o BatchMode=yes "$h" 'rpm -q bitrix-env; php -r "echo PHP_VERSION;"' | tr '\n' ' '))"
+}
+
+# prepare_centos7 points a CentOS 7 at what is left of its repositories:
+# base on vault.centos.org (cloud-init did that), EPEL in the archive,
+# Remi's and Percona's EL7 trees still online. bitrix-env.sh skips the
+# repositories it finds installed, and its own EPEL link is dead.
+prepare_centos7() {
+	local h=$1
+	ssh -o BatchMode=yes "$h" "set -e
+hostnamectl set-hostname $(fqdn bitrixvm7)
+grep -q '$(fqdn bitrixvm7)' /etc/hosts || echo '$(ip_of bitrixvm7) $(fqdn bitrixvm7)' >> /etc/hosts
+sed -i 's|^mirrorlist=|#mirrorlist=|; s|^#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|' /etc/yum.repos.d/CentOS-*.repo
+sed -i '/^nameserver 192.168.122.1/d' /etc/resolv.conf
+rpm -q epel-release >/dev/null 2>&1 || yum -y -q install https://dl.fedoraproject.org/pub/archive/epel/7/x86_64/Packages/e/epel-release-7-14.noarch.rpm
+sed -i 's|^metalink=|#metalink=|; s|^#baseurl=http://download.example/pub/epel/|baseurl=https://dl.fedoraproject.org/pub/archive/epel/|' /etc/yum.repos.d/epel*.repo
+rpm -q remi-release >/dev/null 2>&1 || yum -y -q install https://rpms.remirepo.net/enterprise/remi-release-7.rpm
+sed -i 's|^mirrorlist=|#mirrorlist=|; s|^#baseurl=|baseurl=|' /etc/yum.repos.d/remi*.repo
+rpm -q percona-release >/dev/null 2>&1 || yum -y -q install http://repo.percona.com/release/percona-release-latest.noarch.rpm
+# The percona-release of the EL7 link is old and lacks the key today's packages are signed with.
+rpm --import https://repo.percona.com/yum/PERCONA-PACKAGING-KEY
+yum -y -q --nogpgcheck update percona-release >/dev/null 2>&1 || true
+yum -y -q install curl wget >/dev/null
+yum makecache fast >/dev/null 2>&1 || true"
 }
 
 install_fastpanel() {
@@ -87,18 +121,23 @@ sshx() { echo "ssh -i /root/.ssh/seed_tmp -o StrictHostKeyChecking=no -o UserKno
 # people run it, main site with server_name _ and the credentials in
 # bitrix/.settings.php.
 seed_bitrixvm() {
-	local from=$1 h site dstip
-	h=$(vm bitrixvm); dstip=$(ip_of bitrixvm)
+	local name=$1 from=$2 h site dstip
+	h=$(vm "$name"); dstip=$(ip_of "$name")
 	site="/var/www/cms/data/www/bitrix.$(fqdn "$from")"
 	ssh -o BatchMode=yes "$(vm "$from")" "test -d $site/bitrix" || die "no Bitrix site on $from: testbed.sh cms $from bitrix"
-	link_vms "$from" bitrixvm
+	link_vms "$from" "$name"
 	ssh -o BatchMode=yes "$h" 'cp -n /home/bitrix/www/bitrix/php_interface/dbconn.php /root/dbconn.bitrixenv.php; cp -n /home/bitrix/www/bitrix/.settings.php /root/settings.bitrixenv.php'
-	log "bitrixvm: files from $from"
+	log "$name: files from $from"
 	ssh -o BatchMode=yes "$(vm "$from")" "tar -C $site --exclude=./bitrix/cache --exclude=./bitrix/managed_cache --exclude=./bitrix/stack_cache -cf - . | $(sshx "$dstip") 'tar -C /home/bitrix/www -xf -'"
-	log "bitrixvm: database from $from"
-	ssh -o BatchMode=yes "$(vm "$from")" "mysqldump --single-transaction --quick --routines --triggers cms_bitrix | $(sshx "$dstip") 'mysql sitemanager'"
-	unlink_vms "$from" bitrixvm
-	ssh -o BatchMode=yes "$h" 'python3 - <<"PY"
+	log "$name: database from $from"
+	# bitrix-env 7 runs MySQL 5.7, which knows nothing of the 8.0 collations
+	# the dump from a modern panel carries.
+	local fix="cat"
+	[ "$name" = bitrixvm7 ] && fix="sed -e 's/utf8mb4_0900_ai_ci/utf8mb4_unicode_ci/g'"
+	ssh -o BatchMode=yes "$(vm "$from")" "mysqldump --single-transaction --quick --routines --triggers cms_bitrix | $fix | $(sshx "$dstip") 'mysql sitemanager'"
+	unlink_vms "$from" "$name"
+	# CentOS 7 has only python2; the snippet runs on both.
+	ssh -o BatchMode=yes "$h" '$(command -v python3 || command -v python) - <<"PY"
 import re
 pw = re.search(r"'"'"'password'"'"'\s*=>\s*'"'"'((?:[^'"'"'\\\\]|\\\\.)*)'"'"'", open("/root/settings.bitrixenv.php").read()).group(1)
 f = "/home/bitrix/www/bitrix/.settings.php"
@@ -110,14 +149,16 @@ for k, v in (("host", "localhost"), ("database", "sitemanager"), ("login", "bitr
 open(f, "w").write(head + tail)
 PY
 cp /root/dbconn.bitrixenv.php /home/bitrix/www/bitrix/php_interface/dbconn.php
-mysql sitemanager -e "UPDATE b_lang SET SERVER_NAME=\"main.'"$(fqdn bitrixvm)"'\"; UPDATE b_option SET VALUE=\"main.'"$(fqdn bitrixvm)"'\" WHERE MODULE_ID=\"main\" AND NAME=\"server_name\";"
+# The site was installed on MySQL 8 and asks for its default collation on every connection; 5.7 has no such thing.
+mysql -N -e "select version()" | grep -q "^8" || sed -i "s/utf8mb4_0900_ai_ci/utf8mb4_unicode_ci/g" /home/bitrix/www/bitrix/php_interface/after_connect_d7.php
+mysql sitemanager -e "UPDATE b_lang SET SERVER_NAME=\"main.'"$(fqdn "$name")"'\"; UPDATE b_option SET VALUE=\"main.'"$(fqdn "$name")"'\" WHERE MODULE_ID=\"main\" AND NAME=\"server_name\";"
 chown -R bitrix:bitrix /home/bitrix/www'
 	local pw
-	pw=$(recall "bitrixvm unix user bitrix")
-	[ -n "$pw" ] || { pw=$(password 'Dd4!'); remember "bitrixvm unix user bitrix: $pw"; }
+	pw=$(recall "$name unix user bitrix")
+	[ -n "$pw" ] || { pw=$(password 'Dd4!'); remember "$name unix user bitrix: $pw"; }
 	ssh -o BatchMode=yes "$h" "echo 'bitrix:$pw' | chpasswd"
-	ssh -o BatchMode=yes "$h" "code=\$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: main.$(fqdn bitrixvm)' http://127.0.0.1/); echo \"main site: HTTP \$code\"; [ \"\$code\" = 200 ]" || die "the seeded Bitrix site does not answer"
-	log "bitrixvm: seeded (main site main.$(fqdn bitrixvm), database sitemanager)"
+	ssh -o BatchMode=yes "$h" "code=\$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: main.$(fqdn "$name")' http://127.0.0.1/); echo \"main site: HTTP \$code\"; [ \"\$code\" = 200 ]" || die "the seeded Bitrix site does not answer"
+	log "$name: seeded (main site main.$(fqdn "$name"), database sitemanager)"
 }
 
 # seed_fastpanel makes the account shop with a WordPress site (from FROM),
@@ -224,22 +265,30 @@ key_access() {
 
 check() { if eval "$2"; then echo "  ok   $1"; else echo "  FAIL $1"; fails=$((fails + 1)); fi; }
 
+# php_branch installs on DST the PHP branch the source runs, if it is missing.
+php_branch() {
+	local dst=$1 v
+	v=$(ssh -o BatchMode=yes "$(vm "$2")" 'php -r "echo PHP_MAJOR_VERSION.\".\".PHP_MINOR_VERSION;"')
+	ssh -o BatchMode=yes "$(vm "$dst")" "mp php list | grep -q '^$v ' || mp php install $v >/dev/null"
+	echo "$v"
+}
+
 migrate_bitrixvm() {
-	local dst=$1 src srcip dstip main pw dbpw fails=0
-	src=$(vm bitrixvm); srcip=$(ip_of bitrixvm); dstip=$(ip_of "$dst"); main="main.$(fqdn bitrixvm)"
-	key_access "$dst" bitrixvm
-	ssh -o BatchMode=yes "$(vm "$dst")" "mp php list | grep -q '^8.2 ' || mp php install 8.2 >/dev/null"
-	log "$dst: mp migrate plan/run --from bitrixvm"
+	local name=$1 dst=$2 src srcip dstip main pw dbpw php fails=0
+	src=$(vm "$name"); srcip=$(ip_of "$name"); dstip=$(ip_of "$dst"); main="main.$(fqdn "$name")"
+	key_access "$dst" "$name"
+	php=$(php_branch "$dst" "$name")
+	log "$dst: mp migrate plan/run --from bitrixvm (source $name, PHP $php)"
 	ssh -o BatchMode=yes "$(vm "$dst")" "mp migrate plan --from bitrixvm --source root@$srcip --domain $main && mp migrate run --from bitrixvm --source root@$srcip --domain $main" | tail -25
 	pw=$(ssh -o BatchMode=yes "$src" 'getent shadow bitrix | cut -d: -f2')
-	dbpw=$(ssh -o BatchMode=yes "$src" "python3 -c \"import re;print(re.search(r\\\"'password'\\s*=>\\s*'([^']*)'\\\", open('/home/bitrix/www/bitrix/.settings.php').read()).group(1))\"")
+	dbpw=$(ssh -o BatchMode=yes "$src" "\$(command -v python3 || command -v python) -c \"import re;print(re.search(r\\\"'password'\\s*=>\\s*'([^']*)'\\\", open('/home/bitrix/www/bitrix/.settings.php').read()).group(1))\"")
 	log "$dst: checks"
 	check "site answers with Bitrix over the new server" "ssh -o BatchMode=yes $(vm "$dst") \"for i in 1 2 3 4 5 6; do curl -sI --resolve $main:80:$dstip http://$main/ | grep -q 'X-Powered-CMS: Bitrix' && exit 0; sleep 5; done; exit 1\""
 	check "old /home/bitrix paths rewritten in dbconn.php" "ssh -o BatchMode=yes $(vm "$dst") \"grep -q '/var/www/bitrix/.bx_temp' /var/www/bitrix/data/www/$main/bitrix/php_interface/dbconn.php\""
 	check "database user logs in with the password from .settings.php" "ssh -o BatchMode=yes $(vm "$dst") \"mysql -u bitrix0 -p'$dbpw' -N -e 'select 1' sitemanager\" >/dev/null 2>&1"
 	check "unix password hash identical" "[ \"\$(ssh -o BatchMode=yes $(vm "$dst") 'getent shadow bitrix | cut -d: -f2')\" = '$pw' ]"
-	check "site listed with the bitrix preset" "ssh -o BatchMode=yes $(vm "$dst") 'mp site list' | grep '$main' | grep -q bitrix"
-	echo "bitrixvm → $dst: $fails failures"
+	check "site listed with the bitrix preset and PHP $php" "ssh -o BatchMode=yes $(vm "$dst") 'mp site list' | grep '$main' | grep bitrix | grep -q ' $php '"
+	echo "$name → $dst: $fails failures"
 	[ "$fails" -eq 0 ]
 }
 
@@ -247,7 +296,7 @@ migrate_fastpanel() {
 	local dst=$1 src srcip dstip z pw dbpw fails=0
 	src=$(vm fastpanel); srcip=$(ip_of fastpanel); dstip=$(ip_of "$dst"); z=$(fqdn fastpanel)
 	key_access "$dst" fastpanel
-	ssh -o BatchMode=yes "$(vm "$dst")" "mp php list | grep -q '^8.2 ' || mp php install 8.2 >/dev/null"
+	php_branch "$dst" fastpanel >/dev/null
 	log "$dst: mp migrate plan/run --from fastpanel"
 	ssh -o BatchMode=yes "$(vm "$dst")" "mp migrate plan --from fastpanel --source root@$srcip --scope user:shop && mp migrate run --from fastpanel --source root@$srcip --scope user:shop" | tail -30
 	pw=$(ssh -o BatchMode=yes "$src" 'getent shadow shop | cut -d: -f2')
@@ -269,8 +318,8 @@ migrate_fastpanel() {
 
 cmd=${1:-}; shift || true
 case "$cmd" in
-install) case "${1:-}" in bitrixvm) install_bitrixvm ;; fastpanel) install_fastpanel ;; *) die "install bitrixvm|fastpanel" ;; esac ;;
-seed) case "${1:-}" in bitrixvm) seed_bitrixvm "${2:-alma9}" ;; fastpanel) seed_fastpanel "${2:-alma9}" ;; *) die "seed bitrixvm|fastpanel [FROM]" ;; esac ;;
-migrate) [ $# -eq 2 ] || die "migrate bitrixvm|fastpanel DST"; case "$1" in bitrixvm) migrate_bitrixvm "$2" ;; fastpanel) migrate_fastpanel "$2" ;; *) die "migrate bitrixvm|fastpanel DST" ;; esac ;;
-*) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+install) case "${1:-}" in bitrixvm | bitrixvm7) install_bitrixvm "$1" ;; fastpanel) install_fastpanel ;; *) die "install bitrixvm|bitrixvm7|fastpanel" ;; esac ;;
+seed) case "${1:-}" in bitrixvm | bitrixvm7) seed_bitrixvm "$1" "${2:-alma9}" ;; fastpanel) seed_fastpanel "${2:-alma9}" ;; *) die "seed bitrixvm|bitrixvm7|fastpanel [FROM]" ;; esac ;;
+migrate) [ $# -eq 2 ] || die "migrate bitrixvm|bitrixvm7|fastpanel DST"; case "$1" in bitrixvm | bitrixvm7) migrate_bitrixvm "$1" "$2" ;; fastpanel) migrate_fastpanel "$2" ;; *) die "migrate bitrixvm|bitrixvm7|fastpanel DST" ;; esac ;;
+*) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

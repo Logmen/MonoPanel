@@ -99,6 +99,9 @@ func migrateCmd() *cobra.Command {
 		if err := prepareSource(); err != nil {
 			return err
 		}
+		if src.Panel != "" && src.Panel != "monopanel" {
+			fmt.Fprintln(os.Stderr, "читаю источник по ssh — на старом сервере с медленным DNS каждая команда может занимать секунды…")
+		}
 		plan, err := cl.MigratePlan(cmd.Context(), src)
 		if err != nil {
 			return err
