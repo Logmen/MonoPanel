@@ -297,6 +297,9 @@ func (s *Server) installNginx(ctx context.Context, jc *jobs.Context) error {
 	if _, err := s.agent.EnsureDirs(ctx, &agent.EnsureDirsRequest{Dirs: []agent.DirSpec{
 		{Path: "/var/lib/monopanel/acme", Mode: 0o755, Owner: s.cfg.ServiceUser, Group: s.cfg.ServiceGroup},
 		{Path: "/var/lib/monopanel/acme/webroot", Mode: 0o755, Owner: s.cfg.ServiceUser, Group: s.cfg.ServiceGroup},
+		// Each level is named: the API (service user) manages the challenge
+		// files and must own the whole path, not just the leaf.
+		{Path: "/var/lib/monopanel/acme/webroot/.well-known", Mode: 0o755, Owner: s.cfg.ServiceUser, Group: s.cfg.ServiceGroup},
 		{Path: "/var/lib/monopanel/acme/webroot/.well-known/acme-challenge", Mode: 0o755, Owner: s.cfg.ServiceUser, Group: s.cfg.ServiceGroup},
 	}}); err != nil {
 		return err

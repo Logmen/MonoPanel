@@ -430,14 +430,22 @@ func ParseCertificatePEM(b []byte) (*CertInfo, error) {
 }
 
 // ensureWebroot creates the challenge directory world-readable regardless of
-// the process umask: nginx workers run as another user.
+// the process umask: nginx workers run as another user. A level that already
+// has the right mode is left alone — it may belong to root (the agent made
+// it), and chmod on it would fail for the service user.
 func (m *Manager) ensureWebroot() error {
 	for _, d := range []string{m.Webroot, filepath.Join(m.Webroot, ".well-known"), filepath.Join(m.Webroot, ".well-known", "acme-challenge")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return fmt.Errorf("webroot: %w", err)
 		}
-		if err := os.Chmod(d, 0o755); err != nil {
+		st, err := os.Stat(d)
+		if err != nil {
 			return fmt.Errorf("webroot: %w", err)
+		}
+		if st.Mode().Perm() != 0o755 {
+			if err := os.Chmod(d, 0o755); err != nil {
+				return fmt.Errorf("webroot: %w", err)
+			}
 		}
 	}
 	return nil

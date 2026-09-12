@@ -109,6 +109,7 @@ func EnsureUnixUser(ctx context.Context, profile osprofile.Profile, req *EnsureU
 
 // EnsureDir creates one directory with mode and ownership (idempotent).
 func EnsureDir(d DirSpec) (created bool, err error) {
+	var made []string
 	p := filepath.Clean(d.Path)
 	if !filepath.IsAbs(p) {
 		return false, errors.New("path must be absolute")
@@ -124,6 +125,10 @@ func EnsureDir(d DirSpec) (created bool, err error) {
 			return false, errors.New("exists and is not a directory: " + p)
 		}
 	case errors.Is(err, os.ErrNotExist):
+		// The levels MkdirAll makes get the owner too: a root-owned parent
+		// keeps the service user from managing what lives under it (the ACME
+		// webroot's .well-known was made that way and broke certificates).
+		made = missingLevels(p)
 		if err := os.MkdirAll(p, mode); err != nil {
 			return false, err
 		}
@@ -146,11 +151,26 @@ func EnsureDir(d DirSpec) (created bool, err error) {
 		}
 	}
 	if uid >= 0 || gid >= 0 {
-		if err := os.Chown(p, uid, gid); err != nil {
-			return created, err
+		for _, dir := range append(made, p) {
+			if err := os.Chown(dir, uid, gid); err != nil {
+				return created, err
+			}
 		}
 	}
 	return created, nil
+}
+
+// missingLevels lists the ancestors of p that do not exist yet, topmost
+// first; p itself is not included.
+func missingLevels(p string) []string {
+	var out []string
+	for q := filepath.Dir(p); q != filepath.Dir(q); q = filepath.Dir(q) {
+		if _, err := os.Lstat(q); err == nil {
+			break
+		}
+		out = append([]string{q}, out...)
+	}
+	return out
 }
 
 func (s *Server) dirAllowed(p string) bool {

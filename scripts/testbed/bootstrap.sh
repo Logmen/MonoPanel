@@ -107,6 +107,15 @@ if [ -n "${TB_CF_TOKEN:-}" ]; then
 		log "mp dns-provider add cf (cloudflare)"
 		mp dns-provider add cf --type cloudflare --cred "CLOUDFLARE_DNS_API_TOKEN=$TB_CF_TOKEN" >/dev/null
 	fi
+	# A panel with a public name gets a real certificate, so the browser and
+	# the migration tests talk to it without --insecure. Not fatal: the panel
+	# works on its self-signed one, and Let's Encrypt has rate limits.
+	case "$addr" in
+	*[a-z]*.*)
+		log "mp ssl panel issue --dns cf ($addr)"
+		mp ssl panel issue --dns cf || log "panel certificate: failed, the self-signed one stays"
+		;;
+	esac
 fi
 
 # -------------------------------------------------------------- report ----
