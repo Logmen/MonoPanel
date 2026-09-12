@@ -169,9 +169,13 @@ func siteCmd() *cobra.Command {
 			if s.CertificateID != nil {
 				ssl = "issued"
 			}
-			rows = append(rows, []string{s.Domain, s.Login, s.PHPVersion, s.Mode, s.Preset, ssl, s.IP, s.Status, firstLine(s.LastError, "")})
+			cms := "-"
+			if s.CMS != "" {
+				cms = strings.TrimSpace(s.CMS + " " + s.CMSVersion)
+			}
+			rows = append(rows, []string{s.Domain, s.Login, s.PHPVersion, s.Mode, s.Preset, cms, ssl, s.IP, s.Status, firstLine(s.LastError, "")})
 		}
-		table([]string{"DOMAIN", "USER", "PHP", "MODE", "PRESET", "SSL", "IP", "STATUS", "ERROR"}, rows)
+		table([]string{"DOMAIN", "USER", "PHP", "MODE", "PRESET", "CMS", "SSL", "IP", "STATUS", "ERROR"}, rows)
 		return nil
 	}}
 
