@@ -32,6 +32,7 @@ mp site logs <domain> [--type access|error|php|slow] [-f] [-n 200]
 mp site suspend | unsuspend | enable | disable <domain>
 mp site apply <domain>               # принудительная перегенерация конфигов сайта
 mp site fix <domain>                          # владелец, права, ACL и метки SELinux файлов сайта (после cp -a из /root и т.п.)
+mp selinux [enforcing|permissive] [--yes]     # режим SELinux; permissive только после предупреждения и подтверждения
 mp config apply --all                # полный reconcile
 
 mp php list [--available]            # установленные / доступные версии

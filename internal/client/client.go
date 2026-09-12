@@ -558,6 +558,18 @@ func (c *Client) ServiceLogs(ctx context.Context, unit string, lines int) (*apit
 	return &out, c.do(ctx, http.MethodGet, fmt.Sprintf("/system/logs/%s?lines=%d", unit, lines), nil, &out)
 }
 
+// SELinux reads the host's SELinux mode.
+func (c *Client) SELinux(ctx context.Context) (*apitypes.SELinuxStatus, error) {
+	var out apitypes.SELinuxStatus
+	return &out, c.do(ctx, http.MethodGet, "/system/selinux", nil, &out)
+}
+
+// SetSELinux switches the mode, now and for the next boot.
+func (c *Client) SetSELinux(ctx context.Context, mode string) (*apitypes.SELinuxStatus, error) {
+	var out apitypes.SELinuxStatus
+	return &out, c.do(ctx, http.MethodPut, "/system/selinux", apitypes.SELinuxRequest{Mode: mode}, &out)
+}
+
 // Doctor runs health checks.
 func (c *Client) Doctor(ctx context.Context) (*apitypes.Doctor, error) {
 	var out apitypes.Doctor

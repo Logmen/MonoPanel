@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"monopanel/internal/agent"
 	"monopanel/internal/apitypes"
 )
 
@@ -59,5 +60,60 @@ func TestDoctorReportsSELinuxDenials(t *testing.T) {
 		if c.Name == "selinux" && (c.Status != "ok" || !strings.Contains(c.Detail, "enforcing")) {
 			t.Fatalf("selinux without denials: %+v", c)
 		}
+	}
+}
+
+// The switch lives in the panel with its warning: permissive turns the live
+// mode and the boot configuration, keeps the file's comments, and the doctor
+// says so from then on; enforcing turns it back.
+func TestSELinuxSwitch(t *testing.T) {
+	withOSRelease(t, "ID=almalinux\nVERSION_ID=9.6\nID_LIKE=\"rhel centos fedora\"\n")
+	dir := t.TempDir()
+	enforce, cfg := filepath.Join(dir, "enforce"), filepath.Join(dir, "config")
+	os.WriteFile(enforce, []byte("1\n"), 0o644)
+	os.WriteFile(cfg, []byte("# This file controls the state of SELinux on the system.\nSELINUX=enforcing\nSELINUXTYPE=targeted\n"), 0o644)
+	prevE, prevC := selinuxEnforcePath, selinuxConfigPath
+	selinuxEnforcePath, selinuxConfigPath = enforce, cfg
+	t.Cleanup(func() { selinuxEnforcePath, selinuxConfigPath = prevE, prevC })
+	f := newSiteFixture(t)
+	f.agent.WriteThrough = func(p string) bool { return p == cfg }
+	// the fake agent does not run setenforce: mirror it by hand when asked
+	f.agent.ToolHook = func(req agent.ToolRequest) *agent.ToolResponse {
+		if req.Name == "setenforce" {
+			os.WriteFile(enforce, []byte(req.Args[0]+"\n"), 0o644)
+			return &agent.ToolResponse{}
+		}
+		return nil
+	}
+
+	var st apitypes.SELinuxStatus
+	f.call(http.MethodGet, "/system/selinux", nil, http.StatusOK, &st)
+	if !st.Supported || st.Mode != "enforcing" || st.Configured != "enforcing" || st.Warning == "" {
+		t.Fatalf("status must carry the warning text to show before switching: %+v", st)
+	}
+	f.call(http.MethodPut, "/system/selinux", map[string]any{"mode": "disabled"}, http.StatusUnprocessableEntity, nil)
+	f.call(http.MethodPut, "/system/selinux", map[string]any{"mode": "permissive"}, http.StatusOK, &st)
+	if st.Mode != "permissive" || st.Configured != "permissive" || st.Warning == "" {
+		t.Fatalf("after switching: %+v", st)
+	}
+	written, _ := f.agent.File(cfg)
+	if !strings.HasPrefix(written, "# This file controls") || !strings.Contains(written, "SELINUX=permissive\n") || !strings.Contains(written, "SELINUXTYPE=targeted") {
+		t.Fatalf("config must keep its comments and change one line:\n%s", written)
+	}
+	var d apitypes.Doctor
+	f.call(http.MethodGet, "/system/doctor", nil, http.StatusOK, &d)
+	found := false
+	for _, c := range d.Checks {
+		if c.Name == "selinux" {
+			found = c.Status == "warn" && strings.Contains(c.Detail, "permissive")
+		}
+	}
+	if !found {
+		t.Fatalf("doctor must warn about permissive: %+v", d.Checks)
+	}
+	st = apitypes.SELinuxStatus{} // omitempty: a stale warning would survive the decode
+	f.call(http.MethodPut, "/system/selinux", map[string]any{"mode": "enforcing"}, http.StatusOK, &st)
+	if st.Mode != "enforcing" || st.Configured != "enforcing" {
+		t.Fatalf("back to enforcing: %+v", st)
 	}
 }

@@ -109,6 +109,7 @@ var DefaultAllowedWritePrefixes = []string{
 	"/usr/local/lib/monopanel/",
 	"/etc/my.cnf.d/",
 	"/etc/apt/sources.list.d/",
+	"/etc/selinux/config", // the mode for the next boot (mp selinux)
 	"/etc/apt/preferences.d/",
 	"/etc/apt/keyrings/",
 	"/etc/yum.repos.d/",

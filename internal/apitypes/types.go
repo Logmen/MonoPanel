@@ -366,6 +366,22 @@ type Check struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+// SELinuxStatus is the host's SELinux state: the live mode and the one
+// /etc/selinux/config sets for the next boot. The panel offers permissive
+// (labels stay, denials only get logged); "disabled" needs a kernel
+// parameter and is not the panel's business.
+type SELinuxStatus struct {
+	Supported  bool   `json:"supported" doc:"SELinux is present on this host"`
+	Mode       string `json:"mode" doc:"enforcing, permissive or disabled (live)"`
+	Configured string `json:"configured,omitempty" doc:"SELINUX= in /etc/selinux/config, applied at boot"`
+	Warning    string `json:"warning,omitempty" doc:"What permissive costs: to show before switching to it and while it is on"`
+}
+
+// SELinuxRequest switches the mode, now and for the next boot.
+type SELinuxRequest struct {
+	Mode string `json:"mode" enum:"enforcing,permissive"`
+}
+
 // Doctor is the health report.
 type Doctor struct {
 	Summary string  `json:"summary"`

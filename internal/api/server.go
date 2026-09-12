@@ -93,6 +93,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 		s.api = humachi.New(sub, hcfg)
 		s.api.UseMiddleware(s.authMiddleware)
 		s.registerSystem()
+		s.registerSELinux()
 		s.registerAuth()
 		s.registerUsers()
 		s.registerJobs()

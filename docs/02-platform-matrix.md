@@ -165,7 +165,7 @@ type Profile interface {
 
 Что SELinux даёт при наших булевых переключателях (`httpd_unified`, `httpd_can_network_connect`, `httpd_can_sendmail`, `httpd_execmem`): взломанный сайт не прочитает `/etc/shadow`, `/root`, чужие домашние каталоги, данные почты и базы, а postfix, dovecot, mysqld и fail2ban остаются в своих доменах. Сайты друг от друга SELinux не изолирует — это делают отдельные пользователи, пулы php-fpm, ACL и open_basedir.
 
-Если всё же нужен permissive (например, стороннее ПО без политики): `setenforce 0` и `SELINUX=permissive` в `/etc/selinux/config`. Панель продолжит работать, отказы будут только записываться в audit, `mp doctor` покажет режим. `SELINUX=disabled` на EL9 и EL10 не действует без параметра ядра `selinux=0` и перезагрузки; панели он не нужен.
+Если всё же нужен permissive (например, стороннее ПО без политики): `mp selinux permissive` или кнопка в «Настройках». Панель сначала показывает, чего это стоит, и просит подтверждения (`--yes` в скриптах), затем делает `setenforce 0` и пишет `SELINUX=permissive` в `/etc/selinux/config`, чтобы режим пережил перезагрузку. Отказы дальше только записываются в audit; `mp doctor` и страница настроек предупреждают, пока режим не вернут: `mp selinux enforcing`. `SELINUX=disabled` панель не предлагает: на EL9 и EL10 он не действует без параметра ядра `selinux=0` и перезагрузки, а панели он не нужен.
 
 ## 7. Firewall и защита от перебора
 

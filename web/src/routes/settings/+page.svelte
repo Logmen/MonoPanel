@@ -17,6 +17,7 @@
   let realip = $state<any>(null);
   let realipFrom = $state('');
   let upd = $state<any>(null);
+  let sel = $state<any>(null);
   let updForm = $state({ repo: '', channel: 'stable', token: '', check_hours: 24, auto_apply: false });
   let updating = $state('');
   let error = $state('');
@@ -24,7 +25,15 @@
   let ask = $state<Ask | null>(null);
   const admin = $derived(auth.me?.role === 'admin');
   const fail = (e: unknown) => { error = e instanceof ApiError ? e.text : String(e); notify(error, 'err'); };
-  async function load() { try { totp = await api('/auth/totp'); tokens = await api('/tokens'); if (admin) { hooks = await api('/webhooks'); realip = await api('/stack/nginx/real-ip'); realipFrom = (realip.from || []).join(', '); setUpdate(await api('/system/update')); } } catch (e: any) { error = e.text || String(e); } }
+  async function load() { try { totp = await api('/auth/totp'); tokens = await api('/tokens'); if (admin) { hooks = await api('/webhooks'); realip = await api('/stack/nginx/real-ip'); realipFrom = (realip.from || []).join(', '); setUpdate(await api('/system/update')); sel = await api('/system/selinux'); } } catch (e: any) { error = e.text || String(e); } }
+  // Переключение SELinux: permissive только через окно с объяснением цены, обратно — сразу.
+  async function setSELinux(mode: string) { try { sel = await api('/system/selinux', { method: 'PUT', json: { mode } }); notify('SELinux: ' + sel.mode, mode === 'permissive' ? 'err' : undefined); } catch (e) { fail(e); } }
+  const askPermissive = (): Ask => ({
+    title: 'Перевести SELinux в permissive?',
+    note: sel?.warning,
+    danger: true, action: 'Перевести',
+    run: () => setSELinux('permissive')
+  });
   function setUpdate(st: any) { upd = st; updForm = { repo: st.settings.repo, channel: st.settings.channel, token: '', check_hours: st.settings.check_hours, auto_apply: st.settings.auto_apply }; }
   async function saveUpdate(e: Event) { e.preventDefault(); try { setUpdate(await api('/system/update', { method: 'PUT', json: { ...updForm, token: updForm.token || undefined } })); notify('настройки обновлений сохранены'); } catch (e) { fail(e); } }
   async function checkUpdate() { updating = 'проверяем репозиторий…'; try { setUpdate(await api('/system/update/check', { method: 'POST', json: {} })); notify(upd.available ? 'доступна версия ' + upd.latest : 'установлена последняя версия'); } catch (e) { fail(e); } finally { updating = ''; } }
@@ -141,7 +150,23 @@
         <div class="sm:col-span-2 flex justify-end"><button class="btn btn-primary">Сохранить</button></div>
       </form>
     </div>
-    <div class="card md:col-span-2 rise" style="--i:5">
+    {#if sel?.supported}
+      <div class="card md:col-span-2 rise" style="--i:5">
+        <div class="flex justify-between items-start gap-3 flex-wrap">
+          <div>
+            <div class="font-medium">SELinux</div>
+            <p class="text-xs text-muted">Режим {sel.mode}{#if sel.configured && sel.configured !== sel.mode} · после перезагрузки {sel.configured}{/if}. В enforcing взломанный сайт не выйдет за пределы веб-каталогов; 403 из-за меток чинит «mp site fix».</p>
+          </div>
+          {#if sel.mode === 'enforcing'}
+            <button class="btn btn-danger btn-sm" onclick={() => (ask = askPermissive())}>перевести в permissive</button>
+          {:else}
+            <button class="btn btn-primary btn-sm" onclick={() => setSELinux('enforcing')}>вернуть enforcing</button>
+          {/if}
+        </div>
+        {#if sel.mode !== 'enforcing' || (sel.configured && sel.configured !== 'enforcing')}<div class="p-3 rounded-lg border border-danger bg-danger-soft text-sm mt-3">{sel.warning}</div>{/if}
+      </div>
+    {/if}
+    <div class="card md:col-span-2 rise" style="--i:6">
       <div class="font-medium mb-2">Webhooks (HMAC-SHA256)</div>
       <form class="flex flex-wrap gap-2 items-end mb-3" onsubmit={addHook}><div class="flex-1 min-w-64"><label class="label" for="hu">URL</label><input id="hu" class="input" bind:value={hook.url} required /></div><div><label class="label" for="he">События</label><input id="he" class="input font-mono" bind:value={hook.events} /></div><button class="btn btn-primary">Добавить</button></form>
       <ul class="text-sm divide-y divide-line">{#each hooks as h}<li class="flex justify-between items-center py-1.5 font-mono text-xs"><span>{h.url} · {h.events.join(',')}</span><button class="btn btn-danger btn-sm" onclick={() => (ask = askHook(h))}>удалить</button></li>{/each}</ul>

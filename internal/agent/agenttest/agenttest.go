@@ -59,6 +59,10 @@ type Agent struct {
 	MissingPackages map[string]bool
 	// ToolHook, when set, may answer a tool call itself (nil = default).
 	ToolHook func(req agent.ToolRequest) *agent.ToolResponse
+	// WriteThrough, when set, says which applied files also land on disk —
+	// for code that reads a file back from the filesystem after the agent
+	// wrote it (only ever temp paths in tests).
+	WriteThrough func(path string) bool
 	// Dirs answers agent.ListDir: directory path -> names inside it.
 	DirEntries map[string][]string
 	// Shadow answers agent.UnixShadow: login -> password hash.
@@ -188,6 +192,9 @@ func (a *Agent) respond(path string, body []byte) any {
 		written := make([]string, 0, len(req.Files))
 		for _, f := range req.Files {
 			a.files[f.Path] = f
+			if a.WriteThrough != nil && a.WriteThrough(f.Path) {
+				os.WriteFile(f.Path, []byte(f.Content), 0o644) //nolint:errcheck // test double
+			}
 			written = append(written, f.Path)
 		}
 		for _, u := range req.Reload {
