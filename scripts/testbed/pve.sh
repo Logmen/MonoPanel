@@ -60,13 +60,21 @@ DISTROS=(
 	"11 ol10      https://yum.oracle.com/templates/OracleLinux/OL10/u1/x86_64/OL10U1_x86_64-kvm-b291.qcow2"
 )
 
+# Sources for the foreign-panel migration tests (docs/07 §6): a machine per
+# panel we import from. They are not part of the matrix, so `names` skips
+# them; address them by name (testbed.sh up fastpanel bitrixvm).
+SOURCES=(
+	"12 fastpanel https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
+	"13 bitrixvm  https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2"
+)
+
 log() { printf '\033[36m[%s]\033[0m %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 die() { echo "pve.sh: $*" >&2; exit 1; }
 
 # row <name> -> "n name url"
 row() {
 	local r
-	for r in "${DISTROS[@]}"; do
+	for r in "${DISTROS[@]}" "${SOURCES[@]}"; do
 		[ "$(awk '{print $2}' <<<"$r")" = "$1" ] && { echo "$r"; return; }
 	done
 	die "unknown distribution: $1 (see: pve.sh names)"
@@ -77,6 +85,8 @@ vmid() { echo $((TB_VMID_BASE + $(num "$1"))); }
 ip() { echo "$TB_PREFIX.$((TB_IP_BASE + $(num "$1")))"; }
 host() { echo "mp-$1"; }
 names() { local r; for r in "${DISTROS[@]}"; do awk '{print $2}' <<<"$r"; done; }
+# all_names adds the migration sources: for DNS and status, not for the matrix.
+all_names() { local r; for r in "${DISTROS[@]}" "${SOURCES[@]}"; do awk '{print $2}' <<<"$r"; done; }
 exists() { qm status "$1" >/dev/null 2>&1; }
 
 # ---------------------------------------------------------------- images ----
@@ -260,7 +270,7 @@ down() {
 status() {
 	local n id st snap
 	printf '%-5s %-14s %-16s %-8s %s\n' VMID NAME IP STATE SNAPSHOT
-	for n in $(names); do
+	for n in $(all_names); do
 		id=$(vmid "$n")
 		if exists "$id"; then
 			st=$(qm status "$id" | awk '{print $2}')
@@ -272,7 +282,7 @@ status() {
 	done
 }
 
-list() { local n; for n in $(names); do echo "$n $(vmid "$n") $(ip "$n")"; done; }
+list() { local n; for n in $(all_names); do echo "$n $(vmid "$n") $(ip "$n")"; done; }
 
 # ------------------------------------------------------------------ main ----
 

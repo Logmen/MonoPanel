@@ -22,6 +22,7 @@
 #   testbed.sh migrate <src> <dst>       move an account between two VMs and verify
 #   testbed.sh dns [up|down|list]        A records for the VMs in the Cloudflare zone
 #   testbed.sh cms <name> [cms...]       mp cms install wordpress|joomla|opencart|bitrix into preset sites and check
+#   testbed.sh sources <args...>         the BitrixVM and FASTPANEL source machines (scripts/testbed/sources.sh)
 set -euo pipefail
 export PATH="$HOME/go/bin:$HOME/.local/go/bin:$HOME/.local/node/bin:$PATH"
 
@@ -193,6 +194,7 @@ deploy) [ $# -ge 1 ] || { echo "usage: testbed.sh deploy <name> [--binary]" >&2;
 e2e) [ $# -eq 1 ] || { echo "usage: testbed.sh e2e <name>" >&2; exit 2; }; e2e "$1" ;;
 matrix) [ $# -gt 0 ] || set -- $(remote names); matrix "$@" ;;
 migrate) [ $# -eq 2 ] || { echo "usage: testbed.sh migrate <source> <target>" >&2; exit 2; }; exec "$root/scripts/testbed/migrate.sh" "$1" "$2" ;;
+sources) exec "$root/scripts/testbed/sources.sh" "$@" ;;
 cms)
 	# Real CMSs on top of the presets; needs the VM names in DNS (dns up).
 	[ $# -ge 1 ] || { echo "usage: testbed.sh cms <name> [wordpress|joomla|opencart|bitrix ...]" >&2; exit 2; }

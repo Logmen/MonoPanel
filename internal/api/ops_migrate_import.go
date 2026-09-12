@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 
@@ -26,14 +27,59 @@ import (
 // only ever reads, so a botched migration cannot damage the server people are
 // still working on.
 
-// migrateSource talks to the panel we are taking an account from.
-type migrateSource struct {
+// migrateSource is where an account comes from. Another MonoPanel answers
+// over its API; a foreign panel is read over ssh by an adapter. The import
+// itself does not care which: it asks for the state, the file streams and
+// the dumps and builds everything here from those.
+type migrateSource interface {
+	// bundle renders the declarative state; withSecrets adds the hashes,
+	// keys and authentication strings the plan must not carry.
+	bundle(ctx context.Context, scope string, withSecrets bool) (*apitypes.MigrationBundle, error)
+	// files streams a tar whose members are relative to the destination
+	// directory of the part (home | mail).
+	files(ctx context.Context, req migrateFilesRequest) (io.ReadCloser, error)
+	// dump streams mysqldump --databases of one database.
+	dump(ctx context.Context, scope, db string) (io.ReadCloser, error)
+	// settle runs once the files are here and the sites exist: чужие панели
+	// правят в конфигах сайтов пути старого сервера.
+	settle(ctx context.Context, jc *jobs.Context, u *store.User) error
+	close()
+}
+
+type migrateFilesRequest struct {
+	scope, part, domain, since string
+	// home is the account's home on this server; adapters rewrite absolute
+	// paths (symlink targets) of the old server to it.
+	home string
+}
+
+// migrateHTTP talks to the MonoPanel we are taking an account from.
+type migrateHTTP struct {
 	base  string
 	token string
 	http  *http.Client
 }
 
-func newMigrateSource(req apitypes.MigrationSourceRequest) (*migrateSource, error) {
+// openMigrateSource picks the adapter for the request and connects to it.
+func (s *Server) openMigrateSource(ctx context.Context, req apitypes.MigrationSourceRequest) (migrateSource, error) {
+	switch req.Panel {
+	case "", "monopanel":
+		return newMigrateHTTP(req)
+	case "fastpanel":
+		return s.openFastpanel(ctx, req)
+	case "bitrixvm":
+		return s.openBitrixVM(ctx, req)
+	}
+	return nil, huma.Error422UnprocessableEntity("неизвестная панель-источник " + req.Panel + ": monopanel, fastpanel или bitrixvm")
+}
+
+func newMigrateHTTP(req apitypes.MigrationSourceRequest) (*migrateHTTP, error) {
+	if strings.TrimSpace(req.Token) == "" {
+		return nil, huma.Error422UnprocessableEntity("нужен токен источника: mp migrate grant на старой панели")
+	}
+	if !strings.HasPrefix(req.Scope, "user:") {
+		return nil, huma.Error422UnprocessableEntity("область переноса: user:<логин>")
+	}
 	raw := strings.TrimSpace(req.Source)
 	if !strings.Contains(raw, "://") {
 		raw = "https://" + raw
@@ -43,10 +89,14 @@ func newMigrateSource(req apitypes.MigrationSourceRequest) (*migrateSource, erro
 		return nil, huma.Error422UnprocessableEntity("адрес источника должен быть вида https://panel.example.com:8443")
 	}
 	tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: req.Insecure, MinVersion: tls.VersionTLS12}} //nolint:gosec // явный флаг: у переезжающей панели сертификата может ещё не быть
-	return &migrateSource{base: u.String() + "/api/v1", token: strings.TrimSpace(req.Token), http: &http.Client{Transport: tr}}, nil
+	return &migrateHTTP{base: u.String() + "/api/v1", token: strings.TrimSpace(req.Token), http: &http.Client{Transport: tr}}, nil
 }
 
-func (m *migrateSource) get(ctx context.Context, path string, query url.Values) (*http.Response, error) {
+func (m *migrateHTTP) close() {}
+
+func (m *migrateHTTP) settle(context.Context, *jobs.Context, *store.User) error { return nil }
+
+func (m *migrateHTTP) get(ctx context.Context, path string, query url.Values) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.base+path+"?"+query.Encode(), nil)
 	if err != nil {
 		return nil, err
@@ -70,7 +120,7 @@ func (m *migrateSource) get(ctx context.Context, path string, query url.Values) 
 
 // bundle fetches the declarative state; withSecrets picks the endpoint that
 // also carries hashes and keys.
-func (m *migrateSource) bundle(ctx context.Context, scope string, withSecrets bool) (*apitypes.MigrationBundle, error) {
+func (m *migrateHTTP) bundle(ctx context.Context, scope string, withSecrets bool) (*apitypes.MigrationBundle, error) {
 	path := "/migrate/plan"
 	if withSecrets {
 		path = "/migrate/state"
@@ -87,7 +137,33 @@ func (m *migrateSource) bundle(ctx context.Context, scope string, withSecrets bo
 	if b.User == nil {
 		return nil, errors.New("источник не отдал аккаунт")
 	}
+	if b.Panel == "" || (b.Panel[0] >= '0' && b.Panel[0] <= '9') {
+		b.Panel = strings.TrimSpace("MonoPanel " + b.Panel)
+	}
 	return &b, nil
+}
+
+func (m *migrateHTTP) files(ctx context.Context, req migrateFilesRequest) (io.ReadCloser, error) {
+	q := url.Values{"scope": {req.scope}, "part": {req.part}}
+	if req.domain != "" {
+		q.Set("domain", req.domain)
+	}
+	if req.since != "" {
+		q.Set("since", req.since)
+	}
+	res, err := m.get(ctx, "/migrate/files", q)
+	if err != nil {
+		return nil, err
+	}
+	return res.Body, nil
+}
+
+func (m *migrateHTTP) dump(ctx context.Context, scope, db string) (io.ReadCloser, error) {
+	res, err := m.get(ctx, "/migrate/dump", url.Values{"scope": {scope}, "db": {db}})
+	if err != nil {
+		return nil, err
+	}
+	return res.Body, nil
 }
 
 type migratePlanInput struct {
@@ -189,16 +265,60 @@ func (s *Server) migrationPlan(ctx context.Context, req apitypes.MigrationSource
 type migratePayload struct {
 	apitypes.MigrationSourceRequest
 	Login string `json:"login"`
+	// Учётные данные ssh лежат в задаче только зашифрованными.
+	PasswordEnc string `json:"password_enc,omitempty"`
+	KeyEnc      string `json:"key_enc,omitempty"`
+}
+
+// sealMigratePayload moves the ssh credentials of a foreign source into the
+// encrypted fields: the jobs table must never hold a root password in the open.
+func (s *Server) sealMigratePayload(req apitypes.MigrationSourceRequest, login string) (migratePayload, error) {
+	p := migratePayload{MigrationSourceRequest: req, Login: login}
+	if req.Password == "" && req.Key == "" {
+		return p, nil
+	}
+	if s.secrets == nil {
+		return p, huma.Error422UnprocessableEntity("хранилище секретов панели не открыто: пароль ssh сохранить некуда")
+	}
+	var err error
+	if req.Password != "" {
+		if p.PasswordEnc, err = s.secrets.Encrypt(req.Password); err != nil {
+			return p, err
+		}
+	}
+	if req.Key != "" {
+		if p.KeyEnc, err = s.secrets.Encrypt(req.Key); err != nil {
+			return p, err
+		}
+	}
+	p.Password, p.Key = "", ""
+	return p, nil
+}
+
+func (s *Server) unsealMigratePayload(p *migratePayload) error {
+	var err error
+	if p.PasswordEnc != "" {
+		if p.Password, err = s.secrets.Decrypt(p.PasswordEnc); err != nil {
+			return err
+		}
+	}
+	if p.KeyEnc != "" {
+		if p.Key, err = s.secrets.Decrypt(p.KeyEnc); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Server) registerMigrateImport() {
 	huma.Register(s.api, huma.Operation{
 		OperationID: "migrate-plan", Method: http.MethodPost, Path: "/migrate/plan", Summary: "Dry run: what would arrive and what stands in the way", Tags: []string{"migrate"}, Security: secured, Metadata: adminOnly,
 	}, func(ctx context.Context, in *migratePlanInput) (*migratePlanOutput, error) {
-		src, err := newMigrateSource(in.Body)
+		src, err := s.openMigrateSource(ctx, in.Body)
 		if err != nil {
 			return nil, err
 		}
+		defer src.close()
 		b, err := src.bundle(ctx, in.Body.Scope, false)
 		if err != nil {
 			return nil, huma.Error502BadGateway(err.Error())
@@ -210,10 +330,11 @@ func (s *Server) registerMigrateImport() {
 		OperationID: "migrate-run", Method: http.MethodPost, Path: "/migrate/run", Summary: "Take the account over (async)", Tags: []string{"migrate"}, Security: secured, Metadata: adminOnly, DefaultStatus: http.StatusAccepted,
 	}, func(ctx context.Context, in *migratePlanInput) (*jobRefOutput, error) {
 		p := principalFrom(ctx)
-		src, err := newMigrateSource(in.Body)
+		src, err := s.openMigrateSource(ctx, in.Body)
 		if err != nil {
 			return nil, err
 		}
+		defer src.close()
 		b, err := src.bundle(ctx, in.Body.Scope, false)
 		if err != nil {
 			return nil, huma.Error502BadGateway(err.Error())
@@ -222,8 +343,14 @@ func (s *Server) registerMigrateImport() {
 		if !plan.OK {
 			return nil, huma.Error409Conflict("перенос не запущен: " + plan.Conflicts[0].Text)
 		}
-		job, err := s.jobs.Enqueue(ctx, "migrate.run", migratePayload{MigrationSourceRequest: in.Body, Login: plan.Login},
-			jobs.WithLockKey("user:"+plan.Login), jobs.WithRequestedBy(p.Login))
+		payload, err := s.sealMigratePayload(in.Body, plan.Login)
+		if err != nil {
+			return nil, err
+		}
+		if payload.Scope == "" {
+			payload.Scope = b.Scope
+		}
+		job, err := s.jobs.Enqueue(ctx, "migrate.run", payload, jobs.WithLockKey("user:"+plan.Login), jobs.WithRequestedBy(p.Login))
 		if err != nil {
 			return nil, err
 		}
@@ -238,10 +365,14 @@ func (s *Server) jobMigrateRun(ctx context.Context, jc *jobs.Context) error {
 	if err := jc.Unmarshal(&p); err != nil {
 		return err
 	}
-	src, err := newMigrateSource(p.MigrationSourceRequest)
+	if err := s.unsealMigratePayload(&p); err != nil {
+		return err
+	}
+	src, err := s.openMigrateSource(ctx, p.MigrationSourceRequest)
 	if err != nil {
 		return err
 	}
+	defer src.close()
 	jc.Progress(2, "состояние источника")
 	b, err := src.bundle(ctx, p.Scope, true)
 	if err != nil {
@@ -250,7 +381,13 @@ func (s *Server) jobMigrateRun(ctx context.Context, jc *jobs.Context) error {
 	if b.Secrets == nil {
 		return errors.New("источник не отдал секреты: токен выдан только на просмотр")
 	}
-	jc.Logf("источник: %s (MonoPanel %s), аккаунт %s → %s", b.Hostname, b.Panel, b.User.Login, p.Login)
+	if p.Scope == "" {
+		p.Scope = b.Scope
+	}
+	jc.Logf("источник: %s (%s), аккаунт %s → %s", b.Hostname, b.Panel, b.User.Login, p.Login)
+	for _, n := range b.Notes {
+		jc.Logf("· %s", n)
+	}
 
 	jc.Progress(5, "аккаунт")
 	u := &store.User{
@@ -305,6 +442,9 @@ func (s *Server) jobMigrateRun(ctx context.Context, jc *jobs.Context) error {
 		}
 		jc.Logf("сертификат %s перенесён (до %s)", cert.Name, cert.NotAfter.Format("2006-01-02"))
 	}
+	if err := src.settle(ctx, jc, u); err != nil {
+		jc.Logf("предупреждение: %v", err)
+	}
 	for _, site := range b.Sites {
 		if _, err := s.jobs.Enqueue(ctx, "site.apply", sitePayload{SiteID: siteID(ctx, s, site.Domain)}, jobs.WithLockKey("site:"+site.Domain), jobs.WithRequestedBy(jc.RequestedBy)); err != nil {
 			jc.Logf("сайт %s: %v", site.Domain, err)
@@ -358,19 +498,12 @@ func siteID(ctx context.Context, s *Server, domain string) int64 {
 
 // migrateFiles streams a tar from the source straight into tar -x here: файлы
 // нигде не складываются целиком, поток идёт сквозь обе панели.
-func (s *Server) migrateFiles(ctx context.Context, jc *jobs.Context, src *migrateSource, p migratePayload, u *store.User, part, domain, since string) error {
-	q := url.Values{"scope": {p.Scope}, "part": {part}}
-	if domain != "" {
-		q.Set("domain", domain)
-	}
-	if since != "" {
-		q.Set("since", since)
-	}
-	res, err := src.get(ctx, "/migrate/files", q)
+func (s *Server) migrateFiles(ctx context.Context, jc *jobs.Context, src migrateSource, p migratePayload, u *store.User, part, domain, since string) error {
+	body, err := src.files(ctx, migrateFilesRequest{scope: p.Scope, part: part, domain: domain, since: since, home: s.homeOf(u)})
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
+	defer body.Close()
 	dest := s.homeOf(u)
 	owner, group := u.Login, u.Login
 	if part == "mail" {
@@ -380,7 +513,7 @@ func (s *Server) migrateFiles(ctx context.Context, jc *jobs.Context, src *migrat
 		}
 	}
 	args := []string{"--extract", "--file", "-", "--directory", dest, "--no-same-owner", "--warning=no-timestamp"}
-	out, err := s.agent.StreamIn(ctx, &agent.StreamRequest{Name: "tar", Args: args}, res.Body)
+	out, err := s.agent.StreamIn(ctx, &agent.StreamRequest{Name: "tar", Args: args}, body)
 	if err != nil {
 		return err
 	}
@@ -399,7 +532,13 @@ func (s *Server) migrateFiles(ctx context.Context, jc *jobs.Context, src *migrat
 
 // migrateDatabase recreates a database, its accounts (with the original
 // password hashes) and streams the dump into mysql.
-func (s *Server) migrateDatabase(ctx context.Context, jc *jobs.Context, src *migrateSource, p migratePayload, u *store.User, d *store.Database, auths map[string]string) error {
+func (s *Server) migrateDatabase(ctx context.Context, jc *jobs.Context, src migrateSource, p migratePayload, u *store.User, d *store.Database, auths map[string]string) error {
+	if d.Charset == "" {
+		d.Charset, d.Collation = "utf8mb4", "utf8mb4_0900_ai_ci"
+	}
+	if d.Collation == "" {
+		d.Collation = d.Charset + "_general_ci"
+	}
 	if _, err := s.mysqlExec(ctx, fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET %s COLLATE %s;", d.Name, d.Charset, d.Collation)); err != nil {
 		return err
 	}
@@ -413,7 +552,18 @@ func (s *Server) migrateDatabase(ctx context.Context, jc *jobs.Context, src *mig
 			jc.Logf("аккаунт %s@%s приедет без пароля: источник не отдал строку аутентификации", acc.Name, acc.Host)
 			continue
 		}
-		// SHOW CREATE USER отдаёт готовый CREATE USER с хешем пароля.
+		// SHOW CREATE USER отдаёт готовый CREATE USER с хешем пароля; от
+		// чужих панелей приходит то же самое, иногда со старым хешем
+		// mysql_native_password, который сервер здесь не принимает без
+		// включённого плагина.
+		create = portableCreateUser(create)
+		if strings.Contains(create, "mysql_native_password") {
+			if inst, err := s.dbInstance(ctx); err == nil {
+				if err := s.ensureNativePassword(ctx, inst); err != nil {
+					jc.Logf("mysql_native_password для %s@%s: %v", acc.Name, acc.Host, err)
+				}
+			}
+		}
 		sql := strings.TrimSuffix(strings.TrimSpace(create), ";") + ";\n"
 		sql += fmt.Sprintf("GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'%s';\nFLUSH PRIVILEGES;\n", d.Name, acc.Name, acc.Host)
 		if _, err := s.mysqlExec(ctx, sql); err != nil {
@@ -421,12 +571,12 @@ func (s *Server) migrateDatabase(ctx context.Context, jc *jobs.Context, src *mig
 		}
 		s.db.CreateDBUser(ctx, &store.DBUser{UserID: u.ID, DatabaseID: &row.ID, Name: acc.Name, Host: acc.Host, AuthPlugin: acc.AuthPlugin}) //nolint:errcheck // строка учётки — украшение списка баз
 	}
-	res, err := src.get(ctx, "/migrate/dump", url.Values{"scope": {p.Scope}, "db": {d.Name}})
+	body, err := src.dump(ctx, p.Scope, d.Name)
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
-	out, err := s.agent.StreamIn(ctx, &agent.StreamRequest{Name: "mysql", Args: []string{"--protocol=socket"}}, res.Body)
+	defer body.Close()
+	out, err := s.agent.StreamIn(ctx, &agent.StreamRequest{Name: "mysql", Args: []string{"--protocol=socket"}}, body)
 	if err != nil {
 		return err
 	}
@@ -435,6 +585,22 @@ func (s *Server) migrateDatabase(ctx context.Context, jc *jobs.Context, src *mig
 	}
 	jc.Logf("база %s перенесена вместе с аккаунтами (пароли прежние)", d.Name)
 	return nil
+}
+
+// MariaDB spells a native hash as IDENTIFIED BY PASSWORD '*…' (before 10.4)
+// or IDENTIFIED VIA mysql_native_password USING '*…'; MySQL 8 takes neither.
+var (
+	mariaDBPasswordRe = regexp.MustCompile(`(?i)IDENTIFIED\s+BY\s+PASSWORD\s+'(\*[0-9A-F]{40})'`)
+	mariaDBViaRe      = regexp.MustCompile(`(?i)IDENTIFIED\s+VIA\s+mysql_native_password\s+USING\s+'(\*[0-9A-F]{40})'`)
+)
+
+// portableCreateUser rewrites a CREATE USER from another server into the
+// form MySQL 8 accepts.
+func portableCreateUser(create string) string {
+	create = strings.TrimSpace(create)
+	create = mariaDBPasswordRe.ReplaceAllString(create, "IDENTIFIED WITH mysql_native_password AS '$1'")
+	create = mariaDBViaRe.ReplaceAllString(create, "IDENTIFIED WITH mysql_native_password AS '$1'")
+	return create
 }
 
 // migrateSite recreates a site row and its custom nginx directives.
@@ -457,7 +623,7 @@ func (s *Server) migrateSite(ctx context.Context, jc *jobs.Context, u *store.Use
 
 // migrateMail moves domains, mailboxes with their password hashes, aliases and
 // the Maildirs themselves.
-func (s *Server) migrateMail(ctx context.Context, jc *jobs.Context, src *migrateSource, p migratePayload, u *store.User, b *apitypes.MigrationBundle) error {
+func (s *Server) migrateMail(ctx context.Context, jc *jobs.Context, src migrateSource, p migratePayload, u *store.User, b *apitypes.MigrationBundle) error {
 	if len(b.MailDomains) == 0 {
 		return nil
 	}

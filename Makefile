@@ -152,6 +152,9 @@ testbed-reset: ## Roll the testbed VMs back to the clean snapshot
 testbed-down: ## Destroy the testbed VMs
 	scripts/testbed/testbed.sh down $(VM)
 
+testbed-sources: ## BitrixVM / FASTPANEL sources for the migration: ARGS="install|seed|migrate ..."
+	scripts/testbed/testbed.sh sources $(ARGS)
+
 testbed-status: ## Show the testbed VMs
 	scripts/testbed/testbed.sh status
 

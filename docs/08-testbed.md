@@ -33,6 +33,7 @@ make testbed-e2e VM=debian13       # e2e-тесты против этой маш
 make testbed-reset VM=debian13     # откатить к clean
 make testbed-matrix                # reset + deploy + e2e на всех машинах параллельно, сводная таблица
 make testbed-migrate SRC=ubuntu2404 DST=debian13   # перенос аккаунта между двумя машинами с проверкой
+make testbed-sources ARGS="migrate bitrixvm debian13"   # переезд с BitrixVM / FASTPANEL (машины-источники)
 make testbed-down                  # удалить машины (образы остаются в кэше)
 ```
 
@@ -47,6 +48,16 @@ make testbed-down                  # удалить машины (образы �
 ## Перенос между панелями
 
 Две любые машины площадки — готовая пара для [переноса](07-migration.md). `scripts/testbed/migrate.sh` (он же `make testbed-migrate`) создаёт на источнике аккаунт с сайтом, PHP-файлом, базой с данными и заданием cron, выдаёт токен (`mp migrate grant`), на приёмнике делает `mp migrate plan` и `mp migrate run` с `--insecure` (сертификаты самоподписанные) и проверяет, что всё приехало: unix-аккаунт с тем же хешем пароля, вход в панель старым паролем, сайт отвечает тем же PHP-файлом, строки в базе и пароль её пользователя, задание в crontab, `mp doctor` без ошибок. Аккаунт остаётся на обеих машинах для осмотра; `make testbed-reset` убирает его вместе со всем остальным.
+
+## Чужие панели как источники
+
+Кроме матрицы на площадке есть две машины-источника для [переезда с чужих панелей](07-migration.md#6-чужие-панели-и-серверы-без-панели): `bitrixvm` (AlmaLinux 9, vmid 913, .213) и `fastpanel` (Debian 12, vmid 912, .212). В матрицу они не входят (`pve.sh` держит их в отдельной таблице `SOURCES`), но `up`, `reset`, `status` и `dns` их знают. `scripts/testbed/sources.sh` (он же `make testbed-sources ARGS=…`):
+
+- `install bitrixvm` ставит bitrix-env 9 официальным `bitrix-env-9.sh` (он требует выключить SELinux и перезагрузиться — скрипт делает это сам, ~15 минут) и создаёт management-пул, без которого `bx-sites` не работает; `install fastpanel` — `install_fastpanel.sh` (пароль `fastuser` попадает в `.dev/sources.txt`).
+- `seed bitrixvm [FROM]` кладёт в `/home/bitrix/www` сайт Битрикса, который `testbed.sh cms FROM bitrix` поставил на машину матрицы (по умолчанию `alma9`), с его базой в `sitemanager` и реквизитами bitrix-env в `.settings.php`; главный сайт остаётся под `server_name _`, как у людей. `seed fastpanel [FROM]` заводит аккаунт `shop` с WordPress оттуда же, сайтом с docroot `public/`, алиасом и allow-списком, базой, crontab с `data/bin/php`, настоящим сертификатом Let's Encrypt (DNS-01 через панель FROM) и ящиком. FASTPANEL без лицензии из её биллинга не пускает ни в API, ни в интерфейс, поэтому строки аккаунта, сайтов, бэкендов, баз, сертификатов и cron пишутся прямо в `fastpanel2.db` — так, как их пишет живая панель (сверено с рабочим FASTPANEL 1.11); файлы, nginx, php-fpm и MySQL настоящие.
+- `migrate bitrixvm DST` и `migrate fastpanel DST` дают root машины DST ключ на источник, ставят там PHP 8.2, делают `mp migrate plan` и `run` и проверяют: сайт отвечает по новому адресу (у Битрикса — `X-Powered-CMS`, у WordPress — по HTTPS с перевезённым сертификатом), пути `/home/bitrix` переписаны, вход в базу прежним паролем или хешем, unix-хеш совпадает с источником, cron и allow-список на месте.
+
+Пароли, которые придумывает `seed`, лежат в `.dev/sources.txt` (git-ignored). Прогон 2026-09-12: BitrixVM → debian13 и FASTPANEL → rocky9 без замечаний.
 
 ## CMS поверх пресетов
 

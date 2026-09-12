@@ -347,6 +347,15 @@ func (a *Agent) respond(path string, body []byte) any {
 	case "/v1/chown":
 		return agent.ChownResponse{Changed: 1}
 
+	case "/v1/user/password":
+		// A hash set with chpasswd -e is what UnixShadow reads back later.
+		var req agent.SetUnixPasswordRequest
+		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		if req.Encrypted {
+			a.Shadow[req.Login] = req.Password
+		}
+		return map[string]any{}
+
 	case "/v1/user/shadow":
 		var req agent.UnixShadowRequest
 		json.Unmarshal(body, &req) //nolint:errcheck // test double

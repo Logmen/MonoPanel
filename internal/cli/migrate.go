@@ -1,7 +1,10 @@
 package cli
 
 import (
+	"bufio"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -35,20 +38,65 @@ func migrateCmd() *cobra.Command {
 	grantCmd.Flags().IntVar(&grant.Hours, "hours", 24, "срок жизни токена в часах")
 
 	var src apitypes.MigrationSourceRequest
+	var passwordStdin bool
+	var keyFile string
 	addSourceFlags := func(cmd *cobra.Command) {
-		cmd.Flags().StringVar(&src.Source, "source", "", "адрес исходной панели, например https://old.example.com:8443")
-		cmd.Flags().StringVar(&src.Token, "token", "", "токен, выданный источником (mp migrate grant)")
-		cmd.Flags().StringVar(&src.Scope, "scope", "", "что переносим: user:<логин>")
+		cmd.Flags().StringVar(&src.Panel, "from", "monopanel", "откуда переносим: monopanel | fastpanel | bitrixvm")
+		cmd.Flags().StringVar(&src.Source, "source", "", "MonoPanel: https://old.example.com:8443; чужая панель: root@old.example.com[:22]")
+		cmd.Flags().StringVar(&src.Token, "token", "", "токен, выданный источником (mp migrate grant) — только для MonoPanel")
+		cmd.Flags().StringVar(&src.Scope, "scope", "", "что переносим: user:<логин> (BitrixVM: всегда user:bitrix)")
 		cmd.Flags().StringVar(&src.As, "as", "", "принять под другим логином")
-		cmd.Flags().BoolVar(&src.Insecure, "insecure", false, "не проверять сертификат источника")
+		cmd.Flags().BoolVar(&src.Insecure, "insecure", false, "не проверять сертификат источника (MonoPanel)")
+		cmd.Flags().BoolVar(&passwordStdin, "password-stdin", false, "прочитать пароль ssh источника из stdin (чужие панели)")
+		cmd.Flags().StringVar(&keyFile, "key", "", "приватный ключ ssh для источника (по умолчанию ~/.ssh/id_ed25519 или id_rsa)")
+		cmd.Flags().StringVar(&src.Domain, "domain", "", "BitrixVM: доменное имя основного сайта (в его nginx стоит server_name _)")
 		cmd.MarkFlagRequired("source") //nolint:errcheck // флаг объявлен строкой выше
-		cmd.MarkFlagRequired("token")  //nolint:errcheck // флаг объявлен строкой выше
-		cmd.MarkFlagRequired("scope")  //nolint:errcheck // флаг объявлен строкой выше
+	}
+	// prepareSource reads the ssh credentials for a foreign source and
+	// checks the flags that only make sense for a MonoPanel one.
+	prepareSource := func() error {
+		switch src.Panel {
+		case "", "monopanel":
+			if src.Token == "" || src.Scope == "" {
+				return &exitError{code: 2, msg: "для переезда с MonoPanel нужны --token и --scope"}
+			}
+			return nil
+		case "fastpanel", "bitrixvm":
+		default:
+			return &exitError{code: 2, msg: "--from: monopanel, fastpanel или bitrixvm"}
+		}
+		if passwordStdin {
+			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+			src.Password = strings.TrimRight(line, "\r\n")
+		}
+		if keyFile == "" && src.Password == "" {
+			home, _ := os.UserHomeDir()
+			for _, name := range []string{"id_ed25519", "id_rsa", "id_ecdsa"} {
+				if _, err := os.Stat(filepath.Join(home, ".ssh", name)); err == nil {
+					keyFile = filepath.Join(home, ".ssh", name)
+					break
+				}
+			}
+		}
+		if keyFile != "" {
+			pem, err := os.ReadFile(keyFile)
+			if err != nil {
+				return fmt.Errorf("ключ ssh: %w", err)
+			}
+			src.Key = string(pem)
+		}
+		if src.Key == "" && src.Password == "" {
+			return &exitError{code: 2, msg: "как войти на источник по ssh: --key <файл> или --password-stdin"}
+		}
+		return nil
 	}
 
 	planCmd := &cobra.Command{Use: "plan", Short: "разбор: что приедет и что этому мешает (ничего не меняет)", RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
+			return err
+		}
+		if err := prepareSource(); err != nil {
 			return err
 		}
 		plan, err := cl.MigratePlan(cmd.Context(), src)
@@ -59,7 +107,7 @@ func migrateCmd() *cobra.Command {
 			return printJSON(plan)
 		}
 		b := plan.Bundle
-		fmt.Printf("Источник: %s (MonoPanel %s, %s)\n", b.Hostname, b.Panel, b.Family)
+		fmt.Printf("Источник: %s (%s, %s)\n", b.Hostname, b.Panel, b.Family)
 		fmt.Printf("Аккаунт:  %s → %s\n", b.User.Login, plan.Login)
 		fmt.Printf("Приедет:  сайтов %d, баз %d, заданий cron %d, app-сервисов %d, почтовых доменов %d, ящиков %d\n",
 			len(b.Sites), len(b.Databases), len(b.Cron), len(b.Apps), len(b.MailDomains), len(b.Mailboxes))
@@ -93,6 +141,9 @@ func migrateCmd() *cobra.Command {
 	runCmd := &cobra.Command{Use: "run", Short: "перенести аккаунт сюда", RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
+			return err
+		}
+		if err := prepareSource(); err != nil {
 			return err
 		}
 		res, err := cl.MigrateRun(cmd.Context(), src)

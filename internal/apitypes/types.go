@@ -879,15 +879,24 @@ type MigrationGrantResponse struct {
 	Command   string    `json:"command" doc:"Готовая команда для целевой панели"`
 }
 
-// MigrationSourceRequest points the target panel at a source.
+// MigrationSourceRequest points the target panel at a source: another
+// MonoPanel over its API, or a foreign panel read over ssh.
 type MigrationSourceRequest struct {
-	Source string `json:"source" doc:"https://исходная-панель:8443"`
-	Token  string `json:"token" doc:"Токен, выданный источником"`
-	Scope  string `json:"scope" doc:"user:<login>"`
+	// Panel names the adapter: monopanel (default), fastpanel, bitrixvm.
+	Panel  string `json:"panel,omitempty" enum:"monopanel,fastpanel,bitrixvm" doc:"Откуда переносим: monopanel (по умолчанию) | fastpanel | bitrixvm"`
+	Source string `json:"source" doc:"MonoPanel: https://исходная-панель:8443; чужие панели: root@host[:port]"`
+	Token  string `json:"token,omitempty" doc:"Токен, выданный источником (MonoPanel)"`
+	Scope  string `json:"scope,omitempty" doc:"user:<login>; у BitrixVM по умолчанию user:bitrix"`
 	As     string `json:"as,omitempty" pattern:"^[a-z_][a-z0-9_-]{0,31}$" doc:"Принять под другим логином, если этот занят"`
 	// Insecure принимает самоподписанный сертификат источника: у переезжающей
 	// панели он часто ещё не выпущен.
 	Insecure bool `json:"insecure,omitempty"`
+	// Доступ по ssh для чужих панелей: пароль root и/или приватный ключ PEM.
+	// В задачу они попадают зашифрованными и стираются вместе с ней.
+	Password string `json:"password,omitempty" doc:"Пароль ssh (чужие панели)"`
+	Key      string `json:"key,omitempty" doc:"Приватный ключ ssh в PEM (чужие панели)"`
+	// Domain даёт имя основному сайту BitrixVM: в его nginx стоит server_name _.
+	Domain string `json:"domain,omitempty" doc:"BitrixVM: домен основного сайта, если в nginx его нет"`
 }
 
 // MigrationPlan is the dry-run: что приедет и что этому мешает.

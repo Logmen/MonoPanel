@@ -78,6 +78,9 @@ mp mail webmail webmail.example.com --user alex --port 2096   # Roundcube
 mp migrate grant user:alex                        # на старом сервере
 mp migrate plan --source https://old:8443 --token … --scope user:alex
 mp migrate run  --source https://old:8443 --token … --scope user:alex
+# … или с BitrixVM и FASTPANEL: по ssh, источник только читается
+mp migrate run --from bitrixvm  --source root@old.example.com --domain shop.example.com
+mp migrate run --from fastpanel --source root@old.example.com --scope user:shop
 
 mp                              # TUI-меню
 ```
@@ -101,6 +104,7 @@ mp                              # TUI-меню
 | СУБД | `mp stack install percona\|mysql`, `mp db create\|list\|passwd\|rm` | Percona Server / MySQL 8.4 LTS, root по `auth_socket` (на EL панель сама переводит его с временного пароля пакета), тюнинг по RAM, `mysql_native_password` только при PHP < 7.4, базы `<login>_<name>`, сгенерированные пароли проходят `validate_password` |
 | TLS | `mp ssl panel issue\|import\|self-signed`, `mp site tls <domain>`, `mp ssl issue\|list\|renew\|rm`, `mp dns-provider add` | lego: HTTP-01 по webroot nginx, DNS-01 (Cloudflare, Hetzner, DigitalOcean, Gandi, deSEC, Namecheap, RFC2136) для wildcard, автопродление за 30 дней; сертификат самой панели и сертификаты сайтов ведутся раздельно — панель заказывает только для своего имени и подхватывает его на лету, сайт заказывает для домена с алиасами и сам переключается на HTTPS; занятый сертификат не удалить; `mp ssl import --cert --key` для готовых |
 | Перенос между панелями | `mp migrate grant\|plan\|run` | аккаунт целиком переезжает на другой сервер с MonoPanel: источник выдаёт токен с областью на один аккаунт и только читает, приёмник разбирает конфликты (`plan` ничего не меняет) и забирает — файлы и дамп идут потоком насквозь, пароли панели, SFTP, MySQL и почты переезжают хешами, поэтому пользователи смены сервера не замечают ([docs/07-migration.md](docs/07-migration.md)) |
+| Переезд с BitrixVM и FASTPANEL | `mp migrate plan\|run --from bitrixvm\|fastpanel` | те же разбор и перенос с чужого сервера по ssh (пароль или ключ, источник только читается): BitrixVM — сайты из `/etc/nginx/bx`, реквизиты базы из `.settings.php`, симлинки link-сайтов и пути в `dbconn.php`/cron переписываются под новый дом; FASTPANEL — аккаунт, сайты, бэкенды PHP, базы с хешами, allow-списки, сертификаты и cron из её базы и файлов; пресет CMS определяется по файлам сайта |
 | Обновление панели | `mp update`, `mp update apply` | релизы этого репозитория: панель находит новую версию, скачивает пакет для своей ОС, проверяет подпись ed25519 и ставит его отдельным systemd-юнитом с откатом на прежний бинарник, если новая версия не отвечает |
 | API-токены | `mp token create\|list\|revoke` | токен принадлежит аккаунту; администратор выпускает его и для другого аккаунта (`--user`), root по локальному сокету — для единственного администратора без флагов |
 | Cron | `mp cron add\|list\|enable\|disable\|rm` | crontab пользователя целиком из БД, PATH с `~/data/bin` (php нужной версии) |
