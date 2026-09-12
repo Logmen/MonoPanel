@@ -33,6 +33,9 @@ mp site suspend | unsuspend | enable | disable <domain>
 mp site apply <domain>               # принудительная перегенерация конфигов сайта
 mp site fix <domain>                          # владелец, права, ACL и метки SELinux файлов сайта (после cp -a из /root и т.п.)
 mp selinux [enforcing|permissive] [--yes]     # режим SELinux; permissive только после предупреждения и подтверждения
+mp cms list                                   # какие CMS панель ставит и откуда берёт дистрибутивы
+mp cms install <domain> wordpress|joomla|opencart|bitrix [--title] [--admin-login] [--admin-password|--password-stdin] [--admin-email] [--edition start|business] [--force]
+                                              # пресет, база <login>_<cms>, файлы, штатный установщик; доступы печатаются один раз
 mp config apply --all                # полный reconcile
 
 mp php list [--available]            # установленные / доступные версии

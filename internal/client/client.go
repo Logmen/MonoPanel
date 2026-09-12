@@ -558,6 +558,18 @@ func (c *Client) ServiceLogs(ctx context.Context, unit string, lines int) (*apit
 	return &out, c.do(ctx, http.MethodGet, fmt.Sprintf("/system/logs/%s?lines=%d", unit, lines), nil, &out)
 }
 
+// CMSList names the CMS the panel installs.
+func (c *Client) CMSList(ctx context.Context) ([]apitypes.CMSInfo, error) {
+	var out []apitypes.CMSInfo
+	return out, c.do(ctx, http.MethodGet, "/cms", nil, &out)
+}
+
+// CMSInstall installs a CMS into a site; the credentials come back once.
+func (c *Client) CMSInstall(ctx context.Context, domain string, req apitypes.CMSInstallRequest) (*apitypes.CMSInstallResult, error) {
+	var out apitypes.CMSInstallResult
+	return &out, c.do(ctx, http.MethodPost, "/sites/"+domain+"/cms", req, &out)
+}
+
 // SELinux reads the host's SELinux mode.
 func (c *Client) SELinux(ctx context.Context) (*apitypes.SELinuxStatus, error) {
 	var out apitypes.SELinuxStatus

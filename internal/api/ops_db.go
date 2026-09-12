@@ -137,6 +137,45 @@ func (s *Server) dbInstance(ctx context.Context) (*store.DBInstance, error) {
 	return inst, err
 }
 
+// createDatabase makes (or re-keys) a database and its single account for
+// the owner: the MySQL side first, then the panel's records. Shared by the
+// databases endpoint and the CMS installer.
+func (s *Server) createDatabase(ctx context.Context, inst *store.DBInstance, owner *store.User, full, password string, legacyAuth *bool) (*store.Database, string, error) {
+	plugin := "caching_sha2_password"
+	legacy := false
+	if legacyAuth != nil {
+		legacy = *legacyAuth
+	} else {
+		legacy = s.ownerNeedsLegacyAuth(ctx, owner.ID)
+	}
+	if legacy {
+		if err := s.ensureNativePassword(ctx, inst); err != nil {
+			return nil, "", err
+		}
+		plugin = "mysql_native_password"
+	}
+	sql := fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;\n"+
+		"CREATE USER IF NOT EXISTS '%s'@'localhost' IDENTIFIED WITH %s BY '%s';\n"+
+		"ALTER USER '%s'@'localhost' IDENTIFIED WITH %s BY '%s';\n"+
+		"GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'localhost';\nFLUSH PRIVILEGES;\n",
+		full, full, plugin, sqlEscaper.Replace(password), full, plugin, sqlEscaper.Replace(password), full, full)
+	if _, err := s.mysqlExec(ctx, sql); err != nil {
+		return nil, "", huma.Error502BadGateway(err.Error())
+	}
+	db := &store.Database{UserID: owner.ID, Name: full}
+	if err := s.db.CreateDatabase(ctx, db); err != nil && !errors.Is(err, store.ErrExists) {
+		return nil, "", err
+	} else if errors.Is(err, store.ErrExists) {
+		db, _ = s.db.GetDatabaseByName(ctx, full)
+	}
+	if len(db.Users) == 0 {
+		s.db.CreateDBUser(ctx, &store.DBUser{UserID: owner.ID, DatabaseID: &db.ID, Name: full, Host: "localhost", AuthPlugin: plugin}) //nolint:errcheck // best effort while rolling back a failed create
+		db.Users, _ = s.db.ListDBUsers(ctx, db.ID)
+	}
+	db.Login = owner.Login
+	return db, plugin, nil
+}
+
 func (s *Server) registerDB() {
 	huma.Register(s.api, huma.Operation{
 		OperationID: "db-engine", Method: http.MethodGet, Path: "/db/engine", Summary: "Database server status", Tags: []string{"db"}, Security: secured,
@@ -238,38 +277,10 @@ func (s *Server) registerDB() {
 			password, _ = auth.NewPassword(20)
 			generated = true
 		}
-		plugin := "caching_sha2_password"
-		legacy := false
-		if in.Body.LegacyAuth != nil {
-			legacy = *in.Body.LegacyAuth
-		} else {
-			legacy = s.ownerNeedsLegacyAuth(ctx, owner.ID)
-		}
-		if legacy {
-			if err := s.ensureNativePassword(ctx, inst); err != nil {
-				return nil, err
-			}
-			plugin = "mysql_native_password"
-		}
-		sql := fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;\n"+
-			"CREATE USER IF NOT EXISTS '%s'@'localhost' IDENTIFIED WITH %s BY '%s';\n"+
-			"ALTER USER '%s'@'localhost' IDENTIFIED WITH %s BY '%s';\n"+
-			"GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'localhost';\nFLUSH PRIVILEGES;\n",
-			full, full, plugin, sqlEscaper.Replace(password), full, plugin, sqlEscaper.Replace(password), full, full)
-		if _, err := s.mysqlExec(ctx, sql); err != nil {
-			return nil, huma.Error502BadGateway(err.Error())
-		}
-		db := &store.Database{UserID: owner.ID, Name: full}
-		if err := s.db.CreateDatabase(ctx, db); err != nil && !errors.Is(err, store.ErrExists) {
+		db, plugin, err := s.createDatabase(ctx, inst, owner, full, password, in.Body.LegacyAuth)
+		if err != nil {
 			return nil, err
-		} else if errors.Is(err, store.ErrExists) {
-			db, _ = s.db.GetDatabaseByName(ctx, full)
 		}
-		if len(db.Users) == 0 {
-			s.db.CreateDBUser(ctx, &store.DBUser{UserID: owner.ID, DatabaseID: &db.ID, Name: full, Host: "localhost", AuthPlugin: plugin}) //nolint:errcheck // best effort while rolling back a failed create
-			db.Users, _ = s.db.ListDBUsers(ctx, db.ID)
-		}
-		db.Login = owner.Login
 		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "db.create", Target: full, IP: requestInfo(ctx).IP, Details: map[string]any{"auth": plugin}})
 		out := &databaseOutput{Status: http.StatusCreated, Body: apitypes.DatabaseResponse{Database: db, DSN: fmt.Sprintf("mysql:host=localhost;unix_socket=%s;dbname=%s", inst.Socket, full)}}
 		if generated {

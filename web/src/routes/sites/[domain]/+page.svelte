@@ -14,7 +14,7 @@
   let site = $state<any>(null);
   let php = $state<any[]>([]);
   let presets = $state<any[]>([]);
-  let tab = $state<'settings' | 'php' | 'nginx' | 'files' | 'logs'>('settings');
+  let tab = $state<'settings' | 'php' | 'nginx' | 'files' | 'logs' | 'cms'>('settings');
   let logType = $state('access');
   let log = $state<any>(null);
   let job = $state<number | null>(null);
@@ -22,6 +22,11 @@
   let certs = $state<any[]>([]);
   let providers = $state<any[]>([]);
   let tlsOpen = $state(false);
+  /* CMS tab: the catalogue, the install form, the credentials shown once */
+  let cmsList = $state<any[]>([]);
+  let cmsForm = $state({ cms: 'wordpress', title: '', admin_login: '', admin_password: '', admin_email: '', edition: 'start', force: false });
+  let cmsResult = $state<any>(null);
+  let cmsBusy = $state(false);
   let tform = $state({ staging: false, dns: '' });
   let error = $state('');
   let aliases = $state('');
@@ -45,11 +50,27 @@
     overrides = Object.entries(site.php_ini || {}).map(([key, value]) => ({ key, value: String(value) }));
     php = ((await api('/php/versions')) as any).installed.filter((v: any) => v.status === 'installed');
     presets = await api('/sites/presets');
+    cmsList = await api('/cms');
     const [c, d] = await Promise.all([api('/certificates'), api('/dns-providers')]);
     certs = c as any[];
     providers = d as any[];
   }
   const cert = $derived(site ? (certs.find((c) => c.id === site.certificate_id) ?? certs.find((c) => c.name === site.domain) ?? null) : null);
+  // Installing a CMS is a job; the administrator password comes back once
+  // in the response and never appears in the job log.
+  async function installCMS(e: Event) {
+    e.preventDefault(); error = ''; cmsBusy = true;
+    try {
+      const body: any = { cms: cmsForm.cms, force: cmsForm.force };
+      for (const k of ['title', 'admin_login', 'admin_password', 'admin_email'] as const) if (cmsForm[k]) body[k] = cmsForm[k];
+      if (cmsForm.cms === 'bitrix') body.edition = cmsForm.edition;
+      cmsResult = await api(`/sites/${domain}/cms`, { method: 'POST', json: body });
+      job = cmsResult.job_id;
+      notify(`${cmsForm.cms}: установка запущена`);
+    } catch (e: any) { error = e.text || String(e); notify(error, 'err'); } finally { cmsBusy = false; }
+  }
+  const cmsName = (id: string) => cmsList.find((c) => c.id === id)?.name ?? id;
+  const cmsAdminPath = (id: string) => ({ wordpress: 'wp-admin/', joomla: 'administrator/', opencart: 'admin/', bitrix: 'bitrix/admin/' } as Record<string, string>)[id] ?? '';
   async function issueTLS(e: Event) { e.preventDefault(); error = ''; try { const r: any = await api(`/sites/${domain}/tls/issue`, { method: 'POST', json: { staging: tform.staging, dns: tform.dns || undefined } }); job = r.job_id; tlsOpen = false; site.ssl = 'auto'; } catch (e: any) { error = e.text || String(e); notify(error, 'err'); } }
   onMount(() => { load().catch((e) => (error = e.text || String(e))); });
   $effect(() => { if (tab === 'php' && !phpInfo) loadPHP(); if (tab === 'nginx' && !nginx) loadNginx(); if (tab === 'logs' && !log) loadLog(); });
@@ -108,7 +129,7 @@
     if (e.key === 'Tab') { e.preventDefault(); const t = e.target as HTMLTextAreaElement; const s = t.selectionStart; custom = custom.slice(0, s) + '    ' + custom.slice(t.selectionEnd); queueMicrotask(() => t.setSelectionRange(s + 4, s + 4)); }
   }
   async function loadLog() { try { log = await api(`/sites/${domain}/logs/${logType}?lines=200`); } catch (e: any) { error = e.text || String(e); } }
-  const tabs: [typeof tab, string, string][] = [['settings', 'Настройки', 'settings'], ['php', 'PHP', 'code'], ['nginx', 'nginx', 'file'], ['files', 'Файлы', 'box'], ['logs', 'Логи', 'terminal']];
+  const tabs: [typeof tab, string, string][] = [['settings', 'Настройки', 'settings'], ['cms', 'CMS', 'plus'], ['php', 'PHP', 'code'], ['nginx', 'nginx', 'file'], ['files', 'Файлы', 'box'], ['logs', 'Логи', 'terminal']];
 </script>
 
 <PageHead title={domain} mono back="/sites" sub={site ? `владелец ${site.login} · ${site.ip} · ${site.mode === 'proxy' ? 'proxy → ' + site.backend : 'PHP ' + site.php_version + ' · ' + site.mode}` : ''}>
@@ -155,6 +176,38 @@
       </div>
       <div class="md:col-span-3"><button class="btn btn-primary"><Icon name="save" size={14} /> Сохранить и применить</button></div>
     </form>
+
+  {:else if tab === 'cms'}
+    <div class="card rise">
+      {#if site.cms}
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div class="font-medium">{cmsName(site.cms)} {site.cms_version}</div>
+            <p class="text-xs text-muted">установлен панелью{#if site.cms_at} {new Date(site.cms_at).toLocaleString('ru-RU')}{/if} · пресет {site.preset || '—'} · файлы и база принадлежат {site.login}</p>
+          </div>
+          <a class="btn btn-sm" href={(site.certificate_id ? 'https://' : 'http://') + domain + '/' + cmsAdminPath(site.cms)} target="_blank" rel="noopener">открыть админку</a>
+        </div>
+        <p class="text-sm text-muted mt-3">Поставить другую CMS сюда же можно с флагом «заменить файлы»: docroot будет очищен, прежняя база останется.</p>
+      {/if}
+      {#if cmsResult}
+        <div class="p-3 rounded-lg border border-accent bg-accent-soft text-sm mt-3">
+          <div class="font-medium text-accent-ink">{cmsName(cmsResult.cms)}: доступы администратора, показаны один раз</div>
+          <div class="font-mono text-xs mt-1 break-all">{cmsResult.admin_url}<br />логин {cmsResult.admin_login}{#if cmsResult.admin_password} · пароль {cmsResult.admin_password}{/if} · {cmsResult.admin_email}<br />база {cmsResult.database}</div>
+        </div>
+      {/if}
+      <form class="grid md:grid-cols-3 gap-3 mt-4 items-end" onsubmit={installCMS}>
+        <div class="md:col-span-3 text-sm text-muted">Дистрибутив скачивается у производителя, распаковывается в docroot от имени клиента, база создаётся отдельно, установку делает штатный установщик CMS. Сайт получает соответствующий пресет.</div>
+        <div><label class="label" for="cms">CMS</label><select id="cms" class="input" bind:value={cmsForm.cms}>{#each cmsList as c}<option value={c.id}>{c.name}</option>{/each}</select></div>
+        <div><label class="label" for="ct">Название сайта</label><input id="ct" class="input" bind:value={cmsForm.title} placeholder={domain} /></div>
+        <div><label class="label" for="cl">Логин администратора</label><input id="cl" class="input" bind:value={cmsForm.admin_login} placeholder="admin" /></div>
+        <div><label class="label" for="cp">Пароль администратора</label><input id="cp" class="input" type="password" bind:value={cmsForm.admin_password} placeholder="12–20 символов, иначе сгенерируется" /></div>
+        <div><label class="label" for="ce">E-mail администратора</label><input id="ce" class="input" bind:value={cmsForm.admin_email} placeholder="e-mail владельца" /></div>
+        {#if cmsForm.cms === 'bitrix'}<div><label class="label" for="ced">Редакция</label><select id="ced" class="input" bind:value={cmsForm.edition}><option value="start">Старт</option><option value="business">Бизнес</option></select></div>{/if}
+        <label class="flex items-center gap-1.5 text-sm md:col-span-2"><input type="checkbox" bind:checked={cmsForm.force} /> заменить файлы в непустом docroot</label>
+        <div class="md:col-span-3 text-xs text-muted">{cmsList.find((c) => c.id === cmsForm.cms)?.notes ?? ''}</div>
+        <div class="md:col-span-3"><button class="btn btn-primary" disabled={cmsBusy}><Icon name="plus" size={14} /> {cmsBusy ? 'запускаю…' : 'Установить'}</button></div>
+      </form>
+    </div>
 
   {:else if tab === 'php'}
     <div class="grid lg:grid-cols-5 gap-4">

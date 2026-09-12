@@ -41,6 +41,7 @@ type Agent struct {
 	units   map[string]string // unit -> last action
 	dirs    []string
 	tools   []agent.ToolRequest
+	runas   []agent.RunAsUserRequest
 
 	// Fail makes the endpoint at the given path answer with an error; the
 	// message is returned to the panel as the agent's failure output.
@@ -63,6 +64,9 @@ type Agent struct {
 	// for code that reads a file back from the filesystem after the agent
 	// wrote it (only ever temp paths in tests).
 	WriteThrough func(path string) bool
+	// RunAsHook answers a run-as-user call (fsop) itself; nil means exit 0
+	// with no output.
+	RunAsHook func(req agent.RunAsUserRequest) *agent.RunAsUserResponse
 	// Dirs answers agent.ListDir: directory path -> names inside it.
 	DirEntries map[string][]string
 	// Shadow answers agent.UnixShadow: login -> password hash.
@@ -296,6 +300,17 @@ func (a *Agent) respond(path string, body []byte) any {
 		json.Unmarshal(body, &req) //nolint:errcheck // test double
 		return agent.InstallPanelResponse{Unit: "monopanel-update.service", Started: true, Signed: req.Sig != ""}
 
+	case "/v1/runas":
+		var req agent.RunAsUserRequest
+		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		a.runas = append(a.runas, req)
+		if a.RunAsHook != nil {
+			if res := a.RunAsHook(req); res != nil {
+				return *res
+			}
+		}
+		return agent.RunAsUserResponse{}
+
 	case "/v1/tool":
 		var req agent.ToolRequest
 		json.Unmarshal(body, &req) //nolint:errcheck // test double
@@ -423,6 +438,13 @@ func (a *Agent) UnitAction(unit string) string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.units[unit]
+}
+
+// RunAs returns the recorded run-as-user (fsop) invocations.
+func (a *Agent) RunAs() []agent.RunAsUserRequest {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]agent.RunAsUserRequest{}, a.runas...)
 }
 
 // Tools returns the recorded tool invocations.

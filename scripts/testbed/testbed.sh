@@ -21,7 +21,7 @@
 #   testbed.sh matrix [name...]          reset + deploy + e2e for each VM, summary
 #   testbed.sh migrate <src> <dst>       move an account between two VMs and verify
 #   testbed.sh dns [up|down|list]        A records for the VMs in the Cloudflare zone
-#   testbed.sh cms <name> [cms...]       install wordpress|joomla|opencart|bitrix into preset sites and check
+#   testbed.sh cms <name> [cms...]       mp cms install wordpress|joomla|opencart|bitrix into preset sites and check
 set -euo pipefail
 export PATH="$HOME/go/bin:$HOME/.local/go/bin:$HOME/.local/node/bin:$PATH"
 
@@ -195,11 +195,8 @@ cms)
 	[ $# -ge 1 ] || { echo "usage: testbed.sh cms <name> [wordpress|joomla|opencart|bitrix ...]" >&2; exit 2; }
 	[ -n "${TB_ZONE:-}" ] || { echo "set TB_ZONE in $env_file: the sites need public names" >&2; exit 2; }
 	n=$1; shift; [ $# -gt 0 ] || set -- wordpress joomla opencart bitrix
-	scp -q "$root/scripts/testbed/cms.sh" "$root/scripts/testbed/bitrix.sh" "$root/scripts/testbed/bitrix-wizard.py" "mp-$n:/root/"
-	others=(); bitrix=""
-	for c in "$@"; do [ "$c" = bitrix ] && bitrix=1 || others+=("$c"); done
-	[ ${#others[@]} -eq 0 ] || ssh "mp-$n" "TB_ZONE=$TB_ZONE TB_DNS_LABEL=${TB_DNS_LABEL:-tb} bash /root/cms.sh $n ${others[*]}"
-	[ -z "$bitrix" ] || ssh "mp-$n" "TB_ZONE=$TB_ZONE TB_DNS_LABEL=${TB_DNS_LABEL:-tb} bash /root/bitrix.sh $n"
+	scp -q "$root/scripts/testbed/cms.sh" "mp-$n:/root/"
+	ssh "mp-$n" "TB_ZONE=$TB_ZONE TB_DNS_LABEL=${TB_DNS_LABEL:-tb} bash /root/cms.sh $n $*"
 	;;
 dns)
 	[ -n "${TB_ZONE:-}" ] && [ -n "${TB_CF_TOKEN:-}" ] || { echo "set TB_ZONE and TB_CF_TOKEN in $env_file" >&2; exit 2; }

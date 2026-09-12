@@ -901,3 +901,39 @@ type MigrationIssue struct {
 	Text   string `json:"text"`
 	Fix    string `json:"fix,omitempty"`
 }
+
+// CMSInfo describes a CMS the panel installs into a site: the distribution
+// is downloaded from its vendor, unpacked into the docroot and set up with
+// the CMS's own installer; the site gets the matching preset.
+type CMSInfo struct {
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	Preset   string   `json:"preset"`
+	Source   string   `json:"source" doc:"Where the distribution is downloaded from"`
+	Editions []string `json:"editions,omitempty" doc:"Bitrix: start (default) or business"`
+	Notes    string   `json:"notes,omitempty"`
+}
+
+// CMSInstallRequest installs a CMS into an existing site. The administrator
+// password must satisfy every CMS at once: 12–20 characters.
+type CMSInstallRequest struct {
+	CMS           string `json:"cms" enum:"wordpress,joomla,opencart,bitrix"`
+	Title         string `json:"title,omitempty" maxLength:"120" doc:"Site name; the domain when empty"`
+	AdminLogin    string `json:"admin_login,omitempty" pattern:"^[a-zA-Z0-9_.-]{1,60}$" doc:"admin when empty"`
+	AdminPassword string `json:"admin_password,omitempty" minLength:"12" maxLength:"20" doc:"Generated and shown once when empty"`
+	AdminEmail    string `json:"admin_email,omitempty" maxLength:"254" doc:"The owner's e-mail, else admin@<domain>"`
+	Edition       string `json:"edition,omitempty" enum:"start,business" doc:"Bitrix only"`
+	Force         bool   `json:"force,omitempty" doc:"Install into a docroot that is not empty: its files are removed first"`
+}
+
+// CMSInstallResult is what the caller needs to keep: the job and the
+// administrator credentials, shown once — the job log never carries them.
+type CMSInstallResult struct {
+	JobID         int64  `json:"job_id"`
+	CMS           string `json:"cms"`
+	AdminURL      string `json:"admin_url"`
+	AdminLogin    string `json:"admin_login"`
+	AdminPassword string `json:"admin_password,omitempty"`
+	AdminEmail    string `json:"admin_email"`
+	Database      string `json:"database"`
+}

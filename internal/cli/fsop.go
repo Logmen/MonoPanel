@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -154,6 +156,7 @@ func fsopCmd() *cobra.Command {
 		tmp.Close()
 		return os.Rename(tmp.Name(), p)
 	}}
+	var strip int
 	extract := &cobra.Command{Use: "extract <archive> <dest>", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
 		arc, err := inside(args[0])
 		if err != nil {
@@ -166,13 +169,37 @@ func fsopCmd() *cobra.Command {
 		if err := os.MkdirAll(dest, 0o755); err != nil {
 			return err
 		}
-		n, err := extractArchive(arc, dest)
+		n, err := extractArchive(arc, dest, strip)
 		if err != nil {
 			return err
 		}
 		fmt.Println(n)
 		return nil
 	}}
+	extract.Flags().IntVar(&strip, "strip", 0, "drop this many leading path components (a distribution's top-level folder)")
+	// run executes a CMS's own command-line installer as the client: only a
+	// PHP interpreter, inside the home directory, with the client's environment.
+	var cwd string
+	run := &cobra.Command{Use: "run --cwd <dir> -- <php> [args...]", Args: cobra.MinimumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		dir, err := inside(cwd)
+		if err != nil {
+			return err
+		}
+		if !phpBinaryAllowed(root(), args[0]) {
+			return fmt.Errorf("run: only a PHP interpreter may be run here, not %s", args[0])
+		}
+		c := exec.CommandContext(cmd.Context(), args[0], args[1:]...)
+		c.Dir, c.Env, c.Stdin, c.Stdout, c.Stderr = dir, os.Environ(), os.Stdin, os.Stdout, os.Stderr
+		if err := c.Run(); err != nil {
+			var ee *exec.ExitError
+			if errors.As(err, &ee) {
+				os.Exit(ee.ExitCode())
+			}
+			return err
+		}
+		return nil
+	}}
+	run.Flags().StringVar(&cwd, "cwd", ".", "working directory, relative to the home")
 	touch := &cobra.Command{Use: "touch <path>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		p, err := inside(args[0])
 		if err != nil {
@@ -206,7 +233,7 @@ func fsopCmd() *cobra.Command {
 		fmt.Println(total)
 		return nil
 	}}
-	c.AddCommand(list, mkdir, touch, rm, mv, chmod, read, write, extract, size)
+	c.AddCommand(list, mkdir, touch, rm, mv, chmod, read, write, extract, run, size)
 	return c
 }
 
@@ -218,7 +245,29 @@ func safeJoin(dest, name string) (string, error) {
 	return p, nil
 }
 
-func extractArchive(arc, dest string) (int, error) {
+// phpBinaryAllowed says whether fsop run may execute bin: the site's own
+// data/bin/php symlink, or a PHP CLI of the distribution / Remi.
+func phpBinaryAllowed(home, bin string) bool {
+	if bin == "php" || bin == filepath.Join(home, "data", "bin", "php") {
+		return true
+	}
+	return phpBinRe.MatchString(bin)
+}
+
+var phpBinRe = regexp.MustCompile(`^(/usr/bin/php[0-9.]*|/opt/remi/php[0-9]+/root/usr/bin/php)$`)
+
+// stripComponents drops the first n path components of an archive entry; an
+// entry that has no more than n components (the top-level folder itself)
+// yields "" and is skipped.
+func stripComponents(name string, n int) string {
+	parts := strings.Split(strings.Trim(name, "/"), "/")
+	if len(parts) <= n {
+		return ""
+	}
+	return strings.Join(parts[n:], "/")
+}
+
+func extractArchive(arc, dest string, strip int) (int, error) {
 	n := 0
 	switch {
 	case strings.HasSuffix(arc, ".zip"):
@@ -228,7 +277,11 @@ func extractArchive(arc, dest string) (int, error) {
 		}
 		defer r.Close() //nolint:errcheck // cleanup
 		for _, f := range r.File {
-			p, err := safeJoin(dest, f.Name)
+			name := stripComponents(f.Name, strip)
+			if name == "" {
+				continue
+			}
+			p, err := safeJoin(dest, name)
 			if err != nil {
 				return n, err
 			}
@@ -278,7 +331,11 @@ func extractArchive(arc, dest string) (int, error) {
 			if err != nil {
 				return n, err
 			}
-			p, err := safeJoin(dest, h.Name)
+			name := stripComponents(h.Name, strip)
+			if name == "" {
+				continue
+			}
+			p, err := safeJoin(dest, name)
 			if err != nil {
 				return n, err
 			}
