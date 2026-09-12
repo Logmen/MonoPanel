@@ -29,7 +29,7 @@
 <main class="min-h-screen grid place-items-center px-5">
   <div class="w-full max-w-sm" in:fly={{ y: 14, duration: dur(320) }}>
     <div class="flex items-center gap-3 mb-6">
-      <span class="w-11 h-11 rounded-xl bg-accent text-white grid place-items-center font-bold text-lg shadow-[0_0_0_6px_var(--accent-glow)]">M</span>
+      <span class="logo-mark w-11 h-11 rounded-xl bg-accent text-white grid place-items-center font-bold text-lg shadow-[0_0_0_6px_var(--accent-glow)]">M</span>
       <div>
         <h1 class="text-2xl font-semibold tracking-tight leading-none">MonoPanel</h1>
         <p class="text-muted text-xs mt-1 font-mono">{location.hostname}{auth.version ? ' · v' + auth.version : ''}</p>

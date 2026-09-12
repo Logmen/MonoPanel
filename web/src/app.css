@@ -1,75 +1,96 @@
 @import "tailwindcss";
+/* Шрифты лежат в пакете: панель не ходит за ними в интернет. Play — заголовки и
+   меню (техно-гротеск с кириллицей), Exo 2 — текст, JetBrains Mono — данные. */
+@import "@fontsource/play/400.css";
+@import "@fontsource/play/700.css";
+@import "@fontsource/exo-2/400.css";
+@import "@fontsource/exo-2/500.css";
+@import "@fontsource/exo-2/600.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
 
-/* ── Design tokens: light is the base, dark redefines the same names ────── */
+/* ── Design tokens: light is the base, dark redefines the same names ──────
+   Стиль «киберпанк»: один акцент — циан, магента и кислотный жёлтый только для
+   состояний, срезанные углы вместо скруглений, свечение у активного. Светлая
+   тема — та же система на холодном светлом фоне. */
 :root {
   color-scheme: light;
-  --bg: #f2f4f6;
+  --bg: #eef3f8;
   --surface: #ffffff;
-  --surface-2: #f7f9fa;
-  --ink: #141b22;
-  --muted: #5d6b79;
-  --line: #dde3e9;
-  --line-strong: #c3ccd5;
-  --accent: #0f8a7f;
-  --accent-ink: #0a6a61;
-  --accent-soft: #dff3ef;
-  --accent-glow: rgba(15, 138, 127, 0.22);
-  --ok: #1f8a4c;
-  --ok-soft: #e2f4e9;
-  --warn: #b0600c;
-  --warn-soft: #fbeedc;
-  --danger: #b6261b;
-  --danger-soft: #fce8e6;
-  --shadow: 0 1px 2px rgba(20, 27, 34, 0.05), 0 10px 30px -18px rgba(20, 27, 34, 0.25);
-  --glow-a: rgba(15, 138, 127, 0.16);
-  --glow-b: rgba(15, 138, 127, 0.05);
+  --surface-2: #f3f7fb;
+  --ink: #0b1a2a;
+  --muted: #5a7086;
+  --line: #cfdbe6;
+  --line-strong: #a9bccd;
+  --accent: #0aa5c2;
+  --accent-ink: #067a92;
+  --accent-soft: #dff6fb;
+  --accent-glow: rgba(10, 165, 194, 0.22);
+  --ok: #14875f;
+  --ok-soft: #e0f5ec;
+  --warn: #a06a00;
+  --warn-soft: #fbf1d6;
+  --danger: #c2186f;
+  --danger-soft: #fce4f0;
+  --shadow: 0 1px 2px rgba(11, 26, 42, 0.05), 0 10px 30px -18px rgba(11, 26, 42, 0.25);
+  --glow-a: rgba(10, 165, 194, 0.14);
+  --glow-b: rgba(10, 165, 194, 0.04);
+  --grid: rgba(10, 165, 194, 0.06);
+  --scan: rgba(0, 0, 0, 0);
+  --text-glow: none;
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0d1117;
-  --surface: #151b23;
-  --surface-2: #1b232c;
-  --ink: #e6edf3;
-  --muted: #8b9aa9;
-  --line: #262f39;
-  --line-strong: #3a4653;
-  --accent: #2ed3c0;
-  --accent-ink: #8feee3;
-  --accent-soft: #0f2e2b;
-  --accent-glow: rgba(46, 211, 192, 0.25);
-  --ok: #4ed28a;
-  --ok-soft: #0f2d1c;
-  --warn: #f0a03d;
-  --warn-soft: #33230c;
-  --danger: #ff7b72;
-  --danger-soft: #3a1614;
-  --shadow: none;
-  --glow-a: rgba(46, 211, 192, 0.14);
-  --glow-b: rgba(46, 211, 192, 0.03);
+  --bg: #05070c;
+  --surface: #0b0f18;
+  --surface-2: #0f1622;
+  --ink: #d6e9f5;
+  --muted: #6f8aa3;
+  --line: #172b3d;
+  --line-strong: #235068;
+  --accent: #21e6ff;
+  --accent-ink: #8ff4ff;
+  --accent-soft: #0a2a33;
+  --accent-glow: rgba(33, 230, 255, 0.35);
+  --ok: #38f0a0;
+  --ok-soft: #0a2a1c;
+  --warn: #f2ff3d;
+  --warn-soft: #2b2d0a;
+  --danger: #ff2ea6;
+  --danger-soft: #33102a;
+  --shadow: inset 0 0 0 1px rgba(33, 230, 255, 0.06);
+  --glow-a: rgba(33, 230, 255, 0.12);
+  --glow-b: rgba(33, 230, 255, 0.02);
+  --grid: rgba(33, 230, 255, 0.035);
+  --scan: rgba(255, 255, 255, 0.025);
+  --text-glow: 0 0 12px rgba(33, 230, 255, 0.55);
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --bg: #0d1117;
-    --surface: #151b23;
-    --surface-2: #1b232c;
-    --ink: #e6edf3;
-    --muted: #8b9aa9;
-    --line: #262f39;
-    --line-strong: #3a4653;
-    --accent: #2ed3c0;
-    --accent-ink: #8feee3;
-    --accent-soft: #0f2e2b;
-    --accent-glow: rgba(46, 211, 192, 0.25);
-    --ok: #4ed28a;
-    --ok-soft: #0f2d1c;
-    --warn: #f0a03d;
-    --warn-soft: #33230c;
-    --danger: #ff7b72;
-    --danger-soft: #3a1614;
-    --shadow: none;
-    --glow-a: rgba(46, 211, 192, 0.14);
-    --glow-b: rgba(46, 211, 192, 0.03);
+    --bg: #05070c;
+    --surface: #0b0f18;
+    --surface-2: #0f1622;
+    --ink: #d6e9f5;
+    --muted: #6f8aa3;
+    --line: #172b3d;
+    --line-strong: #235068;
+    --accent: #21e6ff;
+    --accent-ink: #8ff4ff;
+    --accent-soft: #0a2a33;
+    --accent-glow: rgba(33, 230, 255, 0.35);
+    --ok: #38f0a0;
+    --ok-soft: #0a2a1c;
+    --warn: #f2ff3d;
+    --warn-soft: #2b2d0a;
+    --danger: #ff2ea6;
+    --danger-soft: #33102a;
+    --shadow: inset 0 0 0 1px rgba(33, 230, 255, 0.06);
+    --glow-a: rgba(33, 230, 255, 0.12);
+    --glow-b: rgba(33, 230, 255, 0.02);
+    --grid: rgba(33, 230, 255, 0.035);
+    --scan: rgba(255, 255, 255, 0.025);
+    --text-glow: 0 0 12px rgba(33, 230, 255, 0.55);
   }
 }
 
@@ -90,8 +111,17 @@
   --color-warn-soft: var(--warn-soft);
   --color-danger: var(--danger);
   --color-danger-soft: var(--danger-soft);
-  --font-sans: ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-mono: ui-monospace, "JetBrains Mono", "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+  --font-sans: "Exo 2", ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Play", "Exo 2", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+  /* Скруглений в этой теме нет: срезанные углы делает clip-path у панелей и кнопок. */
+  --radius-xs: 0px;
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+  --radius-2xl: 0px;
+  --radius-3xl: 0px;
 }
 
 html, body {
@@ -104,21 +134,29 @@ html, body {
 ::selection { background: var(--accent-glow); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+/* Заголовки страниц и меню — дисплейным шрифтом, капителью с разрядкой;
+   моноширинные заголовки (домены) остаются как есть. */
+.page-title:not(.font-mono) { font-family: var(--font-display); text-transform: uppercase; letter-spacing: 0.12em; font-weight: 700; text-shadow: var(--text-glow); }
+.page-title.font-mono { font-weight: 400; }
+.nav-item { font-family: var(--font-display); letter-spacing: 0.04em; border-left: 2px solid transparent; }
+.nav-on { border-left-color: var(--accent); text-shadow: var(--text-glow); background: linear-gradient(90deg, var(--accent-soft), transparent); }
+.logo-mark { color: var(--bg); clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 9px, 100% 100%, 9px 100%, 0 calc(100% - 9px)); box-shadow: none; }
+
 @layer components {
-  .btn { @apply inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium border border-line bg-surface text-ink cursor-pointer select-none transition-[background-color,border-color,box-shadow,transform,color] duration-150 hover:bg-surface-2 hover:border-line-strong active:scale-[.98] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100; }
-  .btn-primary { @apply bg-accent text-white border-accent hover:bg-accent hover:brightness-110 hover:border-accent shadow-[0_1px_0_rgba(0,0,0,.05)]; }
+  .btn { @apply inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold uppercase tracking-[0.08em] border border-line-strong bg-surface text-accent-ink cursor-pointer select-none transition-[background-color,border-color,box-shadow,transform,color] duration-150 hover:bg-surface-2 hover:border-line-strong active:scale-[.98] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100; }
+  .btn-primary { @apply bg-accent text-bg border-accent hover:bg-accent hover:brightness-110 hover:border-accent; }
   .btn-danger { @apply text-danger border-danger/40 hover:bg-danger-soft hover:border-danger; }
-  .btn-ghost { @apply border-transparent bg-transparent hover:bg-surface-2; }
+  .btn-ghost { @apply border-transparent bg-transparent text-muted hover:bg-surface-2 hover:text-ink; }
   .btn-sm { @apply px-2 py-1 text-xs; }
-  .input { @apply w-full rounded-md border border-line bg-surface text-ink px-2.5 py-1.5 text-sm transition-[border-color,box-shadow] duration-150 placeholder:text-muted/70 focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/25; }
+  .input { @apply w-full rounded-md border border-line border-b-line-strong bg-surface text-ink font-mono px-2.5 py-1.5 text-sm transition-[border-color,box-shadow] duration-150 placeholder:text-muted/70 focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/25; }
   select.input { @apply pr-7; }
-  .label { @apply block text-[11px] uppercase tracking-wider text-muted mb-1 font-mono; }
-  .card { @apply bg-surface border border-line rounded-xl p-4 shadow-(--shadow) transition-[background-color,border-color] duration-200; }
+  .label { @apply block text-[11px] uppercase tracking-[0.14em] text-muted mb-1 font-mono; }
+  .card { @apply relative bg-surface border border-line rounded-xl p-4 shadow-(--shadow) transition-[background-color,border-color] duration-200; }
   .tbl { @apply w-full text-sm border-collapse; }
-  .tbl th { @apply text-left text-[11px] uppercase tracking-wider text-muted font-mono font-medium px-3 py-2.5 border-b border-line bg-surface-2 first:rounded-tl-xl last:rounded-tr-xl; }
+  .tbl th { @apply text-left text-[11px] uppercase tracking-[0.14em] text-muted font-mono font-normal px-3 py-2.5 border-b border-line-strong; background: color-mix(in srgb, var(--accent) 5%, transparent); }
   .tbl td { @apply px-3 py-2.5 border-b border-line align-top; }
   .tbl tbody tr { @apply transition-colors duration-100; }
-  .tbl tbody tr:hover { background: color-mix(in srgb, var(--surface-2) 70%, transparent); }
+  .tbl tbody tr:hover { background: color-mix(in srgb, var(--accent) 5%, transparent); }
   .tbl tbody tr:last-child td { @apply border-b-0; }
   /* На телефоне таблица нечитаема: строка становится карточкой, а заголовки
      колонок — подписями слева от значений (через data-label на ячейках). */
@@ -146,20 +184,25 @@ html, body {
     .tbl td[colspan] { @apply justify-center text-center; }
   }
 
-  .tag { @apply inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-mono leading-4 whitespace-nowrap; }
+  .tag { @apply inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-mono uppercase tracking-[0.06em] leading-4 whitespace-nowrap; }
   .tag-ok { @apply border-ok/40 text-ok bg-ok-soft; }
   .tag-warn { @apply border-warn/40 text-warn bg-warn-soft; }
   .tag-err { @apply border-danger/40 text-danger bg-danger-soft; }
   .tag-muted { @apply border-line text-muted bg-surface-2; }
   .tag-accent { @apply border-accent/40 text-accent-ink bg-accent-soft; }
-  .dot { @apply inline-block w-1.5 h-1.5 rounded-full bg-current; }
+  .dot { @apply inline-block w-1.5 h-1.5 rounded-full bg-current shadow-[0_0_6px_currentColor]; }
   .dot-live { animation: pulse-dot 1.4s ease-in-out infinite; }
-  .code { @apply text-xs font-mono whitespace-pre-wrap leading-5 bg-surface-2 border border-line rounded-lg p-3 overflow-auto; }
+  .code { @apply text-xs font-mono whitespace-pre-wrap leading-5 bg-bg border border-line rounded-lg p-3 overflow-auto; }
   .tabs { @apply flex gap-1 border-b border-line mb-4 overflow-x-auto; }
-  .tab { @apply px-3 py-2 text-sm text-muted border-b-2 border-transparent -mb-px cursor-pointer transition-colors duration-150 hover:text-ink whitespace-nowrap; }
-  .tab-on { @apply text-accent-ink border-accent font-medium; }
-  .kpi { @apply bg-surface border border-line rounded-xl p-4 shadow-(--shadow) flex flex-col gap-1 min-w-0 transition-[background-color,border-color] duration-200; }
-  .kpi-v { @apply text-xl font-semibold tracking-tight font-mono tabular-nums truncate; }
+  .tab { @apply px-3 py-2 text-xs uppercase tracking-[0.08em] text-muted border-b-2 border-transparent -mb-px cursor-pointer transition-colors duration-150 hover:text-ink whitespace-nowrap; font-family: var(--font-display); }
+  .tab-on { @apply text-accent-ink border-accent; text-shadow: var(--text-glow); }
+  .kpi { @apply relative bg-surface border border-line rounded-xl p-4 shadow-(--shadow) flex flex-col gap-1 min-w-0 transition-[background-color,border-color] duration-200; }
+  .kpi-v { @apply text-xl font-medium tracking-tight font-mono tabular-nums truncate; text-shadow: var(--text-glow); }
+  /* Срезанный угол и акцентная засечка — «форма» темы. Тень clip-path режет,
+     поэтому у панелей она только внутренняя. */
+  .card, .kpi { clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px)); }
+  .card::before, .kpi::before { content: ""; position: absolute; left: 0; top: 0; width: 26px; height: 2px; background: var(--accent); box-shadow: 0 0 8px var(--accent-glow); }
+  .btn { clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 7px, 100% 100%, 7px 100%, 0 calc(100% - 7px)); }
   .rise { animation: rise 0.42s cubic-bezier(0.22, 1, 0.36, 1) both; animation-delay: calc(var(--i, 0) * 28ms); }
   .skel { @apply rounded-md bg-surface-2 relative overflow-hidden; }
   .skel::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, var(--accent-glow), transparent); animation: shimmer 1.3s infinite; }
@@ -175,11 +218,16 @@ html, body {
 @keyframes stripes { to { background-position: 28px 0; } }
 @keyframes drift { 0% { transform: translate(-6%, -4%) scale(1); } 50% { transform: translate(4%, 6%) scale(1.08); } 100% { transform: translate(-6%, -4%) scale(1); } }
 
-.progress { height: 6px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line); overflow: hidden; }
-.progress > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; transition: width 0.45s cubic-bezier(0.22, 1, 0.36, 1); }
+.progress { height: 5px; background: color-mix(in srgb, var(--accent) 12%, transparent); overflow: hidden; }
+.progress > i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-ink)); box-shadow: 0 0 8px var(--accent-glow); transition: width 0.45s cubic-bezier(0.22, 1, 0.36, 1); }
 .progress.running > i { background-image: linear-gradient(45deg, rgba(255,255,255,.22) 25%, transparent 25%, transparent 50%, rgba(255,255,255,.22) 50%, rgba(255,255,255,.22) 75%, transparent 75%); background-size: 28px 28px; animation: stripes 0.9s linear infinite; }
 
-.glow { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
+/* Фон: сетка и едва заметные строки развёртки поверх дрейфующего свечения. */
+.glow { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none;
+  background:
+    linear-gradient(var(--grid) 1px, transparent 1px) 0 0 / 100% 48px,
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px) 0 0 / 48px 100%; }
+.glow::after { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(180deg, var(--scan) 0 1px, transparent 1px 3px); }
 .glow::before { content: ""; position: absolute; width: 60vw; height: 60vw; left: 20vw; top: -20vw; border-radius: 50%; background: radial-gradient(closest-side, var(--glow-a), var(--glow-b) 60%, transparent); filter: blur(30px); animation: drift 26s ease-in-out infinite; }
 
 @media (prefers-reduced-motion: reduce) {
