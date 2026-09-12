@@ -116,5 +116,5 @@ fi
 
 echo
 echo "Установлено. Дальше:"
-echo "  mp setup                         # администратор, каталоги, сервисы"
-echo "  mp update settings --repo $REPO  # обновляться из релизов этого репозитория"
+echo "  mp setup     # администратор, каталоги, сервисы"
+echo "  mp update    # обновления: релизы $REPO (сборка знает свой репозиторий; сменить — mp update settings --repo owner/name)"

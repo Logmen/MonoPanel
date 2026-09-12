@@ -581,12 +581,13 @@ type SitePreset struct {
 
 // UpdateSettings says where the panel looks for new versions of itself.
 type UpdateSettings struct {
-	Repo       string `json:"repo" doc:"Репозиторий с релизами в виде owner/name"`
-	API        string `json:"api,omitempty" doc:"Адрес API репозитория; пусто — api.github.com (для GitHub Enterprise)"`
-	Channel    string `json:"channel" doc:"stable — только релизы, beta — ещё и предрелизы"`
-	HasToken   bool   `json:"has_token" doc:"Токен доступа сохранён (обязателен для приватного репозитория)"`
-	CheckHours int    `json:"check_hours" doc:"Как часто проверять обновления; 0 — не проверять"`
-	AutoApply  bool   `json:"auto_apply" doc:"Устанавливать найденное обновление без подтверждения"`
+	Repo        string `json:"repo" doc:"Репозиторий с релизами в виде owner/name"`
+	RepoBuiltIn bool   `json:"repo_builtin" doc:"Репозиторий взят из сборки панели, а не из настроек"`
+	API         string `json:"api,omitempty" doc:"Адрес API репозитория; пусто — api.github.com (для GitHub Enterprise)"`
+	Channel     string `json:"channel" doc:"stable — только релизы, beta — ещё и предрелизы"`
+	HasToken    bool   `json:"has_token" doc:"Токен доступа сохранён (обязателен для приватного репозитория)"`
+	CheckHours  int    `json:"check_hours" doc:"Как часто проверять обновления; 0 — не проверять"`
+	AutoApply   bool   `json:"auto_apply" doc:"Устанавливать найденное обновление без подтверждения"`
 }
 
 // UpdateSettingsRequest changes them. Omitted fields keep their value.

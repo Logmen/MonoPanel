@@ -5,7 +5,10 @@ VERSION := $(patsubst v%,%,$(VERSION))
 RPMARCH  = $(if $(filter arm64,$(ARCH)),aarch64,x86_64)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-LDFLAGS := -s -w -X monopanel/internal/buildinfo.Version=$(VERSION) -X monopanel/internal/buildinfo.Commit=$(COMMIT) -X monopanel/internal/buildinfo.Date=$(DATE)
+# REPO is baked into the binary as the place to look for releases; the
+# release workflow passes the repository it runs in, a local build takes origin.
+REPO ?= $(shell git remote get-url origin 2>/dev/null | sed -nE 's#^(git@|https://)github\.com[:/]([^/]+/[^/.]+)(\.git)?$$#\2#p')
+LDFLAGS := -s -w -X monopanel/internal/buildinfo.Version=$(VERSION) -X monopanel/internal/buildinfo.Commit=$(COMMIT) -X monopanel/internal/buildinfo.Date=$(DATE) -X monopanel/internal/buildinfo.Repo=$(REPO)
 GO      ?= go
 ARCH    ?= amd64
 # Where `make deploy-dev` and `make e2e` point. Keep your own host out of the

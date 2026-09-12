@@ -53,7 +53,7 @@ jobs:
         run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.44.0
 
       - name: packages
-        run: make packages VERSION="$VERSION"
+        run: make packages VERSION="$VERSION" REPO="$GITHUB_REPOSITORY"
 
       # Servers with a pinned key install nothing that is not signed here.
       - name: sign the checksums

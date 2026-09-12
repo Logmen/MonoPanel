@@ -38,7 +38,14 @@ hand — `.deb` and `.rpm` for amd64 and arm64 are attached to every
 
 `mp setup` creates the service user, the directories, the database, a self-signed
 certificate and the administrator account, then prints the panel's address and the
-password.
+password. The panel updates from the releases of the repository the package was built
+from: `mp update` shows it as built-in, and only a fork or a private repository needs
+the setting changed.
+
+The script does not use the GitHub API: the latest tag comes from the `/releases/latest`
+redirect and the files from their plain download links, so the anonymous API quota
+(60 requests an hour per address) cannot block an install. The panel itself falls back
+to the same links when it checks for updates and the quota is exhausted.
 
 Requires root, systemd and one of: Debian 12/13, Ubuntu 22.04/24.04/26.04,
 AlmaLinux, Rocky Linux or Oracle Linux 9/10. The whole matrix runs on a

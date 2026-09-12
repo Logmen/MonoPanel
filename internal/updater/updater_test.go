@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -227,5 +228,59 @@ func TestSaveToSlowLinkAndStall(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "b.deb")); err == nil {
 		t.Fatal("a failed download must not leave the file in place")
+	}
+}
+
+// With the anonymous API quota gone, a public repository is still readable:
+// the site's redirect names the latest tag and the assets have plain
+// addresses. A token means a private repository, where nothing else works.
+func TestClientFallsBackWithoutAPIWhenRateLimited(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, `{"message":"API rate limit exceeded for 203.0.113.9."}`)
+	}))
+	defer api.Close()
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/acme/panel/releases/latest":
+			http.Redirect(w, r, "/acme/panel/releases/tag/v0.7.2", http.StatusFound)
+		case "/acme/empty/releases/latest":
+			http.Redirect(w, r, "/acme/empty/releases", http.StatusFound)
+		case "/acme/panel/releases/download/v0.7.2/SHA256SUMS":
+			http.Redirect(w, r, "/objects/sums", http.StatusFound)
+		case "/objects/sums":
+			fmt.Fprint(w, "0000  monopanel_0.7.2_amd64.deb\n")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer site.Close()
+	ctx := context.Background()
+	c := &Client{Repo: "acme/panel", API: api.URL, Site: site.URL}
+	rel, err := c.Latest(ctx, ChannelStable)
+	if err != nil || rel.Version != "0.7.2" || rel.Tag != "v0.7.2" {
+		t.Fatalf("latest without the API: %v %+v", err, rel)
+	}
+	a, err := Select(rel, "debian", "amd64")
+	if err != nil || a.URL != site.URL+"/acme/panel/releases/download/v0.7.2/monopanel_0.7.2_amd64.deb" {
+		t.Fatalf("asset by name: %v %+v", err, a)
+	}
+	sums, _ := rel.Asset(SumsFile)
+	if b, err := c.Bytes(ctx, sums); err != nil || !strings.Contains(string(b), "monopanel_0.7.2_amd64.deb") {
+		t.Fatalf("checksum list by its address: %v %q", err, b)
+	}
+	if rel, err := c.ByTag(ctx, "0.7.2"); err != nil || rel.Version != "0.7.2" {
+		t.Fatalf("by tag without the API: %v %+v", err, rel)
+	}
+	if _, err := c.ByTag(ctx, "0.1.0"); !errors.Is(err, ErrNoRelease) {
+		t.Fatalf("a tag without assets is no release: %v", err)
+	}
+	if _, err := (&Client{Repo: "acme/empty", API: api.URL, Site: site.URL}).Latest(ctx, ChannelStable); !errors.Is(err, ErrNoRelease) {
+		t.Fatalf("a repository without releases: %v", err)
+	}
+	c.Token = "token"
+	if _, err := c.Latest(ctx, ChannelStable); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("with a token the rate limit is reported, not worked around: %v", err)
 	}
 }

@@ -43,11 +43,18 @@ const (
 // DefaultAPI is GitHub's REST endpoint; tests point Client.API elsewhere.
 const DefaultAPI = "https://api.github.com"
 
+// DefaultSite is GitHub's web host: a public repository's releases are
+// reachable there without the API and its anonymous rate limit.
+const DefaultSite = "https://github.com"
+
 // Asset is one file attached to a release.
 type Asset struct {
 	Name string `json:"name"`
 	ID   int64  `json:"id"`
 	Size int64  `json:"size"`
+	// URL is the plain download address, set when the release was resolved
+	// without the API (the id and the size are unknown then).
+	URL string `json:"url,omitempty"`
 }
 
 // Release is a published version.
@@ -77,6 +84,7 @@ type Client struct {
 	Repo  string // owner/name
 	Token string
 	API   string // defaults to DefaultAPI
+	Site  string // defaults to DefaultSite
 	HTTP  *http.Client
 	// Idle is how long a response may send nothing before the request is
 	// given up (default one minute). There is no cap on the whole transfer:
@@ -86,6 +94,11 @@ type Client struct {
 
 // ErrNoRelease means the repository has no release for the channel.
 var ErrNoRelease = errors.New("no release published yet")
+
+// ErrRateLimited means GitHub's API refused the request because the address
+// used up its quota: 60 anonymous requests an hour, which a shared NAT
+// exhausts quickly. A public repository is then read without the API.
+var ErrRateLimited = errors.New("GitHub API rate limit exceeded")
 
 var repoRe = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
 
@@ -97,6 +110,13 @@ func (c *Client) base() string {
 		return strings.TrimSuffix(c.API, "/")
 	}
 	return DefaultAPI
+}
+
+func (c *Client) site() string {
+	if c.Site != "" {
+		return strings.TrimSuffix(c.Site, "/")
+	}
+	return DefaultSite
 }
 
 // http is a client without an overall deadline: connecting and the first
@@ -142,8 +162,12 @@ func (b *idleBody) Close() error {
 }
 
 func (c *Client) get(ctx context.Context, path, accept string) (*http.Response, error) {
+	return c.getURL(ctx, c.base()+path, accept)
+}
+
+func (c *Client) getURL(ctx context.Context, url, accept string) (*http.Response, error) {
 	rctx, cancel := context.WithCancel(ctx)
-	req, err := http.NewRequestWithContext(rctx, http.MethodGet, c.base()+path, nil)
+	req, err := http.NewRequestWithContext(rctx, http.MethodGet, url, nil)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -168,7 +192,10 @@ func (c *Client) get(ctx context.Context, path, accept string) (*http.Response, 
 		case http.StatusNotFound:
 			// A private repository answers 404 for a wrong or missing token too.
 			return nil, fmt.Errorf("%s: not found (check the repository name and the token)", c.Repo)
-		case http.StatusUnauthorized, http.StatusForbidden:
+		case http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests:
+			if res.Header.Get("X-RateLimit-Remaining") == "0" || res.StatusCode == http.StatusTooManyRequests {
+				return nil, fmt.Errorf("%s: %w (%s)", c.Repo, ErrRateLimited, msg)
+			}
 			// A public repository answers 401 to a token that is no longer
 			// valid — the token is then the problem, not the access.
 			if c.Token != "" {
@@ -213,6 +240,9 @@ func (c *Client) Latest(ctx context.Context, channel string) (*Release, error) {
 	}
 	res, err := c.get(ctx, "/repos/"+c.Repo+"/releases?per_page=30", "application/vnd.github+json")
 	if err != nil {
+		if errors.Is(err, ErrRateLimited) && c.Token == "" {
+			return c.latestWithoutAPI(ctx)
+		}
 		return nil, err
 	}
 	defer res.Body.Close()
@@ -249,6 +279,9 @@ func (c *Client) ByTag(ctx context.Context, tag string) (*Release, error) {
 	}
 	res, err := c.get(ctx, "/repos/"+c.Repo+"/releases/tags/"+tag, "application/vnd.github+json")
 	if err != nil {
+		if errors.Is(err, ErrRateLimited) && c.Token == "" {
+			return c.releaseWithoutAPI(ctx, tag)
+		}
 		return nil, err
 	}
 	defer res.Body.Close()
@@ -262,9 +295,89 @@ func (c *Client) ByTag(ctx context.Context, tag string) (*Release, error) {
 	return g.release(), nil
 }
 
+// latestWithoutAPI resolves the newest release the way a browser does: the
+// site redirects /releases/latest to the tag page. That is GitHub's own
+// notion of latest (the most recent non-prerelease), good enough while the
+// API's anonymous quota is gone; whoever installs still compares versions.
+func (c *Client) latestWithoutAPI(ctx context.Context) (*Release, error) {
+	loc, err := c.redirect(ctx, c.site()+"/"+c.Repo+"/releases/latest")
+	if err != nil {
+		return nil, err
+	}
+	// A repository without releases redirects to the releases list instead.
+	tag := loc[strings.LastIndex(loc, "/")+1:]
+	if !strings.HasPrefix(tag, "v") || !semver.IsValid(Normalize(Version(tag))) {
+		return nil, ErrNoRelease
+	}
+	return c.releaseWithoutAPI(ctx, tag)
+}
+
+// releaseWithoutAPI builds a release from its tag alone: the asset names are
+// fixed by the packaging and their download addresses are plain. The
+// checksum list is looked up first, so a wrong tag reads as no release.
+func (c *Client) releaseWithoutAPI(ctx context.Context, tag string) (*Release, error) {
+	if !strings.HasPrefix(tag, "v") {
+		tag = "v" + tag
+	}
+	base := c.site() + "/" + c.Repo + "/releases/download/" + tag + "/"
+	if _, err := c.redirect(ctx, base+SumsFile); err != nil {
+		return nil, err
+	}
+	version := Version(tag)
+	r := &Release{Tag: tag, Version: version, Name: "MonoPanel " + version}
+	names := []string{SumsFile, SigFile}
+	for _, kind := range []string{"deb", "rpm", "bin"} {
+		for _, arch := range []string{"amd64", "arm64"} {
+			names = append(names, AssetName(kind, arch, version))
+		}
+	}
+	for _, n := range names {
+		r.Assets = append(r.Assets, Asset{Name: n, URL: base + n})
+	}
+	return r, nil
+}
+
+// redirect asks where the site sends url without following: the redirect
+// target for a release page or an asset, url itself when it answers
+// directly, ErrNoRelease when there is nothing there.
+func (c *Client) redirect(ctx context.Context, url string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+	if err != nil {
+		return "", err
+	}
+	hc := *c.http()
+	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	res, err := hc.Do(req)
+	if err != nil {
+		return "", err
+	}
+	res.Body.Close()
+	switch {
+	case res.StatusCode >= 300 && res.StatusCode < 400:
+		if loc := res.Header.Get("Location"); loc != "" {
+			return loc, nil
+		}
+		return "", fmt.Errorf("%s: redirect without a location", url)
+	case res.StatusCode == http.StatusOK:
+		return url, nil
+	case res.StatusCode == http.StatusNotFound:
+		return "", ErrNoRelease
+	}
+	return "", fmt.Errorf("%s: %s", url, res.Status)
+}
+
+// getAsset fetches an asset: by its plain address when the release was
+// resolved without the API, through the API by id otherwise.
+func (c *Client) getAsset(ctx context.Context, a Asset) (*http.Response, error) {
+	if a.URL != "" {
+		return c.getURL(ctx, a.URL, "application/octet-stream")
+	}
+	return c.get(ctx, fmt.Sprintf("/repos/%s/releases/assets/%d", c.Repo, a.ID), "application/octet-stream")
+}
+
 // Bytes downloads a small asset (the checksum list and its signature).
 func (c *Client) Bytes(ctx context.Context, a Asset) ([]byte, error) {
-	res, err := c.get(ctx, fmt.Sprintf("/repos/%s/releases/assets/%d", c.Repo, a.ID), "application/octet-stream")
+	res, err := c.getAsset(ctx, a)
 	if err != nil {
 		return nil, err
 	}
@@ -276,7 +389,7 @@ func (c *Client) Bytes(ctx context.Context, a Asset) ([]byte, error) {
 // written next to its final name and renamed, so a half-finished download is
 // never handed to the package manager.
 func (c *Client) SaveTo(ctx context.Context, a Asset, path string) (string, error) {
-	res, err := c.get(ctx, fmt.Sprintf("/repos/%s/releases/assets/%d", c.Repo, a.ID), "application/octet-stream")
+	res, err := c.getAsset(ctx, a)
 	if err != nil {
 		return "", err
 	}

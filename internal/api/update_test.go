@@ -19,6 +19,7 @@ import (
 	"monopanel/internal/agent"
 	"monopanel/internal/apitypes"
 	"monopanel/internal/auth"
+	"monopanel/internal/buildinfo"
 	"monopanel/internal/config"
 	"monopanel/internal/store"
 	"monopanel/internal/updater"
@@ -259,4 +260,36 @@ func TestUpdateSettingsValidatedAndAdminOnly(t *testing.T) {
 	f.loginAs("alex", "alex-password")
 	f.call(http.MethodGet, "/system/update", nil, http.StatusForbidden, nil)
 	f.call(http.MethodPost, "/system/update/apply", map[string]any{}, http.StatusForbidden, nil)
+}
+
+// A package built from a repository knows where its releases live: without
+// a configured repository the panel checks there, until told otherwise.
+func TestUpdateRepositoryFromBuild(t *testing.T) {
+	rel := newRelease(t, "9.9.9")
+	prev := buildinfo.Repo
+	buildinfo.Repo = "acme/panel"
+	t.Cleanup(func() { buildinfo.Repo = prev })
+	f := newSiteFixture(t)
+	var st apitypes.UpdateStatus
+	f.call(http.MethodGet, "/system/update", nil, http.StatusOK, &st)
+	if st.Settings.Repo != "acme/panel" || !st.Settings.RepoBuiltIn {
+		t.Fatalf("the build's repository must be the default: %+v", st.Settings)
+	}
+	// The fake lives elsewhere and wants its token; the repository stays the built-in one.
+	f.call(http.MethodPut, "/system/update", map[string]any{"api": rel.URL, "token": "secret-token"}, http.StatusOK, &st)
+	f.call(http.MethodPost, "/system/update/check", nil, http.StatusOK, &st)
+	if !st.Available || st.Latest != "9.9.9" || !st.Settings.RepoBuiltIn {
+		t.Fatalf("check against the built-in repository: %+v", st)
+	}
+	// "-" switches updates off; it must not fall back to the build.
+	f.call(http.MethodPut, "/system/update", map[string]any{"repo": "-"}, http.StatusOK, &st)
+	if st.Settings.Repo != "" || st.Settings.RepoBuiltIn {
+		t.Fatalf("updates must be off: %+v", st.Settings)
+	}
+	f.call(http.MethodPost, "/system/update/check", nil, http.StatusUnprocessableEntity, nil)
+	// Naming the repository makes it a setting like any other.
+	f.call(http.MethodPut, "/system/update", map[string]any{"repo": "acme/panel"}, http.StatusOK, &st)
+	if st.Settings.Repo != "acme/panel" || st.Settings.RepoBuiltIn {
+		t.Fatalf("explicit repository: %+v", st.Settings)
+	}
 }

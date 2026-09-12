@@ -32,7 +32,10 @@ const defaultCheckHours = 24
 // updateConfig is the stored half of the update settings: where to look, how
 // often, and the access token (encrypted, like every other secret).
 type updateConfig struct {
-	Repo       string     `json:"repo,omitempty"`
+	Repo string `json:"repo,omitempty"`
+	// Disabled records an explicit "-": without it an empty Repo falls back
+	// to the repository the build came from.
+	Disabled   bool       `json:"disabled,omitempty"`
 	API        string     `json:"api,omitempty"`
 	Channel    string     `json:"channel,omitempty"`
 	TokenEnc   string     `json:"token_enc,omitempty"`
@@ -44,6 +47,21 @@ type updateConfig struct {
 	// does not depend on the repository being reachable.
 	Latest *updater.Release `json:"latest,omitempty"`
 }
+
+// repo is where releases are looked for: the configured repository, else
+// the one baked into the build, unless updates were switched off.
+func (c updateConfig) repo() string {
+	if c.Repo != "" {
+		return c.Repo
+	}
+	if c.Disabled {
+		return ""
+	}
+	return buildinfo.Repo
+}
+
+// repoBuiltIn reports that the repository comes from the build, not the settings.
+func (c updateConfig) repoBuiltIn() bool { return c.Repo == "" && c.repo() != "" }
 
 func (c updateConfig) channel() string {
 	if c.Channel == updater.ChannelBeta {
@@ -77,10 +95,10 @@ func (s *Server) saveUpdateConfig(ctx context.Context, c updateConfig) error {
 
 // updateClient builds a release client from the stored settings.
 func (s *Server) updateClient(c updateConfig) (*updater.Client, error) {
-	if c.Repo == "" {
+	if c.repo() == "" {
 		return nil, huma.Error422UnprocessableEntity("укажите репозиторий с релизами: mp update settings --repo owner/name")
 	}
-	cl := &updater.Client{Repo: c.Repo, API: c.API}
+	cl := &updater.Client{Repo: c.repo(), API: c.API}
 	if c.TokenEnc != "" {
 		if s.secrets == nil {
 			return nil, huma.Error500InternalServerError("ключ шифрования недоступен, токен репозитория прочитать нельзя")
@@ -101,7 +119,7 @@ func (s *Server) updateStatus(ctx context.Context, c updateConfig) apitypes.Upda
 		CheckedAt: c.CheckedAt,
 		LastError: c.LastError,
 		Settings: apitypes.UpdateSettings{
-			Repo: c.Repo, API: c.API, Channel: c.channel(), HasToken: c.TokenEnc != "",
+			Repo: c.repo(), RepoBuiltIn: c.repoBuiltIn(), API: c.API, Channel: c.channel(), HasToken: c.TokenEnc != "",
 			CheckHours: c.hours(), AutoApply: c.AutoApply,
 		},
 	}
@@ -180,18 +198,18 @@ func (s *Server) registerUpdate() {
 			// Turning updates off resets the whole source, endpoint and token
 			// included: leaving them behind makes the next repository inherit
 			// settings nobody meant for it.
-			c = updateConfig{CheckHours: c.CheckHours, AutoApply: c.AutoApply}
+			c = updateConfig{CheckHours: c.CheckHours, AutoApply: c.AutoApply, Disabled: true}
 		} else if r != "" {
 			r = strings.TrimSuffix(strings.TrimPrefix(r, "https://github.com/"), ".git")
 			if !updater.ValidRepo(r) {
 				return nil, huma.Error422UnprocessableEntity("репозиторий указывается как owner/name")
 			}
-			if r != c.Repo {
+			if r != c.repo() {
 				// A token belongs to the repository it was issued for and must
 				// not be sent to a different one.
 				c.Latest, c.CheckedAt, c.LastError, c.TokenEnc = nil, nil, "", ""
 			}
-			c.Repo = r
+			c.Repo, c.Disabled = r, false
 		}
 		switch a := strings.TrimSpace(in.Body.API); {
 		case a == "-":
@@ -253,7 +271,7 @@ func (s *Server) registerUpdate() {
 	}, func(ctx context.Context, in *updateApplyInput) (*jobRefOutput, error) {
 		p := principalFrom(ctx)
 		c := s.loadUpdateConfig(ctx)
-		if c.Repo == "" {
+		if c.repo() == "" {
 			return nil, huma.Error422UnprocessableEntity("укажите репозиторий с релизами")
 		}
 		job, err := s.jobs.Enqueue(ctx, "panel.update", panelUpdatePayload{Version: in.Body.Version},
@@ -328,7 +346,11 @@ func (s *Server) jobPanelUpdate(ctx context.Context, jc *jobs.Context) error {
 		os.Remove(local)
 		return fmt.Errorf("контрольная сумма %s не совпала с релизом", asset.Name)
 	}
-	jc.Logf("%s: %d КБ, sha256 %s…", asset.Name, asset.Size/1024, sum[:16])
+	if asset.Size > 0 {
+		jc.Logf("%s: %d КБ, sha256 %s…", asset.Name, asset.Size/1024, sum[:16])
+	} else {
+		jc.Logf("%s: sha256 %s…", asset.Name, sum[:16])
+	}
 
 	jc.Progress(70, "установка")
 	res, err := s.agent.InstallPanel(ctx, &agent.InstallPanelRequest{
@@ -406,7 +428,7 @@ func (s *Server) updateLoop(ctx context.Context) {
 		case <-t.C:
 		}
 		c := s.loadUpdateConfig(ctx)
-		if c.Repo == "" || c.hours() <= 0 {
+		if c.repo() == "" || c.hours() <= 0 {
 			continue
 		}
 		if c.CheckedAt != nil && time.Since(*c.CheckedAt) < time.Duration(c.hours())*time.Hour {

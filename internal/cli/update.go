@@ -180,6 +180,9 @@ func printUpdate(st *apitypes.UpdateStatus) {
 		if st.Settings.API != "" {
 			where += " @ " + st.Settings.API
 		}
+		if st.Settings.RepoBuiltIn {
+			where += ", из сборки"
+		}
 		fmt.Printf("Репозиторий: %s (%s)\n", where, st.Settings.Channel)
 	}
 	if st.Latest != "" {
