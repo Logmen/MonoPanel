@@ -157,6 +157,9 @@ matrix() {
 			e2e "$n"
 		) &
 		pids+=($!)
+		# eleven resets at once open eleven ssh sessions to the Proxmox host in
+		# the same second; sshd's MaxStartups drops the last one (ol10 every time)
+		sleep 2
 	done
 	for i in "${!names[@]}"; do
 		if wait "${pids[$i]}"; then results+=("${names[$i]} ok"); else results+=("${names[$i]} FAIL"); fi
