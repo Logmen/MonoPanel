@@ -531,3 +531,54 @@ func TestBitrixSecureCookieFollowsTLS(t *testing.T) {
 		t.Fatalf("bitrix pool with HTTPS must set session.cookie_secure:\n%s", pool)
 	}
 }
+
+// site fix puts a hand-reshaped tree back: directories and ACLs as on
+// creation, the client as owner of the whole site root, and on SELinux hosts
+// the labels the policy expects.
+func TestSiteFixRestoresOwnerACLsAndLabels(t *testing.T) {
+	f := newSiteFixture(t)
+	site := f.createSite(map[string]any{"domain": "fix.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	before := len(f.agent.Calls())
+	var out struct {
+		JobID int64 `json:"job_id"`
+	}
+	f.call(http.MethodPost, "/sites/"+site.Domain+"/fix", nil, http.StatusAccepted, &out)
+	if job := f.waitJob(out.JobID); job.Status != store.JobDone {
+		t.Fatalf("fix: %s %s", job.Status, job.Error)
+	}
+	root := "/var/www/alex/data/www/fix.example.com"
+	chown, acl, relabel := false, false, false
+	for _, c := range f.agent.Calls()[before:] {
+		body := string(c.Body)
+		switch {
+		case c.Path == "/v1/chown" && strings.Contains(body, root) && strings.Contains(body, `"recursive":true`) && strings.Contains(body, `"owner":"alex"`):
+			chown = true
+		case c.Path == "/v1/acl/set" && strings.Contains(body, root) && strings.Contains(body, `"default":true`):
+			acl = true
+		case c.Path == "/v1/tool" && strings.Contains(body, "restorecon"):
+			relabel = true
+		}
+	}
+	if !chown || !acl {
+		t.Fatalf("fix must chown the site root and reapply the web ACL: chown=%v acl=%v", chown, acl)
+	}
+	if relabel {
+		t.Fatal("no SELinux on Debian: nothing to relabel")
+	}
+}
+
+// On an EL host relabel calls restorecon through the agent, recursively.
+func TestRelabelOnEL(t *testing.T) {
+	withOSRelease(t, "ID=almalinux\nVERSION_ID=9.6\nID_LIKE=\"rhel centos fedora\"\n")
+	f := newSiteFixture(t)
+	f.s.relabel(f.ctx, nil, "/var/www/alice/data", true)
+	found := false
+	for _, c := range f.agent.Calls() {
+		if c.Path == "/v1/tool" && strings.Contains(string(c.Body), `"restorecon"`) && strings.Contains(string(c.Body), `"-R"`) && strings.Contains(string(c.Body), "/var/www/alice/data") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("restorecon -R expected: %v", f.agent.Tools())
+	}
+}

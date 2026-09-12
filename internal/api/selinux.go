@@ -3,6 +3,9 @@ package api
 import (
 	"context"
 	"fmt"
+	"monopanel/internal/apitypes"
+	"os"
+	"regexp"
 	"strings"
 
 	"monopanel/internal/agent"
@@ -88,4 +91,93 @@ func (s *Server) selinuxFileContext(ctx context.Context, spec, label string) err
 		return fmt.Errorf("semanage fcontext %s: %s", spec, strings.TrimSpace(res.Output))
 	}
 	return nil
+}
+
+// selinuxEnforcePath tells the SELinux mode: "1" enforcing, "0" permissive;
+// absent when SELinux is off or the kernel has none. Tests point it elsewhere.
+var selinuxEnforcePath = "/sys/fs/selinux/enforce"
+
+// relabel gives a client's tree the labels the policy expects. Files copied
+// with cp -a or rsync -X from /root keep admin_home_t, and a confined nginx
+// answers 403 for them — the classic EL support ticket. Nothing happens
+// without SELinux; a failure is logged, the operation itself succeeded.
+func (s *Server) relabel(ctx context.Context, jc *jobs.Context, dir string, recursive bool) {
+	if s.profile.MAC() != "selinux" {
+		return
+	}
+	args := []string{"-F"}
+	if recursive {
+		args = append(args, "-R")
+	}
+	res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "restorecon", Args: append(args, dir), TimeoutSeconds: 600})
+	switch {
+	case err != nil:
+		s.log.Warn("restorecon failed", "path", dir, "err", err)
+	case res.ExitCode != 0:
+		s.log.Warn("restorecon failed", "path", dir, "output", strings.TrimSpace(res.Output))
+	case jc != nil:
+		jc.Logf("SELinux labels restored under %s", dir)
+	}
+}
+
+// avcRe picks the pieces of a raw audit record the panel reports: the
+// process, the target (nginx records often carry only name=, not path=),
+// the object class and the label the target had.
+var avcRe = regexp.MustCompile(`comm="([^"]*)"|(?:path|name)="([^"]*)"|tclass=(\S+)|tcontext=\w+:\w+:(\w+):`)
+
+// selinuxCheck is the doctor's SELinux line: the mode, and today's denials
+// for the web domain (nginx and php-fpm both run as httpd_t) with the site
+// the last one points at, so a 403 caused by a label is told apart from one
+// caused by permissions. Nil where SELinux is not in the picture.
+func (s *Server) selinuxCheck(ctx context.Context) *apitypes.Check {
+	raw, err := os.ReadFile(selinuxEnforcePath)
+	if err != nil {
+		return nil
+	}
+	mode := "permissive"
+	if strings.TrimSpace(string(raw)) == "1" {
+		mode = "enforcing"
+	}
+	res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "ausearch", Args: []string{"-m", "AVC", "-ts", "today", "--raw"}, TimeoutSeconds: 30})
+	if err != nil || (res.ExitCode != 0 && !strings.Contains(res.Output, "no matches")) {
+		c := check("selinux", "ok", mode+"; audit log not readable, denials unknown")
+		return &c
+	}
+	denials, last := 0, ""
+	for _, line := range strings.Split(res.Output, "\n") {
+		if !strings.Contains(line, "avc:  denied") || !strings.Contains(line, ":httpd_t:") {
+			continue
+		}
+		denials++
+		comm, target, class, label := "", "", "", ""
+		for _, m := range avcRe.FindAllStringSubmatch(line, -1) {
+			switch {
+			case m[1] != "":
+				comm = m[1]
+			case m[2] != "":
+				target = m[2]
+			case m[3] != "":
+				class = m[3]
+			case m[4] != "":
+				label = m[4]
+			}
+		}
+		last = fmt.Sprintf("%s → %s (%s, %s)", comm, target, class, label)
+		switch rel, ok := strings.CutPrefix(target, strings.TrimSuffix(s.cfg.WWWRoot, "/")+"/"); {
+		case ok:
+			// /var/www/<login>/data/www/<domain>/...: the site to fix
+			if parts := strings.SplitN(rel, "/", 5); len(parts) >= 4 && parts[1] == "data" && parts[2] == "www" {
+				last += "; mp site fix " + parts[3]
+			}
+		case strings.HasSuffix(label, "_home_t"):
+			// copied from /root or a home directory with cp -a / rsync -X
+			last += "; a file copied from a home directory — mp site fix <domain>"
+		}
+	}
+	if denials == 0 {
+		c := check("selinux", "ok", mode+", no denials for the web server today")
+		return &c
+	}
+	c := check("selinux", "warn", fmt.Sprintf("%s; %d denial(s) for the web server today, last: %s", mode, denials, last))
+	return &c
 }

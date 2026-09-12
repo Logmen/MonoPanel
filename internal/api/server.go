@@ -137,6 +137,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	s.jobs.Register("php.install", s.jobPHPInstall)
 	s.jobs.Register("php.remove", s.jobPHPRemove)
 	s.jobs.Register("site.apply", s.jobSiteApply)
+	s.jobs.Register("site.fix", s.jobSiteFix)
 	s.jobs.Register("site.delete", s.jobSiteDelete)
 	s.jobs.Register("backup.run", s.jobBackupRun)
 	s.jobs.Register("backup.restore", s.jobBackupRestore)

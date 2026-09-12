@@ -163,6 +163,10 @@ func (s *Server) registerFiles() {
 		if in.Body.Op == "size" || in.Body.Op == "extract" {
 			res.Value, _ = strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
 		}
+		if in.Body.Op == "extract" {
+			// an archive may carry SELinux labels from another host
+			s.relabel(ctx, nil, path.Join(s.homeOf(u), in.Body.Dest), true)
+		}
 		s.db.Audit(ctx, store.AuditEntry{Actor: principalFrom(ctx).Login, Action: "files." + in.Body.Op, Target: u.Login + ":" + in.Body.Path, IP: requestInfo(ctx).IP})
 		return &filesOpOutput{Body: res}, nil
 	})

@@ -282,9 +282,10 @@ func siteCmd() *cobra.Command {
 	set.Flags().BoolVar(&allowAll, "allow-all", false, "снять ограничение по IP")
 	set.Flags().StringVar(&preset, "preset", "", "пресет CMS: wordpress, joomla, bitrix, opencart; пустая строка — универсальный")
 
-	for _, action := range []string{"apply", "suspend", "unsuspend"} {
+	for _, action := range []string{"apply", "suspend", "unsuspend", "fix"} {
 		action := action
-		short := map[string]string{"apply": "перегенерировать и применить конфигурацию", "suspend": "приостановить (503-заглушка, пул остановлен)", "unsuspend": "снова включить"}[action]
+		short := map[string]string{"apply": "перегенерировать и применить конфигурацию", "suspend": "приостановить (503-заглушка, пул остановлен)", "unsuspend": "снова включить",
+			"fix": "починить владельца, права, ACL и метки SELinux файлов сайта"}[action]
 		c.AddCommand(&cobra.Command{Use: action + " <domain>", Short: short, Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 			cl, err := newClient()
 			if err != nil {

@@ -428,15 +428,27 @@ func (s *Server) registerSites() {
 		return &siteJobOutput{Status: http.StatusAccepted, Body: apitypes.SiteWithJob{Site: site, JobID: jobID}}, nil
 	})
 
-	for _, action := range []string{"apply", "suspend", "unsuspend"} {
+	for _, action := range []string{"apply", "suspend", "unsuspend", "fix"} {
 		action := action
+		summary := strings.ToUpper(action[:1]) + action[1:] + " a site (async)"
+		if action == "fix" {
+			summary = "Fix the owner, modes, ACLs and SELinux labels of a site's files (async)"
+		}
 		huma.Register(s.api, huma.Operation{
-			OperationID: "sites-" + action, Method: http.MethodPost, Path: "/sites/{domain}/" + action, Summary: strings.ToUpper(action[:1]) + action[1:] + " a site (async)", Tags: []string{"sites"}, Security: secured, DefaultStatus: http.StatusAccepted,
+			OperationID: "sites-" + action, Method: http.MethodPost, Path: "/sites/{domain}/" + action, Summary: summary, Tags: []string{"sites"}, Security: secured, DefaultStatus: http.StatusAccepted,
 		}, func(ctx context.Context, in *siteDomainInput) (*siteJobOutput, error) {
 			p := principalFrom(ctx)
 			site, err := s.loadSiteFor(ctx, in.Domain)
 			if err != nil {
 				return nil, err
+			}
+			if action == "fix" {
+				job, err := s.jobs.Enqueue(ctx, "site.fix", sitePayload{SiteID: site.ID}, jobs.WithLockKey("site:"+site.Domain), jobs.WithRequestedBy(p.Login))
+				if err != nil {
+					return nil, err
+				}
+				s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "site.fix", Target: site.Domain, IP: requestInfo(ctx).IP})
+				return &siteJobOutput{Status: http.StatusAccepted, Body: apitypes.SiteWithJob{Site: site, JobID: job.ID}}, nil
 			}
 			switch action {
 			case "suspend":
@@ -554,6 +566,76 @@ func (s *Server) certForSite(ctx context.Context, site *store.Site) *store.Certi
 }
 
 // jobSiteApply renders and applies the pool, nginx (and Apache) configuration.
+// siteTree makes the client's directories with their modes and gives the
+// web group its ACLs: on creation, and again by site.fix after someone
+// reshaped the tree by hand.
+func (s *Server) siteTree(ctx context.Context, jc *jobs.Context, l *siteLayout, login string) error {
+	dirs := []agent.DirSpec{
+		{Path: l.home, Mode: 0o710, Owner: login, Group: login},
+		{Path: l.data, Mode: 0o750, Owner: login, Group: login},
+		{Path: path.Join(l.data, "www"), Mode: 0o750, Owner: login, Group: login},
+		{Path: l.siteRoot, Mode: 0o750, Owner: login, Group: login},
+		{Path: path.Join(l.data, "logs"), Mode: 0o750, Owner: login, Group: login},
+		{Path: path.Join(l.data, "tmp"), Mode: 0o700, Owner: login, Group: login},
+		{Path: path.Join(l.data, "tmp", "sess"), Mode: 0o700, Owner: login, Group: login},
+		{Path: path.Join(l.data, "bin"), Mode: 0o750, Owner: login, Group: login},
+		{Path: path.Join(s.cfg.RunDir, "php"), Mode: 0o755, Owner: "root", Group: "root"},
+	}
+	if l.docroot != l.siteRoot {
+		dirs = append(dirs, agent.DirSpec{Path: l.docroot, Mode: 0o750, Owner: login, Group: login})
+	}
+	if _, err := s.agent.EnsureDirs(ctx, &agent.EnsureDirsRequest{Dirs: dirs}); err != nil {
+		return err
+	}
+	if err := s.ensurePackages(ctx, jc, "acl"); err != nil {
+		return err
+	}
+	webACL := "g:" + s.cfg.WebGroup
+	for _, d := range []string{l.home, l.data, path.Join(l.data, "www")} {
+		if err := s.agent.SetACL(ctx, &agent.SetACLRequest{Path: d, Entries: []string{webACL + ":x"}}); err != nil {
+			return err
+		}
+	}
+	return s.agent.SetACL(ctx, &agent.SetACLRequest{Path: l.siteRoot, Entries: []string{webACL + ":rX"}, Default: true, Recursive: true})
+}
+
+// jobSiteFix puts a site's files back in order after someone worked on them
+// as root: directories and ACLs as on creation, the client as the owner of
+// the whole site tree, SELinux labels the policy expects (files copied with
+// cp -a from /root keep admin_home_t and nginx answers 403 for them).
+func (s *Server) jobSiteFix(ctx context.Context, jc *jobs.Context) error {
+	var p sitePayload
+	if err := jc.Unmarshal(&p); err != nil {
+		return err
+	}
+	site, err := s.db.GetSite(ctx, p.SiteID)
+	if err != nil {
+		return err
+	}
+	user, err := s.db.GetUserByID(ctx, site.UserID)
+	if err != nil {
+		return err
+	}
+	if user.UnixUID == nil {
+		return errors.New("owner has no unix account yet")
+	}
+	l := s.layoutFor(site, user)
+	jc.Progress(10, "directories and ACLs")
+	if err := s.siteTree(ctx, jc, l, user.Login); err != nil {
+		return err
+	}
+	jc.Progress(40, "owner")
+	ch, err := s.agent.Chown(ctx, &agent.ChownRequest{Path: l.siteRoot, Owner: user.Login, Group: user.Login, Recursive: true})
+	if err != nil {
+		return err
+	}
+	jc.Logf("owner %s under %s: %d objects changed", user.Login, l.siteRoot, ch.Changed)
+	jc.Progress(70, "SELinux labels")
+	s.relabel(ctx, jc, l.data, true)
+	jc.Progress(100, "fixed")
+	return nil
+}
+
 func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 	var p sitePayload
 	if err := jc.Unmarshal(&p); err != nil {
@@ -590,33 +672,7 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 	suspended := site.Status == store.SiteSuspended
 
 	jc.Progress(10, "directories and permissions")
-	dirs := []agent.DirSpec{
-		{Path: l.home, Mode: 0o710, Owner: login, Group: login},
-		{Path: l.data, Mode: 0o750, Owner: login, Group: login},
-		{Path: path.Join(l.data, "www"), Mode: 0o750, Owner: login, Group: login},
-		{Path: l.siteRoot, Mode: 0o750, Owner: login, Group: login},
-		{Path: path.Join(l.data, "logs"), Mode: 0o750, Owner: login, Group: login},
-		{Path: path.Join(l.data, "tmp"), Mode: 0o700, Owner: login, Group: login},
-		{Path: path.Join(l.data, "tmp", "sess"), Mode: 0o700, Owner: login, Group: login},
-		{Path: path.Join(l.data, "bin"), Mode: 0o750, Owner: login, Group: login},
-		{Path: path.Join(s.cfg.RunDir, "php"), Mode: 0o755, Owner: "root", Group: "root"},
-	}
-	if l.docroot != l.siteRoot {
-		dirs = append(dirs, agent.DirSpec{Path: l.docroot, Mode: 0o750, Owner: login, Group: login})
-	}
-	if _, err := s.agent.EnsureDirs(ctx, &agent.EnsureDirsRequest{Dirs: dirs}); err != nil {
-		return s.siteFail(ctx, site, err)
-	}
-	if err := s.ensurePackages(ctx, jc, "acl"); err != nil {
-		return s.siteFail(ctx, site, err)
-	}
-	webACL := "g:" + s.cfg.WebGroup
-	for _, d := range []string{l.home, l.data, path.Join(l.data, "www")} {
-		if err := s.agent.SetACL(ctx, &agent.SetACLRequest{Path: d, Entries: []string{webACL + ":x"}}); err != nil {
-			return s.siteFail(ctx, site, err)
-		}
-	}
-	if err := s.agent.SetACL(ctx, &agent.SetACLRequest{Path: l.siteRoot, Entries: []string{webACL + ":rX"}, Default: true, Recursive: true}); err != nil {
+	if err := s.siteTree(ctx, jc, l, login); err != nil {
 		return s.siteFail(ctx, site, err)
 	}
 	if !proxy {

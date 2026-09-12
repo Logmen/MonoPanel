@@ -41,6 +41,7 @@ var tools = map[string][]string{
 	"semanage":        {"/usr/sbin/semanage"},
 	"setsebool":       {"/usr/sbin/setsebool"},
 	"restorecon":      {"/usr/sbin/restorecon"},
+	"ausearch":        {"/usr/sbin/ausearch"}, // doctor: SELinux denials of the web domain
 	"firewall-cmd":    {"/usr/bin/firewall-cmd"},
 	"postmap":         {"/usr/sbin/postmap"},
 	"postconf":        {"/usr/sbin/postconf"},

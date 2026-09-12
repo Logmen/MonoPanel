@@ -391,6 +391,9 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 			add(check("jobs", "ok", "no failures in 24h"))
 		}
 	}
+	if c := s.selinuxCheck(actx); c != nil {
+		add(*c)
+	}
 	if h := s.cfg.Web.Hostname; h != "" {
 		addrs, err := publicLookup(actx, h)
 		local := map[string]bool{}

@@ -393,6 +393,7 @@ func (s *Server) migrateFiles(ctx context.Context, jc *jobs.Context, src *migrat
 		return err
 	}
 	jc.Logf("%s: файлы распакованы в %s, владелец исправлен у %d объектов", part, dest, ch.Changed)
+	s.relabel(ctx, jc, dest, true)
 	return nil
 }
 
