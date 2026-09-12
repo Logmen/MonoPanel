@@ -43,12 +43,15 @@ func TestDoctorReportsSELinuxDenials(t *testing.T) {
 	if sel.Status != "warn" || !strings.Contains(sel.Detail, "enforcing") || !strings.Contains(sel.Detail, "1 denial") || !strings.Contains(sel.Detail, "php-fpm") || !strings.Contains(sel.Detail, "admin_home_t") || !strings.Contains(sel.Detail, "mp site fix wp.example.com") {
 		t.Fatalf("selinux check: %+v", sel)
 	}
+	if sel.Action != "site.fix" || sel.Target != "wp.example.com" {
+		t.Fatalf("the finding must carry the fix for a button: %+v", sel)
+	}
 
 	// nginx records name only the file: the label still tells where it came from.
 	f.agent.ToolOutput["ausearch"] = `type=AVC msg=audit(1757660002.300:202): avc:  denied  { getattr } for  pid=901 comm="nginx" name="label.php" dev="vda1" ino=2 scontext=system_u:system_r:httpd_t:s0 tcontext=unconfined_u:object_r:admin_home_t:s0 tclass=file permissive=0` + "\n"
 	f.call(http.MethodGet, "/system/doctor", nil, http.StatusOK, &d)
 	for _, c := range d.Checks {
-		if c.Name == "selinux" && (c.Status != "warn" || !strings.Contains(c.Detail, "nginx → label.php") || !strings.Contains(c.Detail, "mp site fix <domain>")) {
+		if c.Name == "selinux" && (c.Status != "warn" || !strings.Contains(c.Detail, "nginx → label.php") || !strings.Contains(c.Detail, "mp site fix <domain>") || c.Action != "site.fix" || c.Target != "*") {
 			t.Fatalf("selinux check for a name-only record: %+v", c)
 		}
 	}
@@ -110,7 +113,7 @@ func TestSELinuxSwitch(t *testing.T) {
 	found := false
 	for _, c := range d.Checks {
 		if c.Name == "selinux" {
-			found = c.Status == "warn" && strings.Contains(c.Detail, "permissive")
+			found = c.Status == "warn" && strings.Contains(c.Detail, "permissive") && c.Action == "selinux.enforcing"
 		}
 	}
 	if !found {

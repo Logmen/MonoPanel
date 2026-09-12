@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { notify } from '$lib/state.svelte';
   import { onMount } from 'svelte';
   import { api, bytes } from '$lib/api';
   import Chart from '$lib/components/Chart.svelte';
@@ -7,6 +8,26 @@
   let status = $state<any>(null);
   let metrics = $state<any>(null);
   let doctor = $state<any>(null);
+  let fixing = $state('');
+  // Doctor's findings carry an action: site.fix (owner, modes, ACLs, SELinux
+  // labels of one site or every site) or selinux.enforcing. One click, then
+  // the diagnostics are read again.
+  async function fixSites(target: string) {
+    fixing = target;
+    try {
+      const domains: string[] = target === '*' ? ((await api('/sites')) as any[]).map((s) => s.domain) : [target];
+      const jobs: number[] = [];
+      for (const d of domains) { const r: any = await api(`/sites/${d}/fix`, { method: 'POST' }); jobs.push(r.job_id); }
+      notify(domains.length === 1 ? `починка ${domains[0]}: задача #${jobs[0]}` : `починка ${domains.length} сайтов: задачи #${jobs[0]}–#${jobs[jobs.length - 1]}`);
+      await new Promise((r) => setTimeout(r, 4000));
+      try { doctor = await api('/system/doctor'); } catch { /* keep the old report */ }
+    } catch (e: any) { notify(e?.text || String(e), 'err'); } finally { fixing = ''; }
+  }
+  async function enforce() {
+    fixing = 'selinux';
+    try { await api('/system/selinux', { method: 'PUT', json: { mode: 'enforcing' } }); notify('SELinux: enforcing'); try { doctor = await api('/system/doctor'); } catch { /* keep */ } }
+    catch (e: any) { notify(e?.text || String(e), 'err'); } finally { fixing = ''; }
+  }
   let range = $state('24h');
   let error = $state('');
   async function load() {
@@ -63,7 +84,10 @@
     <div class="flex justify-between items-center mb-3"><span class="font-medium">Диагностика</span><span class="text-xs text-muted font-mono">{doctor.summary}</span></div>
     <ul class="text-sm grid md:grid-cols-2 gap-x-6 gap-y-1">
       {#each doctor.checks as c, i}
-        <li class="flex items-start gap-2 py-0.5 rise" style="--i:{i}"><span class="tag {c.status === 'ok' ? 'tag-ok' : c.status === 'warn' ? 'tag-warn' : 'tag-err'} w-12 justify-center">{c.status}</span><span class="font-mono text-xs pt-0.5 shrink-0">{c.name}</span><span class="text-muted text-xs pt-0.5 truncate" title={c.detail}>{c.detail}</span></li>
+        <li class="flex items-start gap-2 py-0.5 rise" style="--i:{i}"><span class="tag {c.status === 'ok' ? 'tag-ok' : c.status === 'warn' ? 'tag-warn' : 'tag-err'} w-12 justify-center">{c.status}</span><span class="font-mono text-xs pt-0.5 shrink-0">{c.name}</span><span class="text-muted text-xs pt-0.5 truncate" title={c.detail}>{c.detail}</span>
+          {#if c.action === 'site.fix' && c.target}<button class="btn btn-sm shrink-0" onclick={() => fixSites(c.target)} disabled={!!fixing}>{fixing ? 'чиню…' : c.target === '*' ? 'починить все сайты' : `починить ${c.target}`}</button>{/if}
+          {#if c.action === 'selinux.enforcing'}<button class="btn btn-sm shrink-0" onclick={enforce} disabled={!!fixing}>вернуть enforcing</button>{/if}
+        </li>
       {/each}
     </ul>
   </div>

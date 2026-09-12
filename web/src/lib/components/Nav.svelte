@@ -9,7 +9,7 @@
   const items: [string, string, string][] = [
     ['/', 'Дашборд', 'home'], ['/sites', 'Сайты', 'globe'], ['/users', 'Пользователи', 'users'], ['/php', 'PHP', 'code'],
     ['/stack', 'Расширения', 'box'], ['/databases', 'Базы данных', 'db'],
-    ['/mail', 'Почта', 'mail'], ['/files', 'Файлы', 'file'], ['/ssl', 'SSL', 'shield'], ['/jobs', 'Задачи', 'tasks'], ['/firewall', 'Firewall', 'fire'], ['/backups', 'Бэкапы', 'archive'], ['/settings', 'Настройки', 'settings']
+    ['/mail', 'Почта', 'mail'], ['/files', 'Файлы', 'file'], ['/ssl', 'SSL', 'shield'], ['/jobs', 'Задачи', 'tasks'], ['/firewall', 'Firewall', 'fire'], ['/backups', 'Бэкапы', 'archive'], ['/console', 'Консоль', 'terminal'], ['/settings', 'Настройки', 'settings']
   ];
   const admin = $derived(auth.me?.role === 'admin');
   const visible = $derived(items.filter(([href]) => admin || ['/', '/sites', '/databases', '/mail', '/files', '/jobs', '/settings'].includes(href)));

@@ -95,6 +95,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 		s.registerSystem()
 		s.registerSELinux()
 		s.registerCMS()
+		s.registerConsole()
 		s.registerAuth()
 		s.registerUsers()
 		s.registerJobs()

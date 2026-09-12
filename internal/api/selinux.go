@@ -240,6 +240,7 @@ func (s *Server) selinuxCheck(ctx context.Context) *apitypes.Check {
 	if mode != "enforcing" {
 		// switched off on purpose (mp selinux permissive) or by hand: say so every time
 		c := check("selinux", "warn", "permissive: denials are only logged, the web domain is not confined (mp selinux enforcing)")
+		c.Action = "selinux.enforcing"
 		return &c
 	}
 	res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "ausearch", Args: []string{"-m", "AVC", "-ts", "today", "--raw"}, TimeoutSeconds: 30})
@@ -249,35 +250,37 @@ func (s *Server) selinuxCheck(ctx context.Context) *apitypes.Check {
 		c := check("selinux", "ok", mode+"; audit log not readable, denials unknown")
 		return &c
 	}
-	denials, last := 0, ""
+	denials, last, action, target := 0, "", "", ""
 	for _, line := range strings.Split(res.Output, "\n") {
 		if !strings.Contains(line, "avc:  denied") || !strings.Contains(line, ":httpd_t:") {
 			continue
 		}
 		denials++
-		comm, target, class, label := "", "", "", ""
+		comm, obj, class, label := "", "", "", ""
 		for _, m := range avcRe.FindAllStringSubmatch(line, -1) {
 			switch {
 			case m[1] != "":
 				comm = m[1]
 			case m[2] != "":
-				target = m[2]
+				obj = m[2]
 			case m[3] != "":
 				class = m[3]
 			case m[4] != "":
 				label = m[4]
 			}
 		}
-		last = fmt.Sprintf("%s → %s (%s, %s)", comm, target, class, label)
-		switch rel, ok := strings.CutPrefix(target, strings.TrimSuffix(s.cfg.WWWRoot, "/")+"/"); {
+		last = fmt.Sprintf("%s → %s (%s, %s)", comm, obj, class, label)
+		switch rel, ok := strings.CutPrefix(obj, strings.TrimSuffix(s.cfg.WWWRoot, "/")+"/"); {
 		case ok:
 			// /var/www/<login>/data/www/<domain>/...: the site to fix
 			if parts := strings.SplitN(rel, "/", 5); len(parts) >= 4 && parts[1] == "data" && parts[2] == "www" {
 				last += "; mp site fix " + parts[3]
+				action, target = "site.fix", parts[3]
 			}
 		case strings.HasSuffix(label, "_home_t"):
 			// copied from /root or a home directory with cp -a / rsync -X
 			last += "; a file copied from a home directory — mp site fix <domain>"
+			action, target = "site.fix", "*"
 		}
 	}
 	if denials == 0 {
@@ -285,5 +288,6 @@ func (s *Server) selinuxCheck(ctx context.Context) *apitypes.Check {
 		return &c
 	}
 	c := check("selinux", "warn", fmt.Sprintf("%s; %d denial(s) for the web server today, last: %s", mode, denials, last))
+	c.Action, c.Target = action, target
 	return &c
 }

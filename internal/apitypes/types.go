@@ -364,6 +364,11 @@ type Check struct {
 	Name   string `json:"name"`
 	Status string `json:"status" enum:"ok,warn,fail"`
 	Detail string `json:"detail,omitempty"`
+	// Action names what the panel can do about the finding, for a button in
+	// the UI: site.fix (Target: the domain, or * for every site) or
+	// selinux.enforcing.
+	Action string `json:"action,omitempty"`
+	Target string `json:"target,omitempty"`
 }
 
 // SELinuxStatus is the host's SELinux state: the live mode and the one
@@ -937,4 +942,10 @@ type CMSInstallResult struct {
 	AdminPassword string `json:"admin_password,omitempty"`
 	AdminEmail    string `json:"admin_email"`
 	Database      string `json:"database"`
+}
+
+// ConsoleRequest is one mp command for the web console: the arguments after
+// "mp", run with the caller's rights.
+type ConsoleRequest struct {
+	Args []string `json:"args" minItems:"1" maxItems:"64" doc:"The arguments after mp, e.g. [\"site\", \"list\"]"`
 }

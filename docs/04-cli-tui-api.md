@@ -33,6 +33,8 @@ mp site suspend | unsuspend | enable | disable <domain>
 mp site apply <domain>               # принудительная перегенерация конфигов сайта
 mp site fix <domain>                          # владелец, права, ACL и метки SELinux файлов сайта (после cp -a из /root и т.п.)
 mp selinux [enforcing|permissive] [--yes]     # режим SELinux; permissive только после предупреждения и подтверждения
+# Веб-консоль («Консоль» в меню, только администратор): те же команды mp с правами вошедшего, POST /system/console {"args": [...]}
+# отдаёт вывод потоком text/plain; каждая команда получает одноразовый токен, служебные команды (api, agent, helper, fsop, setup) недоступны.
 mp cms list                                   # какие CMS панель ставит и откуда берёт дистрибутивы
 mp cms install <domain> wordpress|joomla|opencart|bitrix [--title] [--admin-login] [--admin-password|--password-stdin] [--admin-email] [--force]
                                               # Битрикс: --edition start|standard|small_business|business, --solution clean|demo|<vendor.solution из Маркетплейса>
