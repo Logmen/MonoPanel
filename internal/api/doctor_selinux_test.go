@@ -53,11 +53,16 @@ func TestDoctorReportsSELinuxDenials(t *testing.T) {
 		}
 	}
 
-	// Nothing denied: the mode alone, and the line is green.
-	f.agent.ToolOutput["ausearch"] = ""
+	// Nothing denied: ausearch exits 1 and prints nothing in --raw mode; the line is green.
+	f.agent.ToolHook = func(req agent.ToolRequest) *agent.ToolResponse {
+		if req.Name == "ausearch" {
+			return &agent.ToolResponse{ExitCode: 1}
+		}
+		return nil
+	}
 	f.call(http.MethodGet, "/system/doctor", nil, http.StatusOK, &d)
 	for _, c := range d.Checks {
-		if c.Name == "selinux" && (c.Status != "ok" || !strings.Contains(c.Detail, "enforcing")) {
+		if c.Name == "selinux" && (c.Status != "ok" || !strings.Contains(c.Detail, "no denials")) {
 			t.Fatalf("selinux without denials: %+v", c)
 		}
 	}

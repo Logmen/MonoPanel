@@ -243,7 +243,9 @@ func (s *Server) selinuxCheck(ctx context.Context) *apitypes.Check {
 		return &c
 	}
 	res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "ausearch", Args: []string{"-m", "AVC", "-ts", "today", "--raw"}, TimeoutSeconds: 30})
-	if err != nil || (res.ExitCode != 0 && !strings.Contains(res.Output, "no matches")) {
+	// ausearch exits 1 when nothing matched — silently in --raw mode
+	nothing := res != nil && res.ExitCode == 1 && (strings.TrimSpace(res.Output) == "" || strings.Contains(res.Output, "no matches"))
+	if err != nil || (res.ExitCode != 0 && !nothing) {
 		c := check("selinux", "ok", mode+"; audit log not readable, denials unknown")
 		return &c
 	}
