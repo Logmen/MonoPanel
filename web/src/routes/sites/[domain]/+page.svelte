@@ -24,7 +24,7 @@
   let tlsOpen = $state(false);
   /* CMS tab: the catalogue, the install form, the credentials shown once */
   let cmsList = $state<any[]>([]);
-  let cmsForm = $state({ cms: 'wordpress', title: '', admin_login: '', admin_password: '', admin_email: '', edition: 'start', force: false });
+  let cmsForm = $state({ cms: 'wordpress', title: '', admin_login: '', admin_password: '', admin_email: '', edition: 'start', solution: 'clean', solutionId: '', force: false });
   let cmsResult = $state<any>(null);
   let cmsBusy = $state(false);
   let tform = $state({ staging: false, dns: '' });
@@ -63,7 +63,7 @@
     try {
       const body: any = { cms: cmsForm.cms, force: cmsForm.force };
       for (const k of ['title', 'admin_login', 'admin_password', 'admin_email'] as const) if (cmsForm[k]) body[k] = cmsForm[k];
-      if (cmsForm.cms === 'bitrix') body.edition = cmsForm.edition;
+      if (cmsForm.cms === 'bitrix') { body.edition = cmsForm.edition; body.solution = cmsForm.solution === 'custom' ? cmsForm.solutionId : cmsForm.solution; }
       cmsResult = await api(`/sites/${domain}/cms`, { method: 'POST', json: body });
       job = cmsResult.job_id;
       notify(`${cmsForm.cms}: установка запущена`);
@@ -202,7 +202,11 @@
         <div><label class="label" for="cl">Логин администратора</label><input id="cl" class="input" bind:value={cmsForm.admin_login} placeholder="admin" /></div>
         <div><label class="label" for="cp">Пароль администратора</label><input id="cp" class="input" type="password" bind:value={cmsForm.admin_password} placeholder="12–20 символов, иначе сгенерируется" /></div>
         <div><label class="label" for="ce">E-mail администратора</label><input id="ce" class="input" bind:value={cmsForm.admin_email} placeholder="e-mail владельца" /></div>
-        {#if cmsForm.cms === 'bitrix'}<div><label class="label" for="ced">Редакция</label><select id="ced" class="input" bind:value={cmsForm.edition}><option value="start">Старт</option><option value="business">Бизнес</option></select></div>{/if}
+        {#if cmsForm.cms === 'bitrix'}
+          <div><label class="label" for="ced">Редакция (пробная)</label><select id="ced" class="input" bind:value={cmsForm.edition}><option value="start">Старт</option><option value="standard">Стандарт</option><option value="small_business">Малый бизнес</option><option value="business">Бизнес</option></select></div>
+          <div><label class="label" for="csol">Решение</label><select id="csol" class="input" bind:value={cmsForm.solution}><option value="clean">Чистая установка (Маркетплейс)</option><option value="demo">Демо-сайт из дистрибутива</option><option value="custom">Решение из Маркетплейса по id</option></select></div>
+          {#if cmsForm.solution === 'custom'}<div><label class="label" for="csid">Id решения</label><input id="csid" class="input font-mono" bind:value={cmsForm.solutionId} placeholder="vendor.solution" /></div>{/if}
+        {/if}
         <label class="flex items-center gap-1.5 text-sm md:col-span-2"><input type="checkbox" bind:checked={cmsForm.force} /> заменить файлы в непустом docroot</label>
         <div class="md:col-span-3 text-xs text-muted">{cmsList.find((c) => c.id === cmsForm.cms)?.notes ?? ''}</div>
         <div class="md:col-span-3"><button class="btn btn-primary" disabled={cmsBusy}><Icon name="plus" size={14} /> {cmsBusy ? 'запускаю…' : 'Установить'}</button></div>

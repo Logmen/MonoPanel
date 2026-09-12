@@ -34,7 +34,8 @@ mp site apply <domain>               # принудительная переге
 mp site fix <domain>                          # владелец, права, ACL и метки SELinux файлов сайта (после cp -a из /root и т.п.)
 mp selinux [enforcing|permissive] [--yes]     # режим SELinux; permissive только после предупреждения и подтверждения
 mp cms list                                   # какие CMS панель ставит и откуда берёт дистрибутивы
-mp cms install <domain> wordpress|joomla|opencart|bitrix [--title] [--admin-login] [--admin-password|--password-stdin] [--admin-email] [--edition start|business] [--force]
+mp cms install <domain> wordpress|joomla|opencart|bitrix [--title] [--admin-login] [--admin-password|--password-stdin] [--admin-email] [--force]
+                                              # Битрикс: --edition start|standard|small_business|business, --solution clean|demo|<vendor.solution из Маркетплейса>
                                               # пресет, база <login>_<cms>, файлы, штатный установщик; доступы печатаются один раз
 mp config apply --all                # полный reconcile
 

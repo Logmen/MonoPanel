@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 
@@ -46,8 +47,8 @@ var cmsCatalog = []cmsDef{
 	{ID: "wordpress", Name: "WordPress", Preset: presetWordPress, Source: "wordpress.org (latest), wp-cli с wp-cli.org", AdminPath: "wp-admin/", Notes: "ЧПУ-ссылки включены пресетом; письмо администратору не отправляется."},
 	{ID: "joomla", Name: "Joomla", Preset: presetJoomla, Source: "github.com/joomla/joomla-cms, последний релиз", AdminPath: "administrator/", Notes: "Каталог installation/ удаляется после установки."},
 	{ID: "opencart", Name: "OpenCart", Preset: presetOpenCart, Source: "github.com/opencart/opencart, последний релиз", AdminPath: "admin/", Notes: "Каталог install/ удаляется после установки; storage/ закрыт пресетом."},
-	{ID: "bitrix", Name: "1С-Битрикс", Preset: presetBitrix, Source: "1c-bitrix.ru, пробная редакция (start или business)", AdminPath: "bitrix/admin/", Editions: []string{"start", "business"},
-		Notes: "Пробная версия с регистрацией на 1c-bitrix.ru от имени администратора сайта; ставится первое встроенное решение. Лицензионный ключ вводится потом в настройках Битрикса."},
+	{ID: "bitrix", Name: "1С-Битрикс", Preset: presetBitrix, Source: "1c-bitrix.ru, пробная редакция: start, standard, small_business или business", AdminPath: "bitrix/admin/", Editions: []string{"start", "standard", "small_business", "business"},
+		Notes: "Пробная версия с регистрацией на 1c-bitrix.ru от имени администратора сайта. По умолчанию ставится «Чистая установка» из Маркетплейса (без демо-сайта); demo — демо-сайт из дистрибутива; можно указать id решения из Маркетплейса. Лицензионный ключ вводится потом в настройках Битрикса, редакция должна совпадать с ключом."},
 }
 
 func cmsByID(id string) *cmsDef {
@@ -69,6 +70,7 @@ type cmsPayload struct {
 	AdminEmail       string `json:"admin_email"`
 	AdminPasswordEnc string `json:"admin_password_enc"`
 	Edition          string `json:"edition,omitempty"`
+	Solution         string `json:"solution,omitempty"`
 	Database         string `json:"database"`
 	DBPasswordEnc    string `json:"db_password_enc"`
 	Force            bool   `json:"force,omitempty"`
@@ -141,8 +143,11 @@ func (s *Server) registerCMS() {
 		if s.secrets == nil {
 			return nil, huma.Error500InternalServerError("the encryption key is unavailable")
 		}
-		if def.Editions == nil && in.Body.Edition != "" {
-			return nil, huma.Error422UnprocessableEntity(def.Name + " has no editions")
+		if def.Editions == nil && (in.Body.Edition != "" || in.Body.Solution != "") {
+			return nil, huma.Error422UnprocessableEntity(def.Name + " has no editions or solutions to choose")
+		}
+		if in.Body.Solution != "" && !cmsSolutionRe.MatchString(in.Body.Solution) {
+			return nil, huma.Error422UnprocessableEntity("solution: clean, demo or a marketplace id like vendor.solution")
 		}
 		login := in.Body.AdminLogin
 		if login == "" {
@@ -165,7 +170,7 @@ func (s *Server) registerCMS() {
 		if title == "" {
 			title = site.Domain
 		}
-		dbName, err := s.freeDatabaseName(ctx, owner, def.ID)
+		dbName, err := s.freeDatabaseName(ctx, owner, def.ID, in.Body.Force)
 		if err != nil {
 			return nil, err
 		}
@@ -178,7 +183,7 @@ func (s *Server) registerCMS() {
 		if err != nil {
 			return nil, err
 		}
-		payload := cmsPayload{SiteID: site.ID, CMS: def.ID, Title: title, AdminLogin: login, AdminEmail: email, AdminPasswordEnc: pwEnc, Edition: in.Body.Edition, Database: dbName, DBPasswordEnc: dbEnc, Force: in.Body.Force}
+		payload := cmsPayload{SiteID: site.ID, CMS: def.ID, Title: title, AdminLogin: login, AdminEmail: email, AdminPasswordEnc: pwEnc, Edition: in.Body.Edition, Solution: in.Body.Solution, Database: dbName, DBPasswordEnc: dbEnc, Force: in.Body.Force}
 		if site.Preset != def.Preset {
 			site.Preset = def.Preset
 			if err := s.db.UpdateSite(ctx, site); err != nil {
@@ -207,15 +212,20 @@ func (s *Server) siteURL(ctx context.Context, site *store.Site) string {
 	return "http://" + site.Domain
 }
 
-// freeDatabaseName is <login>_<cms>, with a number when that is taken.
-func (s *Server) freeDatabaseName(ctx context.Context, owner *store.User, cms string) (string, error) {
-	for i := 0; i < 10; i++ {
-		name := owner.Login + "_" + cms
+// freeDatabaseName is <login>_<cms>, with a number when that is taken. A
+// forced reinstall takes the plain name back: the job empties it first.
+func (s *Server) freeDatabaseName(ctx context.Context, owner *store.User, cms string, reuse bool) (string, error) {
+	base := owner.Login + "_" + cms
+	if len(base) > 32 {
+		return "", huma.Error422UnprocessableEntity("login_cms exceeds MySQL's 32-character account limit")
+	}
+	if reuse {
+		return base, nil
+	}
+	for i := 0; i < 20; i++ {
+		name := base
 		if i > 0 {
-			name = fmt.Sprintf("%s%d", name, i+1)
-		}
-		if len(name) > 32 {
-			return "", huma.Error422UnprocessableEntity("login_cms exceeds MySQL's 32-character account limit")
+			name = fmt.Sprintf("%s%d", base, i+1)
 		}
 		if _, err := s.db.GetDatabaseByName(ctx, name); errors.Is(err, store.ErrNotFound) {
 			return name, nil
@@ -223,7 +233,7 @@ func (s *Server) freeDatabaseName(ctx context.Context, owner *store.User, cms st
 			return "", err
 		}
 	}
-	return "", huma.Error422UnprocessableEntity("too many " + cms + " databases already")
+	return "", huma.Error422UnprocessableEntity("too many " + cms + " databases already; reinstall with force to reuse " + base)
 }
 
 // jobSiteCMS does the install: the preset (when it changed), an empty
@@ -304,6 +314,12 @@ func (s *Server) jobSiteCMS(ctx context.Context, jc *jobs.Context) error {
 	if err != nil {
 		return err
 	}
+	if p.Force {
+		// a forced reinstall starts from an empty database, as it starts from an empty docroot
+		if _, err := s.mysqlExec(ctx, "DROP DATABASE IF EXISTS `"+p.Database+"`;\n"); err != nil {
+			return fmt.Errorf("drop database %s: %w", p.Database, err)
+		}
+	}
 	if _, _, err := s.createDatabase(ctx, inst, owner, p.Database, dbPassword, nil); err != nil {
 		return fmt.Errorf("database %s: %w", p.Database, err)
 	}
@@ -317,7 +333,7 @@ func (s *Server) jobSiteCMS(ctx context.Context, jc *jobs.Context) error {
 
 	jc.Progress(60, "running the "+def.Name+" installer")
 	siteURL := s.siteURL(ctx, site)
-	ins := cmsInstall{def: def, site: site, owner: owner, layout: l, rel: rel, url: siteURL, title: p.Title, login: p.AdminLogin, password: adminPassword, email: p.AdminEmail, db: p.Database, dbPassword: dbPassword, edition: p.Edition}
+	ins := cmsInstall{def: def, site: site, owner: owner, layout: l, rel: rel, url: siteURL, title: p.Title, login: p.AdminLogin, password: adminPassword, email: p.AdminEmail, db: p.Database, dbPassword: dbPassword, edition: p.Edition, solution: p.Solution}
 	switch def.ID {
 	case "wordpress":
 		version, err = s.cmsInstallWordPress(ctx, jc, ins)
@@ -458,11 +474,11 @@ func zipToTar(zr *zip.Reader, w io.Writer) error {
 
 // cmsInstall carries what the installers need.
 type cmsInstall struct {
-	def                                                              *cmsDef
-	site                                                             *store.Site
-	owner                                                            *store.User
-	layout                                                           *siteLayout
-	rel, url, title, login, password, email, db, dbPassword, edition string
+	def                                                                        *cmsDef
+	site                                                                       *store.Site
+	owner                                                                      *store.User
+	layout                                                                     *siteLayout
+	rel, url, title, login, password, email, db, dbPassword, edition, solution string
 }
 
 // run executes the CMS's own installer as the client, in the docroot.
@@ -557,6 +573,13 @@ func (s *Server) cmsInstallOpenCart(ctx context.Context, jc *jobs.Context, in cm
 	return nil
 }
 
+// cmsSolutionRe accepts the two words and a marketplace id (vendor.solution).
+var cmsSolutionRe = regexp.MustCompile(`^(clean|demo|[a-z0-9_]+\.[a-z0-9_.]+)$`)
+
+// bitrixCleanSolution is the marketplace's «Чистая установка «1С-Битрикс»»:
+// the edition without a demo site, the way most sites start.
+const bitrixCleanSolution = "nsandrey.emptyinstall"
+
 func (s *Server) cmsInstallBitrix(ctx context.Context, jc *jobs.Context, in cmsInstall) error {
 	overrides := map[string]string{
 		"__wiz_agree_license": "Y", "__wiz_lic_key_variant": "Y",
@@ -564,11 +587,30 @@ func (s *Server) cmsInstallBitrix(ctx context.Context, jc *jobs.Context, in cmsI
 		"__wiz_host": "localhost", "__wiz_create_user": "N", "__wiz_user": in.db, "__wiz_password": in.dbPassword,
 		"__wiz_create_database": "N", "__wiz_database": in.db,
 		"__wiz_login": in.login, "__wiz_admin_password": in.password, "__wiz_admin_password_confirm": in.password, "__wiz_admin_email": in.email,
+		// the solution wizards ask for the site's name and title: the site's own
+		"__wiz_siteName": in.title, "__wiz_siteMetaTitle": in.title,
+	}
+	// The solution: the marketplace's clean install unless the demo site or
+	// another marketplace solution was asked for. "@" is the wizard's own
+	// name for "load from the marketplace"; the solution id is chosen on the
+	// next step.
+	solution, what := in.solution, ""
+	switch solution {
+	case "", "clean":
+		solution, what = bitrixCleanSolution, "the marketplace's clean install"
+	case "demo":
+		solution, what = "", "the demo site bundled with the edition"
+	default:
+		what = "marketplace solution " + solution
+	}
+	if solution != "" {
+		overrides["__wiz_selected_wizard"] = "@"
+		overrides["__wiz_selected_module"] = solution
 	}
 	w := newBitrixWizard(in.url, in.site.Domain, in.site.IP, overrides, jc)
 	if err := w.run(ctx); err != nil {
 		return err
 	}
-	jc.Logf("Bitrix installed through its web wizard (trial licence, the first bundled solution)")
+	jc.Logf("Bitrix installed through its web wizard: trial licence, %s", what)
 	return nil
 }

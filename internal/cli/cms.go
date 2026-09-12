@@ -73,7 +73,8 @@ func cmsCmd() *cobra.Command {
 	install.Flags().StringVar(&req.AdminPassword, "admin-password", "", "пароль администратора, 12–20 символов (иначе генерируется)")
 	install.Flags().BoolVar(&passwordStdin, "password-stdin", false, "прочитать пароль администратора из stdin")
 	install.Flags().StringVar(&req.AdminEmail, "admin-email", "", "e-mail администратора (по умолчанию e-mail владельца или admin@<домен>)")
-	install.Flags().StringVar(&req.Edition, "edition", "", "редакция Битрикса: start (по умолчанию) или business")
+	install.Flags().StringVar(&req.Edition, "edition", "", "редакция Битрикса: start (по умолчанию), standard, small_business или business")
+	install.Flags().StringVar(&req.Solution, "solution", "", "решение Битрикса: clean (чистая установка из Маркетплейса, по умолчанию), demo (демо-сайт из дистрибутива) или id решения из Маркетплейса")
 	install.Flags().BoolVar(&req.Force, "force", false, "ставить в непустой docroot: его файлы удаляются")
 	c.AddCommand(install)
 	return c

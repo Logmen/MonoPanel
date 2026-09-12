@@ -224,8 +224,17 @@ func TestCMSInstallOpenCartAndForce(t *testing.T) {
 		t.Fatalf("a full docroot must stop the install: %s %s", job.Status, job.Error)
 	}
 	res, job = f.installCMS(t, site.Domain, map[string]any{"cms": "opencart", "force": true})
-	if job.Status != store.JobDone || res.Database != "alex_opencart2" {
-		t.Fatalf("force: %s %s; database %s", job.Status, job.Error, res.Database)
+	if job.Status != store.JobDone || res.Database != "alex_opencart" {
+		t.Fatalf("force reuses the database: %s %s; database %s", job.Status, job.Error, res.Database)
+	}
+	dropped := false
+	for _, tc := range f.agent.Tools() {
+		if tc.Name == "mysql" && strings.Contains(tc.Stdin, "DROP DATABASE IF EXISTS `alex_opencart`") {
+			dropped = true
+		}
+	}
+	if !dropped {
+		t.Fatalf("force must empty the database first: %+v", f.agent.Tools())
 	}
 	removed := false
 	for _, r := range f.agent.RunAs() {
@@ -248,7 +257,7 @@ func TestCMSInstallRefusals(t *testing.T) {
 	f.call(http.MethodPost, "/sites/"+site.Domain+"/cms", map[string]any{"cms": "joomla", "edition": "start"}, http.StatusUnprocessableEntity, nil)
 	var list []apitypes.CMSInfo
 	f.call(http.MethodGet, "/cms", nil, http.StatusOK, &list)
-	if len(list) != 4 || list[3].ID != "bitrix" || len(list[3].Editions) != 2 {
+	if len(list) != 4 || list[3].ID != "bitrix" || len(list[3].Editions) != 4 {
 		t.Fatalf("catalogue: %+v", list)
 	}
 }
@@ -290,7 +299,7 @@ func TestBitrixWizardDriver(t *testing.T) {
 	page := func(step, next, extra string) string {
 		return `<html><body><form action="/" method="post" name="__wizard_form"><input type="hidden" name="CurrentStepID" value="` + step + `"><input type="hidden" name="NextStepID" value="` + next + `">` + extra + `<input type="submit" name="StepNext" value="Далее"></form></body></html>`
 	}
-	ajaxCalls := 0
+	ajaxCalls, downloadCalls := 0, 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			fmt.Fprint(w, page("welcome", "agreement", ""))
@@ -336,11 +345,28 @@ func TestBitrixWizardDriver(t *testing.T) {
 		case "create_admin":
 			fmt.Fprint(w, page("select_wizard", "finish", `<input type="radio" name="redio" onclick="SelectSolution(this, 'bitrix.sitecorporate:bitrix:corp_furniture');"><input type="radio" name="redio" onclick="SelectSolution(this, '@');"><input type="hidden" id="id___wiz_selected_wizard" name="__wiz_selected_wizard" value="">`))
 		case "select_wizard":
-			if r.PostFormValue("__wiz_selected_wizard") == "" {
+			switch r.PostFormValue("__wiz_selected_wizard") {
+			case "":
+				fmt.Fprint(w, page("select_wizard", "finish", `Не указан мастер установки<input type="hidden" name="__wiz_selected_wizard" value="">`))
+			case "@":
+				fmt.Fprint(w, page("load_module", "select_wizard1", `<input type="hidden" id="id___wiz_selected_module" name="__wiz_selected_module" value=""><div onclick="SelectSolutionMP(this, 'nsandrey.emptyinstall');"><input type="radio" id="id_radio_nsandrey.emptyinstall" name="redio"></div>`))
+			default:
+				fmt.Fprint(w, `<html><head><title>Мебельная компания</title></head><body>Сайт работает</body></html>`)
+			}
+		case "load_module":
+			if r.PostFormValue("__wiz_selected_module") != "nsandrey.emptyinstall" {
 				fmt.Fprint(w, page("select_wizard", "finish", `Не указан мастер установки<input type="hidden" name="__wiz_selected_wizard" value="">`))
 				return
 			}
-			fmt.Fprint(w, `<html><head><title>Мебельная компания</title></head><body>Сайт работает</body></html>`)
+			fmt.Fprint(w, page("load_module_action", "finish", `<input type="hidden" name="__wiz_nextStep" value="load_module"><input type="hidden" name="__wiz_nextStepStage" value=""><script>var ajaxForm = new CAjaxForm("__wizard_form", "iframe-post-form", {"nextStep": "__wiz_nextStep", "nextStepStage": "__wiz_nextStepStage"});</script>`))
+		case "load_module_action":
+			// the marketplace download answers the same hint while it works, then the page
+			downloadCalls++
+			if downloadCalls < 4 {
+				fmt.Fprint(w, `[response] window.ajaxForm.SetStatus('40'); window.ajaxForm.Post({'nextStep': 'do_update_module', 'nextStepStage': 'nsandrey.emptyinstall'}, 'Загрузка'); [/response]`)
+				return
+			}
+			fmt.Fprint(w, `<html><head><title>Чистая установка</title></head><body>Сайт работает</body></html>`)
 		default:
 			http.Error(w, "unknown step "+r.PostFormValue("CurrentStepID"), 500)
 		}
@@ -359,6 +385,20 @@ func TestBitrixWizardDriver(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(w.log, "\n"), "wizard finished") {
 		t.Fatalf("log: %v", w.log)
+	}
+
+	// The marketplace path: "@" on the solution step, the solution id on the next.
+	seen = map[string]string{}
+	ov["__wiz_selected_wizard"], ov["__wiz_selected_module"] = "@", "nsandrey.emptyinstall"
+	w = newBitrixWizard(srv.URL, "example.com", "", ov, nil)
+	if err := w.run(context.Background()); err != nil {
+		t.Fatalf("marketplace wizard: %v\n%s", err, strings.Join(w.log, "\n"))
+	}
+	if seen["__wiz_selected_wizard"] != "@" || seen["__wiz_selected_module"] != "nsandrey.emptyinstall" {
+		t.Fatalf("marketplace fields sent: %v", seen)
+	}
+	if downloadCalls != 4 {
+		t.Fatalf("a repeated download hint means keep polling: %d calls", downloadCalls)
 	}
 }
 

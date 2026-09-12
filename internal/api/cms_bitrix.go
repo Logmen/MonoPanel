@@ -42,14 +42,22 @@ var (
 	bxSpaceRe    = regexp.MustCompile(`\s+`)
 )
 
-// bxTrace logs every AJAX answer of the wizard into the job (MONOPANEL_BITRIX_TRACE=1).
-var bxTrace = os.Getenv("MONOPANEL_BITRIX_TRACE") != ""
+// bxTrace logs every AJAX answer of the wizard into the job
+// (MONOPANEL_BITRIX_TRACE=1); bxTraceDir keeps each step's page there too.
+var (
+	bxTrace    = os.Getenv("MONOPANEL_BITRIX_TRACE") != ""
+	bxTraceDir = os.Getenv("MONOPANEL_BITRIX_TRACE_DIR")
+)
 
 // bitrixWizard walks the installer at base (the site's address), resolving
 // the site's name to ip so DNS is not needed.
 type bitrixWizard struct {
 	base      string
 	overrides map[string]string
+	// selectAll names the checkbox groups to tick in full, whatever the
+	// page pre-ticks: a solution's module list, where leaving all boxes
+	// empty makes its installer fail.
+	selectAll map[string]bool
 	client    *http.Client
 	jc        *jobs.Context
 	log       []string
@@ -69,7 +77,7 @@ func newBitrixWizard(base, domain, ip string, overrides map[string]string, jc *j
 		TLSClientConfig:       &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // a hop to our own nginx; the placeholder certificate is self-signed
 		ResponseHeaderTimeout: 15 * time.Minute,
 	}
-	return &bitrixWizard{base: strings.TrimSuffix(base, "/"), overrides: overrides, jc: jc, client: &http.Client{Jar: jar, Transport: tr, Timeout: 20 * time.Minute}}
+	return &bitrixWizard{base: strings.TrimSuffix(base, "/"), overrides: overrides, selectAll: map[string]bool{"__wiz_install[]": true}, jc: jc, client: &http.Client{Jar: jar, Transport: tr, Timeout: 20 * time.Minute}}
 }
 
 type bxField struct {
@@ -134,7 +142,7 @@ func (p *bxPage) text() string {
 // form is what a browser would submit: hidden and text values, checked
 // choices, the overrides for the fields the page has, the first solution
 // on the solution step.
-func (p *bxPage) form(overrides map[string]string) url.Values {
+func (p *bxPage) form(overrides map[string]string, selectAll map[string]bool) url.Values {
 	v := url.Values{}
 	names := map[string]bool{}
 	for _, f := range p.fields {
@@ -143,9 +151,14 @@ func (p *bxPage) form(overrides map[string]string) url.Values {
 		case "submit", "button", "image", "file":
 			continue
 		case "checkbox", "radio":
-			if !f.checked {
+			if !f.checked && !(f.typ == "checkbox" && selectAll[f.name]) {
 				continue
 			}
+		}
+		if strings.HasSuffix(f.name, "[]") {
+			// an array field: every checked box travels, as a browser sends them
+			v.Add(f.name, f.value)
+			continue
 		}
 		v.Set(f.name, f.value)
 	}
@@ -218,6 +231,11 @@ func (w *bitrixWizard) run(ctx context.Context) error {
 		}
 		if p.step != last {
 			w.logf("wizard step: %s", p.step)
+			if bxTraceDir != "" {
+				if err := os.WriteFile(fmt.Sprintf("%s/bx-%02d-%s.html", bxTraceDir, n, p.step), []byte(body), 0o600); err != nil {
+					w.logf("trace dump: %v", err)
+				}
+			}
 			if bxTrace {
 				i := strings.Index(body, "CAjaxForm")
 				if i < 0 {
@@ -227,7 +245,38 @@ func (w *bitrixWizard) run(ctx context.Context) error {
 				if i >= 0 {
 					ctxt = snippet(bxSpaceRe.ReplaceAllString(body[max(0, i-80):], " "), 260)
 				}
-				w.logf("trace %s: ajax=%v bytes=%d action=%q fields=%d around=%q", p.step, p.ajax, len(body), p.action, len(p.fields), ctxt)
+				names := []string{}
+				for _, f := range p.fields {
+					val := snippet(f.value, 40)
+					if strings.Contains(strings.ToLower(f.name), "password") || f.name == "__wiz_license" {
+						val = "***"
+					}
+					names = append(names, f.typ+":"+f.name+"="+val)
+				}
+				w.logf("trace %s: ajax=%v bytes=%d action=%q dir=%q fields=%v around=%q text=%q", p.step, p.ajax, len(body), p.action, bxTraceDir, names, ctxt, snippet(p.text(), 900))
+				if p.step == "load_module" || p.step == "check_license_key" {
+					ids := []string{}
+					for _, m := range regexp.MustCompile(`SelectSolution\(this,\s*'([^']*)'\)`).FindAllStringSubmatch(body, -1) {
+						ids = append(ids, m[1])
+					}
+					w.logf("trace %s solutions=%v", p.step, ids)
+					w.logf("trace %s fulltext=%s", p.step, snippet(p.text(), 12000))
+					for _, m := range regexp.MustCompile(`(?is)<input[^>]*name="__wiz_[^"]*"[^>]*>`).FindAllString(body, -1) {
+						if !strings.Contains(m, `type="hidden"`) {
+							w.logf("trace %s input=%s", p.step, snippet(m, 300))
+						}
+					}
+					for i, m := range regexp.MustCompile(`(?is)<input[^>]*type="radio"[^>]*>`).FindAllStringIndex(body, -1) {
+						if i < 4 {
+							w.logf("trace %s radio=%s", p.step, snippet(bxSpaceRe.ReplaceAllString(body[m[0]:min(len(body), m[1]+400)], " "), 500))
+						}
+					}
+					for _, fn := range []string{"function changeLicKey", "function SelectModule", "function SelectSolution", "selected_module"} {
+						if i := strings.Index(body, fn); i >= 0 {
+							w.logf("trace %s js %s: %s", p.step, fn, snippet(bxSpaceRe.ReplaceAllString(body[i:min(len(body), i+700)], " "), 700))
+						}
+					}
+				}
 			}
 			last, same = p.step, 0
 		} else {
@@ -245,7 +294,7 @@ func (w *bitrixWizard) run(ctx context.Context) error {
 		}
 		base, _ := url.Parse(pageURL)
 		actionURL := base.ResolveReference(action).String()
-		form := p.form(w.overrides)
+		form := p.form(w.overrides, w.selectAll)
 		if p.ajax {
 			pageURL, body, err = w.ajaxLoop(ctx, actionURL, form, p)
 		} else {
@@ -270,7 +319,7 @@ func (w *bitrixWizard) ajaxLoop(ctx context.Context, actionURL string, form url.
 		return "__wiz_" + k
 	}
 	retries := 0
-	for k := 0; k < 1000; k++ {
+	for k := 0; k < 3000; k++ {
 		if err := ctx.Err(); err != nil {
 			return "", "", err
 		}
@@ -316,8 +365,18 @@ func (w *bitrixWizard) ajaxLoop(ctx context.Context, actionURL string, form url.
 		if changed {
 			continue
 		}
-		if len(next) > 0 {
-			w.logf("wizard step %s: stage %s/%s repeated, taking it as done", p.step, form.Get(field("nextStep")), form.Get(field("nextStepStage")))
+		if len(next) > 0 && next["nextStep"] != "__finish" && !strings.Contains(resp, "StopAjax") {
+			// the same hint again: the wizard is still working on that stage
+			// (a marketplace download comes in chunks, one per request) — keep asking
+			if k%20 == 0 {
+				w.logf("wizard step %s: still at %s/%s (%d requests)", p.step, form.Get(field("nextStep")), form.Get(field("nextStepStage")), k)
+			}
+			select {
+			case <-ctx.Done():
+				return "", "", ctx.Err()
+			case <-time.After(time.Second):
+			}
+			continue
 		}
 		if strings.Contains(resp, "submit()") || strings.Contains(resp, "StopAjax") || len(next) > 0 {
 			// the stage is done: submit the form as the page would, without the AJAX markers

@@ -910,7 +910,7 @@ type CMSInfo struct {
 	Name     string   `json:"name"`
 	Preset   string   `json:"preset"`
 	Source   string   `json:"source" doc:"Where the distribution is downloaded from"`
-	Editions []string `json:"editions,omitempty" doc:"Bitrix: start (default) or business"`
+	Editions []string `json:"editions,omitempty" doc:"Bitrix: the trial editions (start by default)"`
 	Notes    string   `json:"notes,omitempty"`
 }
 
@@ -922,7 +922,8 @@ type CMSInstallRequest struct {
 	AdminLogin    string `json:"admin_login,omitempty" pattern:"^[a-zA-Z0-9_.-]{1,60}$" doc:"admin when empty"`
 	AdminPassword string `json:"admin_password,omitempty" minLength:"12" maxLength:"20" doc:"Generated and shown once when empty"`
 	AdminEmail    string `json:"admin_email,omitempty" maxLength:"254" doc:"The owner's e-mail, else admin@<domain>"`
-	Edition       string `json:"edition,omitempty" enum:"start,business" doc:"Bitrix only"`
+	Edition       string `json:"edition,omitempty" enum:"start,standard,small_business,business" doc:"Bitrix: the trial edition to download (start when empty)"`
+	Solution      string `json:"solution,omitempty" maxLength:"120" doc:"Bitrix: clean (the marketplace «Чистая установка», default), demo (the demo site bundled with the edition) or a marketplace solution id"`
 	Force         bool   `json:"force,omitempty" doc:"Install into a docroot that is not empty: its files are removed first"`
 }
 
