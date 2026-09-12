@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"monopanel/internal/agent"
 	"monopanel/internal/apitypes"
@@ -53,6 +54,26 @@ func TestDoctorReportsSELinuxDenials(t *testing.T) {
 	for _, c := range d.Checks {
 		if c.Name == "selinux" && (c.Status != "warn" || !strings.Contains(c.Detail, "nginx → label.php") || !strings.Contains(c.Detail, "mp site fix <domain>") || c.Action != "site.fix" || c.Target != "*") {
 			t.Fatalf("selinux check for a name-only record: %+v", c)
+		}
+	}
+
+	// After a fix today the doctor counts from the fix, not from midnight.
+	if err := f.db.SetSetting(f.ctx, settingSELinuxRelabeledAt, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	f.call(http.MethodGet, "/system/doctor", nil, http.StatusOK, &d)
+	sinceFix := false
+	for _, tc := range f.agent.Tools() {
+		if tc.Name == "ausearch" && len(tc.Args) >= 5 && tc.Args[2] == "-ts" && tc.Args[3] == time.Now().Format("01/02/06") {
+			sinceFix = true
+		}
+	}
+	if !sinceFix {
+		t.Fatalf("ausearch must start at the fix time: %+v", f.agent.Tools())
+	}
+	for _, c := range d.Checks {
+		if c.Name == "selinux" && !strings.Contains(c.Detail, "since the fix at") {
+			t.Fatalf("the detail must say the count starts at the fix: %+v", c)
 		}
 	}
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"monopanel/internal/agent"
 	"monopanel/internal/jobs"
@@ -22,6 +23,12 @@ const settingSELinux = "selinux.hosting"
 // default): php-fpm sockets that nginx connects to, and per-site logs that
 // nginx writes.
 var selinuxFileContexts = [][2]string{
+	// Everything under a site's docroot is web content, whatever the base
+	// policy thinks of directories named logs or cgi-bin inside it: OpenCart
+	// writes system/storage/logs/error.log, which the base rule
+	// /var/www(/.*)?/logs(/.*)? turns into httpd_log_t that php-fpm may not
+	// write, and restorecon would only put that label back.
+	{"/var/www/[^/]+/data/www(/.*)?", "httpd_sys_content_t"},
 	{"/run/monopanel(/.*)?", "httpd_var_run_t"},
 	{"/var/www/[^/]+/data/logs(/.*)?", "httpd_log_t"},
 }
@@ -41,7 +48,7 @@ func (s *Server) selinuxHostingPolicy(ctx context.Context, jc *jobs.Context) err
 	if s.profile.MAC() != "selinux" {
 		return nil
 	}
-	if v, _ := s.db.GetSetting(ctx, settingSELinux); v == "ready" {
+	if v, _ := s.db.GetSetting(ctx, settingSELinux); v == selinuxPolicyVersion {
 		return nil
 	}
 	jc.Progress(3, "SELinux policy for hosting")
@@ -65,8 +72,16 @@ func (s *Server) selinuxHostingPolicy(ctx context.Context, jc *jobs.Context) err
 		return fmt.Errorf("restorecon: %w", err)
 	}
 	jc.Logf("selinux: file contexts for %s and per-site logs, booleans %s", s.cfg.RunDir, strings.Join(selinuxBooleans, " "))
-	return s.db.SetSetting(ctx, settingSELinux, "ready")
+	return s.db.SetSetting(ctx, settingSELinux, selinuxPolicyVersion)
 }
+
+// selinuxPolicyVersion changes when the rules above do: a host that applied
+// an older set applies the current one at the next site fix.
+const selinuxPolicyVersion = "v2"
+
+// settingSELinuxRelabeledAt remembers the last relabel: the doctor counts
+// denials from then on, so a fixed label is not reported all day.
+const settingSELinuxRelabeledAt = "selinux.relabeled_at"
 
 // selinuxFileContext adds one fcontext rule, or updates it when it exists.
 // Paths under an equivalence (EL9 maps /run to /var/run, EL10 the other way
@@ -214,8 +229,11 @@ func (s *Server) relabel(ctx context.Context, jc *jobs.Context, dir string, recu
 		s.log.Warn("restorecon failed", "path", dir, "err", err)
 	case res.ExitCode != 0:
 		s.log.Warn("restorecon failed", "path", dir, "output", strings.TrimSpace(res.Output))
-	case jc != nil:
-		jc.Logf("SELinux labels restored under %s", dir)
+	default:
+		s.db.SetSetting(ctx, settingSELinuxRelabeledAt, time.Now().UTC().Format(time.RFC3339))
+		if jc != nil {
+			jc.Logf("SELinux labels restored under %s", dir)
+		}
 	}
 }
 
@@ -243,7 +261,22 @@ func (s *Server) selinuxCheck(ctx context.Context) *apitypes.Check {
 		c.Action = "selinux.enforcing"
 		return &c
 	}
-	res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "ausearch", Args: []string{"-m", "AVC", "-ts", "today", "--raw"}, TimeoutSeconds: 30})
+	// denials since the last relabel when that was today, else since midnight
+	since, sinceText := []string{"today"}, "today"
+	if v, _ := s.db.GetSetting(ctx, settingSELinuxRelabeledAt); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			if l := t.Local(); l.YearDay() == time.Now().YearDay() && l.Year() == time.Now().Year() {
+				// ausearch reads dates in the C locale's %x form: month/day/two-digit year
+				since, sinceText = []string{l.Format("01/02/06"), l.Format("15:04:05")}, "since the fix at "+l.Format("15:04")
+			}
+		}
+	}
+	res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "ausearch", Args: append(append([]string{"-m", "AVC", "-ts"}, since...), "--raw"), TimeoutSeconds: 30})
+	if err == nil && res.ExitCode != 0 && strings.Contains(res.Output, "date") && len(since) > 1 {
+		// a locale that spells dates differently: count from midnight instead
+		sinceText = "today"
+		res, err = s.agent.Tool(ctx, &agent.ToolRequest{Name: "ausearch", Args: []string{"-m", "AVC", "-ts", "today", "--raw"}, TimeoutSeconds: 30})
+	}
 	// ausearch exits 1 when nothing matched — silently in --raw mode
 	nothing := res != nil && res.ExitCode == 1 && (strings.TrimSpace(res.Output) == "" || strings.Contains(res.Output, "no matches"))
 	if err != nil || (res.ExitCode != 0 && !nothing) {
@@ -284,10 +317,10 @@ func (s *Server) selinuxCheck(ctx context.Context) *apitypes.Check {
 		}
 	}
 	if denials == 0 {
-		c := check("selinux", "ok", mode+", no denials for the web server today")
+		c := check("selinux", "ok", mode+", no denials for the web server "+sinceText)
 		return &c
 	}
-	c := check("selinux", "warn", fmt.Sprintf("%s; %d denial(s) for the web server today, last: %s", mode, denials, last))
+	c := check("selinux", "warn", fmt.Sprintf("%s; %d denial(s) for the web server %s, last: %s", mode, denials, sinceText, last))
 	c.Action, c.Target = action, target
 	return &c
 }

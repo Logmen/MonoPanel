@@ -110,13 +110,16 @@ func TestNginxInstallOnELPreparesSELinux(t *testing.T) {
 	if job := f.waitJob(ref.JobID); job.Status != store.JobDone {
 		t.Fatalf("nginx install on EL: %s %s", job.Status, job.Error)
 	}
-	var fcontext, booleans, relabel bool
+	var fcontext, docroot, booleans, relabel bool
 	for _, tool := range f.agent.Tools() {
 		args := strings.Join(tool.Args, " ")
 		switch tool.Name {
 		case "semanage":
 			if strings.Contains(args, "httpd_var_run_t") && strings.Contains(args, "/run/monopanel") {
 				fcontext = true
+			}
+			if strings.Contains(args, "httpd_sys_content_t /var/www/[^/]+/data/www(/.*)?") {
+				docroot = true
 			}
 		case "setsebool":
 			if strings.Contains(args, "-P") && strings.Contains(args, "httpd_unified=1") {
@@ -128,8 +131,8 @@ func TestNginxInstallOnELPreparesSELinux(t *testing.T) {
 			}
 		}
 	}
-	if !fcontext || !booleans || !relabel {
-		t.Fatalf("selinux policy incomplete: fcontext=%v booleans=%v relabel=%v (%+v)", fcontext, booleans, relabel, f.agent.Tools())
+	if !fcontext || !docroot || !booleans || !relabel {
+		t.Fatalf("selinux policy incomplete: fcontext=%v docroot=%v booleans=%v relabel=%v (%+v)", fcontext, docroot, booleans, relabel, f.agent.Tools())
 	}
 	restore := false
 	for _, c := range f.agent.Calls() {
@@ -140,7 +143,7 @@ func TestNginxInstallOnELPreparesSELinux(t *testing.T) {
 	if !restore {
 		t.Fatal("nginx configuration was applied without relabelling the pid file")
 	}
-	if v, _ := f.db.GetSetting(f.ctx, settingSELinux); v != "ready" {
+	if v, _ := f.db.GetSetting(f.ctx, settingSELinux); v != selinuxPolicyVersion {
 		t.Fatalf("policy not remembered: %q", v)
 	}
 	// Once is enough: a PHP installation later does not repeat it.

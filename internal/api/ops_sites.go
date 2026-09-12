@@ -631,6 +631,10 @@ func (s *Server) jobSiteFix(ctx context.Context, jc *jobs.Context) error {
 	}
 	jc.Logf("owner %s under %s: %d objects changed", user.Login, l.siteRoot, ch.Changed)
 	jc.Progress(70, "SELinux labels")
+	// the rules first: a host that applied an older policy gets the current one
+	if err := s.selinuxHostingPolicy(ctx, jc); err != nil {
+		jc.Logf("warning: SELinux policy: %v", err)
+	}
 	s.relabel(ctx, jc, l.data, true)
 	jc.Progress(100, "fixed")
 	return nil
