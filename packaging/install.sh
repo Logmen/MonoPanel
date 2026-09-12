@@ -49,10 +49,28 @@ fetch() {
 	fi
 }
 
-release_url="$API/repos/$REPO/releases/latest"
-[ "${MONOPANEL_VERSION:-latest}" = "latest" ] || release_url="$API/repos/$REPO/releases/tags/v${MONOPANEL_VERSION#v}"
-json=$(fetch "$release_url" -) || { echo "cannot read releases of $REPO (private repository? set MONOPANEL_TOKEN)" >&2; exit 1; }
-tag=$(printf '%s' "$json" | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4)
+# A public repository needs no API call at all: GitHub redirects
+# /releases/latest to the tag page, and every asset has a plain download URL.
+# The API allows 60 anonymous requests an hour per address — easily used up
+# behind a shared NAT — so it is only used with a token, to read a private
+# repository.
+json=""
+if [ -n "$TOKEN" ]; then
+	release_url="$API/repos/$REPO/releases/latest"
+	[ "${MONOPANEL_VERSION:-latest}" = "latest" ] || release_url="$API/repos/$REPO/releases/tags/v${MONOPANEL_VERSION#v}"
+	json=$(fetch "$release_url" -) || { echo "cannot read releases of $REPO with the token" >&2; exit 1; }
+	tag=$(printf '%s' "$json" | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4)
+elif [ "${MONOPANEL_VERSION:-latest}" = "latest" ]; then
+	# A repository without releases redirects to /releases instead of a tag.
+	tag=$(curl -fsSI -o /dev/null -w '%{redirect_url}' "https://github.com/$REPO/releases/latest") || tag=""
+	tag="${tag##*/}"
+	case "$tag" in
+	v[0-9]*) ;;
+	*) echo "no release found in $REPO (private repository? set MONOPANEL_TOKEN)" >&2; exit 1 ;;
+	esac
+else
+	tag="v${MONOPANEL_VERSION#v}"
+fi
 [ -n "$tag" ] || { echo "no release found in $REPO" >&2; exit 1; }
 version="${tag#v}"
 
@@ -63,7 +81,8 @@ else
 fi
 
 # A private repository serves assets only through the API, by id; a public one
-# has a plain download URL.
+# has a plain download URL (which also answers 404 for a pinned version that
+# does not exist — curl reports it).
 asset_url() { # asset_url <file name>
 	if [ -n "$TOKEN" ]; then
 		# In GitHub's JSON an asset's "id" comes a few lines before its
@@ -81,8 +100,10 @@ asset_url() { # asset_url <file name>
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 echo "MonoPanel $version ($package)"
-fetch "$(asset_url "$package")" "$tmp/$package" application/octet-stream
-fetch "$(asset_url SHA256SUMS)" "$tmp/SHA256SUMS" application/octet-stream
+fetch "$(asset_url "$package")" "$tmp/$package" application/octet-stream ||
+	{ echo "cannot download $package of release $tag from $REPO" >&2; exit 1; }
+fetch "$(asset_url SHA256SUMS)" "$tmp/SHA256SUMS" application/octet-stream ||
+	{ echo "release $tag of $REPO has no SHA256SUMS" >&2; exit 1; }
 (cd "$tmp" && sha256sum -c --ignore-missing SHA256SUMS >/dev/null) ||
 	{ echo "checksum mismatch: refusing to install $package" >&2; exit 1; }
 
