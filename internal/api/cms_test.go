@@ -157,7 +157,7 @@ func TestCMSInstallWordPress(t *testing.T) {
 		switch {
 		case c.Path == "/v1/chown" && strings.Contains(string(c.Body), `"recursive":true`) && strings.Contains(string(c.Body), "wp.example.com"):
 			chown = true
-		case c.Path == "/v1/file/ensure" && strings.Contains(string(c.Body), wpCLIPhar):
+		case c.Path == "/v1/config/apply" && strings.Contains(string(c.Body), wpCLIPhar):
 			wpcli = true
 		}
 	}
@@ -174,7 +174,7 @@ func TestCMSInstallWordPress(t *testing.T) {
 // installer run; a second install of the same CMS takes the next name and
 // needs force for the docroot that is no longer empty.
 func TestCMSInstallOpenCartAndForce(t *testing.T) {
-	src := zipBytes(t, map[string]string{"opencart-4.1.0.4/upload/index.php": "<?php", "opencart-4.1.0.4/upload/config-dist.php": "<?php", "opencart-4.1.0.4/upload/admin/config-dist.php": "<?php", "opencart-4.1.0.4/README.md": "x"})
+	src := zipBytes(t, map[string]string{"upload/index.php": "<?php", "upload/config-dist.php": "<?php", "upload/admin/config-dist.php": "<?php", "README.md": "x", ".github/workflows/ci.yml": "x"})
 	f := cmsFixture(t, map[string][]byte{"https://github.com/opencart/opencart/releases/download/4.1.0.4/opencart-4.1.0.4.zip": src})
 	site := f.createSite(map[string]any{"domain": "shop.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
 	res, job := f.installCMS(t, site.Domain, map[string]any{"cms": "opencart", "admin_login": "owner", "admin_password": "Sup3rSecretPass!", "admin_email": "o@example.com"})
@@ -186,12 +186,12 @@ func TestCMSInstallOpenCartAndForce(t *testing.T) {
 	}
 	stripped := false
 	for _, st := range f.agent.Streams() {
-		if st.Direction == "in" && st.Name == "tar" && strings.Contains(strings.Join(st.Args, " "), "-xf - -C /var/www/alex/data/www/shop.example.com") && strings.Contains(strings.Join(st.Args, " "), "--strip-components=2") && st.Bytes > 0 {
+		if st.Direction == "in" && st.Name == "tar" && strings.Contains(strings.Join(st.Args, " "), "-xf - -C /var/www/alex/data/www/shop.example.com") && strings.HasSuffix(strings.Join(st.Args, " "), "--strip-components=1 upload") && st.Bytes > 0 {
 			stripped = true
 		}
 	}
 	if !stripped {
-		t.Fatalf("zip must arrive as a tar stream with two components stripped: %+v", f.agent.Streams())
+		t.Fatalf("zip must arrive as a tar stream, upload/ only, one component stripped: %+v", f.agent.Streams())
 	}
 	wrote, ran := 0, false
 	for _, r := range f.agent.RunAs() {

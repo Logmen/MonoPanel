@@ -32,10 +32,11 @@ install(){
   fi
   ok "site $DOMAIN"
   start=$(date +%s)
-  out=$(mp cms install "$DOMAIN" "$cms" --force --json 2>/root/cms-install.err); rc=$?
-  if [ $rc -ne 0 ]; then fail "mp cms install $cms: $(tail -3 /root/cms-install.err | tr '\n' ' ' | cut -c1-300)"; return 1; fi
-  APW=$(echo "$out" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("admin_password",""))' 2>/dev/null)
-  ADMIN_URL=$(echo "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["admin_url"])' 2>/dev/null)
+  # the CLI follows the job and exits 3 when it fails; the credentials are on stdout once
+  out=$(mp cms install "$DOMAIN" "$cms" --force 2>/root/cms-install.err); rc=$?
+  if [ $rc -ne 0 ]; then fail "mp cms install $cms: $(grep -vE '^\s+\[' /root/cms-install.err | tail -3 | tr '\n' ' ' | cut -c1-400)"; return 1; fi
+  APW=$(echo "$out" | awk '/Пароль:/{print $2}')
+  ADMIN_URL=$(echo "$out" | awk '/Админка:/{print $2}')
   ver=$(mp site show "$DOMAIN" --json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("cms","?"), d.get("cms_version",""))' 2>/dev/null)
   ok "mp cms install $cms: $ver in $(( $(date +%s) - start ))s"
   echo "CREDS $cms $ADMIN_URL admin $APW"

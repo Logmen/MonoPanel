@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -40,6 +41,9 @@ var (
 	bxTagRe      = regexp.MustCompile(`<[^>]+>`)
 	bxSpaceRe    = regexp.MustCompile(`\s+`)
 )
+
+// bxTrace logs every AJAX answer of the wizard into the job (MONOPANEL_BITRIX_TRACE=1).
+var bxTrace = os.Getenv("MONOPANEL_BITRIX_TRACE") != ""
 
 // bitrixWizard walks the installer at base (the site's address), resolving
 // the site's name to ip so DNS is not needed.
@@ -109,8 +113,10 @@ func bxParse(pageURL, body string) *bxPage {
 	if m := bxFormRe.FindStringSubmatch(body); m != nil {
 		p.action = html.UnescapeString(m[1])
 	}
+	// the solution wizard builds its CAjaxForm from a variable, not a literal:
+	// the step is AJAX either way, the field names then keep their defaults
+	p.ajax = strings.Contains(body, "new CAjaxForm")
 	if m := bxAjaxMapRe.FindStringSubmatch(body); m != nil {
-		p.ajax = true
 		for _, kv := range bxPairRe.FindAllStringSubmatch(m[1], -1) {
 			p.ajaxMap[kv[1]] = kv[2]
 		}
@@ -205,13 +211,24 @@ func (w *bitrixWizard) run(ctx context.Context) error {
 		p := bxParse(pageURL, body)
 		if p.action == "" || p.step == "" {
 			if strings.Contains(body, "[response]") {
-				return errors.New("wizard: lost its page after an AJAX step")
+				return fmt.Errorf("wizard: lost its page after an AJAX step at %s: %s", last, snippet(bxSpaceRe.ReplaceAllString(body, " "), 300))
 			}
 			w.logf("wizard finished: %s", pageURL)
 			return nil
 		}
 		if p.step != last {
 			w.logf("wizard step: %s", p.step)
+			if bxTrace {
+				i := strings.Index(body, "CAjaxForm")
+				if i < 0 {
+					i = strings.Index(body, "ajaxForm")
+				}
+				ctxt := ""
+				if i >= 0 {
+					ctxt = snippet(bxSpaceRe.ReplaceAllString(body[max(0, i-80):], " "), 260)
+				}
+				w.logf("trace %s: ajax=%v bytes=%d action=%q fields=%d around=%q", p.step, p.ajax, len(body), p.action, len(p.fields), ctxt)
+			}
 			last, same = p.step, 0
 		} else {
 			same++
@@ -261,6 +278,9 @@ func (w *bitrixWizard) ajaxLoop(ctx context.Context, actionURL string, form url.
 		if err != nil {
 			return "", "", err
 		}
+		if bxTrace {
+			w.logf("ajax %s #%d: %s", p.step, k, snippet(bxSpaceRe.ReplaceAllString(resp, " "), 160))
+		}
 		if strings.Contains(strings.ToLower(resp), "<html") {
 			q := bxParse(pageURL, resp)
 			if m := bxErrorRe.FindStringSubmatch(resp); m != nil && q.step == p.step {
@@ -295,6 +315,9 @@ func (w *bitrixWizard) ajaxLoop(ctx context.Context, actionURL string, form url.
 		}
 		if changed {
 			continue
+		}
+		if len(next) > 0 {
+			w.logf("wizard step %s: stage %s/%s repeated, taking it as done", p.step, form.Get(field("nextStep")), form.Get(field("nextStepStage")))
 		}
 		if strings.Contains(resp, "submit()") || strings.Contains(resp, "StopAjax") || len(next) > 0 {
 			// the stage is done: submit the form as the page would, without the AJAX markers

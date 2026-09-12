@@ -284,8 +284,17 @@ func (s *Server) jobSiteCMS(ctx context.Context, jc *jobs.Context) error {
 		for _, e := range entries {
 			args = append(args, path.Join(rel, e.Name))
 		}
-		if _, err := s.fsop(ctx, owner, nil, args...); err != nil {
-			return fmt.Errorf("empty the docroot: %w", err)
+		// a site still serving requests keeps writing cache and session files
+		// under the tree being removed: try again rather than fail on the race
+		var rmErr error
+		for attempt := 0; attempt < 3; attempt++ {
+			if _, rmErr = s.fsop(ctx, owner, nil, args...); rmErr == nil {
+				break
+			}
+			time.Sleep(2 * time.Second)
+		}
+		if rmErr != nil {
+			return fmt.Errorf("empty the docroot: %w", rmErr)
 		}
 		jc.Logf("docroot emptied: %d entries removed", len(entries))
 	}
@@ -357,7 +366,8 @@ func (s *Server) cmsDeliver(ctx context.Context, jc *jobs.Context, def *cmsDef, 
 		if err != nil {
 			return "", err
 		}
-		src, version, strip, isZip = fmt.Sprintf("https://github.com/opencart/opencart/releases/download/%s/opencart-%s.zip", tag, tag), tag, 2, true
+		// the release zip has no top folder: the shop is its upload/ directory
+		src, version, strip, isZip = fmt.Sprintf("https://github.com/opencart/opencart/releases/download/%s/opencart-%s.zip", tag, tag), tag, 1, true
 	case "bitrix":
 		if edition == "" {
 			edition = "start"
@@ -372,6 +382,10 @@ func (s *Server) cmsDeliver(ctx context.Context, jc *jobs.Context, def *cmsDef, 
 	defer body.Close()
 	var rd io.Reader = body
 	args := []string{"-xzf", "-", "-C", l.docroot, "--no-same-owner", "--warning=no-timestamp"}
+	members := []string{}
+	if def.ID == "opencart" {
+		members = []string{"upload"}
+	}
 	if isZip {
 		// tar cannot read a zip from a pipe: the zip is transcoded to a tar stream on the fly
 		data, err := io.ReadAll(io.LimitReader(body, 256<<20))
@@ -390,6 +404,7 @@ func (s *Server) cmsDeliver(ctx context.Context, jc *jobs.Context, def *cmsDef, 
 	if strip > 0 {
 		args = append(args, fmt.Sprintf("--strip-components=%d", strip))
 	}
+	args = append(args, members...) // only these members, when named
 	res, err := s.agent.StreamIn(ctx, &agent.StreamRequest{Name: "tar", Args: args, TimeoutSeconds: 3600}, rd)
 	if err != nil {
 		return "", fmt.Errorf("unpack %s: %w", def.Name, err)
@@ -480,7 +495,8 @@ func (s *Server) ensureWPCLI(ctx context.Context, jc *jobs.Context) error {
 	if _, err := s.agent.EnsureDirs(ctx, &agent.EnsureDirsRequest{Dirs: []agent.DirSpec{{Path: path.Dir(wpCLIPhar), Mode: 0o755, Owner: "root", Group: "root"}}}); err != nil {
 		return err
 	}
-	if _, err := s.agent.EnsureFile(ctx, &agent.EnsureFileRequest{Path: wpCLIPhar, ContentBase64: base64.StdEncoding.EncodeToString(phar), Mode: 0o644, Owner: "root", Group: "root"}); err != nil {
+	// a system file, not a client's: it goes the way composer's phar does
+	if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: []agent.FileSpec{{Path: wpCLIPhar, ContentBase64: base64.StdEncoding.EncodeToString(phar), Mode: 0o644}}, Origin: "wp-cli"}); err != nil {
 		return fmt.Errorf("install wp-cli: %w", err)
 	}
 	return nil
