@@ -6,3 +6,6 @@ dist/
 web/node_modules/
 web/.svelte-kit/
 web/build/
+
+# Python bytecode from the testbed scripts
+__pycache__/
