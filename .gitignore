@@ -9,3 +9,6 @@ web/build/
 
 # Python bytecode from the testbed scripts
 __pycache__/
+
+# local: dev-server launch config for the desktop app
+.claude/launch.json

@@ -2,6 +2,7 @@
   import { notify } from '$lib/state.svelte';
   import { onMount } from 'svelte';
   import { api, bytes } from '$lib/api';
+  import { t, tn } from '$lib/i18n/index.svelte';
   import Chart from '$lib/components/Chart.svelte';
   import PageHead from '$lib/components/PageHead.svelte';
   import Icon from '$lib/components/Icon.svelte';
@@ -18,7 +19,7 @@
       const domains: string[] = target === '*' ? ((await api('/sites')) as any[]).map((s) => s.domain) : [target];
       const jobs: number[] = [];
       for (const d of domains) { const r: any = await api(`/sites/${d}/fix`, { method: 'POST' }); jobs.push(r.job_id); }
-      notify(domains.length === 1 ? `починка ${domains[0]}: задача #${jobs[0]}` : `починка ${domains.length} сайтов: задачи #${jobs[0]}–#${jobs[jobs.length - 1]}`);
+      notify(domains.length === 1 ? t('dashboard.fixOneStarted', { domain: domains[0], job: jobs[0] }) : tn('dashboard.fixManyStarted', domains.length, { first: jobs[0], last: jobs[jobs.length - 1] }));
       await new Promise((r) => setTimeout(r, 4000));
       try { doctor = await api('/system/doctor'); } catch { /* keep the old report */ }
     } catch (e: any) { notify(e?.text || String(e), 'err'); } finally { fixing = ''; }
@@ -39,17 +40,17 @@
     }
     try { doctor = await api('/system/doctor'); } catch { doctor = null; }
   }
-  onMount(() => { load(); const t = setInterval(() => api('/system/status').then((s) => (status = s)).catch(() => {}), 15000); return () => clearInterval(t); });
+  onMount(() => { load(); const timer = setInterval(() => api('/system/status').then((s) => (status = s)).catch(() => {}), 15000); return () => clearInterval(timer); });
   $effect(() => { range; api('/system/metrics?range=' + range).then((m) => (metrics = m)).catch(() => {}); });
   const host = $derived(status?.host);
   const pts = (key: string) => (metrics?.points || []).map((p: any) => ({ x: p.ts, y: key === 'mem' ? p.mem_used / 1048576 : key === 'net' ? (p.net_rx + p.net_tx) / 1024 : p[key] }));
   const pct = (used: number, total: number) => (total ? Math.round((used / total) * 100) : 0);
   const memUsed = $derived(host ? host.mem_total_bytes - host.mem_available_bytes : 0);
   const disk = $derived(host?.disks?.[0]);
-  const up = (s: number) => { const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600); return d ? `${d} д ${h} ч` : `${h} ч ${Math.floor((s % 3600) / 60)} м`; };
+  const up = (s: number) => { const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600); return d ? t('dashboard.uptimeDays', { d, h }) : t('dashboard.uptimeHours', { h, m: Math.floor((s % 3600) / 60) }); };
 </script>
 
-<PageHead title="Дашборд" sub={host ? `${host.hostname} · ${host.release?.pretty_name} · ядро ${host.kernel}` : ''}>
+<PageHead title={t('dashboard.title')} sub={host ? t('dashboard.sub', { hostname: host.hostname, release: host.release?.pretty_name, kernel: host.kernel }) : ''}>
   <div class="flex gap-1">
     {#each ['1h', '6h', '24h', '7d', '30d'] as r}
       <button class="btn btn-sm {range === r ? 'btn-primary' : 'btn-ghost'}" onclick={() => (range = r)}>{r}</button>
@@ -59,10 +60,10 @@
 {#if error}<p class="text-danger text-sm mb-3">{error}</p>{/if}
 {#if status}
   <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
-    <div class="kpi rise" style="--i:0"><div class="label flex items-center gap-1"><Icon name="cpu" size={12} /> Нагрузка</div><div class="kpi-v">{host?.load?.map((x: number) => x.toFixed(2)).join('  ')}</div><div class="text-xs text-muted">{host?.cpus} CPU · uptime {up(host?.uptime_seconds || 0)}</div></div>
-    <div class="kpi rise" style="--i:1"><div class="label">Память</div><div class="kpi-v">{pct(memUsed, host?.mem_total_bytes)}%</div><div class="progress mt-1"><i style="width:{pct(memUsed, host?.mem_total_bytes)}%"></i></div><div class="text-xs text-muted">{bytes(memUsed)} из {bytes(host?.mem_total_bytes)}</div></div>
-    <div class="kpi rise" style="--i:2"><div class="label">Диск {disk?.mount || '/'}</div><div class="kpi-v">{pct(disk?.total_bytes - disk?.free_bytes, disk?.total_bytes)}%</div><div class="progress mt-1"><i style="width:{pct(disk?.total_bytes - disk?.free_bytes, disk?.total_bytes)}%"></i></div><div class="text-xs text-muted">свободно {bytes(disk?.free_bytes)} из {bytes(disk?.total_bytes)}</div></div>
-    <div class="kpi rise" style="--i:3"><div class="label">Панель</div><div class="kpi-v">v{status.panel.version}</div><div class="text-xs text-muted">задачи: {Object.entries(status.panel.jobs).map(([k, v]) => `${k} ${v}`).join(' · ') || 'нет'} · аккаунты {status.panel.users.admin || 0}+{status.panel.users.user || 0}</div></div>
+    <div class="kpi rise" style="--i:0"><div class="label flex items-center gap-1"><Icon name="cpu" size={12} /> {t('dashboard.load')}</div><div class="kpi-v">{host?.load?.map((x: number) => x.toFixed(2)).join('  ')}</div><div class="text-xs text-muted">{host?.cpus} CPU · uptime {up(host?.uptime_seconds || 0)}</div></div>
+    <div class="kpi rise" style="--i:1"><div class="label">{t('dashboard.memory')}</div><div class="kpi-v">{pct(memUsed, host?.mem_total_bytes)}%</div><div class="progress mt-1"><i style="width:{pct(memUsed, host?.mem_total_bytes)}%"></i></div><div class="text-xs text-muted">{t('dashboard.usedOf', { used: bytes(memUsed), total: bytes(host?.mem_total_bytes) })}</div></div>
+    <div class="kpi rise" style="--i:2"><div class="label">{t('dashboard.disk', { mount: disk?.mount || '/' })}</div><div class="kpi-v">{pct(disk?.total_bytes - disk?.free_bytes, disk?.total_bytes)}%</div><div class="progress mt-1"><i style="width:{pct(disk?.total_bytes - disk?.free_bytes, disk?.total_bytes)}%"></i></div><div class="text-xs text-muted">{t('dashboard.freeOf', { free: bytes(disk?.free_bytes), total: bytes(disk?.total_bytes) })}</div></div>
+    <div class="kpi rise" style="--i:3"><div class="label">{t('dashboard.panel')}</div><div class="kpi-v">v{status.panel.version}</div><div class="text-xs text-muted">{t('dashboard.panelStats', { jobs: Object.entries(status.panel.jobs).map(([k, v]) => `${k} ${v}`).join(' · ') || t('common.none'), admins: status.panel.users.admin || 0, users: status.panel.users.user || 0 })}</div></div>
   </div>
   <div class="card mb-4 rise" style="--i:4">
     <div class="flex flex-wrap gap-2 text-sm">
@@ -74,19 +75,19 @@
   </div>
   <div class="grid md:grid-cols-2 gap-3 mb-4">
     <Chart points={pts('cpu')} label="CPU, %" format={(v) => v.toFixed(0) + '%'} />
-    <Chart points={pts('load1')} label="Load average (1 мин)" format={(v) => v.toFixed(2)} />
-    <Chart points={pts('mem')} label="Память, МБ" format={(v) => v.toFixed(0) + ' МБ'} />
-    <Chart points={pts('net')} label="Сеть, КБ за шаг" format={(v) => v.toFixed(0) + ' КБ'} />
+    <Chart points={pts('load1')} label={t('dashboard.chartLoad')} format={(v) => v.toFixed(2)} />
+    <Chart points={pts('mem')} label={t('dashboard.chartMem')} format={(v) => t('dashboard.mb', { v: v.toFixed(0) })} />
+    <Chart points={pts('net')} label={t('dashboard.chartNet')} format={(v) => t('dashboard.kb', { v: v.toFixed(0) })} />
   </div>
 {/if}
 {#if doctor}
   <div class="card rise">
-    <div class="flex justify-between items-center mb-3"><span class="font-medium">Диагностика</span><span class="text-xs text-muted font-mono">{doctor.summary}</span></div>
+    <div class="flex justify-between items-center mb-3"><span class="font-medium">{t('dashboard.doctor')}</span><span class="text-xs text-muted font-mono">{doctor.summary}</span></div>
     <ul class="text-sm grid md:grid-cols-2 gap-x-6 gap-y-1">
       {#each doctor.checks as c, i}
         <li class="flex flex-wrap items-start gap-2 py-0.5 rise min-w-0" style="--i:{i}"><span class="tag {c.status === 'ok' ? 'tag-ok' : c.status === 'warn' ? 'tag-warn' : 'tag-err'} w-12 justify-center">{c.status}</span><span class="font-mono text-xs pt-0.5 shrink-0">{c.name}</span><span class="text-muted text-xs pt-0.5 truncate" title={c.detail}>{c.detail}</span>
-          {#if c.action === 'site.fix' && c.target}<button class="btn btn-sm shrink-0" onclick={() => fixSites(c.target)} disabled={!!fixing}>{fixing ? 'чиню…' : c.target === '*' ? 'починить все сайты' : `починить ${c.target}`}</button>{/if}
-          {#if c.action === 'selinux.enforcing'}<button class="btn btn-sm shrink-0" onclick={enforce} disabled={!!fixing}>вернуть enforcing</button>{/if}
+          {#if c.action === 'site.fix' && c.target}<button class="btn btn-sm shrink-0" onclick={() => fixSites(c.target)} disabled={!!fixing}>{fixing ? t('dashboard.fixing') : c.target === '*' ? t('dashboard.fixAllSites') : t('dashboard.fixSite', { domain: c.target })}</button>{/if}
+          {#if c.action === 'selinux.enforcing'}<button class="btn btn-sm shrink-0" onclick={enforce} disabled={!!fixing}>{t('dashboard.enforce')}</button>{/if}
         </li>
       {/each}
     </ul>

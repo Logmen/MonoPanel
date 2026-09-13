@@ -1,20 +1,21 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { auth, logout, theme, setTheme, type ThemeMode } from '$lib/state.svelte';
+  import { t, type MsgKey } from '$lib/i18n/index.svelte';
   import Icon from './Icon.svelte';
 
   // На узких экранах меню выезжает поверх содержимого и закрывается после
   // перехода; на широких это обычная колонка слева.
   let { open = false, onclose }: { open?: boolean; onclose?: () => void } = $props();
-  const items: [string, string, string][] = [
-    ['/', 'Дашборд', 'home'], ['/sites', 'Сайты', 'globe'], ['/users', 'Пользователи', 'users'], ['/php', 'PHP', 'code'],
-    ['/stack', 'Расширения', 'box'], ['/databases', 'Базы данных', 'db'],
-    ['/mail', 'Почта', 'mail'], ['/files', 'Файлы', 'file'], ['/ssl', 'SSL', 'shield'], ['/jobs', 'Задачи', 'tasks'], ['/firewall', 'Firewall', 'fire'], ['/backups', 'Бэкапы', 'archive'], ['/console', 'Консоль', 'terminal'], ['/settings', 'Настройки', 'settings']
+  const items: [string, MsgKey, string][] = [
+    ['/', 'shell.nav.dashboard', 'home'], ['/sites', 'shell.nav.sites', 'globe'], ['/users', 'shell.nav.users', 'users'], ['/php', 'shell.nav.php', 'code'],
+    ['/stack', 'shell.nav.stack', 'box'], ['/databases', 'shell.nav.databases', 'db'],
+    ['/mail', 'shell.nav.mail', 'mail'], ['/files', 'shell.nav.files', 'file'], ['/ssl', 'shell.nav.ssl', 'shield'], ['/jobs', 'shell.nav.jobs', 'tasks'], ['/firewall', 'shell.nav.firewall', 'fire'], ['/backups', 'shell.nav.backups', 'archive'], ['/console', 'shell.nav.console', 'terminal'], ['/settings', 'shell.nav.settings', 'settings']
   ];
   const admin = $derived(auth.me?.role === 'admin');
   const visible = $derived(items.filter(([href]) => admin || ['/', '/sites', '/databases', '/mail', '/files', '/jobs', '/settings'].includes(href)));
   const active = (href: string) => page.url.pathname === href || (href !== '/' && page.url.pathname.startsWith(href));
-  const modes: [ThemeMode, string, string][] = [['system', 'monitor', 'как в системе'], ['light', 'sun', 'светлая'], ['dark', 'moon', 'тёмная']];
+  const modes: [ThemeMode, string, MsgKey][] = [['system', 'monitor', 'shell.theme.system'], ['light', 'sun', 'shell.theme.light'], ['dark', 'moon', 'shell.theme.dark']];
 </script>
 
 <aside
@@ -27,17 +28,17 @@
     <span class="brand font-bold text-[15px]">MonoPanel</span>
   </a>
   <nav class="flex flex-col gap-0.5 text-sm">
-    {#each visible as [href, title, icon], i}
+    {#each visible as [href, key, icon], i}
       <a {href} onclick={onclose} class="nav-item relative flex items-center gap-2.5 px-2.5 py-2.5 rounded-md transition-all duration-150 rise {active(href) ? 'nav-on text-accent-ink' : 'text-muted hover:text-ink hover:bg-surface-2'}" style="--i:{i}">
         <Icon name={icon} size={17} class="shrink-0 opacity-80" />
-        <span>{title}</span>
+        <span>{t(key)}</span>
       </a>
     {/each}
   </nav>
   <div class="mt-auto pt-4 space-y-3">
-    <div class="flex rounded-md border border-line p-0.5 bg-surface-2" role="group" aria-label="Тема">
+    <div class="flex rounded-md border border-line p-0.5 bg-surface-2" role="group" aria-label={t('shell.theme.label')}>
       {#each modes as [m, icon, label]}
-        <button class="flex-1 grid place-items-center py-1.5 rounded-md transition-all duration-150 {theme.mode === m ? 'bg-surface text-accent-ink' : 'text-muted hover:text-ink'}" title={label} aria-pressed={theme.mode === m} onclick={() => setTheme(m)}>
+        <button class="flex-1 grid place-items-center py-1.5 rounded-md transition-all duration-150 {theme.mode === m ? 'bg-surface text-accent-ink' : 'text-muted hover:text-ink'}" title={t(label)} aria-pressed={theme.mode === m} onclick={() => setTheme(m)}>
           <Icon name={icon} size={15} />
         </button>
       {/each}
@@ -47,7 +48,7 @@
         <div class="font-medium truncate">{auth.me?.login}</div>
         <div class="text-muted font-mono">{auth.me?.role}{auth.version ? ' · v' + auth.version : ''}</div>
       </div>
-      <button class="btn btn-ghost btn-sm text-muted" onclick={logout} title="выйти"><Icon name="logout" size={15} /></button>
+      <button class="btn btn-ghost btn-sm text-muted" onclick={logout} title={t('shell.nav.logout')}><Icon name="logout" size={15} /></button>
     </div>
     <a href="/api/v1/docs" target="_blank" class="text-[11px] text-muted hover:text-ink inline-flex items-center gap-1 transition-colors">API docs <Icon name="external" size={11} /></a>
   </div>

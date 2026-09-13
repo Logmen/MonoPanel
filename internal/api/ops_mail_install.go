@@ -381,7 +381,7 @@ func (s *Server) mailStatus(ctx context.Context) apitypes.MailStatus {
 			out.Ports = append(out.Ports, p)
 		}
 		if c.WebmailPort > 0 && c.Webmail != "" {
-			out.Ports = append(out.Ports, apitypes.MailPort{Port: c.WebmailPort, Name: "Вебпочта", Open: probes[c.WebmailPort].Open, Managed: true})
+			out.Ports = append(out.Ports, apitypes.MailPort{Port: c.WebmailPort, Name: "Webmail", Open: probes[c.WebmailPort].Open, Managed: true})
 		}
 		out.Warnings = s.mailWarnings(ctx, c, kind, probes)
 	}

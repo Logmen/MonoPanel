@@ -5,6 +5,7 @@
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
   import Confirm, { type Ask } from './Confirm.svelte';
+  import { t, tn, lang } from '$lib/i18n/index.svelte';
 
   let { user, start = '/', sites = [] }: { user: string; start?: string; sites?: { domain: string; docroot?: string }[] } = $props();
 
@@ -80,7 +81,7 @@
     monacoPromise = new Promise((resolve, reject) => {
       const script = document.createElement('script');
       script.src = '/monaco/vs/loader.js';
-      script.onerror = () => reject(new Error('редактор не загрузился'));
+      script.onerror = () => reject(new Error(t('files.editorLoadError')));
       script.onload = () => {
         w.MonacoEnvironment = { getWorkerUrl: () => '/monaco/vs/editor/editor.worker.js' };
         w.require.config({ paths: { vs: '/monaco/vs' } });
@@ -120,7 +121,7 @@
       editor.focus();
     } catch (e) {
       monacoFailed = true;
-      notify('редактор VS Code не загрузился, работает простое поле', 'err');
+      notify(t('files.monacoFailed'), 'err');
     }
   }
 
@@ -154,7 +155,7 @@
       const list: Entry[] = res.entries || [];
       // Каталоги сверху, дальше по алфавиту.
       entries = list.sort((a, b) =>
-        (a.type === 'dir' ? 0 : 1) - (b.type === 'dir' ? 0 : 1) || a.name.localeCompare(b.name, 'ru')
+        (a.type === 'dir' ? 0 : 1) - (b.type === 'dir' ? 0 : 1) || a.name.localeCompare(b.name, lang.locale)
       );
     } catch (e) {
       entries = [];
@@ -176,7 +177,7 @@
   // Уход из редактора с несохранёнными правками требует подтверждения.
   function leaveEditor(then?: () => void): boolean {
     if (dirty) {
-      askConfirm('Изменения не сохранены', `${editing}: правки будут потеряны.`, 'Отбросить', () => {
+      askConfirm(t('files.unsavedTitle'), t('files.unsavedNote', { name: editing ?? '' }), t('files.discard'), () => {
         closeEditor();
         then?.();
       });
@@ -194,13 +195,13 @@
   async function open(e: Entry) {
     if (e.type === 'dir') { go(join(cwd, e.name)); return; }
     if (dirty) { leaveEditor(() => open(e)); return; }
-    if (binaryExt.test(e.name)) { notify('двоичный файл — доступно скачивание', 'err'); return; }
-    if (e.size > editLimit) { notify(`файл больше ${bytes(editLimit)} — доступно скачивание`, 'err'); return; }
+    if (binaryExt.test(e.name)) { notify(t('files.binaryFile'), 'err'); return; }
+    if (e.size > editLimit) { notify(t('files.tooLarge', { size: bytes(editLimit) }), 'err'); return; }
     closeEditor();
     try {
       const body = await apiText(`/files/content?${q(join(cwd, e.name))}`);
       // Нулевой байт — верный признак, что это не текст.
-      if (body.indexOf('\u0000') >= 0) { notify('двоичный файл — доступно скачивание', 'err'); return; }
+      if (body.indexOf('\u0000') >= 0) { notify(t('files.binaryFile'), 'err'); return; }
       original = text = body;
       editing = e.name;
       mountEditor(e.name);
@@ -218,7 +219,7 @@
         await apiPutRaw(`/files/content?${q(join(cwd, editing))}`, text);
       }
       original = text;
-      notify(`${editing} сохранён`);
+      notify(t('files.saved', { name: editing }));
       await load();
     } catch (e) { fail(e); } finally { saving = false; }
   }
@@ -226,7 +227,7 @@
   // Ctrl+S ловится на окне: внутри Monaco свои привязки, и до textarea-обработчика
   // событие не доходит.
   function windowKeys(e: KeyboardEvent) {
-    if (editing !== null && (e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'ы')) {
+    if (editing !== null && (e.ctrlKey || e.metaKey) && (e.code === 'KeyS' || e.key === 's')) {
       e.preventDefault();
       save();
     }
@@ -268,25 +269,25 @@
     await askRun(value);
   }
 
-  const mkdir = () => request('Новая папка', 'Название', '', (v) => op({ op: 'mkdir', path: join(cwd, v) }, `папка ${v} создана`));
-  const touch = () => request('Новый файл', 'Название', '', (v) => op({ op: 'touch', path: join(cwd, v) }, `файл ${v} создан`));
-  const rename = (e: Entry) => request('Переименовать', 'Новое имя или путь', e.name, (v) => {
+  const mkdir = () => request(t('files.newFolder'), t('files.nameLabel'), '', (v) => op({ op: 'mkdir', path: join(cwd, v) }, t('files.folderCreated', { name: v })));
+  const touch = () => request(t('files.newFile'), t('files.nameLabel'), '', (v) => op({ op: 'touch', path: join(cwd, v) }, t('files.fileCreated', { name: v })));
+  const rename = (e: Entry) => request(t('files.rename'), t('files.renameLabel'), e.name, (v) => {
     if (editing === e.name) closeEditor();
-    return op({ op: 'mv', path: join(cwd, e.name), dest: v.includes('/') ? clean(v) : join(cwd, v) }, 'переименовано');
+    return op({ op: 'mv', path: join(cwd, e.name), dest: v.includes('/') ? clean(v) : join(cwd, v) }, t('files.renamed'));
   });
-  const chmod = (e: Entry) => request(`Права на ${e.name}`, 'Восьмеричные права, например 644', modeOctal(e.mode), (v) =>
-    op({ op: 'chmod', path: join(cwd, e.name), mode: v }, 'права изменены'));
-  const extract = (e: Entry) => request(`Распаковать ${e.name}`, 'Куда распаковать', cwd, (v) =>
-    op({ op: 'extract', path: join(cwd, e.name), dest: clean(v) }, 'архив распакован'));
+  const chmod = (e: Entry) => request(t('files.permsTitle', { name: e.name }), t('files.permsLabel'), modeOctal(e.mode), (v) =>
+    op({ op: 'chmod', path: join(cwd, e.name), mode: v }, t('files.permsChanged')));
+  const extract = (e: Entry) => request(t('files.extractTitle', { name: e.name }), t('files.extractLabel'), cwd, (v) =>
+    op({ op: 'extract', path: join(cwd, e.name), dest: clean(v) }, t('files.extracted')));
 
   function remove(names: string[]) {
     if (!names.length) return;
-    const what = names.length === 1 ? names[0] : `${names.length} объект(ов)`;
-    askConfirm('Удаление', `${what} — восстановить будет нечем.`, 'Удалить', () => {
+    const what = names.length === 1 ? names[0] : tn('files.items', names.length);
+    askConfirm(t('files.deleteTitle'), t('files.deleteNote', { what }), t('common.delete'), () => {
       // Открытый в редакторе файл после удаления показывать нечего.
       if (editing !== null && names.includes(editing)) closeEditor();
       const paths = names.map((n) => join(cwd, n));
-      op({ op: 'rm', path: paths[0], paths: paths.slice(1) }, 'удалено');
+      op({ op: 'rm', path: paths[0], paths: paths.slice(1) }, t('files.deleted'));
     });
   }
 
@@ -300,7 +301,7 @@
     for (const f of Array.from(files)) {
       try {
         await apiPutRaw(`/files/content?${q(join(cwd, f.name))}`, f);
-        notify(`${f.name} загружен (${bytes(f.size)})`);
+        notify(t('files.uploaded', { name: f.name, size: bytes(f.size) }));
       } catch (e) { fail(e); }
     }
     await load();
@@ -347,8 +348,8 @@
 <div class="card p-0 overflow-hidden">
   <div class="flex flex-wrap items-center gap-2 p-3 border-b border-line bg-surface-2">
     <div class="flex items-center gap-1 text-sm min-w-0 w-full sm:w-auto sm:flex-1 flex-wrap">
-      <button class="btn btn-ghost btn-sm" onclick={() => go('/')} title="домашний каталог"><Icon name="home" size={14} /></button>
-      {#if cwd !== '/'}<button class="btn btn-ghost btn-sm" onclick={() => go(parent(cwd))} title="вверх">..</button>{/if}
+      <button class="btn btn-ghost btn-sm" onclick={() => go('/')} title={t('files.homeDir')}><Icon name="home" size={14} /></button>
+      {#if cwd !== '/'}<button class="btn btn-ghost btn-sm" onclick={() => go(parent(cwd))} title={t('files.up')}>..</button>{/if}
       <span class="text-muted font-mono text-xs">/var/www/{user}</span>
       {#each crumbs as c}
         <span class="text-muted">/</span>
@@ -364,23 +365,23 @@
           el.value = '';
         }}
       >
-        <option value="">перейти к сайту…</option>
+        <option value="">{t('files.goToSite')}</option>
         {#each sites as s}<option value={'/data/www/' + s.domain + (s.docroot ? '/' + s.docroot : '')}>{s.domain}</option>{/each}
       </select>
     {/if}
     <div class="flex gap-1">
-      <button class="btn btn-sm" onclick={mkdir}><Icon name="plus" size={13} /> папка</button>
-      <button class="btn btn-sm" onclick={touch}><Icon name="file" size={13} /> файл</button>
-      <button class="btn btn-sm" onclick={pick}><Icon name="archive" size={13} /> загрузить</button>
-      <button class="btn btn-ghost btn-sm" onclick={load} title="обновить"><Icon name="refresh" size={14} /></button>
+      <button class="btn btn-sm" onclick={mkdir}><Icon name="plus" size={13} /> {t('files.folderBtn')}</button>
+      <button class="btn btn-sm" onclick={touch}><Icon name="file" size={13} /> {t('files.fileBtn')}</button>
+      <button class="btn btn-sm" onclick={pick}><Icon name="archive" size={13} /> {t('files.upload')}</button>
+      <button class="btn btn-ghost btn-sm" onclick={load} title={t('files.refresh')}><Icon name="refresh" size={14} /></button>
     </div>
   </div>
 
   {#if selected.length}
     <div class="flex items-center gap-3 px-3 py-2 border-b border-line bg-accent-soft text-sm">
-      <span>выбрано: {selected.length}</span>
-      <button class="btn btn-danger btn-sm" onclick={() => remove(selected)}><Icon name="trash" size={13} /> удалить</button>
-      <button class="btn btn-ghost btn-sm" onclick={() => (selected = [])}>снять</button>
+      <span>{t('files.selectedCount', { n: selected.length })}</span>
+      <button class="btn btn-danger btn-sm" onclick={() => remove(selected)}><Icon name="trash" size={13} /> {t('files.deleteBtn')}</button>
+      <button class="btn btn-ghost btn-sm" onclick={() => (selected = [])}>{t('files.deselect')}</button>
     </div>
   {/if}
 
@@ -389,24 +390,24 @@
   <div
     class="relative {dragging ? 'ring-2 ring-accent ring-inset' : ''}"
     role="region"
-    aria-label="файлы"
+    aria-label={t('files.regionLabel')}
     ondragover={(e) => { e.preventDefault(); dragging = true; }}
     ondragleave={() => (dragging = false)}
     ondrop={drop}
   >
     {#if loading && !entries.length}
-      <p class="text-sm text-muted p-4">загрузка…</p>
+      <p class="text-sm text-muted p-4">{t('common.loading')}</p>
     {:else if !entries.length}
-      <p class="text-sm text-muted p-6 text-center">Пусто. Перетащите файлы сюда или создайте новый.</p>
+      <p class="text-sm text-muted p-6 text-center">{t('files.empty')}</p>
     {:else}
       <table class="tbl">
         <thead>
           <tr>
             <th class="w-8"></th>
-            <th>Имя</th>
-            <th class="text-right w-24">Размер</th>
-            <th class="w-28 hidden sm:table-cell">Права</th>
-            <th class="w-40 hidden md:table-cell">Изменён</th>
+            <th>{t('common.name')}</th>
+            <th class="text-right w-24">{t('files.colSize')}</th>
+            <th class="w-28 hidden sm:table-cell">{t('files.colMode')}</th>
+            <th class="w-40 hidden md:table-cell">{t('files.colModified')}</th>
             <th class="w-40"></th>
           </tr>
         </thead>
@@ -414,26 +415,26 @@
           {#each entries as e (e.name)}
             <tr class={editing === e.name ? 'bg-accent-soft' : ''}>
               <td data-label="" class="text-center">
-                <input type="checkbox" checked={selected.includes(e.name)} onchange={() => toggle(e.name)} aria-label={'выбрать ' + e.name} />
+                <input type="checkbox" checked={selected.includes(e.name)} onchange={() => toggle(e.name)} aria-label={t('files.selectEntry', { name: e.name })} />
               </td>
-              <td data-label="Имя">
+              <td data-label={t('common.name')}>
                 <button class="inline-flex items-center gap-2 text-left max-w-full" onclick={() => open(e)}>
                   <Icon name={icon(e)} size={15} class="shrink-0 text-muted" />
                   <span class="truncate {e.type === 'dir' ? 'font-medium' : ''}">{e.name}</span>
                   {#if e.type === 'link'}<span class="text-xs text-muted">→ {e.target}</span>{/if}
                 </button>
               </td>
-              <td data-label="Размер" class="text-right text-muted tabular-nums whitespace-nowrap">{e.type === 'dir' ? '—' : bytes(e.size)}</td>
-              <td data-label="Права" class="font-mono text-xs text-muted hidden sm:table-cell">{e.mode}</td>
-              <td data-label="Изменён" class="text-muted text-xs hidden md:table-cell whitespace-nowrap">{(e.mtime || '').replace('T', ' ').slice(0, 16)}</td>
+              <td data-label={t('files.colSize')} class="text-right text-muted tabular-nums whitespace-nowrap">{e.type === 'dir' ? '—' : bytes(e.size)}</td>
+              <td data-label={t('files.colMode')} class="font-mono text-xs text-muted hidden sm:table-cell">{e.mode}</td>
+              <td data-label={t('files.colModified')} class="text-muted text-xs hidden md:table-cell whitespace-nowrap">{(e.mtime || '').replace('T', ' ').slice(0, 16)}</td>
               <td data-label="" class="text-right whitespace-nowrap">
                 {#if e.type !== 'dir'}
-                  <button class="btn btn-ghost btn-sm" onclick={() => download(e)} title="скачать"><Icon name="download" size={13} /></button>
-                  {#if archiveExt.test(e.name)}<button class="btn btn-ghost btn-sm" onclick={() => extract(e)} title="распаковать"><Icon name="archive" size={13} /></button>{/if}
+                  <button class="btn btn-ghost btn-sm" onclick={() => download(e)} title={t('files.download')}><Icon name="download" size={13} /></button>
+                  {#if archiveExt.test(e.name)}<button class="btn btn-ghost btn-sm" onclick={() => extract(e)} title={t('files.extractBtn')}><Icon name="archive" size={13} /></button>{/if}
                 {/if}
-                <button class="btn btn-ghost btn-sm" onclick={() => rename(e)} title="переименовать"><Icon name="pencil" size={13} /></button>
-                <button class="btn btn-ghost btn-sm" onclick={() => chmod(e)} title="права"><Icon name="lock" size={13} /></button>
-                <button class="btn btn-ghost btn-sm text-danger" onclick={() => remove([e.name])} title="удалить"><Icon name="trash" size={13} /></button>
+                <button class="btn btn-ghost btn-sm" onclick={() => rename(e)} title={t('files.renameBtn')}><Icon name="pencil" size={13} /></button>
+                <button class="btn btn-ghost btn-sm" onclick={() => chmod(e)} title={t('files.permsBtn')}><Icon name="lock" size={13} /></button>
+                <button class="btn btn-ghost btn-sm text-danger" onclick={() => remove([e.name])} title={t('files.deleteBtn')}><Icon name="trash" size={13} /></button>
               </td>
             </tr>
           {/each}
@@ -448,12 +449,12 @@
     <div class="flex flex-wrap items-center gap-2 p-3 border-b border-line bg-surface-2">
       <Icon name="code" size={15} class="text-muted" />
       <span class="font-mono text-sm truncate">{join(cwd, editing)}</span>
-      {#if dirty}<span class="tag">не сохранено</span>{/if}
-      <span class="text-xs text-muted ml-auto">{lines} строк · {bytes(new Blob([text]).size)}</span>
+      {#if dirty}<span class="tag">{t('files.unsavedTag')}</span>{/if}
+      <span class="text-xs text-muted ml-auto">{tn('files.lines', lines)} · {bytes(new Blob([text]).size)}</span>
       <button class="btn btn-primary btn-sm" disabled={!dirty || saving} onclick={save}>
-        <Icon name="save" size={13} /> {saving ? 'сохраняю…' : 'Сохранить'}
+        <Icon name="save" size={13} /> {saving ? t('files.saving') : t('common.save')}
       </button>
-      <button class="btn btn-sm" onclick={() => leaveEditor()}>Закрыть</button>
+      <button class="btn btn-sm" onclick={() => leaveEditor()}>{t('common.close')}</button>
     </div>
     {#if monacoFailed}
       <div class="flex font-mono text-[13px] leading-[1.5]">
@@ -470,14 +471,14 @@
           autocapitalize="off"
           class="flex-1 bg-transparent p-3 outline-none resize-none font-mono text-[13px] leading-[1.5]"
           style="min-height:40vh;max-height:60vh"
-          aria-label="содержимое файла"
+          aria-label={t('files.contentLabel')}
         ></textarea>
       </div>
     {:else}
-      <div bind:this={monacoBox} style="height:240px" aria-label="содержимое файла"></div>
+      <div bind:this={monacoBox} style="height:240px" aria-label={t('files.contentLabel')}></div>
     {/if}
     <div class="px-3 py-2 border-t border-line text-xs text-muted">
-      Ctrl+S — сохранить{monacoFailed ? '' : ', F1 — команды редактора'}. Файл пишется от имени {user}; nginx и php-fpm подхватывают изменения сразу.
+      {monacoFailed ? t('files.hintSave') : t('files.hintSaveF1')} {t('files.hintWrites', { user })}
     </div>
   </div>
 {/if}
@@ -498,7 +499,7 @@
     />
   </form>
   {#snippet footer()}
-    <button class="btn" onclick={() => (askOpen = false)}>Отмена</button>
-    <button class="btn btn-primary" form="fm-ask" type="submit">Готово</button>
+    <button class="btn" onclick={() => (askOpen = false)}>{t('common.cancel')}</button>
+    <button class="btn btn-primary" form="fm-ask" type="submit">{t('files.done')}</button>
   {/snippet}
 </Modal>

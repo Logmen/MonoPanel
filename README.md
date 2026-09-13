@@ -116,6 +116,7 @@ mp                              # TUI-меню
 | SFTP / SSH | `mp user add`, `mp user set --shell\|--sftp-only --password` | SFTP-only = chroot в `/var/www/<login>` через `sshd_config.d/monopanel.conf`, пароль общий для панели и SFTP; `mp user rm <login> [--purge]` — удаление вместе с сайтами, базами, cron, app-сервисами и сертификатами |
 | Метрики и логи | `mp metrics`, `mp site logs`, `mp logs <unit>`, `mp doctor` | сэмплер раз в 10 с → точки по минутам (30 дней), хвост логов сайтов и journald через агент; doctor проверяет сервисы, конфиги, диск, сертификаты, DNS, задачи и дрейф файлов |
 | Безопасность | `mp user totp-reset`, `mp webhook add` | TOTP 2FA (QR в Web UI), Bearer-токены, webhooks с HMAC-SHA256 на события задач |
+| Языки | — | Web UI на русском и английском: язык берётся из браузера (языки стран СНГ → русский, остальные → английский), переключается в «Настройках» и на экране входа, выбор запоминается в браузере; сообщения API, задач и CLI пока только на русском |
 
 ### Чего пока нет
 

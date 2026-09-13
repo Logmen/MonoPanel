@@ -1,3 +1,5 @@
+import { t, tn, dateLocale } from './i18n/index.svelte';
+
 export class ApiError extends Error {
   status: number;
   detail: string;
@@ -75,8 +77,8 @@ export function jobEvents(id: number, onEvent: (type: string, data: any) => void
 }
 
 export function bytes(n: number | undefined | null): string {
-  if (!n) return '0 Б';
-  const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
+  const units = (['common.unit.b', 'common.unit.kb', 'common.unit.mb', 'common.unit.gb', 'common.unit.tb'] as const).map((k) => t(k));
+  if (!n) return '0 ' + units[0];
   let f = n;
   let i = 0;
   while (f >= 1024 && i < units.length - 1) {
@@ -89,11 +91,11 @@ export function bytes(n: number | undefined | null): string {
 export function when(s: string | null | undefined): string {
   if (!s) return '—';
   const d = new Date(s);
-  return isNaN(d.getTime()) ? s : d.toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' });
+  return isNaN(d.getTime()) ? s : d.toLocaleString(dateLocale(), { dateStyle: 'short', timeStyle: 'short' });
 }
 
 export function daysLeft(s: string | null | undefined): string {
   if (!s) return '—';
   const d = Math.round((new Date(s).getTime() - Date.now()) / 86400000);
-  return `${new Date(s).toLocaleDateString('ru-RU')} (${d} дн.)`;
+  return `${new Date(s).toLocaleDateString(dateLocale())} (${tn('common.days', d)})`;
 }

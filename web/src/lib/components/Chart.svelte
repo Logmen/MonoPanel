@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from '$lib/i18n/index.svelte';
   let { points, format = (v: number) => v.toFixed(0), label = '' }: { points: { x: number; y: number }[]; format?: (v: number) => string; label?: string } = $props();
   const W = 640, H = 150, P = 28;
   const geo = $derived.by(() => {
@@ -18,7 +19,7 @@
 <figure class="card rise">
   <div class="flex justify-between items-baseline text-xs text-muted mb-1">
     <span class="font-medium text-ink">{label}</span>
-    <span class="font-mono tabular-nums">сейчас <b class="text-ink">{format(last)}</b> · макс {format(geo?.max ?? 1)}</span>
+    <span class="font-mono tabular-nums">{t('shell.chart.now')} <b class="text-ink">{format(last)}</b> · {t('shell.chart.max')} {format(geo?.max ?? 1)}</span>
   </div>
   <svg viewBox="0 0 {W} {H}" class="w-full h-auto" role="img" aria-label={label}>
     <defs>
@@ -34,7 +35,7 @@
       <path d={geo.line} fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linejoin="round" />
       <circle cx={geo.last[0]} cy={geo.last[1]} r="3.5" fill="var(--accent)" stroke="var(--surface)" stroke-width="2" />
     {:else}
-      <text x={W / 2} y={H / 2} text-anchor="middle" font-size="12" fill="currentColor" fill-opacity="0.4">нет данных</text>
+      <text x={W / 2} y={H / 2} text-anchor="middle" font-size="12" fill="currentColor" fill-opacity="0.4">{t('shell.chart.noData')}</text>
     {/if}
   </svg>
 </figure>

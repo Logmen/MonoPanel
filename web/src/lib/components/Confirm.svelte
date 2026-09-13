@@ -15,6 +15,7 @@
 
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { t } from '$lib/i18n/index.svelte';
   import Modal from './Modal.svelte';
 
   let { ask = $bindable(null), children }: { ask?: Ask | null; children?: Snippet } = $props();
@@ -37,9 +38,9 @@
   {#if ask?.note}<p class="text-muted">{ask.note}</p>{/if}
   {@render children?.()}
   {#snippet footer()}
-    <button class="btn" onclick={() => (ask = null)} disabled={busy}>Отмена</button>
+    <button class="btn" onclick={() => (ask = null)} disabled={busy}>{t('common.cancel')}</button>
     <button class="btn {ask?.danger ? 'btn-danger' : 'btn-primary'}" onclick={go} disabled={busy}>
-      {busy ? 'выполняю…' : (ask?.action ?? 'Продолжить')}
+      {busy ? t('shell.confirm.busy') : (ask?.action ?? t('shell.confirm.proceed'))}
     </button>
   {/snippet}
 </Modal>

@@ -2,6 +2,7 @@
   import { slide } from 'svelte/transition';
   import { jobEvents } from '$lib/api';
   import { dur } from '$lib/state.svelte';
+  import { t } from '$lib/i18n/index.svelte';
   let { jobId, onfinish }: { jobId: number; onfinish?: (status: string) => void } = $props();
   let lines = $state<string[]>([]);
   let progress = $state(0);
@@ -46,7 +47,7 @@
 
 <div class="card font-mono text-xs rise" transition:slide={{ duration: dur(200) }}>
   <div class="flex items-center gap-3">
-    <button class="text-muted hover:text-ink transition-colors" onclick={() => (open = !open)} aria-expanded={open}>задача #{jobId} {open ? '▾' : '▸'}</button>
+    <button class="text-muted hover:text-ink transition-colors" onclick={() => (open = !open)} aria-expanded={open}>{t('shell.jobLog.job', { id: jobId })} {open ? '▾' : '▸'}</button>
     <div class="flex-1 progress {status === 'running' ? 'running' : ''}"><i style="width:{Math.max(2, progress)}%"></i></div>
     <span class="tabular-nums w-9 text-right text-muted">{progress}%</span>
     <span class={status === 'failed' ? 'tag tag-err' : status === 'done' ? 'tag tag-ok' : 'tag tag-accent'}>{#if status === 'running'}<span class="dot dot-live"></span>{/if}{status}</span>

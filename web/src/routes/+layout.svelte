@@ -4,18 +4,22 @@
   import { page } from '$app/state';
   import { fly, fade } from 'svelte/transition';
   import { auth, loadMe, toastValue, initTheme, dur } from '$lib/state.svelte';
+  import { browser } from '$app/environment';
+  import { initLang, t } from '$lib/i18n/index.svelte';
   import Login from '$lib/components/Login.svelte';
   import Nav from '$lib/components/Nav.svelte';
   import Icon from '$lib/components/Icon.svelte';
   let { children } = $props();
   let navOpen = $state(false);
+  // Язык нужен до первого рендера, иначе экран мигнёт русским перед английским.
+  if (browser) initLang();
   onMount(() => { initTheme(); loadMe(); });
 </script>
 
 {#if auth.loading}
   <div class="min-h-screen grid place-items-center">
     <div class="flex items-center gap-3 text-muted text-sm" in:fade={{ duration: dur(200) }}>
-      <span class="w-2 h-2 rounded-full bg-accent dot-live"></span> загрузка…
+      <span class="w-2 h-2 rounded-full bg-accent dot-live"></span> {t('common.loading')}
     </div>
   </div>
 {:else if !auth.me}
@@ -27,7 +31,7 @@
     {#if navOpen}
       <button
         class="fixed inset-0 z-30 bg-black/40 backdrop-blur-[2px] lg:hidden"
-        aria-label="закрыть меню"
+        aria-label={t('shell.layout.closeMenu')}
         onclick={() => (navOpen = false)}
         transition:fade={{ duration: dur(150) }}
       ></button>
@@ -35,7 +39,7 @@
     <div class="flex-1 min-w-0 flex flex-col">
       <!-- Шапка с кнопкой меню — только там, где меню спрятано. -->
       <header class="lg:hidden sticky top-0 z-20 flex items-center gap-3 px-4 h-14 border-b border-line bg-surface/95 backdrop-blur">
-        <button class="btn btn-ghost px-2" aria-label="меню" aria-expanded={navOpen} onclick={() => (navOpen = true)}>
+        <button class="btn btn-ghost px-2" aria-label={t('shell.layout.menu')} aria-expanded={navOpen} onclick={() => (navOpen = true)}>
           <Icon name="menu" size={20} />
         </button>
         <a href="/" class="flex items-center gap-2 font-semibold tracking-tight">

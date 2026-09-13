@@ -2,6 +2,7 @@
   import type { Snippet } from 'svelte';
   import { fade, scale } from 'svelte/transition';
   import { dur } from '$lib/state.svelte';
+  import { t } from '$lib/i18n/index.svelte';
   // onclose нужен там, где открытость выводится из состояния снаружи
   // (open={!!del}): без него Esc и клик по фону гасят окно, а состояние
   // остаётся — и та же кнопка второй раз уже ничего не открывает.
@@ -13,10 +14,10 @@
 <svelte:window onkeydown={key} />
 {#if open}
   <div class="fixed inset-0 z-40 flex items-center justify-center p-4" transition:fade={{ duration: dur(150) }}>
-    <button class="absolute inset-0 bg-black/40 backdrop-blur-[2px] cursor-default" aria-label="закрыть" onclick={close}></button>
+    <button class="absolute inset-0 bg-black/40 backdrop-blur-[2px] cursor-default" aria-label={t('shell.modal.close')} onclick={close}></button>
     <div class="relative card no-cut w-full max-w-md shadow-2xl" role="dialog" aria-modal="true" transition:scale={{ start: 0.96, duration: dur(180) }}>
       {#if title}<div class="text-base font-semibold mb-3 pr-8">{title}</div>{/if}
-      <button class="absolute top-3 right-3 btn btn-ghost btn-sm" onclick={close} aria-label="закрыть">✕</button>
+      <button class="absolute top-3 right-3 btn btn-ghost btn-sm" onclick={close} aria-label={t('shell.modal.close')}>✕</button>
       <div class="text-sm space-y-3">{@render children?.()}</div>
       {#if footer}<div class="flex justify-end gap-2 mt-5">{@render footer()}</div>{/if}
     </div>

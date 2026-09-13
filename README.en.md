@@ -123,6 +123,7 @@ and the terminal menu.
 | SFTP / SSH | `mp user add`, `mp user set --shell\|--sftp-only --password` | SFTP-only means a chroot into `/var/www/<login>` via `sshd_config.d/monopanel.conf`, with one password for the panel and SFTP; `mp user rm <login> [--purge]` removes sites, databases, cron, app services, certificates and the unix account together |
 | Metrics and logs | `mp metrics`, `mp site logs`, `mp logs <unit>`, `mp doctor` | a sampler every 10 s stored as one point per minute for 30 days, site and journald log tails through the agent; doctor checks services, configs, disk, certificates, DNS, jobs and file drift |
 | Security | `mp user totp-reset`, `mp webhook add` | TOTP 2FA (QR in the web UI), Bearer tokens, webhooks signed with HMAC-SHA256 on job events |
+| Languages | — | the web UI in English and Russian: picked from the browser language (CIS languages → Russian, everything else → English), switchable in Settings and on the sign-in screen, remembered per browser; API, job and CLI messages are Russian-only for now |
 
 ### Not there yet
 

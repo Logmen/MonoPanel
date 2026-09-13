@@ -5,6 +5,7 @@
   import { auth } from '$lib/state.svelte';
   import PageHead from '$lib/components/PageHead.svelte';
   import FileManager from '$lib/components/FileManager.svelte';
+  import { t } from '$lib/i18n/index.svelte';
 
   const admin = $derived(auth.me?.role === 'admin');
   let users = $state<any[]>([]);
@@ -35,7 +36,7 @@
   const userSites = $derived(sites.filter((s) => s.login === user).map((s) => ({ domain: s.domain, docroot: s.docroot })));
 </script>
 
-<PageHead title="Файлы" sub="каталоги сайтов, загрузка и редактор — от имени владельца">
+<PageHead title={t('files.title')} sub={t('files.sub')}>
   {#if admin && users.length}
     <select class="input w-auto py-1.5 text-sm" bind:value={user}>
       {#each users as u}<option value={u.login}>{u.login}</option>{/each}
@@ -50,5 +51,5 @@
     <FileManager {user} {start} sites={userSites} />
   {/key}
 {:else if !error}
-  <div class="card text-sm text-muted">Нет аккаунтов с домашним каталогом — файлы появятся после создания пользователя.</div>
+  <div class="card text-sm text-muted">{t('files.noAccounts')}</div>
 {/if}
