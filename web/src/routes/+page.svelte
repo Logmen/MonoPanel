@@ -84,7 +84,7 @@
     <div class="flex justify-between items-center mb-3"><span class="font-medium">Диагностика</span><span class="text-xs text-muted font-mono">{doctor.summary}</span></div>
     <ul class="text-sm grid md:grid-cols-2 gap-x-6 gap-y-1">
       {#each doctor.checks as c, i}
-        <li class="flex items-start gap-2 py-0.5 rise" style="--i:{i}"><span class="tag {c.status === 'ok' ? 'tag-ok' : c.status === 'warn' ? 'tag-warn' : 'tag-err'} w-12 justify-center">{c.status}</span><span class="font-mono text-xs pt-0.5 shrink-0">{c.name}</span><span class="text-muted text-xs pt-0.5 truncate" title={c.detail}>{c.detail}</span>
+        <li class="flex flex-wrap items-start gap-2 py-0.5 rise min-w-0" style="--i:{i}"><span class="tag {c.status === 'ok' ? 'tag-ok' : c.status === 'warn' ? 'tag-warn' : 'tag-err'} w-12 justify-center">{c.status}</span><span class="font-mono text-xs pt-0.5 shrink-0">{c.name}</span><span class="text-muted text-xs pt-0.5 truncate" title={c.detail}>{c.detail}</span>
           {#if c.action === 'site.fix' && c.target}<button class="btn btn-sm shrink-0" onclick={() => fixSites(c.target)} disabled={!!fixing}>{fixing ? 'чиню…' : c.target === '*' ? 'починить все сайты' : `починить ${c.target}`}</button>{/if}
           {#if c.action === 'selinux.enforcing'}<button class="btn btn-sm shrink-0" onclick={enforce} disabled={!!fixing}>вернуть enforcing</button>{/if}
         </li>

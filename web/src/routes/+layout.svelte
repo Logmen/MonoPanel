@@ -21,6 +21,7 @@
 {:else if !auth.me}
   <Login />
 {:else}
+  <div class="glow"></div>
   <div class="flex min-h-screen">
     <Nav open={navOpen} onclose={() => (navOpen = false)} />
     {#if navOpen}
@@ -38,7 +39,7 @@
           <Icon name="menu" size={20} />
         </button>
         <a href="/" class="flex items-center gap-2 font-semibold tracking-tight">
-          <span class="w-7 h-7 rounded-lg bg-accent text-white grid place-items-center font-bold text-xs">M</span>
+          <span class="logo-mark w-7 h-7 bg-accent grid place-items-center font-bold text-xs">M</span>
           MonoPanel
         </a>
       </header>

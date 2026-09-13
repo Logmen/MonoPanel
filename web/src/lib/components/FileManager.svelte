@@ -444,7 +444,7 @@
 </div>
 
 {#if editing !== null}
-  <div class="card p-0 mt-4 overflow-hidden">
+  <div class="card no-cut p-0 mt-4 overflow-hidden">
     <div class="flex flex-wrap items-center gap-2 p-3 border-b border-line bg-surface-2">
       <Icon name="code" size={15} class="text-muted" />
       <span class="font-mono text-sm truncate">{join(cwd, editing)}</span>

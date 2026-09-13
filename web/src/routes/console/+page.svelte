@@ -58,7 +58,7 @@
   <div class="flex flex-wrap gap-1.5 mb-3">
     {#each quick as q}<button class="btn btn-sm font-mono" onclick={() => run(q)} disabled={running}>mp {q}</button>{/each}
   </div>
-  <pre bind:this={pre} class="font-mono text-xs whitespace-pre-wrap break-words bg-ground rounded-lg p-3 h-[28rem] overflow-y-auto border border-line">{output || 'Введите команду, например doctor, или нажмите кнопку выше.'}</pre>
+  <pre bind:this={pre} class="font-mono text-xs whitespace-pre-wrap break-words bg-bg rounded-lg p-3 h-[28rem] overflow-y-auto border border-line">{output || 'Введите команду, например doctor, или нажмите кнопку выше.'}</pre>
   <form class="flex gap-2 mt-3 items-center" onsubmit={(e) => { e.preventDefault(); run(); }}>
     <span class="font-mono text-sm text-muted shrink-0">$ mp</span>
     <!-- svelte-ignore a11y_autofocus -->

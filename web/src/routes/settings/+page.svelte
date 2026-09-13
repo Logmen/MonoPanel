@@ -118,7 +118,7 @@
       {#if realip}
         <label class="flex items-center gap-2 text-sm mb-2"><input type="checkbox" bind:checked={realip.cloudflare} /> доверять сетям Cloudflare (CF-Connecting-IP)</label>
         <label class="label" for="rf">Свои прокси (IP / CIDR, X-Forwarded-For)</label>
-        <div class="flex gap-2"><input id="rf" class="input font-mono" bind:value={realipFrom} placeholder="10.0.0.5, 192.168.1.0/24" /><button class="btn btn-primary" onclick={saveRealIP}>Применить</button></div>
+        <div class="flex flex-wrap gap-2"><input id="rf" class="input font-mono min-w-0 flex-1" bind:value={realipFrom} placeholder="10.0.0.5, 192.168.1.0/24" /><button class="btn btn-primary" onclick={saveRealIP}>Применить</button></div>
       {/if}
     </div>
     <div class="card md:col-span-2 rise" style="--i:4">

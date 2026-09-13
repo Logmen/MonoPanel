@@ -23,13 +23,12 @@
          lg:sticky lg:top-0 lg:z-auto lg:h-screen lg:translate-x-0 lg:shadow-none"
 >
   <a href="/" class="flex items-center gap-2.5 mb-6 group">
-    <span class="logo-mark w-8 h-8 rounded-lg bg-accent text-white grid place-items-center font-bold text-sm shadow-[0_0_0_4px_var(--accent-glow)] transition-transform duration-200 group-hover:rotate-[-6deg]">M</span>
-    <span class="font-semibold text-[15px] tracking-tight">MonoPanel</span>
+    <span class="logo-mark w-8 h-8 bg-accent grid place-items-center font-bold text-sm transition-transform duration-200 group-hover:rotate-[-6deg]">M</span>
+    <span class="brand font-bold text-[15px]">MonoPanel</span>
   </a>
   <nav class="flex flex-col gap-0.5 text-sm">
     {#each visible as [href, title, icon], i}
       <a {href} onclick={onclose} class="nav-item relative flex items-center gap-2.5 px-2.5 py-2.5 rounded-md transition-all duration-150 rise {active(href) ? 'nav-on text-accent-ink' : 'text-muted hover:text-ink hover:bg-surface-2'}" style="--i:{i}">
-        {#if active(href)}<span class="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-full bg-accent"></span>{/if}
         <Icon name={icon} size={17} class="shrink-0 opacity-80" />
         <span>{title}</span>
       </a>
@@ -38,7 +37,7 @@
   <div class="mt-auto pt-4 space-y-3">
     <div class="flex rounded-md border border-line p-0.5 bg-surface-2" role="group" aria-label="Тема">
       {#each modes as [m, icon, label]}
-        <button class="flex-1 grid place-items-center py-1.5 rounded-[5px] transition-all duration-150 {theme.mode === m ? 'bg-surface text-accent-ink shadow-sm' : 'text-muted hover:text-ink'}" title={label} aria-pressed={theme.mode === m} onclick={() => setTheme(m)}>
+        <button class="flex-1 grid place-items-center py-1.5 rounded-md transition-all duration-150 {theme.mode === m ? 'bg-surface text-accent-ink' : 'text-muted hover:text-ink'}" title={label} aria-pressed={theme.mode === m} onclick={() => setTheme(m)}>
           <Icon name={icon} size={15} />
         </button>
       {/each}
