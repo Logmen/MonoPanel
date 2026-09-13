@@ -300,6 +300,10 @@ func TestBitrixWizardDriver(t *testing.T) {
 		return `<html><body><form action="/" method="post" name="__wizard_form"><input type="hidden" name="CurrentStepID" value="` + step + `"><input type="hidden" name="NextStepID" value="` + next + `">` + extra + `<input type="submit" name="StepNext" value="Далее"></form></body></html>`
 	}
 	ajaxCalls, downloadCalls := 0, 0
+	filesFailedOnce := false
+	prevDelay := bxRetryDelay
+	bxRetryDelay = 0
+	t.Cleanup(func() { bxRetryDelay = prevDelay })
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			fmt.Fprint(w, page("welcome", "agreement", ""))
@@ -336,6 +340,13 @@ func TestBitrixWizardDriver(t *testing.T) {
 			case "main/database":
 				fmt.Fprint(w, `[response] window.ajaxForm.SetStatus('10'); window.ajaxForm.Post({'nextStep': 'main', 'nextStepStage': 'files'}, 'files'); [/response]`)
 			case "main/files":
+				// The update server hiccups once: the wizard answers with ShowError,
+				// and the driver has to ask again instead of giving up.
+				if !filesFailedOnce {
+					filesFailedOnce = true
+					fmt.Fprint(w, `[response] window.ajaxForm.ShowError('Ошибка соединения с сервером обновлений: [101] Network is unreachable. '); [/response]`)
+					return
+				}
 				fmt.Fprint(w, `[response] window.ajaxForm.SetStatus('90'); window.ajaxForm.Post({'nextStep': '__finish', 'nextStepStage': ''}, ''); [/response]`)
 			case "__finish/":
 				fmt.Fprint(w, `[response] window.ajaxForm.Post({'nextStep': '__finish', 'nextStepStage': ''}, ''); [/response]`)
@@ -380,10 +391,10 @@ func TestBitrixWizardDriver(t *testing.T) {
 	if seen["__wiz_agree_license"] != "Y" || seen["__wiz_database"] != "alex_bitrix" || seen["__wiz_selected_wizard"] != "bitrix.sitecorporate:bitrix:corp_furniture" || seen["__wiz_admin_password"] != "Sup3rSecretPass!" || seen["__wiz_license"] != "S26-TRIAL" {
 		t.Fatalf("fields sent: %v", seen)
 	}
-	if ajaxCalls != 4 {
-		t.Fatalf("ajax calls: %d, want 4 (database, files, finish, final submit)", ajaxCalls)
+	if ajaxCalls != 5 {
+		t.Fatalf("ajax calls: %d, want 5 (database, files with one retry, finish, final submit)", ajaxCalls)
 	}
-	if !strings.Contains(strings.Join(w.log, "\n"), "wizard finished") {
+	if joined := strings.Join(w.log, "\n"); !strings.Contains(joined, "wizard finished") || !strings.Contains(joined, "retrying") {
 		t.Fatalf("log: %v", w.log)
 	}
 

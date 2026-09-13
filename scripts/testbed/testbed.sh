@@ -133,9 +133,21 @@ deploy() {
 		pkg="/tmp/$pkg"
 	fi
 	scp -q "$root/scripts/testbed/bootstrap.sh" "$vm:/tmp/bootstrap.sh"
+	# Let's Encrypt allows five certificates per name a week and every reset
+	# would ask for a new one: a certificate issued once is kept here and
+	# put back on the rebuilt VM while it is good for another month.
+	local certdir="$root/.dev/testbed/certs/$name" panelcert=""
+	if [ -s "$certdir/panel.crt" ] && [ -s "$certdir/panel.key" ] && openssl x509 -in "$certdir/panel.crt" -noout -checkend 2592000 >/dev/null 2>&1; then
+		scp -q "$certdir/panel.crt" "$vm:/tmp/panel-cert.crt" && scp -q "$certdir/panel.key" "$vm:/tmp/panel-cert.key" && panelcert=/tmp/panel-cert
+	fi
 	# The Cloudflare token travels on stdin, not on a command line.
 	# shellcheck disable=SC2029
-	ssh "$vm" "TB_CF_TOKEN=\$(head -1) TB_PHP=${TB_PHP:-} TB_DB=${TB_DB:-} TB_EXTRA=${TB_EXTRA:-} bash /tmp/bootstrap.sh $pkg $addr" <<<"${TB_CF_TOKEN:-}"
+	ssh "$vm" "TB_CF_TOKEN=\$(head -1) TB_PHP=${TB_PHP:-} TB_DB=${TB_DB:-} TB_EXTRA=${TB_EXTRA:-} TB_PANEL_CERT=$panelcert bash /tmp/bootstrap.sh $pkg $addr" <<<"${TB_CF_TOKEN:-}"
+	# Keep a freshly issued certificate for the next reset.
+	if [ -z "$panelcert" ] && ssh "$vm" 'openssl x509 -in /var/lib/monopanel/tls/panel.crt -noout -issuer 2>/dev/null' | grep -qi "let's encrypt"; then
+		mkdir -p "$certdir" && chmod 700 "$certdir"
+		scp -q "$vm:/var/lib/monopanel/tls/panel.crt" "$certdir/panel.crt" && scp -q "$vm:/var/lib/monopanel/tls/panel.key" "$certdir/panel.key" && chmod 600 "$certdir"/panel.* && log "$vm: panel certificate kept in $certdir"
+	fi
 }
 
 e2e() {

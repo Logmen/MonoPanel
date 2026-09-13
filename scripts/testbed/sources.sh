@@ -279,7 +279,7 @@ migrate_bitrixvm() {
 	key_access "$dst" "$name"
 	php=$(php_branch "$dst" "$name")
 	log "$dst: mp migrate plan/run --from bitrixvm (source $name, PHP $php)"
-	ssh -o BatchMode=yes "$(vm "$dst")" "mp migrate plan --from bitrixvm --source root@$srcip --domain $main && mp migrate run --from bitrixvm --source root@$srcip --domain $main" | tail -25
+	ssh -o BatchMode=yes "$(vm "$dst")" "mp migrate plan --from bitrixvm --source root@$srcip --domain $main && mp migrate run --from bitrixvm --source root@$srcip --domain $main" | tail -60
 	pw=$(ssh -o BatchMode=yes "$src" 'getent shadow bitrix | cut -d: -f2')
 	dbpw=$(ssh -o BatchMode=yes "$src" "\$(command -v python3 || command -v python) -c \"import re;print(re.search(r\\\"'password'\\s*=>\\s*'([^']*)'\\\", open('/home/bitrix/www/bitrix/.settings.php').read()).group(1))\"")
 	log "$dst: checks"
@@ -298,7 +298,7 @@ migrate_fastpanel() {
 	key_access "$dst" fastpanel
 	php_branch "$dst" fastpanel >/dev/null
 	log "$dst: mp migrate plan/run --from fastpanel"
-	ssh -o BatchMode=yes "$(vm "$dst")" "mp migrate plan --from fastpanel --source root@$srcip --scope user:shop && mp migrate run --from fastpanel --source root@$srcip --scope user:shop" | tail -30
+	ssh -o BatchMode=yes "$(vm "$dst")" "mp migrate plan --from fastpanel --source root@$srcip --scope user:shop && mp migrate run --from fastpanel --source root@$srcip --scope user:shop" | tail -60
 	pw=$(ssh -o BatchMode=yes "$src" 'getent shadow shop | cut -d: -f2')
 	dbpw=$(recall "fastpanel db shop_wp")
 	log "$dst: checks"

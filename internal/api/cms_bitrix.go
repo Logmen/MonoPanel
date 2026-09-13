@@ -27,19 +27,20 @@ import (
 // for is known up front, so no step is left to guess at.
 
 var (
-	bxInputRe    = regexp.MustCompile(`(?is)<input\b([^>]*)>`)
-	bxAttrRe     = regexp.MustCompile(`(\w+)\s*=\s*"([^"]*)"`)
-	bxFormRe     = regexp.MustCompile(`(?is)<form\b[^>]*\baction="([^"]*)"`)
-	bxAjaxMapRe  = regexp.MustCompile(`(?s)new CAjaxForm\([^{]*\{(.*?)\}`)
-	bxPairRe     = regexp.MustCompile(`"(\w+)"\s*:\s*"([^"]+)"`)
-	bxErrorRe    = regexp.MustCompile(`(?s)id="error_text"[^>]*>\s*(\S.*?)</div>`)
-	bxPostMapRe  = regexp.MustCompile(`(?s)Post\(\s*\{(.*?)\}`)
-	bxPostArgRe  = regexp.MustCompile(`'(\w+)'\s*:\s*'?([^',}\s]*)'?`)
-	bxPostPosRe  = regexp.MustCompile(`Post\(\s*'([^']*)'\s*,\s*'([^']*)'`)
-	bxSolutionRe = regexp.MustCompile(`SelectSolution\(this,\s*'([^'@]+)'\)`)
-	bxScriptRe   = regexp.MustCompile(`(?is)<script.*?</script>`)
-	bxTagRe      = regexp.MustCompile(`<[^>]+>`)
-	bxSpaceRe    = regexp.MustCompile(`\s+`)
+	bxInputRe     = regexp.MustCompile(`(?is)<input\b([^>]*)>`)
+	bxAttrRe      = regexp.MustCompile(`(\w+)\s*=\s*"([^"]*)"`)
+	bxFormRe      = regexp.MustCompile(`(?is)<form\b[^>]*\baction="([^"]*)"`)
+	bxAjaxMapRe   = regexp.MustCompile(`(?s)new CAjaxForm\([^{]*\{(.*?)\}`)
+	bxPairRe      = regexp.MustCompile(`"(\w+)"\s*:\s*"([^"]+)"`)
+	bxErrorRe     = regexp.MustCompile(`(?s)id="error_text"[^>]*>\s*(\S.*?)</div>`)
+	bxAjaxErrorRe = regexp.MustCompile(`ShowError\('((?:[^'\\]|\\.)*)'`)
+	bxPostMapRe   = regexp.MustCompile(`(?s)Post\(\s*\{(.*?)\}`)
+	bxPostArgRe   = regexp.MustCompile(`'(\w+)'\s*:\s*'?([^',}\s]*)'?`)
+	bxPostPosRe   = regexp.MustCompile(`Post\(\s*'([^']*)'\s*,\s*'([^']*)'`)
+	bxSolutionRe  = regexp.MustCompile(`SelectSolution\(this,\s*'([^'@]+)'\)`)
+	bxScriptRe    = regexp.MustCompile(`(?is)<script.*?</script>`)
+	bxTagRe       = regexp.MustCompile(`<[^>]+>`)
+	bxSpaceRe     = regexp.MustCompile(`\s+`)
 )
 
 // bxTrace logs every AJAX answer of the wizard into the job
@@ -330,6 +331,26 @@ func (w *bitrixWizard) ajaxLoop(ctx context.Context, actionURL string, form url.
 		if bxTrace {
 			w.logf("ajax %s #%d: %s", p.step, k, snippet(bxSpaceRe.ReplaceAllString(resp, " "), 160))
 		}
+		// Мастер отвечает на AJAX-запрос вызовом ShowError('…'), когда шаг не
+		// удался (сервер обновлений недоступен и т.п.): это та же ошибка, что
+		// и красный блок в HTML — повторяем, потом пропускаем шаг.
+		if m := bxAjaxErrorRe.FindStringSubmatch(resp); m != nil {
+			retries++
+			msg := snippet(strings.TrimSpace(strings.ReplaceAll(m[1], `\'`, "'")), 200)
+			if retries > 6 {
+				return "", "", fmt.Errorf("step %s keeps failing: %s", p.step, msg)
+			}
+			w.logf("wizard step %s: %s (%s)", p.step, msg, map[bool]string{true: "retrying", false: "skipping"}[retries < 3])
+			if retries >= 3 && form.Get(field("nextStep")) != "main" {
+				form.Set(field("nextStepStage"), "skip")
+			}
+			select {
+			case <-ctx.Done():
+				return "", "", ctx.Err()
+			case <-time.After(bxRetryDelay):
+			}
+			continue
+		}
 		if strings.Contains(strings.ToLower(resp), "<html") {
 			q := bxParse(pageURL, resp)
 			if m := bxErrorRe.FindStringSubmatch(resp); m != nil && q.step == p.step {
@@ -388,6 +409,10 @@ func (w *bitrixWizard) ajaxLoop(ctx context.Context, actionURL string, form url.
 	}
 	return "", "", fmt.Errorf("step %s never finished", p.step)
 }
+
+// bxRetryDelay is the pause before a failed wizard step is asked again;
+// tests set it to zero.
+var bxRetryDelay = 3 * time.Second
 
 func snippet(s string, n int) string {
 	if len(s) > n {

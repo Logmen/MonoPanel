@@ -112,8 +112,13 @@ if [ -n "${TB_CF_TOKEN:-}" ]; then
 	# works on its self-signed one, and Let's Encrypt has rate limits.
 	case "$addr" in
 	*[a-z]*.*)
-		log "mp ssl panel issue --dns cf ($addr)"
-		mp ssl panel issue --dns cf || log "panel certificate: failed, the self-signed one stays"
+		if [ -n "${TB_PANEL_CERT:-}" ] && [ -s "$TB_PANEL_CERT.crt" ]; then
+			log "mp ssl panel import (the certificate kept from an earlier run)"
+			mp ssl panel import --cert "$TB_PANEL_CERT.crt" --key "$TB_PANEL_CERT.key" >/dev/null && rm -f "$TB_PANEL_CERT.crt" "$TB_PANEL_CERT.key" || log "panel certificate: import failed, the self-signed one stays"
+		else
+			log "mp ssl panel issue --dns cf ($addr)"
+			mp ssl panel issue --dns cf || log "panel certificate: failed, the self-signed one stays"
+		fi
 		;;
 	esac
 fi

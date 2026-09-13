@@ -150,6 +150,11 @@ func (s *Server) buildMigrationBundle(ctx context.Context, u *store.User, withSe
 			}
 			seen[c.Name] = true
 			mc := apitypes.MigrationCert{Name: c.Name, Names: c.Names, Kind: c.Kind, AutoRenew: c.AutoRenew, NotAfter: c.NotAfter}
+			if _, cerr := os.Stat(c.CertPath); cerr == nil {
+				if _, kerr := os.Stat(c.KeyPath); kerr == nil {
+					mc.Files = true
+				}
+			}
 			if withSecrets {
 				cert, cerr := os.ReadFile(c.CertPath)
 				key, kerr := os.ReadFile(c.KeyPath)

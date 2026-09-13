@@ -219,8 +219,15 @@ func (s *Server) phpPackagesExist(ctx context.Context, layout *osprofile.PHPLayo
 	if _, ok := res.Available[layout.FPMPackage]; ok {
 		return nil
 	}
-	return fmt.Errorf("PHP %s is not available on this OS: %s", layout.Version, s.phpUnavailableNote(ctx, layout.Version))
+	return &phpUnavailableError{fmt.Sprintf("PHP %s is not available on this OS: %s", layout.Version, s.phpUnavailableNote(ctx, layout.Version))}
 }
+
+// phpUnavailableError marks a branch no repository of this OS carries: the
+// job fails, and the row is removed instead of staying in error — there is
+// nothing to retry.
+type phpUnavailableError struct{ msg string }
+
+func (e *phpUnavailableError) Error() string { return e.msg }
 
 // phpUnavailableNote explains a missing branch: on an Ubuntu the PPA does not
 // build for yet it names what Ubuntu itself ships.
@@ -269,6 +276,11 @@ func (s *Server) phpAvailable(ctx context.Context) []osprofile.PHPVersionInfo {
 }
 
 func (s *Server) phpFail(ctx context.Context, version string, err error) error {
+	var unavailable *phpUnavailableError
+	if errors.As(err, &unavailable) {
+		_ = s.db.DeletePHPVersion(context.WithoutCancel(ctx), version)
+		return err
+	}
 	_ = s.db.SetPHPStatus(context.WithoutCancel(ctx), version, store.PHPError, err.Error())
 	return err
 }

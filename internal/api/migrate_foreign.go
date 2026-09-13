@@ -370,7 +370,7 @@ func certificateFromPEM(name, certPEM, keyPEM string, withSecrets bool) (apitype
 		return apitypes.MigrationCert{}, false
 	}
 	na := info.NotAfter
-	mc := apitypes.MigrationCert{Name: name, Names: info.Names, Kind: store.CertKindCustom, NotAfter: &na}
+	mc := apitypes.MigrationCert{Name: name, Names: info.Names, Kind: store.CertKindCustom, NotAfter: &na, Files: true}
 	if strings.Contains(strings.ToLower(info.Issuer+" "+info.IssuerOrg), "let's encrypt") {
 		mc.Kind, mc.AutoRenew = store.CertKindACME, true
 	}

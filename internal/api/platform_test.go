@@ -43,6 +43,10 @@ func TestPHPUbuntuWithoutPPAStaysWithDistroPackages(t *testing.T) {
 	if job.Status != store.JobFailed || !strings.Contains(job.Error, "ppa:ondrej/php has no packages for Ubuntu 26.04 (resolute)") {
 		t.Fatalf("install of a branch Ubuntu lacks: status=%s error=%q", job.Status, job.Error)
 	}
+	// A branch this OS cannot install must not linger as a phantom row in error.
+	if _, err := f.db.GetPHPVersion(f.ctx, "8.3"); err == nil {
+		t.Error("недоступная ветка осталась в списке PHP")
+	}
 	for _, c := range f.agent.Calls() {
 		if c.Path == "/v1/config/apply" && strings.Contains(string(c.Body), "ondrej-php.list") {
 			t.Fatal("the PPA source was written although the PPA has no release")

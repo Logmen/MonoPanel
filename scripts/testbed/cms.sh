@@ -33,8 +33,10 @@ install(){
   ok "site $DOMAIN"
   start=$(date +%s)
   # the CLI follows the job and exits 3 when it fails; the credentials are on stdout once
-  out=$(mp cms install "$DOMAIN" "$cms" --force 2>/root/cms-install.err); rc=$?
-  if [ $rc -ne 0 ]; then fail "mp cms install $cms: $(grep -vE '^\s+\[' /root/cms-install.err | tail -3 | tr '\n' ' ' | cut -c1-400)"; return 1; fi
+  out=$(mp cms install "$DOMAIN" "$cms" --force 2>/root/cms-install-$cms.err); rc=$?
+  if [ $rc -ne 0 ]; then fail "mp cms install $cms: $(grep -vE '^\s+\[' /root/cms-install-$cms.err | tail -3 | tr '\n' ' ' | cut -c1-600)"; return 1; fi
+  # A passing install may still have retried or skipped a step: say so.
+  grep -iE 'retrying|skipping|warning|предупрежд' /root/cms-install-$cms.err | sed 's/^\s*/note  /' | head -5
   APW=$(echo "$out" | awk '/Пароль:/{print $2}')
   ADMIN_URL=$(echo "$out" | awk '/Админка:/{print $2}')
   ver=$(mp site show "$DOMAIN" --json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("cms","?"), d.get("cms_version",""))' 2>/dev/null)
@@ -48,7 +50,7 @@ do_wordpress(){
   c=$(code http://$DOMAIN/wp-admin/); [ "$c" = 302 ] && ok "wp-admin redirects to login" || fail "wp-admin $c"
   c=$(code -X POST http://$DOMAIN/xmlrpc.php); [ "$c" = 403 ] && ok "xmlrpc.php closed ($c)" || fail "xmlrpc.php $c"
   echo '<?php echo "PHP RAN";' > "$DOC/wp-content/uploads/evil.php" 2>/dev/null || { mkdir -p "$DOC/wp-content/uploads"; echo '<?php echo "PHP RAN";' > "$DOC/wp-content/uploads/evil.php"; }; chown $user:$user "$DOC/wp-content/uploads/evil.php"
-  c=$(code http://$DOMAIN/wp-content/uploads/evil.php); ! body http://$DOMAIN/wp-content/uploads/evil.php | grep -q 'PHP RAN' && ok "php in uploads denied ($c)" || fail "php in uploads $c"
+  c=$(code http://$DOMAIN/wp-content/uploads/evil.php); rm -f "$DOC/wp-content/uploads/evil.php"; ! body http://$DOMAIN/wp-content/uploads/evil.php | grep -q 'PHP RAN' && ok "php in uploads denied ($c)" || fail "php in uploads $c"
   c=$(code "http://$DOMAIN/sample-page/"); [ "$c" = 200 ] && ok "pretty permalink" || fail "pretty permalink $c"
 }
 do_joomla(){
@@ -58,7 +60,7 @@ do_joomla(){
   c=$(code http://$DOMAIN/configuration.php); { [ "$c" = 403 ] || [ "$c" = 404 ]; } && ok "configuration.php closed ($c)" || fail "configuration.php $c"
   c=$(code http://$DOMAIN/api/index.php/v1/content/articles); { [ "$c" = 401 ] || [ "$c" = 403 ]; } && ok "/api answers ($c)" || fail "/api $c"
   echo '<?php echo "PHP RAN";' > "$DOC/images/evil.php"; chown $user:$user "$DOC/images/evil.php"
-  c=$(code http://$DOMAIN/images/evil.php); ! body http://$DOMAIN/images/evil.php | grep -q 'PHP RAN' && ok "php in images denied ($c)" || fail "php in images $c"
+  c=$(code http://$DOMAIN/images/evil.php); b=$(body http://$DOMAIN/images/evil.php); rm -f "$DOC/images/evil.php"; ! grep -q 'PHP RAN' <<<"$b" && ok "php in images denied ($c)" || fail "php in images $c"
   c=$(code http://$DOMAIN/index.php/component/users/login); [ "$c" = 200 ] && ok "SEF route" || fail "SEF route $c"
   [ -d "$DOC/installation" ] && fail "installation/ still there" || ok "installation/ removed"
 }
@@ -79,7 +81,7 @@ do_bitrix(){
   c=$(code "http://$DOMAIN/bitrix/admin/"); b=$(body "http://$DOMAIN/bitrix/admin/"); [ "$c" = 200 ] && echo "$b" | grep -qiE 'USER_LOGIN|Авторизация|Authorization' && ok "admin login form" || fail "admin $c"
   for u in /bitrix/php_interface/dbconn.php /bitrix/modules/main/include/prolog.php /bitrix/.settings.php /bitrix/cache/x.php; do c=$(code "http://$DOMAIN$u"); b=$(body "http://$DOMAIN$u"); if { [ "$c" = 403 ] || [ "$c" = 404 ]; } && ! echo "$b" | grep -q 'DBLogin'; then ok "closed $u ($c)"; else fail "$u $c"; fi; done
   echo '<?php echo "PHP RAN";' > "$DOC/upload/evil.php"; chown $user:$user "$DOC/upload/evil.php"
-  c=$(code "http://$DOMAIN/upload/evil.php"); ! body "http://$DOMAIN/upload/evil.php" | grep -q 'PHP RAN' && ok "php in upload denied ($c)" || fail "php in upload executed"
+  c=$(code "http://$DOMAIN/upload/evil.php"); b=$(body "http://$DOMAIN/upload/evil.php"); rm -f "$DOC/upload/evil.php"; ! grep -q 'PHP RAN' <<<"$b" && ok "php in upload denied ($c)" || fail "php in upload executed"
   c=$(code "http://$DOMAIN/no-such-page-$RANDOM/"); b=$(body "http://$DOMAIN/no-such-page-$RANDOM/"); [ "$c" = 404 ] && echo "$b" | grep -qi 'bitrix' && ok "urlrewrite 404 handled by Bitrix" || fail "urlrewrite $c"
   php=$(mp site php "$DOMAIN" 2>/dev/null); for kv in "short_open_tag On" "max_input_vars 20000" "memory_limit 512M"; do set -- $kv; echo "$php" | grep -qE "^$1\s+$2" && ok "php $1=$2" || fail "php $1: $(echo "$php" | grep -E "^$1" | head -1)"; done
 }

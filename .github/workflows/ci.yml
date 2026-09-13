@@ -14,8 +14,8 @@ jobs:
     name: go (test + build)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.27"
           cache-dependency-path: go.sum
@@ -29,7 +29,7 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           go tool cover -func=coverage.out | grep -vE '\s100.0%$' | tail -20 >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: coverage
           path: coverage.out
@@ -40,8 +40,8 @@ jobs:
     name: lint
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.27"
           cache-dependency-path: go.sum
@@ -56,8 +56,8 @@ jobs:
     name: templates (real nginx / apache)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.27"
           cache-dependency-path: go.sum
@@ -78,12 +78,12 @@ jobs:
     name: web (build + type check)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - run: corepack enable
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.local/share/pnpm/store
           key: pnpm-${{ hashFiles('web/pnpm-lock.yaml') }}
@@ -92,7 +92,7 @@ jobs:
       - run: cd web && node_modules/.bin/svelte-kit sync
       - run: cd web && node_modules/.bin/svelte-check --tsconfig ./tsconfig.json
       - run: cd web && node_modules/.bin/vite build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: web-build
           path: web/build
@@ -106,8 +106,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.27"
       - run: make web-stub

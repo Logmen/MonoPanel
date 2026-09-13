@@ -19,20 +19,20 @@ jobs:
     name: build, sign and publish
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.27"
           cache-dependency-path: go.sum
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - run: corepack enable
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.local/share/pnpm/store
           key: pnpm-${{ hashFiles('web/pnpm-lock.yaml') }}
@@ -85,7 +85,7 @@ jobs:
           gh release create "$TAG" --title "MonoPanel $VERSION" --notes-file /tmp/notes.md \
             $(ls dist/monopanel_${VERSION}_*.deb dist/monopanel-${VERSION}.*.rpm dist/monopanel-linux-* dist/SHA256SUMS dist/SHA256SUMS.sig 2>/dev/null)
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: packages
           path: |

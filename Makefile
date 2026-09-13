@@ -155,6 +155,9 @@ testbed-down: ## Destroy the testbed VMs
 testbed-sources: ## BitrixVM / FASTPANEL sources for the migration: ARGS="install|seed|migrate ..."
 	scripts/testbed/testbed.sh sources $(ARGS)
 
+testbed-full: ## The whole testbed for a release: matrix, migrations, CMS, foreign sources, doctor (STAGES="matrix cms" for a part)
+	scripts/testbed/full-run.sh $(STAGES)
+
 testbed-status: ## Show the testbed VMs
 	scripts/testbed/testbed.sh status
 

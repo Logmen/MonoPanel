@@ -233,7 +233,7 @@ func (s *Server) migrationPlan(ctx context.Context, req apitypes.MigrationSource
 		}
 	}
 	for _, cert := range b.Certificates {
-		if cert.Cert == "" {
+		if !cert.Files && cert.Cert == "" {
 			warn("cert", cert.Name, "сертификат приедет без файлов: до выпуска нового сайт будет работать по HTTP", "после переключения DNS: mp ssl issue "+cert.Name)
 		}
 	}
@@ -446,9 +446,12 @@ func (s *Server) jobMigrateRun(ctx context.Context, jc *jobs.Context) error {
 		jc.Logf("предупреждение: %v", err)
 	}
 	for _, site := range b.Sites {
-		if _, err := s.jobs.Enqueue(ctx, "site.apply", sitePayload{SiteID: siteID(ctx, s, site.Domain)}, jobs.WithLockKey("site:"+site.Domain), jobs.WithRequestedBy(jc.RequestedBy)); err != nil {
+		job, err := s.jobs.Enqueue(ctx, "site.apply", sitePayload{SiteID: siteID(ctx, s, site.Domain)}, jobs.WithLockKey("site:"+site.Domain), jobs.WithRequestedBy(jc.RequestedBy))
+		if err != nil {
 			jc.Logf("сайт %s: %v", site.Domain, err)
+			continue
 		}
+		jc.Logf("сайт %s: конфигурация применяется задачей #%d", site.Domain, job.ID)
 	}
 
 	jc.Progress(88, "cron и app-сервисы")

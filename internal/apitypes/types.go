@@ -854,8 +854,11 @@ type MigrationCert struct {
 	Kind      string     `json:"kind"`
 	AutoRenew bool       `json:"auto_renew"`
 	NotAfter  *time.Time `json:"not_after,omitempty"`
-	Cert      string     `json:"cert,omitempty"`
-	Key       string     `json:"key,omitempty"`
+	// Files says the source can hand the PEM over; the plan carries no
+	// secrets, so Cert/Key are empty there even when the files exist.
+	Files bool   `json:"files"`
+	Cert  string `json:"cert,omitempty"`
+	Key   string `json:"key,omitempty"`
 }
 
 // MigrationSizes is what the receiving side needs to know before it starts.
