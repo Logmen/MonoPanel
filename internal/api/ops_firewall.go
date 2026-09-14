@@ -167,16 +167,9 @@ func (s *Server) applyFirewall(ctx context.Context) (*apitypes.FirewallStatus, e
 	if s.anySiteHTTP3(ctx) {
 		fw.Allow = append(fw.Allow, "udp dport 443 accept")
 	}
-	for _, r := range rules {
-		if !r.Enabled {
-			continue
-		}
-		if r.Kind == "deny" {
-			fw.Deny = append(fw.Deny, ruleLine(r))
-		} else {
-			fw.Allow = append(fw.Allow, ruleLine(r))
-		}
-	}
+	plan := planFirewall(rules)
+	fw.Except, fw.Deny = plan.except, plan.deny
+	fw.Allow = append(fw.Allow, plan.allow...)
 	text, err := s.render.Render("nftables/monopanel.nft.tmpl", fw)
 	if err != nil {
 		return nil, err
@@ -240,6 +233,7 @@ func (s *Server) firewallStatus(ctx context.Context) (*apitypes.FirewallStatus, 
 	actx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	st.SSHPorts = s.sshPorts(actx)
+	st.Restricted = firewallRestricted(st.Rules, append(append([]int{}, st.SSHPorts...), 80, 443, s.panelPort()))
 	if res, err := s.agent.Tool(actx, &agent.ToolRequest{Name: "nft", Args: []string{"list", "table", "inet", "monopanel"}}); err == nil && res.ExitCode == 0 {
 		st.Active = true
 	}
@@ -325,6 +319,10 @@ func (s *Server) registerFirewall() {
 			proto = "tcp"
 		}
 		r := &store.FirewallRule{Kind: in.Body.Kind, Proto: proto, Port: in.Body.Port, Source: in.Body.Source, Comment: in.Body.Comment, Enabled: true}
+		before, _ := s.db.ListFirewallRules(ctx)
+		if lock := s.firewallGuard(ctx, before, append(append([]*store.FirewallRule{}, before...), r)); lock != nil {
+			return nil, huma.Error422UnprocessableEntity(lock.Error())
+		}
 		if err := s.db.CreateFirewallRule(ctx, r); err != nil {
 			return nil, err
 		}
@@ -341,6 +339,16 @@ func (s *Server) registerFirewall() {
 		OperationID: "firewall-rule-delete", Method: http.MethodDelete, Path: "/firewall/rules/{id}", Summary: "Delete a rule and apply", Tags: []string{"firewall"}, Security: secured, Metadata: adminOnly, DefaultStatus: http.StatusNoContent,
 	}, func(ctx context.Context, in *ruleIDInput) (*struct{}, error) {
 		p := principalFrom(ctx)
+		before, _ := s.db.ListFirewallRules(ctx)
+		after := make([]*store.FirewallRule, 0, len(before))
+		for _, r := range before {
+			if r.ID != in.ID {
+				after = append(after, r)
+			}
+		}
+		if lock := s.firewallGuard(ctx, before, after); lock != nil {
+			return nil, huma.Error409Conflict(lock.onDelete(in.ID))
+		}
 		if err := s.db.DeleteFirewallRule(ctx, in.ID); errors.Is(err, store.ErrNotFound) {
 			return nil, huma.Error404NotFound("rule not found")
 		} else if err != nil {
@@ -367,6 +375,9 @@ func (s *Server) registerFirewall() {
 			}
 			rules, _ := s.db.ListFirewallRules(ctx)
 			if action == "ban" {
+				if caller := requestInfo(ctx).IP; sourceHas(ip, caller) {
+					return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("нельзя забанить собственный адрес: %s включает %s, с которого вы сейчас работаете", ip, caller))
+				}
 				exists := false
 				for _, r := range rules {
 					if r.Kind == "deny" && r.Source == ip && r.Port == "" {

@@ -150,8 +150,9 @@ type Sphinx struct {
 // Firewall feeds nftables/monopanel.nft.tmpl: pre-rendered rule lines.
 type Firewall struct {
 	Policy string
-	Allow  []string
+	Except []string // per-source allows: checked before any deny
 	Deny   []string
+	Allow  []string // port-wide allows next to the always-open ports
 }
 
 // Fail2ban feeds fail2ban/jail.local.tmpl.

@@ -12,7 +12,9 @@ table inet monopanel {
         ct state invalid drop
         ip saddr @banned4 drop
         ip6 saddr @banned6 drop
+        ip saddr 198.51.100.4 tcp dport 8443 accept
         ip saddr 203.0.113.7 drop
+        tcp dport 8443 drop
         ip protocol icmp accept
         ip6 nexthdr ipv6-icmp accept
         tcp dport { 22, 80, 443, 8443 } accept

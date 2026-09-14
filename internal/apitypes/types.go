@@ -337,12 +337,20 @@ type Fail2banStatus struct {
 
 // FirewallStatus is the firewall page.
 type FirewallStatus struct {
-	Enabled   bool                  `json:"enabled"`
-	Active    bool                  `json:"active" doc:"nftables table currently loaded"`
-	PanelPort int                   `json:"panel_port"`
-	SSHPorts  []int                 `json:"ssh_ports"`
-	Rules     []*store.FirewallRule `json:"rules"`
-	Fail2ban  *Fail2banStatus       `json:"fail2ban,omitempty"`
+	Enabled    bool                  `json:"enabled"`
+	Active     bool                  `json:"active" doc:"nftables table currently loaded"`
+	PanelPort  int                   `json:"panel_port"`
+	SSHPorts   []int                 `json:"ssh_ports"`
+	Rules      []*store.FirewallRule `json:"rules"`
+	Restricted []RestrictedPort      `json:"restricted,omitempty" doc:"always-open ports a source-less deny closes to everyone but the listed sources"`
+	Fail2ban   *Fail2banStatus       `json:"fail2ban,omitempty"`
+}
+
+// RestrictedPort is an always-open port (SSH, 80, 443, the panel) that a deny
+// without a source has closed; only the listed sources still get in.
+type RestrictedPort struct {
+	Port    int      `json:"port"`
+	Sources []string `json:"sources"`
 }
 
 // Metrics is a time series of host metrics.

@@ -141,6 +141,13 @@ func firewallCmd() *cobra.Command {
 			ports = append(ports, strconv.Itoa(p))
 		}
 		fmt.Printf("firewall: %s · policy drop · всегда открыты: ssh %s, 80, 443, панель %d\n", state, strings.Join(ports, ","), st.PanelPort)
+		for _, r := range st.Restricted {
+			only := "никого — deny без allow с источником"
+			if len(r.Sources) > 0 {
+				only = strings.Join(r.Sources, ", ")
+			}
+			fmt.Printf("  порт %d закрыт для всех, кроме: %s\n", r.Port, only)
+		}
 		rows := make([][]string, 0, len(st.Rules))
 		for _, r := range st.Rules {
 			rows = append(rows, []string{strconv.FormatInt(r.ID, 10), r.Kind, r.Proto, r.Port, r.Source, r.Comment})
@@ -202,7 +209,19 @@ func firewallCmd() *cobra.Command {
 	allow.Flags().StringVar(&rule.Source, "source", "", "IP или CIDR")
 	allow.Flags().StringVar(&rule.Comment, "comment", "", "комментарий")
 	var deny apitypes.FirewallRuleRequest
-	denyCmd := &cobra.Command{Use: "deny", Short: "запретить источник (опционально порт)", RunE: func(cmd *cobra.Command, _ []string) error {
+	denyCmd := &cobra.Command{Use: "deny", Short: "запретить источник (опционально порт)", Long: `Запретить источник, порт или порт для источника.
+
+Порядок проверки в цепочке: сначала allow с источником, затем все deny, затем
+всегда открытые порты и allow без источника. Поэтому deny на порт без
+источника закрывает его для всех, кроме адресов из allow с источником —
+так панель или SSH ограничиваются VPN:
+
+  mp firewall allow --port 8443 --source 203.0.113.5
+  mp firewall deny  --port 8443
+
+Для SSH и порта панели deny без источника принимается только когда такой
+allow уже есть, а deny, накрывающий ваш текущий адрес, отклоняется — так
+нельзя запереть самого себя.`, RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err

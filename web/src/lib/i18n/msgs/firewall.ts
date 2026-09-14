@@ -3,6 +3,9 @@ import { frag } from '../frag';
 export const firewall = frag({
   en: {
     'firewall.sub': 'nftables inet monopanel · policy drop · always open: SSH {ssh}, 80, 443, panel {panel}',
+    'firewall.restricted': 'port {port}: only from {sources}',
+    'firewall.restrictedNone': 'port {port}: closed to everyone',
+    'firewall.orderHint': 'Order of checks: allow rules with a source first, then deny rules, then the always-open ports and allow rules without a source. A deny on a port without a source therefore closes it to everyone except the sources allowed explicitly — that is how the panel or SSH is limited to a VPN. For SSH and the panel port such a deny is accepted only once an allow with a source exists, and a deny covering your current address is refused, so you cannot lock yourself out.',
     'firewall.enabled': 'enabled',
     'firewall.disabled': 'disabled',
     'firewall.applied': 'applied',
@@ -41,6 +44,9 @@ export const firewall = frag({
   },
   ru: {
     'firewall.sub': 'nftables inet monopanel · policy drop · всегда открыты SSH {ssh}, 80, 443, панель {panel}',
+    'firewall.restricted': 'порт {port}: только с {sources}',
+    'firewall.restrictedNone': 'порт {port}: закрыт для всех',
+    'firewall.orderHint': 'Порядок проверки: сначала allow с источником, затем все deny, затем всегда открытые порты и allow без источника. Поэтому deny на порт без источника закрывает его для всех, кроме адресов из allow с источником — так панель или SSH ограничиваются VPN. Для SSH и порта панели такой deny принимается только когда allow с источником уже есть, а deny, накрывающий ваш текущий адрес, отклоняется — запереть самого себя нельзя.',
     'firewall.enabled': 'включён',
     'firewall.disabled': 'выключен',
     'firewall.applied': 'применён',

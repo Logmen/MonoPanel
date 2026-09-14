@@ -12,6 +12,9 @@ table inet monopanel {
         ct state invalid drop
         ip saddr @banned4 drop
         ip6 saddr @banned6 drop
+{{- range .Except }}
+        {{ . }}
+{{- end }}
 {{- range .Deny }}
         {{ . }}
 {{- end }}

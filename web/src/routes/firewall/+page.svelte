@@ -48,6 +48,7 @@
 <PageHead title="Firewall" sub={fw ? t('firewall.sub', { ssh: fw.ssh_ports.join(','), panel: fw.panel_port }) : ''}>
   {#if fw}
     <span class="tag {fw.enabled ? 'tag-ok' : 'tag-warn'}"><span class="dot"></span>{fw.enabled ? t('firewall.enabled') : t('firewall.disabled')}</span>
+    {#each fw.restricted ?? [] as r}<span class="tag tag-warn font-mono" title={t('firewall.orderHint')}>{r.sources.length ? t('firewall.restricted', { port: r.port, sources: r.sources.join(', ') }) : t('firewall.restrictedNone', { port: r.port })}</span>{/each}
     {#if fw.enabled}<button class="btn" onclick={() => act('apply')}><Icon name="refresh" size={14} /> {t('firewall.applyBtn')}</button><button class="btn btn-danger" onclick={() => (ask = askDisable())}>{t('firewall.disableBtn')}</button>{:else}<button class="btn btn-primary" onclick={() => act('enable')}>{t('firewall.enableBtn')}</button>{/if}
   {/if}
 </PageHead>
@@ -60,6 +61,7 @@
     <div><label class="label" for="s">{t('firewall.source')}</label><input id="s" class="input font-mono" bind:value={rule.source} placeholder="IP / CIDR" /></div>
     <div><label class="label" for="c">{t('firewall.comment')}</label><input id="c" class="input" bind:value={rule.comment} /></div>
     <button class="btn btn-primary"><Icon name="plus" size={14} /> {t('common.add')}</button>
+    <p class="md:col-span-6 text-xs text-muted m-0">{t('firewall.orderHint')}</p>
   </form>
   <div class="card overflow-x-auto p-0 mb-4 rise" style="--i:1">
     <table class="tbl"><thead><tr><th>ID</th><th>{t('firewall.colKind')}</th><th>Proto</th><th>{t('firewall.port')}</th><th>{t('firewall.source')}</th><th>{t('firewall.comment')}</th><th></th></tr></thead>
