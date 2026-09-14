@@ -32,12 +32,20 @@ func (aptManager) Name() string { return "apt" }
 func (aptManager) Env() []string {
 	return []string{"DEBIAN_FRONTEND=noninteractive", "LANG=C.UTF-8", "LC_ALL=C.UTF-8"}
 }
-func (aptManager) UpdateIndexArgv() []string { return []string{"apt-get", "-q", "update"} }
+
+// aptLockWait makes apt wait for the dpkg lock instead of failing at once:
+// on a fresh Ubuntu unattended-upgrades holds it for minutes after boot, and
+// a job that dies on "Could not get lock" looks like a broken installer.
+const aptLockWait = "DPkg::Lock::Timeout=600"
+
+func (aptManager) UpdateIndexArgv() []string {
+	return []string{"apt-get", "-q", "-o", aptLockWait, "update"}
+}
 func (aptManager) InstallArgv(pkgs []string) []string {
-	return append([]string{"apt-get", "-q", "-y", "-o", "Dpkg::Options::=--force-confold", "--no-install-recommends", "install"}, pkgs...)
+	return append([]string{"apt-get", "-q", "-y", "-o", aptLockWait, "-o", "Dpkg::Options::=--force-confold", "--no-install-recommends", "install"}, pkgs...)
 }
 func (aptManager) RemoveArgv(pkgs []string) []string {
-	return append([]string{"apt-get", "-q", "-y", "remove"}, pkgs...)
+	return append([]string{"apt-get", "-q", "-y", "-o", aptLockWait, "remove"}, pkgs...)
 }
 func (aptManager) QueryInstalledArgv(pkgs []string) []string {
 	return append([]string{"dpkg-query", "-W", "-f=${Package} ${Version} ${db:Status-Status}\n"}, pkgs...)

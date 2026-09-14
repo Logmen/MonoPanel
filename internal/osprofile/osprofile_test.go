@@ -85,7 +85,7 @@ func TestPackageQueryParsing(t *testing.T) {
 	if got["nginx"] != "1.28.0-1.el10.ngx" || len(got) != 1 {
 		t.Fatalf("dnf parse: %v", got)
 	}
-	if strings.Join(apt.InstallArgv([]string{"nginx"}), " ") != "apt-get -q -y -o Dpkg::Options::=--force-confold --no-install-recommends install nginx" {
+	if strings.Join(apt.InstallArgv([]string{"nginx"}), " ") != "apt-get -q -y -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confold --no-install-recommends install nginx" {
 		t.Fatalf("apt install argv: %v", apt.InstallArgv([]string{"nginx"}))
 	}
 }
