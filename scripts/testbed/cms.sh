@@ -14,7 +14,10 @@ vm=$1; shift
 zone=${TB_DNS_LABEL:-tb}.${TB_ZONE:?TB_ZONE is required}
 user=cms
 ok(){ echo "ok    $*"; }
-fail(){ echo "FAIL  $*"; }
+# Failures are counted so the exit code tells the caller (full-run.sh retries
+# a CMS that failed on a transient download only when this script says so).
+failures=0
+fail(){ echo "FAIL  $*"; failures=$((failures + 1)); }
 code(){ curl -s -o /dev/null -m 60 -w '%{http_code}' "$@"; }
 body(){ curl -s -m 60 "$@"; }
 rnd(){ echo "$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 14)Aa1!"; }
@@ -86,3 +89,4 @@ do_bitrix(){
   php=$(mp site php "$DOMAIN" 2>/dev/null); for kv in "short_open_tag On" "max_input_vars 20000" "memory_limit 512M"; do set -- $kv; echo "$php" | grep -qE "^$1\s+$2" && ok "php $1=$2" || fail "php $1: $(echo "$php" | grep -E "^$1" | head -1)"; done
 }
 for cms in "$@"; do echo "=== $cms"; do_$cms; done
+[ "$failures" -eq 0 ] || { echo "$failures check(s) failed"; exit 1; }

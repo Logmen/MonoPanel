@@ -159,27 +159,38 @@ func fetchBytes(ctx context.Context, url string) ([]byte, error) {
 	return fetchBytesN(ctx, url, 1<<20)
 }
 
-// fetchBytesN is fetchBytes with its own size limit (composer.phar is a few MB).
-func fetchBytesN(ctx context.Context, url string, limit int64) ([]byte, error) {
+// fetchRetryBase paces retries of network fetches: 5 s, then 20 s. A dropped
+// connection to github.com or a mirror is common enough on a fresh server
+// that one timeout must not fail a whole install.
+var fetchRetryBase = 5 * time.Second
+
+// withRetry runs op up to three times while it reports a retryable failure.
+func withRetry[T any](ctx context.Context, op func() (T, bool, error)) (T, error) {
+	var zero T
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(time.Duration(attempt*attempt) * 5 * time.Second):
+				return zero, ctx.Err()
+			case <-time.After(time.Duration(attempt*attempt) * fetchRetryBase):
 			}
 		}
-		b, retry, err := fetchOnce(ctx, url, limit)
+		v, retry, err := op()
 		if err == nil {
-			return b, nil
+			return v, nil
 		}
 		lastErr = err
 		if !retry {
 			break
 		}
 	}
-	return nil, lastErr
+	return zero, lastErr
+}
+
+// fetchBytesN is fetchBytes with its own size limit (composer.phar is a few MB).
+func fetchBytesN(ctx context.Context, url string, limit int64) ([]byte, error) {
+	return withRetry(ctx, func() ([]byte, bool, error) { return fetchOnce(ctx, url, limit) })
 }
 
 // fetchClient has no overall deadline: a 40 MB Sphinx tarball from a slow
@@ -223,25 +234,31 @@ func fetchOnce(ctx context.Context, url string, limit int64) (body []byte, retry
 // fetchStream opens a download for streaming (a CMS distribution goes
 // straight into tar on the agent instead of through memory), with the same
 // stall watch as fetchOnce: the body is cut off after fetchIdle without data.
+// Opening the stream is retried like fetchBytes; once bytes flow, a break
+// is the caller's to handle (the half-written tar cannot be resumed).
 func fetchStream(ctx context.Context, url string) (io.ReadCloser, error) {
+	return withRetry(ctx, func() (io.ReadCloser, bool, error) { return fetchStreamOnce(ctx, url) })
+}
+
+func fetchStreamOnce(ctx context.Context, url string) (io.ReadCloser, bool, error) {
 	rctx, cancel := context.WithCancel(ctx)
 	req, err := http.NewRequestWithContext(rctx, http.MethodGet, url, nil)
 	if err != nil {
 		cancel()
-		return nil, err
+		return nil, false, err
 	}
 	res, err := fetchClient.Do(req)
 	if err != nil {
 		cancel()
-		return nil, err
+		return nil, ctx.Err() == nil, err
 	}
 	if res.StatusCode != http.StatusOK {
 		res.Body.Close()
 		cancel()
-		return nil, fmt.Errorf("GET %s: %s", url, res.Status)
+		return nil, res.StatusCode >= 500, fmt.Errorf("GET %s: %s", url, res.Status)
 	}
 	stall := time.AfterFunc(fetchIdle, cancel)
-	return &stallBody{r: &stallReader{r: res.Body, timer: stall}, body: res.Body, timer: stall, cancel: cancel}, nil
+	return &stallBody{r: &stallReader{r: res.Body, timer: stall}, body: res.Body, timer: stall, cancel: cancel}, false, nil
 }
 
 type stallBody struct {
@@ -262,23 +279,29 @@ func (b *stallBody) Close() error {
 // githubLatestTag names a public repository's latest release without the
 // API and its anonymous quota: the site redirects /releases/latest to the tag.
 func githubLatestTag(ctx context.Context, repo string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, "https://github.com/"+repo+"/releases/latest", nil)
-	if err != nil {
-		return "", err
-	}
-	hc := *fetchClient
-	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	res, err := hc.Do(req)
-	if err != nil {
-		return "", err
-	}
-	res.Body.Close()
-	loc := res.Header.Get("Location")
-	tag := loc[strings.LastIndex(loc, "/")+1:]
-	if res.StatusCode/100 != 3 || !strings.Contains(loc, "/releases/tag/") || tag == "" {
-		return "", fmt.Errorf("github.com/%s: no release found (%s)", repo, res.Status)
-	}
-	return tag, nil
+	return githubLatestTagAt(ctx, "https://github.com", repo)
+}
+
+func githubLatestTagAt(ctx context.Context, site, repo string) (string, error) {
+	return withRetry(ctx, func() (string, bool, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodHead, site+"/"+repo+"/releases/latest", nil)
+		if err != nil {
+			return "", false, err
+		}
+		hc := *fetchClient
+		hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		res, err := hc.Do(req)
+		if err != nil {
+			return "", ctx.Err() == nil, err
+		}
+		res.Body.Close()
+		loc := res.Header.Get("Location")
+		tag := loc[strings.LastIndex(loc, "/")+1:]
+		if res.StatusCode/100 != 3 || !strings.Contains(loc, "/releases/tag/") || tag == "" {
+			return "", res.StatusCode >= 500, fmt.Errorf("github.com/%s: no release found (%s)", repo, res.Status)
+		}
+		return tag, false, nil
+	})
 }
 
 // stallReader pushes the stall timer back whenever data arrives.
