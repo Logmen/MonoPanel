@@ -201,8 +201,11 @@ func TestStaticImmutableRealNames(t *testing.T) {
 	if _, err := fs.Stat(sub, "monaco/vs/loader.js"); err != nil {
 		t.Skip("placeholder build embedded; run make web for the full check")
 	}
-	fs.WalkDir(sub, ".", func(p string, d fs.DirEntry, err error) error { //nolint:errcheck // walk of an embed FS
-		if err != nil || d.IsDir() {
+	err := fs.WalkDir(sub, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
 			return nil
 		}
 		if immutableRe.MatchString(p) && !strings.HasPrefix(p, "_app/immutable/") && !(strings.HasPrefix(p, "monaco/vs/") && path.Ext(p) == ".js") {
@@ -210,6 +213,9 @@ func TestStaticImmutableRealNames(t *testing.T) {
 		}
 		return nil
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, p := range []string{"index.html", "_app/version.json", "monaco/vs/loader.js", "monaco/vs/editor/editor.main.js", "monaco/vs/editor/editor.main.css"} {
 		if immutableRe.MatchString(p) {
 			t.Errorf("%s must revalidate", p)
