@@ -1,5 +1,32 @@
+<script lang="ts" module>
+  // AMD-загрузчик Monaco: один на страницу, общий для всех экземпляров
+  // менеджера (страница файлов и вкладка сайта). Неудача не запоминается:
+  // следующий вызов пробует снова — панель могла просто перезапускаться.
+  let monacoPromise: Promise<any> | null = null;
+  export function loadMonaco(): Promise<any> {
+    const w = window as any;
+    if (w.monaco) return Promise.resolve(w.monaco);
+    if (monacoPromise) return monacoPromise;
+    const script = document.createElement('script');
+    monacoPromise = new Promise((resolve, reject) => {
+      script.src = '/monaco/vs/loader.js';
+      script.onerror = () => reject(new Error('monaco loader'));
+      script.onload = () => {
+        w.require.config({ paths: { vs: '/monaco/vs' } });
+        w.require(['vs/editor/editor.main'], () => resolve(w.monaco), reject);
+      };
+      document.head.appendChild(script);
+    }).catch((e) => {
+      monacoPromise = null;
+      script.remove();
+      throw e;
+    });
+    return monacoPromise;
+  }
+</script>
+
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { tick, onMount } from 'svelte';
   import { api, apiText, apiPutRaw, ApiError, bytes } from '$lib/api';
   import { notify, theme } from '$lib/state.svelte';
   import Icon from './Icon.svelte';
@@ -29,6 +56,7 @@
   // открыл файл. Если не загрузится — остаётся простое поле ввода.
   let editor: any = null;
   let monacoFailed = $state(false);
+  let editorReady = $state(false);
   const dirty = $derived(editing !== null && text !== original);
   const lines = $derived(text.split('\n').length);
 
@@ -72,25 +100,18 @@
     theme.mode === 'dark' ||
     (theme.mode === 'system' && typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: dark)').matches);
 
-  // AMD-загрузчик Monaco: подключается один раз на страницу.
-  let monacoPromise: Promise<any> | null = null;
-  function loadMonaco(): Promise<any> {
+  // Пока человек выбирает файл, редактор уже едет: с прогретым кэшем
+  // браузера первое открытие не ждёт 4,7 МБ.
+  onMount(() => {
     const w = window as any;
-    if (w.monaco) return Promise.resolve(w.monaco);
-    if (monacoPromise) return monacoPromise;
-    monacoPromise = new Promise((resolve, reject) => {
-      const script = document.createElement('script');
-      script.src = '/monaco/vs/loader.js';
-      script.onerror = () => reject(new Error(t('files.editorLoadError')));
-      script.onload = () => {
-        w.MonacoEnvironment = { getWorkerUrl: () => '/monaco/vs/editor/editor.worker.js' };
-        w.require.config({ paths: { vs: '/monaco/vs' } });
-        w.require(['vs/editor/editor.main'], () => resolve(w.monaco), reject);
-      };
-      document.head.appendChild(script);
-    });
-    return monacoPromise;
-  }
+    const run = () => { if (!monacoFailed) loadMonaco().catch(() => {}); };
+    if (w.requestIdleCallback) {
+      const id = w.requestIdleCallback(run, { timeout: 2000 });
+      return () => w.cancelIdleCallback?.(id);
+    }
+    const id = setTimeout(run, 300);
+    return () => clearTimeout(id);
+  });
 
   async function mountEditor(name: string) {
     if (monacoFailed) return;
@@ -119,6 +140,7 @@
         monacoBox.style.height = fit + 'px';
       });
       editor.focus();
+      editorReady = true;
     } catch (e) {
       monacoFailed = true;
       notify(t('files.monacoFailed'), 'err');
@@ -170,6 +192,7 @@
   function closeEditor() {
     editor?.dispose();
     editor = null;
+    editorReady = false;
     editing = null;
     text = original = '';
   }
@@ -475,6 +498,7 @@
         ></textarea>
       </div>
     {:else}
+      {#if !editorReady}<div class="px-3 pt-2 text-xs text-muted">{t('files.editorLoading')}</div>{/if}
       <div bind:this={monacoBox} style="height:240px" aria-label={t('files.contentLabel')}></div>
     {/if}
     <div class="px-3 py-2 border-t border-line text-xs text-muted">

@@ -1,7 +1,8 @@
 <script lang="ts">
   import '../app.css';
   import { onMount } from 'svelte';
-  import { page } from '$app/state';
+  import { page, updated } from '$app/state';
+  import { beforeNavigate } from '$app/navigation';
   import { fly, fade } from 'svelte/transition';
   import { auth, loadMe, toastValue, initTheme, dur } from '$lib/state.svelte';
   import { browser } from '$app/environment';
@@ -13,6 +14,10 @@
   let navOpen = $state(false);
   // Язык нужен до первого рендера, иначе экран мигнёт русским перед английским.
   if (browser) initLang();
+  // Хешированные чанки кэшируются на год: после обновления панели открытая
+  // вкладка узнаёт о новой сборке по _app/version.json и на следующем
+  // переходе перезагружается целиком, а не смешивает старые чанки с новыми.
+  beforeNavigate(({ willUnload, to }) => { if (updated.current && !willUnload && to?.url) location.href = to.url.href; });
   onMount(() => { initTheme(); loadMe(); });
 </script>
 

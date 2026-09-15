@@ -66,6 +66,21 @@ func TestHealthAndOpenAPI(t *testing.T) {
 	if res.StatusCode != 200 {
 		t.Fatalf("spa fallback: %d", res.StatusCode)
 	}
+	// Through the whole middleware stack: revalidation and method refusal.
+	raw := &http.Client{Transport: &http.Transport{DisableCompression: true}}
+	res, _ = raw.Get(ts.URL + "/")
+	etag := res.Header.Get("ETag")
+	if res.Header.Get("Cache-Control") != "no-cache" || !strings.HasPrefix(etag, `W/"`) || res.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("shell headers: %v", res.Header)
+	}
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/", nil)
+	req.Header.Set("If-None-Match", etag)
+	if res, _ = raw.Do(req); res.StatusCode != 304 {
+		t.Fatalf("shell revalidation: %d", res.StatusCode)
+	}
+	if res, _ = http.Post(ts.URL+"/some/spa/route", "text/plain", nil); res.StatusCode != 405 || res.Header.Get("Allow") != "GET, HEAD" {
+		t.Fatalf("post on the spa: %d %v", res.StatusCode, res.Header)
+	}
 }
 
 func TestAuthFlow(t *testing.T) {

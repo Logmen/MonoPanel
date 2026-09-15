@@ -28,31 +28,20 @@ func uiCSP(index []byte) string {
 	if len(hashes) > 0 {
 		script += " " + strings.Join(hashes, " ")
 	}
-	// font-src с data: — шрифт иконок редактора вшит в его CSS как data-URI.
-	return "default-src 'self'; script-src " + script + "; img-src 'self' data:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'"
+	// font-src с data: — шрифт иконок редактора вшит в его CSS как data-URI;
+	// worker-src с blob: — Monaco запускает свой рабочий поток через Blob,
+	// который importScripts-ом тянет хешированный чанк с нашего origin.
+	return "default-src 'self'; script-src " + script + "; worker-src 'self' blob:; img-src 'self' data:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'"
 }
 
-// uiHandler serves the embedded SPA with an index.html fallback.
+// uiHandler serves the embedded SPA with an index.html fallback; see
+// staticServer for compression and caching.
 func (s *Server) uiHandler() http.Handler {
 	sub, err := fs.Sub(web.FS, "build")
 	if err != nil {
 		return http.NotFoundHandler()
 	}
-	files := http.FileServerFS(sub)
-	index, _ := fs.ReadFile(sub, "index.html")
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p := strings.TrimPrefix(r.URL.Path, "/")
-		if p != "" && !strings.HasSuffix(p, "/") {
-			if f, err := sub.Open(p); err == nil {
-				f.Close() //nolint:errcheck // cleanup
-				files.ServeHTTP(w, r)
-				return
-			}
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Write(index) //nolint:errcheck // writing to an in-memory buffer or a closed client
-	})
+	return newStaticServer(sub)
 }
 
 // uiCSPFromEmbed computes the CSP once from the embedded index.html.

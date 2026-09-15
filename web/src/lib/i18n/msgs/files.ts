@@ -2,10 +2,10 @@ import { frag } from '../frag';
 
 export const files = frag({
   en: {
+    'files.editorLoading': 'Loading the editor…',
     'files.title': 'Files',
     'files.sub': 'Site directories, uploads and an editor — acting as the owner',
     'files.noAccounts': 'No accounts with a home directory — files will appear once a user is created.',
-    'files.editorLoadError': 'Editor failed to load',
     'files.monacoFailed': 'VS Code editor failed to load, using the plain text field',
     'files.unsavedTitle': 'Unsaved changes',
     'files.unsavedNote': '{name}: the edits will be lost.',
@@ -68,10 +68,10 @@ export const files = frag({
     'files.done': 'OK'
   },
   ru: {
+    'files.editorLoading': 'Редактор загружается…',
     'files.title': 'Файлы',
     'files.sub': 'каталоги сайтов, загрузка и редактор — от имени владельца',
     'files.noAccounts': 'Нет аккаунтов с домашним каталогом — файлы появятся после создания пользователя.',
-    'files.editorLoadError': 'редактор не загрузился',
     'files.monacoFailed': 'редактор VS Code не загрузился, работает простое поле',
     'files.unsavedTitle': 'Изменения не сохранены',
     'files.unsavedNote': '{name}: правки будут потеряны.',
