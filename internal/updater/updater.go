@@ -90,6 +90,10 @@ type Client struct {
 	// given up (default one minute). There is no cap on the whole transfer:
 	// a package on a slow link takes as long as it takes.
 	Idle time.Duration
+	// RetryDelay paces the retries of a failed request (default 5 s: the
+	// second attempt after 5 s, the third after 20 s). A dropped connection
+	// to GitHub must not cost a whole update cycle.
+	RetryDelay time.Duration
 }
 
 // ErrNoRelease means the repository has no release for the channel.
@@ -132,6 +136,45 @@ func (c *Client) http() *http.Client {
 	}}
 }
 
+// permanentError marks an answer that another attempt cannot change: a
+// missing repository or release, a refused token, an exhausted API quota.
+type permanentError struct{ err error }
+
+func (e permanentError) Error() string { return e.err.Error() }
+func (e permanentError) Unwrap() error { return e.err }
+
+func permanent(err error) error { return permanentError{err} }
+
+// withRetry runs op up to three times while its failure is transient: the
+// connection dropped or timed out, the body broke off, the server answered
+// 5xx. Cancelling ctx stops it at once.
+func withRetry[T any](ctx context.Context, c *Client, op func() (T, error)) (T, error) {
+	delay := c.RetryDelay
+	if delay <= 0 {
+		delay = 5 * time.Second
+	}
+	var zero T
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return zero, ctx.Err()
+			case <-time.After(time.Duration(attempt*attempt) * delay):
+			}
+		}
+		var v T
+		if v, err = op(); err == nil {
+			return v, nil
+		}
+		var p permanentError
+		if errors.As(err, &p) || ctx.Err() != nil {
+			break
+		}
+	}
+	return zero, err
+}
+
 func (c *Client) idle() time.Duration {
 	if c.Idle > 0 {
 		return c.Idle
@@ -165,7 +208,13 @@ func (c *Client) get(ctx context.Context, path, accept string) (*http.Response, 
 	return c.getURL(ctx, c.base()+path, accept)
 }
 
+// getURL is getURLOnce with retries for the request and the status line;
+// the caller reads the body.
 func (c *Client) getURL(ctx context.Context, url, accept string) (*http.Response, error) {
+	return withRetry(ctx, c, func() (*http.Response, error) { return c.getURLOnce(ctx, url, accept) })
+}
+
+func (c *Client) getURLOnce(ctx context.Context, url, accept string) (*http.Response, error) {
 	rctx, cancel := context.WithCancel(ctx)
 	req, err := http.NewRequestWithContext(rctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -191,19 +240,23 @@ func (c *Client) getURL(ctx context.Context, url, accept string) (*http.Response
 		switch res.StatusCode {
 		case http.StatusNotFound:
 			// A private repository answers 404 for a wrong or missing token too.
-			return nil, fmt.Errorf("%s: not found (check the repository name and the token)", c.Repo)
+			return nil, permanent(fmt.Errorf("%s: not found (check the repository name and the token)", c.Repo))
 		case http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests:
 			if res.Header.Get("X-RateLimit-Remaining") == "0" || res.StatusCode == http.StatusTooManyRequests {
-				return nil, fmt.Errorf("%s: %w (%s)", c.Repo, ErrRateLimited, msg)
+				return nil, permanent(fmt.Errorf("%s: %w (%s)", c.Repo, ErrRateLimited, msg))
 			}
 			// A public repository answers 401 to a token that is no longer
 			// valid — the token is then the problem, not the access.
 			if c.Token != "" {
-				return nil, fmt.Errorf("%s: access denied (%s); if the repository is public, drop the token: mp update settings --clear-token", c.Repo, res.Status)
+				return nil, permanent(fmt.Errorf("%s: access denied (%s); if the repository is public, drop the token: mp update settings --clear-token", c.Repo, res.Status))
 			}
-			return nil, fmt.Errorf("%s: access denied (%s)", c.Repo, res.Status)
+			return nil, permanent(fmt.Errorf("%s: access denied (%s)", c.Repo, res.Status))
 		}
-		return nil, fmt.Errorf("%s: %s: %s", c.Repo, res.Status, msg)
+		err := fmt.Errorf("%s: %s: %s", c.Repo, res.Status, msg)
+		if res.StatusCode < 500 {
+			err = permanent(err)
+		}
+		return nil, err
 	}
 	return res, nil
 }
@@ -341,9 +394,13 @@ func (c *Client) releaseWithoutAPI(ctx context.Context, tag string) (*Release, e
 // target for a release page or an asset, url itself when it answers
 // directly, ErrNoRelease when there is nothing there.
 func (c *Client) redirect(ctx context.Context, url string) (string, error) {
+	return withRetry(ctx, c, func() (string, error) { return c.redirectOnce(ctx, url) })
+}
+
+func (c *Client) redirectOnce(ctx context.Context, url string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
 	if err != nil {
-		return "", err
+		return "", permanent(err)
 	}
 	hc := *c.http()
 	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -357,49 +414,64 @@ func (c *Client) redirect(ctx context.Context, url string) (string, error) {
 		if loc := res.Header.Get("Location"); loc != "" {
 			return loc, nil
 		}
-		return "", fmt.Errorf("%s: redirect without a location", url)
+		return "", permanent(fmt.Errorf("%s: redirect without a location", url))
 	case res.StatusCode == http.StatusOK:
 		return url, nil
 	case res.StatusCode == http.StatusNotFound:
-		return "", ErrNoRelease
+		return "", permanent(ErrNoRelease)
 	}
-	return "", fmt.Errorf("%s: %s", url, res.Status)
+	err = fmt.Errorf("%s: %s", url, res.Status)
+	if res.StatusCode < 500 {
+		err = permanent(err)
+	}
+	return "", err
 }
 
 // getAsset fetches an asset: by its plain address when the release was
 // resolved without the API, through the API by id otherwise.
+// Downloads retry as a whole (withRetry in Bytes and SaveTo), so this one
+// makes a single attempt.
 func (c *Client) getAsset(ctx context.Context, a Asset) (*http.Response, error) {
-	if a.URL != "" {
-		return c.getURL(ctx, a.URL, "application/octet-stream")
+	url := a.URL
+	if url == "" {
+		url = c.base() + fmt.Sprintf("/repos/%s/releases/assets/%d", c.Repo, a.ID)
 	}
-	return c.get(ctx, fmt.Sprintf("/repos/%s/releases/assets/%d", c.Repo, a.ID), "application/octet-stream")
+	return c.getURLOnce(ctx, url, "application/octet-stream")
 }
 
 // Bytes downloads a small asset (the checksum list and its signature).
 func (c *Client) Bytes(ctx context.Context, a Asset) ([]byte, error) {
-	res, err := c.getAsset(ctx, a)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-	return io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	return withRetry(ctx, c, func() ([]byte, error) {
+		res, err := c.getAsset(ctx, a)
+		if err != nil {
+			return nil, err
+		}
+		defer res.Body.Close()
+		return io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	})
 }
 
 // SaveTo downloads an asset to path and returns its SHA-256. The file is
 // written next to its final name and renamed, so a half-finished download is
 // never handed to the package manager.
 func (c *Client) SaveTo(ctx context.Context, a Asset, path string) (string, error) {
+	// A download that breaks off halfway starts over: the temporary file of
+	// the failed attempt is removed before the next one.
+	return withRetry(ctx, c, func() (string, error) { return c.saveOnce(ctx, a, path) })
+}
+
+func (c *Client) saveOnce(ctx context.Context, a Asset, path string) (string, error) {
 	res, err := c.getAsset(ctx, a)
 	if err != nil {
 		return "", err
 	}
 	defer res.Body.Close()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", err
+		return "", permanent(err)
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".download-*")
 	if err != nil {
-		return "", err
+		return "", permanent(err)
 	}
 	defer os.Remove(tmp.Name())
 	sum := sha256.New()
@@ -411,10 +483,10 @@ func (c *Client) SaveTo(ctx context.Context, a Asset, path string) (string, erro
 		return "", err
 	}
 	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
-		return "", err
+		return "", permanent(err)
 	}
 	if err := os.Rename(tmp.Name(), path); err != nil {
-		return "", err
+		return "", permanent(err)
 	}
 	return hex.EncodeToString(sum.Sum(nil)), nil
 }

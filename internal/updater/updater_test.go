@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -215,7 +216,7 @@ func TestSaveToSlowLinkAndStall(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	c := &Client{Repo: "o/r", API: srv.URL, Idle: 300 * time.Millisecond}
+	c := &Client{Repo: "o/r", API: srv.URL, Idle: 300 * time.Millisecond, RetryDelay: time.Millisecond}
 	dir := t.TempDir()
 	// 8 × 60 ms is longer than the idle period, but data keeps coming.
 	sum, err := c.SaveTo(context.Background(), Asset{ID: 1}, filepath.Join(dir, "a.deb"))
@@ -282,5 +283,73 @@ func TestClientFallsBackWithoutAPIWhenRateLimited(t *testing.T) {
 	c.Token = "token"
 	if _, err := c.Latest(ctx, ChannelStable); !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("with a token the rate limit is reported, not worked around: %v", err)
+	}
+}
+
+// A dropped connection, a 5xx or a body that breaks off halfway is retried;
+// a missing release is not. The half-written file of a failed attempt never
+// survives, and the retried download ends up complete.
+func TestClientRetriesTransientFailures(t *testing.T) {
+	var releases, assets, missing int
+	pkg := strings.Repeat("package-bytes\n", 2000)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/releases"):
+			releases++
+			if releases == 1 {
+				conn, _, _ := w.(http.Hijacker).Hijack()
+				conn.Close() //nolint:errcheck // test server
+				return
+			}
+			if releases == 2 {
+				http.Error(w, "unicorn", http.StatusBadGateway)
+				return
+			}
+			w.Write([]byte(`[{"tag_name":"v1.2.3","assets":[{"name":"a.deb","id":7,"size":1}]}]`)) //nolint:errcheck // test server
+		case strings.HasSuffix(r.URL.Path, "/assets/7"):
+			assets++
+			if assets == 1 {
+				// Promise the whole package, send a third, hang up.
+				w.Header().Set("Content-Length", strconv.Itoa(len(pkg)))
+				w.Write([]byte(pkg[:len(pkg)/3])) //nolint:errcheck // test server
+				w.(http.Flusher).Flush()
+				conn, _, _ := w.(http.Hijacker).Hijack()
+				conn.Close() //nolint:errcheck // test server
+				return
+			}
+			w.Write([]byte(pkg)) //nolint:errcheck // test server
+		case strings.HasSuffix(r.URL.Path, "/assets/8"):
+			missing++
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	c := &Client{Repo: "o/r", API: srv.URL, RetryDelay: time.Millisecond}
+	ctx := context.Background()
+	rel, err := c.Latest(ctx, ChannelStable)
+	if err != nil || rel.Version != "1.2.3" || releases != 3 {
+		t.Fatalf("latest: %+v %v after %d requests", rel, err, releases)
+	}
+	dir := t.TempDir()
+	sum, err := c.SaveTo(ctx, Asset{ID: 7}, filepath.Join(dir, "a.deb"))
+	if err != nil || assets != 2 {
+		t.Fatalf("save: %v after %d requests", err, assets)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "a.deb"))
+	want := sha256.Sum256([]byte(pkg))
+	if string(got) != pkg || sum != hex.EncodeToString(want[:]) {
+		t.Fatalf("saved %d bytes, sum %s", len(got), sum)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Fatalf("leftovers of the failed attempt: %v", entries)
+	}
+	if _, err := c.SaveTo(ctx, Asset{ID: 8}, filepath.Join(dir, "b.deb")); err == nil || missing != 1 {
+		t.Fatalf("a 404 must fail at once: %v after %d requests", err, missing)
+	}
+	cctx, cancel := context.WithCancel(ctx)
+	cancel()
+	start := time.Now()
+	if _, err := (&Client{Repo: "o/r", API: "http://127.0.0.1:1"}).Latest(cctx, ChannelStable); err == nil || time.Since(start) > time.Second {
+		t.Fatalf("a cancelled context must not wait for retries: %v in %s", err, time.Since(start))
 	}
 }
