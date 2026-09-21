@@ -4,3 +4,7 @@ Copyright 2026 Alex Bekker
 This product includes software developed as part of the MonoPanel project
 (https://github.com/Logmen/MonoPanel), licensed under the Apache License,
 Version 2.0.
+
+This product bundles Stoplight Elements (https://github.com/stoplightio/elements),
+Copyright Stoplight, Inc., licensed under the Apache License, Version 2.0
+(see internal/api/elements/LICENSE).

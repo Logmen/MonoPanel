@@ -194,6 +194,11 @@ func (st *staticServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// can take over.
 		f = st.index
 	}
+	f.serve(w, r)
+}
+
+// serve writes one prepared file: validators, caching, gzip when accepted.
+func (f *staticFile) serve(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
 	h.Set("Content-Type", f.ctype)
 	h.Set("ETag", f.etag)

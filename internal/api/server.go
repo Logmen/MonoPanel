@@ -89,7 +89,11 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 		"bearer":  {Type: "http", Scheme: "bearer", Description: "API token: mp token create"},
 		"session": {Type: "apiKey", In: "cookie", Name: sessionCookieName, Description: "Browser session"},
 	}
+	// Страница документации своя: huma тянет её скрипт с unpkg.com, а она
+	// живёт на origin панели, рядом с сессией администратора.
+	hcfg.DocsPath = ""
 	r.Route("/api/v1", func(sub chi.Router) {
+		mountDocs(sub, "/api/v1")
 		s.api = humachi.New(sub, hcfg)
 		s.api.UseMiddleware(s.authMiddleware)
 		s.registerSystem()
