@@ -86,6 +86,11 @@ func TestDocsAreSelfHosted(t *testing.T) {
 			t.Errorf("%s: %d sha384-%s, want the @stoplight/elements@9.0.15 release", p, res.StatusCode, got)
 		}
 	}
+	head, _ := http.NewRequest(http.MethodHead, ts.URL+"/api/v1/docs", nil)
+	head.AddCookie(c.cookie)
+	if res, err := http.DefaultClient.Do(head); err != nil || res.StatusCode != 200 {
+		t.Errorf("HEAD docs: %v %v", res, err)
+	}
 	for _, p := range []string{"/api/v1/docs", "/api/v1/docs/elements.js", "/api/v1/docs/elements.css"} {
 		res, _ := c.get(p)
 		csp := res.Header.Get("Content-Security-Policy")

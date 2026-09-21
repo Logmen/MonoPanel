@@ -53,10 +53,12 @@ func mountDocs(r chi.Router, base string) {
 		"/docs/elements.css": st.prepare("elements.css", read("styles.min.css")),
 	}
 	for p, f := range files {
-		r.Get(p, func(w http.ResponseWriter, req *http.Request) {
+		h := func(w http.ResponseWriter, req *http.Request) {
 			w.Header().Set("Content-Security-Policy", docsCSP)
 			f.serve(w, req)
-		})
+		}
+		r.Get(p, h)
+		r.Head(p, h)
 	}
 }
 
