@@ -16,7 +16,7 @@ import (
 // Health is the public liveness answer.
 type Health struct {
 	Status  string    `json:"status"`
-	Version string    `json:"version"`
+	Version string    `json:"version,omitempty" doc:"Panel version; only for an authenticated caller"`
 	Time    time.Time `json:"time"`
 }
 

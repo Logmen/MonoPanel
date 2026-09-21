@@ -160,3 +160,22 @@ func TestDocsRequireAuthentication(t *testing.T) {
 		}
 	}
 }
+
+// Liveness is public, the version is not: a build number tells a scanner
+// which vulnerabilities to try. A signed-in caller still gets it — the UI
+// shows it and the update card waits for it.
+func TestHealthHidesVersionFromAnonymous(t *testing.T) {
+	_, ts := testServer(t)
+	res, body := docsClient{t: t, base: ts.URL}.get("/api/v1/health")
+	if res.StatusCode != 200 || !strings.Contains(body, `"status":"ok"`) || strings.Contains(body, "version") {
+		t.Fatalf("anonymous health: %d %s", res.StatusCode, body)
+	}
+	res, body = docsClient{t: t, base: ts.URL, bearer: "nope"}.get("/api/v1/health")
+	if res.StatusCode != 200 || strings.Contains(body, "version") {
+		t.Fatalf("health with a bad token: %d %s", res.StatusCode, body)
+	}
+	res, body = docsClient{t: t, base: ts.URL, cookie: docsLogin(t, ts.URL)}.get("/api/v1/health")
+	if res.StatusCode != 200 || !strings.Contains(body, `"version":"`) {
+		t.Fatalf("signed-in health: %d %s", res.StatusCode, body)
+	}
+}

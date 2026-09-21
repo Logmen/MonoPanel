@@ -43,7 +43,13 @@ func (s *Server) registerSystem() {
 	huma.Register(s.api, huma.Operation{
 		OperationID: "health", Method: http.MethodGet, Path: "/health", Summary: "Liveness (public)", Tags: []string{"system"},
 	}, func(ctx context.Context, _ *struct{}) (*healthOutput, error) {
-		return &healthOutput{Body: apitypes.Health{Status: "ok", Version: buildinfo.Version, Time: time.Now()}}, nil
+		// Версию видит только вошедший: анониму она не нужна, а сканеру
+		// говорит, какие уязвимости примерять. Живость — всем.
+		h := apitypes.Health{Status: "ok", Time: time.Now()}
+		if principalFrom(ctx) != nil {
+			h.Version = buildinfo.Version
+		}
+		return &healthOutput{Body: h}, nil
 	})
 
 	huma.Register(s.api, huma.Operation{
