@@ -39,7 +39,7 @@ func setupCmd() *cobra.Command {
 			for _, u := range res.URLs {
 				fmt.Println("  Web:      ", u)
 			}
-			fmt.Println("  API docs: ", "/api/v1/docs")
+			fmt.Println("  API docs: ", "/api/v1/docs (после входа)")
 			fmt.Println("  Логин:    ", res.AdminLogin)
 			if res.AdminCreated {
 				if res.GeneratedPassword {

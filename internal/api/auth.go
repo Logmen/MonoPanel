@@ -78,7 +78,26 @@ func sameOrigin(ctx huma.Context) bool {
 }
 
 func (s *Server) authenticate(ctx huma.Context) *principal {
-	rctx := ctx.Context()
+	return s.authenticateWith(ctx.Context(), ctx.Header("Authorization"), func() string {
+		if c, err := huma.ReadCookie(ctx, sessionCookieName); err == nil {
+			return c.Value
+		}
+		return ""
+	})
+}
+
+// authenticateRequest is authenticate for plain handlers outside huma (the
+// API reference and the specification).
+func (s *Server) authenticateRequest(r *http.Request) *principal {
+	return s.authenticateWith(r.Context(), r.Header.Get("Authorization"), func() string {
+		if c, err := r.Cookie(sessionCookieName); err == nil {
+			return c.Value
+		}
+		return ""
+	})
+}
+
+func (s *Server) authenticateWith(rctx context.Context, authorization string, sessionCookie func() string) *principal {
 	if cred, ok := peercred.FromContext(rctx); ok {
 		if cred.UID == 0 {
 			return &principal{Principal: apitypes.Principal{Login: "root", Role: store.RoleAdmin, Via: "peercred"}}
@@ -88,7 +107,7 @@ func (s *Server) authenticate(ctx huma.Context) *principal {
 		}
 		return nil
 	}
-	if h := ctx.Header("Authorization"); strings.HasPrefix(h, "Bearer ") {
+	if h := authorization; strings.HasPrefix(h, "Bearer ") {
 		tok, err := s.db.GetAPITokenByHash(rctx, auth.HashToken(strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))))
 		if err != nil {
 			return nil
@@ -100,8 +119,8 @@ func (s *Server) authenticate(ctx huma.Context) *principal {
 		go s.db.TouchAPIToken(context.Background(), tok.ID) //nolint:errcheck // last-used bookkeeping must not fail the request
 		return &principal{Principal: apitypes.Principal{UserID: u.ID, Login: u.Login, Role: u.Role, Via: "token", Scopes: tok.Scopes}}
 	}
-	if c, err := huma.ReadCookie(ctx, sessionCookieName); err == nil && c.Value != "" {
-		sess, err := s.db.GetSession(rctx, c.Value)
+	if v := sessionCookie(); v != "" {
+		sess, err := s.db.GetSession(rctx, v)
 		if err != nil {
 			return nil
 		}
@@ -119,14 +138,17 @@ func (s *Server) authenticate(ctx huma.Context) *principal {
 // /migrate and closes everything else. The match against the requested account
 // happens in the handler, which sees the query. Scopes the panel does not know
 // stay what they always were — a label on the token.
-func scopeAllowsOperation(scopes []string, op *huma.Operation) bool {
-	migration := false
+func hasMigrationScope(scopes []string) bool {
 	for _, sc := range scopes {
 		if strings.HasPrefix(sc, migrateScopePrefix) {
-			migration = true
+			return true
 		}
 	}
-	if !migration {
+	return false
+}
+
+func scopeAllowsOperation(scopes []string, op *huma.Operation) bool {
+	if !hasMigrationScope(scopes) {
 		return true
 	}
 	return strings.HasPrefix(op.Path, "/migrate") && op.Method == http.MethodGet

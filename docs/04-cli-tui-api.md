@@ -90,7 +90,7 @@ mp files ls|cp|mv|rm|chmod|extract --user <login> <path>   # через helper �
 
 ## 4. REST API
 
-- Базовый путь `/api/v1`, спецификация `/api/v1/openapi.json`, интерактивная документация `/api/docs` (Scalar).
+- Базовый путь `/api/v1`, спецификация `/api/v1/openapi.json`, интерактивная документация `/api/v1/docs` (Stoplight Elements, вшит в бинарник). Документация, спецификация и `/schemas/*` отдаются только вошедшим (сессия или API-токен; токен переезда — нет): `curl -H "Authorization: Bearer $TOKEN" https://host:8443/api/v1/openapi.json`.
 - Аутентификация: `Authorization: Bearer <token>` (scopes: `users:r|rw`, `sites:r|rw`, `db:r|rw`, `ssl:rw`, `backups:rw`, `files:rw`, `system:rw`, `admin`), cookie-сессия для UI (+ CSRF), unix peer-cred для CLI.
 - Мутации, требующие работы на сервере, асинхронны: `202 Accepted` + `{ "job_id": … }`; `GET /jobs/{id}`, `GET /jobs/{id}/events` (SSE: `progress`, `log`, `done`, `failed`). Быстрые операции (создать токен, изменить настройку) — синхронные `200/201`.
 - Ошибки — RFC 9457 `application/problem+json` с полем `errors[]` для валидации по полям.

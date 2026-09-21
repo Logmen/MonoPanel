@@ -93,6 +93,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	// живёт на origin панели, рядом с сессией администратора.
 	hcfg.DocsPath = ""
 	r.Route("/api/v1", func(sub chi.Router) {
+		sub.Use(s.docsGate("/api/v1"))
 		mountDocs(sub, "/api/v1")
 		s.api = humachi.New(sub, hcfg)
 		s.api.UseMiddleware(s.authMiddleware)

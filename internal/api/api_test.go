@@ -46,7 +46,10 @@ func TestHealthAndOpenAPI(t *testing.T) {
 	if err != nil || res.StatusCode != 200 {
 		t.Fatalf("health: %v %v", res, err)
 	}
-	res, _ = http.Get(ts.URL + "/api/v1/openapi.json")
+	// The specification is for signed-in accounts (TestDocsRequireAuthentication).
+	req0, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/openapi.json", nil)
+	req0.AddCookie(docsLogin(t, ts.URL))
+	res, _ = http.DefaultClient.Do(req0)
 	if res.StatusCode != 200 {
 		t.Fatalf("openapi: %d", res.StatusCode)
 	}

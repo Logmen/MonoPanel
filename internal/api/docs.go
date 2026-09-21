@@ -3,6 +3,8 @@ package api
 import (
 	"embed"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -56,4 +58,43 @@ func mountDocs(r chi.Router, base string) {
 			f.serve(w, req)
 		})
 	}
+}
+
+// docsGate closes the API reference, the OpenAPI specification and the JSON
+// schemas to anyone who is not signed in: a map of every operation is of no
+// use to a visitor and of some use to a scanner. Any account may read it, a
+// session or an API token both work; a migration token may not — it exists
+// to read one account and nothing else.
+func (s *Server) docsGate(base string) func(http.Handler) http.Handler {
+	gated := func(p string) bool {
+		p = strings.TrimPrefix(p, base)
+		return p == "/docs" || strings.HasPrefix(p, "/docs/") || strings.HasPrefix(p, "/openapi") || strings.HasPrefix(p, "/schemas/")
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !gated(r.URL.Path) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			p := s.authenticateRequest(r)
+			switch {
+			case p == nil && r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/docs") && strings.Contains(r.Header.Get("Accept"), "text/html"):
+				// A person following the link: the panel's sign-in page.
+				http.Redirect(w, r, "/", http.StatusFound)
+			case p == nil:
+				docsRefuse(w, http.StatusUnauthorized, "authentication required")
+			case hasMigrationScope(p.Scopes):
+				docsRefuse(w, http.StatusForbidden, "token scope does not allow this operation")
+			default:
+				next.ServeHTTP(w, r)
+			}
+		})
+	}
+}
+
+func docsRefuse(w http.ResponseWriter, status int, detail string) {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	w.Write([]byte(`{"title":"` + http.StatusText(status) + `","status":` + strconv.Itoa(status) + `,"detail":"` + detail + `"}`)) //nolint:errcheck // a closed client is not our problem
 }
