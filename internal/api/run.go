@@ -47,6 +47,8 @@ func (s *Server) Run(ctx context.Context) error {
 		for attempt := 0; attempt < 6; attempt++ {
 			if _, err := s.agent.Pkg(ctx, "query", "nginx"); err == nil {
 				s.refreshDefaultServers(ctx)
+				s.refreshDBConfig(ctx)
+				s.refreshPHPCLIInis(ctx)
 				return
 			}
 			select {

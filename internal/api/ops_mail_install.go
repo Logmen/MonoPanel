@@ -292,7 +292,7 @@ func (s *Server) orderMailCertificate(ctx context.Context, jc *jobs.Context, c m
 	for _, ip := range localIPv4s() {
 		local[ip] = true
 	}
-	addrs, err := publicLookup(ctx, c.Hostname)
+	addrs, err := s.lookup(ctx, c.Hostname)
 	points := false
 	for _, a := range addrs {
 		if local[a] {

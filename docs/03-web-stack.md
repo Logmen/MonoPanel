@@ -162,12 +162,13 @@ php_value[post_max_size]        = 64M
 php_value[max_execution_time]   = 120
 php_value[date.timezone]        = Europe/Moscow
 php_value[display_errors]       = Off
+php_value[short_open_tag]       = Off   ; пресет bitrix — On
 php_value[opcache.enable]       = 1
 ```
 
 `disable_functions` по умолчанию перечислены выше; переключатель `allow_exec` на сайт снимает их (WP-CLI-хуки, очереди Laravel, ImageMagick через CLI).
 
-`pm.max_children` панель считает из RAM и `memory_limit` с потолком на сайт; при `pm=ondemand` неактивные сайты не держат воркеров — основной режим для shared-сервера с сотнями сайтов. Для нагруженных сайтов — `dynamic`/`static` вручную.
+`pm.max_children` по умолчанию 8; пресету bitrix — по воркеру на 256 МБ RAM, от 8 до 48: шаблоны Битрикса ходят по HTTP на свой же сайт из запроса, и восемь занятых воркеров ждут друг друга. Глобальный `99-monopanel.ini` ветки держит `short_open_tag = Off`, но копия, которую читает CLI, открывает короткие теги, пока на ветке есть сайт с пресетом bitrix: cron-скрипты и пролог Битрикса начинаются с `<?`, и PHP иначе печатает их текстом с кодом 0. Пулы задают `short_open_tag` сами, поэтому на Remi, где CLI и FPM читают один каталог, сайтам это не мешает. Задать `max_children` вручную можно для любого сайта; при `pm=ondemand` неактивные сайты не держат воркеров — основной режим для shared-сервера с сотнями сайтов. Для нагруженных сайтов — `dynamic`/`static` вручную.
 
 ## 6. Изоляция и лимиты
 

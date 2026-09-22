@@ -379,9 +379,19 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 		add(check("update attempt", "warn", "установка "+st.To+": "+st.Status+", "+st.Error))
 	}
 	if jobs, err := s.db.ListJobs(actx, 200, store.JobFailed); err == nil {
+		// A failure a later run of the same work (same lock key) has fixed
+		// is history, not a problem: the site applied fine the next time.
+		fixed := map[string]int64{}
+		if done, err := s.db.ListJobs(actx, 500, store.JobDone); err == nil {
+			for _, j := range done {
+				if j.LockKey != "" && j.ID > fixed[j.LockKey] {
+					fixed[j.LockKey] = j.ID
+				}
+			}
+		}
 		recent := 0
 		for _, j := range jobs {
-			if time.Since(j.CreatedAt.Std()) < 24*time.Hour {
+			if time.Since(j.CreatedAt.Std()) < 24*time.Hour && (j.LockKey == "" || fixed[j.LockKey] < j.ID) {
 				recent++
 			}
 		}
@@ -395,9 +405,9 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 		add(*c)
 	}
 	if h := s.cfg.Web.Hostname; h != "" {
-		addrs, err := publicLookup(actx, h)
+		addrs, err := s.lookup(actx, h)
 		local := map[string]bool{}
-		for _, ip := range localIPv4s() {
+		for _, ip := range s.hostIPs() {
 			local[ip] = true
 		}
 		ok := false
@@ -414,6 +424,9 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 		default:
 			add(check("dns "+h, "warn", "points to "+strings.Join(addrs, ", ")+", not this host"))
 		}
+	}
+	if off := s.sitesOffHost(actx); len(off) > 0 {
+		add(check("site addresses", "fail", s.offHostHint(off)))
 	}
 	if sites, err := s.db.ListSites(actx, 0); err == nil {
 		paths := []string{}

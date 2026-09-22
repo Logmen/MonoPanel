@@ -278,8 +278,15 @@ func (f *foreignSource) crontab(ctx context.Context, login string) []*store.Cron
 
 var cronLineRe = regexp.MustCompile(`^(@\w+|(?:\S+\s+){4}\S+)\s+(.+)$`)
 
-func (f *foreignSource) parseCrontab(text string) []*store.CronJob {
-	var jobs []*store.CronJob
+// cronEntry is one job line of a crontab as the old server has it.
+type cronEntry struct {
+	schedule, command, comment string
+}
+
+// cronEntries splits a crontab into jobs; the comment right above a line
+// belongs to it, variable assignments are dropped.
+func cronEntries(text string) []cronEntry {
+	var out []cronEntry
 	comment := ""
 	for _, l := range strings.Split(text, "\n") {
 		l = strings.TrimSpace(l)
@@ -297,10 +304,55 @@ func (f *foreignSource) parseCrontab(text string) []*store.CronJob {
 		if m == nil {
 			continue
 		}
-		jobs = append(jobs, &store.CronJob{Schedule: m[1], Command: f.rewriteText(m[2]), Comment: comment, Enabled: true})
+		out = append(out, cronEntry{schedule: m[1], command: m[2], comment: comment})
 		comment = ""
 	}
+	return out
+}
+
+func (f *foreignSource) parseCrontab(text string) []*store.CronJob {
+	var jobs []*store.CronJob
+	for _, e := range cronEntries(text) {
+		jobs = append(jobs, f.cronJob(e))
+	}
 	return jobs
+}
+
+// cronJob turns an old line into a job here: paths rewritten, and a line
+// that looks like a planted payload arrives switched off.
+func (f *foreignSource) cronJob(e cronEntry) *store.CronJob {
+	j := &store.CronJob{Schedule: e.schedule, Command: f.rewriteText(e.command), Comment: e.comment, Enabled: true}
+	if suspiciousCron(e.command) {
+		j.Enabled = false
+		j.Comment = strings.TrimSuffix(cronSuspectMark+"; "+e.comment, "; ")
+	}
+	return j
+}
+
+const cronSuspectMark = "выключено при переносе: похоже на чужую закладку"
+
+var (
+	// A binary run straight from a world-writable directory.
+	cronTmpExecRe = regexp.MustCompile(`(?:^|[;&|(]\s*)(?:(?:nohup|nice|perl|python[0-9.]*|sh|bash|php[0-9.]*)\s+)*(?:/tmp|/var/tmp|/dev/shm)/`)
+	// A script fetched and piped into a shell, or an encoded one.
+	cronFetchRe = regexp.MustCompile(`(?:curl|wget)\b[^|]*\|\s*(?:ba)?sh\b|base64\s+(?:-d|--decode)`)
+)
+
+// suspiciousCron says whether a cron command looks like what an intruder
+// leaves behind rather than like site maintenance.
+func suspiciousCron(cmd string) bool {
+	return cronTmpExecRe.MatchString(cmd) || cronFetchRe.MatchString(cmd)
+}
+
+// cronNotes lists the jobs switched off on the way, for the plan.
+func cronNotes(jobs []*store.CronJob) []string {
+	var out []string
+	for _, j := range jobs {
+		if !j.Enabled && strings.HasPrefix(j.Comment, cronSuspectMark) {
+			out = append(out, fmt.Sprintf("cron «%s %s» похоже на чужую закладку (запуск из /tmp, загрузка скрипта в shell): приедет выключенным — проверьте источник на взлом", j.Schedule, j.Command))
+		}
+	}
+	return out
 }
 
 // phpVersion asks the old server's CLI PHP for its branch.

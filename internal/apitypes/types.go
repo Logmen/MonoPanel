@@ -255,6 +255,20 @@ type SiteUpdateRequest struct {
 	Preset         *string           `json:"preset,omitempty" doc:"CMS preset: wordpress, joomla, bitrix, opencart or \"\" for generic"`
 }
 
+// SiteMoveIPRequest moves the sites of one address to another: after the
+// host's address changed, nginx cannot bind the old one, and one site at a
+// time does not pass the configuration check while the others still name it.
+type SiteMoveIPRequest struct {
+	From string `json:"from,omitempty" doc:"Address the sites listen on now; empty = every address this host no longer has"`
+	To   string `json:"to" doc:"Address of this host the sites move to"`
+}
+
+// SiteMoveIPResponse lists the sites being moved.
+type SiteMoveIPResponse struct {
+	JobID int64    `json:"job_id"`
+	Sites []string `json:"sites"`
+}
+
 // SiteWithJob is returned by mutations.
 type SiteWithJob struct {
 	Site  *store.Site `json:"site"`

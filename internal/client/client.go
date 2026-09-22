@@ -419,6 +419,13 @@ func (c *Client) UpdateSite(ctx context.Context, domain string, req apitypes.Sit
 	return &out, c.do(ctx, http.MethodPatch, "/sites/"+domain, req, &out)
 }
 
+// MoveSitesIP moves the sites of an address (or of every gone address) to
+// another address of the host.
+func (c *Client) MoveSitesIP(ctx context.Context, req apitypes.SiteMoveIPRequest) (*apitypes.SiteMoveIPResponse, error) {
+	var out apitypes.SiteMoveIPResponse
+	return &out, c.do(ctx, http.MethodPost, "/sites/move-ip", req, &out)
+}
+
 // SiteAction runs apply, suspend or unsuspend.
 func (c *Client) SiteAction(ctx context.Context, domain, action string) (*apitypes.SiteWithJob, error) {
 	var out apitypes.SiteWithJob
@@ -486,6 +493,12 @@ func (c *Client) DeleteDatabase(ctx context.Context, name string) error {
 func (c *Client) DatabasePassword(ctx context.Context, name, password string) (*apitypes.DatabaseResponse, error) {
 	var out apitypes.DatabaseResponse
 	return &out, c.do(ctx, http.MethodPost, "/databases/"+name+"/password", apitypes.PasswordRequest{Password: password}, &out)
+}
+
+// AllCronJobs lists the cron jobs of every user (admin).
+func (c *Client) AllCronJobs(ctx context.Context) ([]*store.CronJob, error) {
+	var out []*store.CronJob
+	return out, c.do(ctx, http.MethodGet, "/cron", nil, &out)
 }
 
 // CronJobs lists a user's cron jobs.

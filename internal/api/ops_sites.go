@@ -251,6 +251,11 @@ func (s *Server) registerSites() {
 		if err := validateIni(b.PHPIni); err != nil {
 			return nil, huma.Error422UnprocessableEntity(err.Error())
 		}
+		if b.IP != "" {
+			if err := s.checkHostIP(b.IP); err != nil {
+				return nil, huma.Error422UnprocessableEntity(err.Error())
+			}
+		}
 		site := &store.Site{UserID: owner.ID, Domain: domain, Aliases: names, Mode: b.Mode, Backend: b.Backend, PHPVersion: phpVersion, Docroot: strings.Trim(b.Docroot, "/"), IP: b.IP, SSL: b.SSL,
 			HTTP2: true, RedirectHTTPS: true, RedirectWWW: b.RedirectWWW, StaticByNginx: true, FPMPM: b.FPMPM, FPMMaxChildren: b.FPMMaxChildren, PHPIni: b.PHPIni, ClientMaxBody: b.ClientMaxBody}
 		if site.AllowFrom, err = normalizeAllowFrom(b.AllowFrom); err != nil {
@@ -278,7 +283,7 @@ func (s *Server) registerSites() {
 			site.AllowExec = *b.AllowExec
 		}
 		if site.IP == "" {
-			if ips := localIPv4s(); len(ips) > 0 {
+			if ips := s.hostIPs(); len(ips) > 0 {
 				site.IP = ips[0]
 			}
 		}
@@ -360,6 +365,9 @@ func (s *Server) registerSites() {
 			site.Docroot = d
 		}
 		if b.IP != "" {
+			if err := s.checkHostIP(b.IP); err != nil {
+				return nil, huma.Error422UnprocessableEntity(err.Error())
+			}
 			site.IP = b.IP
 		}
 		if b.SSL != "" {
@@ -540,6 +548,10 @@ func (s *Server) layoutFor(site *store.Site, user *store.User) *siteLayout {
 }
 
 func (s *Server) siteFail(ctx context.Context, site *store.Site, err error) error {
+	// A shutdown is not the site's fault: the job runs again after the restart.
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return err
+	}
 	_ = s.db.SetSiteStatus(context.WithoutCancel(ctx), site.ID, store.SiteError, err.Error())
 	return err
 }
@@ -668,7 +680,7 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 	}
 	web := s.profile.Web()
 	if site.IP == "" {
-		if ips := localIPv4s(); len(ips) > 0 {
+		if ips := s.hostIPs(); len(ips) > 0 {
 			site.IP = ips[0]
 		}
 	}
@@ -692,6 +704,9 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 		}
 		if err := s.agent.EnsureSymlink(ctx, &agent.EnsureSymlinkRequest{Path: path.Join(l.data, "bin", "php"), Target: l.php.CLIBinary, Owner: login, OnlyIfMissing: true}); err != nil {
 			jc.Logf("warning: php CLI symlink: %v", err)
+		}
+		if err := s.refreshPHPCLIIni(ctx, l.php); err != nil {
+			jc.Logf("warning: PHP CLI settings: %v", err)
 		}
 	}
 
@@ -719,7 +734,7 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 	}
 	maxChildren := site.FPMMaxChildren
 	if maxChildren <= 0 {
-		maxChildren = 8
+		maxChildren = s.defaultMaxChildren(ctx, site)
 	}
 	disable := render.DefaultDisableFunctions
 	if site.AllowExec {
@@ -828,6 +843,10 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 			jc.Logf("%s released the pool socket", unit)
 		}
 	}
+	// A default server of an address the host lost fails the check below.
+	if gone := s.pruneDefaultServers(ctx); len(gone) > 0 {
+		jc.Logf("removed default servers of gone addresses: %s", strings.Join(gone, ", "))
+	}
 	jc.Progress(75, "applying")
 	apply, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Validate: validate, Reload: reload, Force: true, Origin: "site:" + site.Domain})
 	if err != nil {
@@ -868,7 +887,15 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 		return err
 	}
 	if site.SSL == "auto" && !tls && !suspended {
-		s.orderSiteCertificate(ctx, jc, site)
+		s.orderSiteCertificate(ctx, jc, site, false)
+	}
+	// An alias added to an HTTPS site: the certificate it has still names
+	// the domain, so it is served, but the new name needs a new one.
+	if site.SSL == "auto" && tls && !suspended && cert.Kind == store.CertKindACME && cert.Name == site.Domain {
+		if missing := uncoveredNames(cert, site); len(missing) > 0 {
+			jc.Logf("certificate %s does not cover %s", cert.Name, strings.Join(missing, ", "))
+			s.orderSiteCertificate(ctx, jc, site, true)
+		}
 	}
 	if suspended {
 		jc.Progress(100, fmt.Sprintf("%s is suspended (503 stub, pool stopped)", site.Domain))
@@ -900,6 +927,26 @@ func modeLabel(mode string) string {
 	return "nginx + php-fpm"
 }
 
+// defaultMaxChildren sizes a pool nobody sized by hand. 1C-Bitrix gets it
+// from RAM: its templates call the site over HTTP from inside a request, and
+// eight workers all waiting for each other stall the site.
+func (s *Server) defaultMaxChildren(ctx context.Context, site *store.Site) int {
+	if site.Preset != presetBitrix {
+		return 8
+	}
+	info, err := s.agent.SystemInfo(ctx)
+	if err != nil {
+		return 8
+	}
+	return bitrixMaxChildren(int(info.MemTotalBytes >> 20))
+}
+
+// bitrixMaxChildren gives a worker per 256 MB of RAM, 8 to 48: a Bitrix
+// worker holds about 100 MB, the rest is for MySQL and the page cache.
+func bitrixMaxChildren(ramMB int) int {
+	return min(max(ramMB/256, 8), 48)
+}
+
 // poolValues merges panel defaults with the site's php_ini into ordered php_value lines.
 func (s *Server) poolValues(ctx context.Context, site *store.Site, tls bool) []render.KV {
 	tz, _ := s.db.GetSetting(ctx, settingTZ)
@@ -909,6 +956,9 @@ func (s *Server) poolValues(ctx context.Context, site *store.Site, tls bool) []r
 	defaults := []render.KV{
 		{Key: "memory_limit", Value: "256M"}, {Key: "upload_max_filesize", Value: "64M"}, {Key: "post_max_size", Value: "64M"},
 		{Key: "max_execution_time", Value: "120"}, {Key: "date.timezone", Value: tz}, {Key: "display_errors", Value: "Off"},
+		// Set here, not left to the global ini: the CLI copy of it opens
+		// short tags for 1C-Bitrix, and on Remi FPM reads the same file.
+		{Key: "short_open_tag", Value: "Off"},
 	}
 	preset := map[string]string{}
 	for k, v := range presetIni[site.Preset] {
@@ -955,32 +1005,52 @@ func (s *Server) poolValues(ctx context.Context, site *store.Site, tls bool) []r
 	return out
 }
 
+// pointsHere says whether a name resolves in public DNS to this host.
+func (s *Server) pointsHere(ctx context.Context, name string) bool {
+	local := map[string]bool{}
+	for _, ip := range s.hostIPs() {
+		local[ip] = true
+	}
+	addrs, err := s.lookup(ctx, name)
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		if local[a] {
+			return true
+		}
+	}
+	return false
+}
+
+// uncoveredNames lists the site's names a certificate does not carry.
+func uncoveredNames(c *store.Certificate, site *store.Site) []string {
+	var out []string
+	for _, n := range append([]string{site.Domain}, site.Aliases...) {
+		if !containsName(c.Names, n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // orderSiteCertificate creates or refreshes the certificate record for a site
 // and enqueues the issue job for the names that publicly resolve to this host.
-func (s *Server) orderSiteCertificate(ctx context.Context, jc *jobs.Context, site *store.Site) {
+// With extend the site already has a certificate and a new one is ordered only
+// when it would carry more names (an alias was added and points here).
+func (s *Server) orderSiteCertificate(ctx context.Context, jc *jobs.Context, site *store.Site, extend bool) {
 	existing, err := s.db.GetCertificateByName(ctx, site.Domain)
 	if err == nil && existing.Status == store.CertPending {
 		jc.Logf("certificate order for %s is already in progress", site.Domain)
 		return
 	}
-	if err == nil && existing.CertPath == "" && renewalBackoff(existing) {
+	if err == nil && (existing.CertPath == "" || extend) && renewalBackoff(existing) {
 		jc.Logf("certificate: last attempt failed (%s); retry after %s", existing.LastError, existing.LastAttempt.Add(renewRetryBackoff).Format("15:04"))
 		return
 	}
-	local := map[string]bool{}
-	for _, ip := range localIPv4s() {
-		local[ip] = true
-	}
 	names := []string{}
 	for _, n := range append([]string{site.Domain}, site.Aliases...) {
-		addrs, err := publicLookup(ctx, n)
-		ok := false
-		for _, a := range addrs {
-			if local[a] {
-				ok = true
-			}
-		}
-		if err != nil || !ok {
+		if !s.pointsHere(ctx, n) {
 			jc.Logf("certificate: %s does not point here yet, skipped", n)
 			continue
 		}
@@ -989,6 +1059,17 @@ func (s *Server) orderSiteCertificate(ctx context.Context, jc *jobs.Context, sit
 	if len(names) == 0 || names[0] != site.Domain {
 		jc.Logf("certificate: %s must resolve to this server first; run `mp site apply %s` afterwards", site.Domain, site.Domain)
 		return
+	}
+	if extend && existing != nil {
+		more := false
+		for _, n := range names {
+			if !containsName(existing.Names, n) {
+				more = true
+			}
+		}
+		if !more {
+			return
+		}
 	}
 	email, _ := s.db.GetSetting(ctx, settingACMEEmail)
 	c := existing
@@ -1005,6 +1086,10 @@ func (s *Server) orderSiteCertificate(ctx context.Context, jc *jobs.Context, sit
 	}
 	if _, err := s.jobs.Enqueue(ctx, "cert.issue", certIssuePayload{CertID: c.ID}, jobs.WithLockKey("cert:"+c.Name), jobs.WithRequestedBy(jc.RequestedBy)); err != nil {
 		jc.Logf("certificate: %v", err)
+		return
+	}
+	if extend {
+		jc.Logf("certificate re-ordered for %s (the current one is served until then)", strings.Join(names, ", "))
 		return
 	}
 	jc.Logf("certificate ordered for %s; the site switches to HTTPS automatically", strings.Join(names, ", "))

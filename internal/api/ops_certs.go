@@ -73,7 +73,9 @@ func (s *Server) registerCerts() {
 		OperationID: "certificates-issue", Method: http.MethodPost, Path: "/certificates", Summary: "Order an ACME certificate (async, HTTP-01)", Tags: []string{"ssl"},
 		Security: secured, Metadata: adminOnly, DefaultStatus: http.StatusAccepted,
 	}, func(ctx context.Context, in *issueCertInput) (*certJobOutput, error) {
-		c, jobID, err := s.issueCertificate(ctx, principalFrom(ctx), in.Body)
+		req := in.Body
+		req.Names = s.withSiteAliases(ctx, req.Names, req.DNS != "")
+		c, jobID, err := s.issueCertificate(ctx, principalFrom(ctx), req)
 		if err != nil {
 			return nil, err
 		}
@@ -151,6 +153,19 @@ func (s *Server) registerCerts() {
 	})
 }
 
+// sameNames compares two name lists as sets.
+func sameNames(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for _, n := range a {
+		if !containsName(b, n) {
+			return false
+		}
+	}
+	return true
+}
+
 func containsName(names []string, name string) bool {
 	name = acme.NormalizeName(name)
 	for _, n := range names {
@@ -159,6 +174,26 @@ func containsName(names []string, name string) bool {
 		}
 	}
 	return false
+}
+
+// withSiteAliases completes a request for a site's domain alone with the
+// site's aliases: a certificate for example.com only would replace the one
+// the site has for www.example.com too. HTTP-01 takes the aliases that point
+// here (one that does not would fail the whole order); DNS-01 takes all.
+func (s *Server) withSiteAliases(ctx context.Context, names []string, dns01 bool) []string {
+	if len(names) != 1 {
+		return names
+	}
+	site, err := s.db.GetSiteByDomain(ctx, acme.NormalizeName(names[0]))
+	if err != nil || site.Domain != acme.NormalizeName(names[0]) {
+		return names
+	}
+	for _, a := range site.Aliases {
+		if dns01 || s.pointsHere(ctx, a) {
+			names = append(names, a)
+		}
+	}
+	return names
 }
 
 // certFail records a failed order. A certificate whose files are still valid
@@ -224,7 +259,7 @@ func (s *Server) jobCertIssue(ctx context.Context, jc *jobs.Context) error {
 		}
 	}
 	jc.Progress(5, "checking DNS")
-	local := localIPv4s()
+	local := s.hostIPs()
 	localSet := map[string]bool{}
 	for _, ip := range local {
 		localSet[ip] = true
@@ -233,7 +268,7 @@ func (s *Server) jobCertIssue(ctx context.Context, jc *jobs.Context) error {
 		if c.DNSProvider != "" {
 			continue // DNS-01: the name need not resolve here (wildcards, other hosts)
 		}
-		addrs, err := publicLookup(ctx, n)
+		addrs, err := s.lookup(ctx, n)
 		if err != nil {
 			return s.certFail(ctx, c, fmt.Errorf("DNS: %s does not resolve (%v); create an A record pointing to %s", n, err, strings.Join(local, " / ")))
 		}
@@ -275,6 +310,13 @@ func (s *Server) jobCertIssue(ctx context.Context, jc *jobs.Context) error {
 	nb, na := res.CertInfo.NotBefore, res.CertInfo.NotAfter
 	c.NotBefore, c.NotAfter, c.LastAttempt = &nb, &na, &now
 	c.Status, c.LastError = store.CertValid, ""
+	// Another order may have changed the names while this one ran (an alias
+	// added, mp site tls): its job is queued behind this one and must find
+	// the names it asked for, not the ones this job started with.
+	if cur, err := s.db.GetCertificate(ctx, c.ID); err == nil && !sameNames(cur.Names, c.Names) {
+		jc.Logf("names changed to %s meanwhile: the queued order issues them", strings.Join(cur.Names, ", "))
+		c.Names, c.Status = cur.Names, cur.Status
+	}
 	if err := s.db.UpsertCertificate(context.WithoutCancel(ctx), c); err != nil {
 		return err
 	}

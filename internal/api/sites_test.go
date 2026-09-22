@@ -235,7 +235,27 @@ func TestSitePresetsRenderExpectedRules(t *testing.T) {
 			if c.preset != "bitrix" && !strings.Contains(pool, "php_admin_value[open_basedir]") {
 				t.Errorf("%s pool lost open_basedir:\n%s", c.preset, pool)
 			}
+			// Cron scripts of Bitrix open with <?: the CLI copy of the global
+			// ini opens short tags, the pools of other sites close them.
+			cli, _ := f.agent.File("/etc/php/8.4/cli/conf.d/99-monopanel.ini")
+			if wantCLI := c.preset == "bitrix"; strings.Contains(cli, "short_open_tag = On") != wantCLI {
+				t.Errorf("%s: CLI short_open_tag On = %v:\n%s", c.preset, !wantCLI, cli)
+			}
+			if _, ok := f.agent.File("/etc/php/8.4/fpm/conf.d/99-monopanel.ini"); ok {
+				t.Error("site apply must not touch the FPM copy of the global ini")
+			}
+			if c.preset != "bitrix" && !strings.Contains(pool, "php_value[short_open_tag] = Off") {
+				t.Errorf("%s pool must close short tags itself:\n%s", c.preset, pool)
+			}
 		})
+	}
+}
+
+func TestBitrixMaxChildren(t *testing.T) {
+	for ram, want := range map[int]int{1024: 8, 2048: 8, 4096: 16, 8192: 32, 65536: 48} {
+		if got := bitrixMaxChildren(ram); got != want {
+			t.Errorf("%d MB: %d, want %d", ram, got, want)
+		}
 	}
 }
 

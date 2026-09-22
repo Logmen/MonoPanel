@@ -545,7 +545,7 @@ func (s *Server) nginxGlobalFiles() ([]agent.FileSpec, error) {
 	for name, content := range snippets {
 		files = append(files, agent.FileSpec{Path: path.Join(confDir, "monopanel", "snippets", name), Content: content, Mode: 0o644})
 	}
-	for _, ip := range localIPv4s() {
+	for _, ip := range s.hostIPs() {
 		conf, err := s.render.Render("nginx/ip-default.conf.tmpl", render.IPDefault{IP: ip, PanelHost: s.cfg.Web.Hostname, PanelPort: s.panelPort()})
 		if err != nil {
 			return nil, err
@@ -563,6 +563,12 @@ func (s *Server) refreshDefaultServers(ctx context.Context) {
 	q, err := s.agent.Pkg(ctx, "query", "nginx")
 	if err != nil || q.Installed["nginx"] == "" {
 		return
+	}
+	if gone := s.pruneDefaultServers(ctx); len(gone) > 0 {
+		s.log.Warn("removed default servers of addresses this host no longer has", "files", gone)
+	}
+	if off := s.sitesOffHost(ctx); len(off) > 0 {
+		s.log.Warn("sites listen on addresses this host does not have", "hint", s.offHostHint(off))
 	}
 	files, err := s.nginxGlobalFiles()
 	if err != nil {

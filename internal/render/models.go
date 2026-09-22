@@ -70,6 +70,8 @@ type PHPIni struct {
 	Version       string
 	Timezone      string
 	OpcacheMemory int
+	// ShortOpenTag opens <? for the copy CLI reads (see phpIniFiles).
+	ShortOpenTag bool
 }
 
 // Welcome feeds site/index.html.tmpl (placeholder page for an empty docroot;

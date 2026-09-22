@@ -166,6 +166,14 @@ func (r *Runner) run(ctx context.Context, job *store.Job) {
 		err = safeCall(jctx, h, jc)
 		cancel()
 	}
+	if err != nil && ctx.Err() != nil {
+		// The panel is stopping (systemctl restart in the middle of a job):
+		// the job stays "running", and the next start puts it back in the
+		// queue instead of leaving a half-done failure behind.
+		r.logLine(job.ID, "[runner] interrupted by shutdown ("+err.Error()+"); runs again after the restart")
+		r.log.Warn("job interrupted by shutdown", "id", job.ID, "type", job.Type)
+		return
+	}
 	if err != nil {
 		r.logLine(job.ID, "error: "+err.Error())
 		_ = r.db.FinishJob(context.Background(), job.ID, store.JobFailed, err.Error())

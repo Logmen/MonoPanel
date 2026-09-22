@@ -51,11 +51,23 @@ type Server struct {
 	// probe answers whether a local port has a listener. Mail installs verify
 	// their own listeners this way; tests with a fake agent replace it.
 	probe func(port int, banner bool) (bool, string)
+	// hostIPs lists the host's IPv4 addresses; tests move the host.
+	hostIPs func() []string
+	// lookup resolves a name in public DNS; tests answer themselves.
+	lookup func(ctx context.Context, name string) ([]string, error)
 }
 
 // SetReadinessWaits overrides the post-reload waits. Intended for tests.
 func (s *Server) SetReadinessWaits(poolSocket, nginx time.Duration) {
 	s.poolSocketWait, s.nginxWait = poolSocket, nginx
+}
+
+// SetHostIPs overrides the host's addresses. Intended for tests.
+func (s *Server) SetHostIPs(fn func() []string) { s.hostIPs = fn }
+
+// SetLookup overrides the public DNS lookup. Intended for tests.
+func (s *Server) SetLookup(fn func(ctx context.Context, name string) ([]string, error)) {
+	s.lookup = fn
 }
 
 // SetPortProbe overrides how the panel checks a local listener. Intended for
@@ -72,6 +84,8 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	s := &Server{cfg: cfg, db: db, agent: ag, jobs: runner, profile: profile, render: render.New(cfg.TemplatesDir), log: log, started: time.Now(), limiter: newLoginLimiter(8, time.Minute)}
 	s.poolSocketWait, s.nginxWait = 10*time.Second, 15*time.Second
 	s.probe = probePort
+	s.hostIPs = localIPv4s
+	s.lookup = publicLookup
 	s.tls = newCertHolder(cfg, log)
 	if box, err := secrets.Open(cfg.SecretKeyFile); err == nil {
 		s.secrets = box
@@ -110,6 +124,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 		s.registerCerts()
 		s.registerPHP()
 		s.registerSites()
+		s.registerSiteIP()
 		s.registerDB()
 		s.registerCron()
 		s.registerFirewall()
@@ -148,6 +163,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	s.jobs.Register("site.fix", s.jobSiteFix)
 	s.jobs.Register("site.cms", s.jobSiteCMS)
 	s.jobs.Register("site.delete", s.jobSiteDelete)
+	s.jobs.Register("sites.move-ip", s.jobSitesMoveIP)
 	s.jobs.Register("backup.run", s.jobBackupRun)
 	s.jobs.Register("backup.restore", s.jobBackupRestore)
 	s.jobs.Register("panel.update", s.jobPanelUpdate)

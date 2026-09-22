@@ -366,6 +366,7 @@ func (f *fastpanelSource) bundle(ctx context.Context, _ string, withSecrets bool
 		out.Sizes.Databases[d.Name] = d.SizeBytes
 	}
 	out.Cron = f.crontab(ctx, acc.login)
+	out.Notes = append(out.Notes, cronNotes(out.Cron)...)
 	if n := f.mailboxCount(ctx, acc.id); n > 0 {
 		out.Notes = append(out.Notes, fmt.Sprintf("почтовых ящиков у аккаунта: %d — почта FASTPANEL не переносится, заведите ящики здесь заново", n))
 	}

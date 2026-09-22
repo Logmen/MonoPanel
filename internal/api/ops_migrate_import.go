@@ -215,6 +215,9 @@ func (s *Server) migrationPlan(ctx context.Context, req apitypes.MigrationSource
 		if _, err := s.dbInstance(ctx); err != nil {
 			block("database", "", "приезжают базы, а сервер БД здесь не установлен", "mp stack install percona")
 		}
+		if v := legacyPHP(b.Sites); v != "" {
+			warn("database", "", "PHP "+v+": аккаунты баз будут с mysql_native_password — caching_sha2_password этой ветке не по силам", "")
+		}
 		for _, d := range b.Databases {
 			if _, err := s.db.GetDatabaseByName(ctx, d.Name); err == nil {
 				block("database", d.Name, "база с таким именем уже есть", "переименуйте или удалите её здесь")
@@ -418,8 +421,9 @@ func (s *Server) jobMigrateRun(ctx context.Context, jc *jobs.Context) error {
 	}
 
 	jc.Progress(45, "базы данных")
+	legacy := legacyPHP(b.Sites) != ""
 	for _, d := range b.Databases {
-		if err := s.migrateDatabase(ctx, jc, src, p, u, d, b.Secrets.DBUsers); err != nil {
+		if err := s.migrateDatabase(ctx, jc, src, p, u, d, b.Secrets.DBUsers, legacy); err != nil {
 			return err
 		}
 	}
@@ -535,7 +539,7 @@ func (s *Server) migrateFiles(ctx context.Context, jc *jobs.Context, src migrate
 
 // migrateDatabase recreates a database, its accounts (with the original
 // password hashes) and streams the dump into mysql.
-func (s *Server) migrateDatabase(ctx context.Context, jc *jobs.Context, src migrateSource, p migratePayload, u *store.User, d *store.Database, auths map[string]string) error {
+func (s *Server) migrateDatabase(ctx context.Context, jc *jobs.Context, src migrateSource, p migratePayload, u *store.User, d *store.Database, auths map[string]string, legacy bool) error {
 	if d.Charset == "" {
 		d.Charset, d.Collation = "utf8mb4", "utf8mb4_0900_ai_ci"
 	}
@@ -559,20 +563,23 @@ func (s *Server) migrateDatabase(ctx context.Context, jc *jobs.Context, src migr
 		// чужих панелей приходит то же самое, иногда со старым хешем
 		// mysql_native_password, который сервер здесь не принимает без
 		// включённого плагина.
-		create = portableCreateUser(create)
-		if strings.Contains(create, "mysql_native_password") {
+		create = pinAuthPlugin(portableCreateUser(create), legacy)
+		plugin := createUserPlugin(create)
+		if plugin == "mysql_native_password" {
 			if inst, err := s.dbInstance(ctx); err == nil {
 				if err := s.ensureNativePassword(ctx, inst); err != nil {
 					jc.Logf("mysql_native_password для %s@%s: %v", acc.Name, acc.Host, err)
 				}
 			}
+		} else if legacy {
+			jc.Logf("предупреждение: аккаунт %s@%s приезжает хешем %s — PHP ниже 7.4 с ним не соединится; после переноса: ALTER USER '%s'@'%s' IDENTIFIED WITH mysql_native_password BY '<пароль из настроек сайта>'", acc.Name, acc.Host, plugin, acc.Name, acc.Host)
 		}
 		sql := strings.TrimSuffix(strings.TrimSpace(create), ";") + ";\n"
 		sql += fmt.Sprintf("GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'%s';\nFLUSH PRIVILEGES;\n", d.Name, acc.Name, acc.Host)
 		if _, err := s.mysqlExec(ctx, sql); err != nil {
 			return fmt.Errorf("аккаунт %s@%s: %w", acc.Name, acc.Host, err)
 		}
-		s.db.CreateDBUser(ctx, &store.DBUser{UserID: u.ID, DatabaseID: &row.ID, Name: acc.Name, Host: acc.Host, AuthPlugin: acc.AuthPlugin}) //nolint:errcheck // строка учётки — украшение списка баз
+		s.db.CreateDBUser(ctx, &store.DBUser{UserID: u.ID, DatabaseID: &row.ID, Name: acc.Name, Host: acc.Host, AuthPlugin: plugin}) //nolint:errcheck // строка учётки — украшение списка баз
 	}
 	body, err := src.dump(ctx, p.Scope, d.Name)
 	if err != nil {
@@ -604,6 +611,41 @@ func portableCreateUser(create string) string {
 	create = mariaDBPasswordRe.ReplaceAllString(create, "IDENTIFIED WITH mysql_native_password AS '$1'")
 	create = mariaDBViaRe.ReplaceAllString(create, "IDENTIFIED WITH mysql_native_password AS '$1'")
 	return create
+}
+
+var (
+	plainPasswordRe  = regexp.MustCompile(`(?i)\bIDENTIFIED\s+BY\s+'`)
+	identifiedWithRe = regexp.MustCompile(`(?i)\bIDENTIFIED\s+WITH\s+'?(\w+)'?`)
+)
+
+// pinAuthPlugin names the plugin of a CREATE USER built from a plain
+// password: without it the server takes its own default, and PHP below 7.4
+// (mysqlnd without caching_sha2_password) cannot log in with that.
+func pinAuthPlugin(create string, legacy bool) string {
+	plugin := "caching_sha2_password"
+	if legacy {
+		plugin = "mysql_native_password"
+	}
+	return plainPasswordRe.ReplaceAllString(create, "IDENTIFIED WITH "+plugin+" BY '")
+}
+
+// createUserPlugin reads the plugin a CREATE USER sets up.
+func createUserPlugin(create string) string {
+	if m := identifiedWithRe.FindStringSubmatch(create); m != nil {
+		return strings.ToLower(m[1])
+	}
+	return "caching_sha2_password"
+}
+
+// legacyPHP returns the oldest PHP branch below 7.4 among the sites, or "".
+func legacyPHP(sites []*store.Site) string {
+	oldest := ""
+	for _, site := range sites {
+		if site.PHPVersion != "" && versionLess(site.PHPVersion, "7.4") && (oldest == "" || versionLess(site.PHPVersion, oldest)) {
+			oldest = site.PHPVersion
+		}
+	}
+	return oldest
 }
 
 // migrateSite recreates a site row and its custom nginx directives.

@@ -113,6 +113,19 @@ func (s *Server) registerCron() {
 	})
 
 	huma.Register(s.api, huma.Operation{
+		OperationID: "cron-list-all", Method: http.MethodGet, Path: "/cron", Summary: "Cron jobs of every user (admin)", Tags: []string{"cron"}, Security: secured, Metadata: adminOnly,
+	}, func(ctx context.Context, _ *struct{}) (*cronListOutput, error) {
+		list, err := s.db.ListCronJobs(ctx, 0)
+		if err != nil {
+			return nil, err
+		}
+		if list == nil {
+			list = []*store.CronJob{}
+		}
+		return &cronListOutput{Body: list}, nil
+	})
+
+	huma.Register(s.api, huma.Operation{
 		OperationID: "cron-create", Method: http.MethodPost, Path: "/users/{login}/cron", Summary: "Add a cron job (crontab is rewritten immediately)", Tags: []string{"cron"}, Security: secured, DefaultStatus: http.StatusCreated,
 	}, func(ctx context.Context, in *cronCreateInput) (*cronJobOutput, error) {
 		p := principalFrom(ctx)

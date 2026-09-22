@@ -58,13 +58,14 @@ mp ssl list [--expiring 30d] | renew --all | account show | register
 mp ssl panel                          # сертификат самой панели: что отдаётся и запись за ним
 mp ssl panel issue [--dns cf] [--staging] | import --cert … --key … | self-signed
 mp site tls <domain> [--dns cf] [--staging]   # сертификат сайта (домен + алиасы), сайт переключается на HTTPS
+mp site move-ip <новый-адрес> [--from <прежний>]   # после смены IP хоста: все сайты пропавших адресов разом
 mp dns-provider add cloudflare --token … --user <login>
 
 mp backup target add local|sftp|s3 … | list
 mp backup run [--target …] [--scope server|panel|user:<login>|site:<domain>|db:<name>]
 mp backup list | restore <snapshot> [--to /path] | prune
 
-mp cron list | add | rm --user <login> --schedule "*/5 * * * *" --command "…" [--php 8.4]
+mp cron list | add | rm --user <login> --schedule "*/5 * * * *" --command "…" [--php 8.4]   # list без --user у администратора — задания всех
 mp firewall status | allow | deny | rules | ban <ip> | unban <ip>
 mp service status | reload | restart nginx|apache|php-fpm@8.4|mysql|panel
 mp config show | set <key> <value> | templates list | diff | override | reset

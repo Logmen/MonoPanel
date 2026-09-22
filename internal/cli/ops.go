@@ -10,12 +10,13 @@ import (
 	"github.com/spf13/cobra"
 
 	"monopanel/internal/apitypes"
+	"monopanel/internal/store"
 )
 
 func cronCmd() *cobra.Command {
 	c := &cobra.Command{Use: "cron", Short: "задания cron пользователей"}
 	var login string
-	c.PersistentFlags().StringVar(&login, "user", "", "логин пользователя (обязателен для администратора)")
+	c.PersistentFlags().StringVar(&login, "user", "", "логин пользователя (обязателен администратору для изменений; list без него показывает всех)")
 	whose := func() (string, error) {
 		if login != "" {
 			return login, nil
@@ -33,17 +34,26 @@ func cronCmd() *cobra.Command {
 		}
 		return me.Login, nil
 	}
-	list := &cobra.Command{Use: "list", Short: "список заданий", RunE: func(cmd *cobra.Command, _ []string) error {
+	list := &cobra.Command{Use: "list", Short: "список заданий (администратор без --user видит всех)", RunE: func(cmd *cobra.Command, _ []string) error {
 		cmd0 = cmd
 		cl, err := newClient()
 		if err != nil {
 			return err
 		}
-		u, err := whose()
-		if err != nil {
-			return err
+		u, all := login, false
+		if u == "" {
+			me, err := cl.Me(cmd.Context())
+			if err != nil {
+				return err
+			}
+			u, all = me.Login, me.UserID == 0
 		}
-		jobs, err := cl.CronJobs(cmd.Context(), u)
+		var jobs []*store.CronJob
+		if all {
+			jobs, err = cl.AllCronJobs(cmd.Context())
+		} else {
+			jobs, err = cl.CronJobs(cmd.Context(), u)
+		}
 		if err != nil {
 			return err
 		}
@@ -56,9 +66,17 @@ func cronCmd() *cobra.Command {
 			if !j.Enabled {
 				state = "off"
 			}
-			rows = append(rows, []string{strconv.FormatInt(j.ID, 10), state, j.Schedule, j.Command, j.Comment})
+			row := []string{strconv.FormatInt(j.ID, 10), state, j.Schedule, j.Command, j.Comment}
+			if all {
+				row = append([]string{j.Login}, row...)
+			}
+			rows = append(rows, row)
 		}
-		table([]string{"ID", "STATE", "SCHEDULE", "COMMAND", "COMMENT"}, rows)
+		head := []string{"ID", "STATE", "SCHEDULE", "COMMAND", "COMMENT"}
+		if all {
+			head = append([]string{"USER"}, head...)
+		}
+		table(head, rows)
 		return nil
 	}}
 	var req apitypes.CronRequest

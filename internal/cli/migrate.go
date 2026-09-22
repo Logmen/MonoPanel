@@ -123,6 +123,20 @@ func migrateCmd() *cobra.Command {
 			fmt.Println()
 			table([]string{"САЙТ", "PHP", "РЕЖИМ", "АЛИАСЫ"}, rows)
 		}
+		// The whole crontab: what runs on the old server by schedule is
+		// easy to overlook, and a planted job would otherwise move silently.
+		if len(b.Cron) > 0 {
+			rows := make([][]string, 0, len(b.Cron))
+			for _, j := range b.Cron {
+				mark := j.Comment
+				if !j.Enabled && !strings.HasPrefix(mark, "выключено") {
+					mark = strings.TrimSuffix("выключено; "+mark, "; ")
+				}
+				rows = append(rows, []string{j.Schedule, j.Command, mark})
+			}
+			fmt.Println()
+			table([]string{"CRON", "КОМАНДА", "ПОМЕТКА"}, rows)
+		}
 		for _, n := range b.Notes {
 			fmt.Println("·", n)
 		}

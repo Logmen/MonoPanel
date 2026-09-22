@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"monopanel/internal/buildinfo"
 	"monopanel/internal/client"
 	"monopanel/internal/config"
 	"monopanel/internal/tui"
@@ -90,6 +91,8 @@ func newRoot() *cobra.Command {
 			return cmd.Help()
 		},
 	}
+	root.Version = buildinfo.String()
+	root.SetVersionTemplate("monopanel {{.Version}}\n")
 	pf := root.PersistentFlags()
 	pf.StringVar(&g.config, "config", "", "путь к config.yaml (по умолчанию /etc/monopanel/config.yaml или $MONOPANEL_CONFIG)")
 	pf.StringVar(&g.server, "server", os.Getenv("MP_SERVER"), "адрес панели для удалённого доступа, например https://host:8443 ($MP_SERVER)")

@@ -14,14 +14,17 @@ const (
 // PHPLayout describes one installed PHP version on this OS: package names,
 // binaries, config directories and the FPM unit.
 type PHPLayout struct {
-	Version      string   `json:"version"`
-	Source       string   `json:"source"`
-	FPMBinary    string   `json:"fpm_binary"`
-	FPMService   string   `json:"fpm_service"`
-	FPMConfDir   string   `json:"fpm_conf_dir"`
-	FPMConf      string   `json:"fpm_conf"`
-	PoolDir      string   `json:"pool_dir"`
-	IniDirs      []string `json:"ini_dirs"`
+	Version    string   `json:"version"`
+	Source     string   `json:"source"`
+	FPMBinary  string   `json:"fpm_binary"`
+	FPMService string   `json:"fpm_service"`
+	FPMConfDir string   `json:"fpm_conf_dir"`
+	FPMConf    string   `json:"fpm_conf"`
+	PoolDir    string   `json:"pool_dir"`
+	IniDirs    []string `json:"ini_dirs"`
+	// CLIIniDir is the one of IniDirs the CLI reads; on Remi CLI and FPM
+	// share a single directory.
+	CLIIniDir    string   `json:"cli_ini_dir"`
 	CLIBinary    string   `json:"cli_binary"`
 	FPMCheckArgv []string `json:"fpm_check_argv"`
 	// CorePackages must all install; ExtraPackages are best effort (old
@@ -99,6 +102,7 @@ func suryLayout(v string) PHPLayout {
 		FPMConf:    base + "/fpm/php-fpm.conf",
 		PoolDir:    base + "/fpm/pool.d",
 		IniDirs:    []string{base + "/fpm/conf.d", base + "/cli/conf.d"},
+		CLIIniDir:  base + "/cli/conf.d",
 		CLIBinary:  "/usr/bin/php" + v,
 		FPMPackage: "php" + v + "-fpm",
 	}
@@ -148,6 +152,7 @@ func remiLayout(v string) PHPLayout {
 		FPMConf:    conf + "/php-fpm.conf",
 		PoolDir:    conf + "/php-fpm.d",
 		IniDirs:    []string{conf + "/php.d"},
+		CLIIniDir:  conf + "/php.d",
 		CLIBinary:  root + "/usr/bin/php",
 		FPMPackage: short + "-php-fpm",
 	}

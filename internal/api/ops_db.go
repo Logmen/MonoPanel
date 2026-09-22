@@ -403,6 +403,19 @@ func (s *Server) ensureNativePassword(ctx context.Context, inst *store.DBInstanc
 	return s.db.UpsertDBInstance(ctx, inst)
 }
 
+// refreshDBConfig re-renders zz-monopanel.cnf at startup on hosts that run
+// legacy PHP, so a panel update that changes the legacy-auth settings reaches
+// the server; the agent restarts MySQL only when the file changed.
+func (s *Server) refreshDBConfig(ctx context.Context) {
+	inst, err := s.db.GetDBInstance(ctx)
+	if err != nil || inst.Status != store.DBReady || !inst.NativePassword {
+		return
+	}
+	if err := s.writeDBConfig(ctx, inst, true); err != nil {
+		s.log.Warn("database config", "err", err)
+	}
+}
+
 // writeDBConfig renders zz-monopanel.cnf for the host size and restarts the server.
 func (s *Server) writeDBConfig(ctx context.Context, inst *store.DBInstance, restart bool) error {
 	layout := osprofile.DB(s.profile, inst.Engine)

@@ -26,6 +26,51 @@ func waitFor(t *testing.T, ch <-chan Event, typ string) Event {
 	}
 }
 
+// A job cut off by a shutdown is not a failure: it stays running and the
+// next start of the panel queues it again.
+func TestShutdownRequeuesRunningJob(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "p.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	started := make(chan struct{})
+	r := NewRunner(db, 1, nil)
+	r.Register("slow", func(ctx context.Context, jc *Context) error {
+		close(started)
+		<-ctx.Done()
+		return errors.New("agent unreachable: " + ctx.Err().Error())
+	})
+	r.Start(ctx)
+	j, err := r.Enqueue(ctx, "slow", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	cancel()
+	r.Wait()
+	got, _ := db.GetJob(context.Background(), j.ID)
+	if got.Status != store.JobRunning || !strings.Contains(got.Log, "interrupted by shutdown") {
+		t.Fatalf("после остановки: %s %q", got.Status, got.Error)
+	}
+
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	r2 := NewRunner(db, 1, nil)
+	r2.Register("slow", func(context.Context, *Context) error { return nil })
+	all, stop := r2.Broker().Subscribe(0, 16)
+	defer stop()
+	r2.Start(ctx2)
+	waitFor(t, all, "done")
+	if got, _ := db.GetJob(ctx2, j.ID); got.Status != store.JobDone {
+		t.Fatalf("после перезапуска: %s", got.Status)
+	}
+	cancel2()
+	r2.Wait()
+}
+
 func TestRunnerLifecycle(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

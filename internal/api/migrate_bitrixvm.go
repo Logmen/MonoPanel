@@ -35,6 +35,8 @@ type bitrixVMSource struct {
 	foreignSource
 	sites []*bxSite
 	php   string
+	// skipped explains the nginx servers that are not taken over.
+	skipped []string
 }
 
 // bxSite is one nginx server on the old machine.
@@ -47,6 +49,10 @@ type bxSite struct {
 	key     string
 	link    bool // bitrix/ is a symlink into another site (a link site)
 	db      bxDB
+	// cache is the cache engine the site's settings name ("" for files).
+	cache string
+	// hardcoded lists files (old absolute paths) that name /home/bitrix.
+	hardcoded []string
 }
 
 type bxDB struct {
@@ -90,7 +96,11 @@ func (b *bitrixVMSource) inventory(ctx context.Context) error {
 			continue
 		}
 		root, names, cert, key := parseNginxServer(text)
-		if root == "" || !strings.HasPrefix(root, bitrixHome+"/") {
+		if root == "" {
+			continue // push server, status pages: nothing to serve from disk
+		}
+		if !strings.HasPrefix(root, bitrixHome+"/") {
+			b.skipped = append(b.skipped, fmt.Sprintf("%s пропущен: root %s вне %s", path.Base(c), root, bitrixHome))
 			continue
 		}
 		site := byRoot[root]
@@ -106,7 +116,11 @@ func (b *bitrixVMSource) inventory(ctx context.Context) error {
 		}
 	}
 	if len(order) == 0 {
-		return errors.New("в /etc/nginx/bx/site_enabled нет сайтов с root внутри /home/bitrix")
+		msg := "в /etc/nginx/bx/site_enabled нет сайтов с root внутри /home/bitrix"
+		if len(b.skipped) > 0 {
+			msg += ": " + strings.Join(b.skipped, "; ")
+		}
+		return errors.New(msg)
 	}
 	sort.Strings(order)
 	mainRoot := bitrixHome + "/www"
@@ -128,6 +142,10 @@ func (b *bitrixVMSource) inventory(ctx context.Context) error {
 		}
 		site.link = b.isSymlink(ctx, root+"/bitrix")
 		site.db = b.readDBSettings(ctx, root)
+		if !site.link {
+			site.cache = b.cacheEngine(ctx, root)
+		}
+		site.hardcoded = b.hardcodedPaths(ctx, site)
 		b.sites = append(b.sites, site)
 	}
 	// Main site first: link sites point into it.
@@ -138,12 +156,86 @@ func (b *bitrixVMSource) inventory(ctx context.Context) error {
 		b.rewrites = append(b.rewrites, [2]string{site.root + "/", b.home + "/data/www/" + site.domain + "/"})
 	}
 	b.rewrites = append(b.rewrites, [2]string{bitrixHome + "/ext_www/", b.home + "/data/www/"}, [2]string{bitrixHome + "/", b.home + "/"})
+	seen := map[string]bool{}
 	for _, site := range b.sites {
+		rel := "data/www/" + site.domain
+		var files []string
 		if !site.link {
-			b.configs = append(b.configs, cmsConfigs("data/www/"+site.domain)...)
+			files = cmsConfigs(rel)
+		}
+		// Scripts that name the old paths themselves (exports writing to
+		// /home/bitrix/www/..., logs in /home/bitrix): the old paths do not
+		// exist here, so they get the same rewrite as the configs.
+		for _, f := range site.hardcoded {
+			files = append(files, rel+"/"+strings.TrimPrefix(f, site.root+"/"))
+		}
+		for _, f := range files {
+			if !seen[f] {
+				seen[f] = true
+				b.configs = append(b.configs, f)
+			}
 		}
 	}
 	return nil
+}
+
+// hardcodedPaths finds the site's own files that name /home/bitrix: the
+// kernel (bitrix/) and upload/ are left out, bitrix/php_interface is the
+// site's code and is looked at. Files over 1 MB are logs and dumps, not
+// scripts, and the rewrite reads each file whole.
+func (b *bitrixVMSource) hardcodedPaths(ctx context.Context, site *bxSite) []string {
+	grep := " -type f -size -1024k -print0 2>/dev/null | xargs -0 -r grep -lI -e " + shq(bitrixHome) + " -- 2>/dev/null"
+	cmd := "cd " + shq(site.root) + " && { find . \\( -path ./bitrix -o -path ./upload -o -name .git \\) -prune -o" + grep
+	if !site.link {
+		cmd += "; find ./bitrix/php_interface" + grep
+	}
+	out, _, _ := b.conn.exec(ctx, cmd+"; } | head -n "+fmt.Sprint(maxHardcoded))
+	var files []string
+	for _, l := range strings.Split(out, "\n") {
+		if l = strings.TrimSpace(l); strings.HasPrefix(l, "./") {
+			files = append(files, site.root+"/"+strings.TrimPrefix(l, "./"))
+		}
+	}
+	return files
+}
+
+// maxHardcoded caps the files rewritten per site: more than that is a copy
+// of something (a backup, a vendor tree) rather than the site's own scripts.
+const maxHardcoded = 200
+
+var (
+	bxCacheBlockRe = regexp.MustCompile(`'cache'\s*=>`)
+	bxCacheTypeRe  = regexp.MustCompile(`'(?:class_name|type)'\s*=>\s*'([^']+)'`)
+	bxCacheDefRe   = regexp.MustCompile(`define\(\s*["'](?:BX_CACHE_TYPE|BX_CACHE_CLASS_FILE)["']\s*,\s*["']([^"']+)["']`)
+)
+
+// cacheEngine reads which cache the site is set up for: the 'cache' block
+// of bitrix/.settings.php, then BX_CACHE_TYPE of dbconn.php. "files" (the
+// default) comes back as "".
+func (b *bitrixVMSource) cacheEngine(ctx context.Context, root string) string {
+	engine := ""
+	if text, err := b.conn.readFile(ctx, root+"/bitrix/.settings.php"); err == nil {
+		if loc := bxCacheBlockRe.FindStringIndex(text); loc != nil {
+			block := text[loc[1]:]
+			if len(block) > 1000 {
+				block = block[:1000]
+			}
+			if m := bxCacheTypeRe.FindStringSubmatch(block); m != nil {
+				engine = m[1]
+			}
+		}
+	}
+	if engine == "" {
+		if text, err := b.conn.readFile(ctx, root+"/bitrix/php_interface/dbconn.php"); err == nil {
+			if m := bxCacheDefRe.FindStringSubmatch(text); m != nil {
+				engine = m[1]
+			}
+		}
+	}
+	if strings.EqualFold(engine, "files") {
+		return ""
+	}
+	return strings.ReplaceAll(engine, `\\`, `\`)
 }
 
 func (b *bitrixVMSource) isSymlink(ctx context.Context, p string) bool {
@@ -152,10 +244,10 @@ func (b *bitrixVMSource) isSymlink(ctx context.Context, p string) bool {
 }
 
 var (
-	nginxRootRe   = regexp.MustCompile(`(?m)^\s*root\s+([^;\s]+)\s*;`)
+	nginxRootRe   = regexp.MustCompile(`(?m)^\s*root\s+("[^"]*"|'[^']*'|[^;\s]+)\s*;`)
 	nginxNamesRe  = regexp.MustCompile(`(?m)^\s*server_name\s+([^;]+);`)
-	nginxCertRe   = regexp.MustCompile(`(?m)^\s*ssl_certificate\s+([^;\s]+)\s*;`)
-	nginxKeyRe    = regexp.MustCompile(`(?m)^\s*ssl_certificate_key\s+([^;\s]+)\s*;`)
+	nginxCertRe   = regexp.MustCompile(`(?m)^\s*ssl_certificate\s+("[^"]*"|'[^']*'|[^;\s]+)\s*;`)
+	nginxKeyRe    = regexp.MustCompile(`(?m)^\s*ssl_certificate_key\s+("[^"]*"|'[^']*'|[^;\s]+)\s*;`)
 	phpSettingRe  = regexp.MustCompile(`'(host|database|login|password)'\s*=>\s*'((?:[^'\\]|\\.)*)'`)
 	phpDBVarRe    = regexp.MustCompile(`\$(DBHost|DBName|DBLogin|DBPassword)\s*=\s*["']((?:[^"'\\]|\\.)*)["']`)
 	phpUnescapeRe = regexp.MustCompile(`\\(.)`)
@@ -174,18 +266,29 @@ func parseNginxServer(text string) (root string, names []string, cert, key strin
 	}
 	text = strings.Join(kept, "\n")
 	if m := nginxRootRe.FindStringSubmatch(text); m != nil {
-		root = strings.TrimSuffix(m[1], "/")
+		root = strings.TrimSuffix(nginxUnquote(m[1]), "/")
 	}
 	for _, m := range nginxNamesRe.FindAllStringSubmatch(text, -1) {
-		names = append(names, strings.Fields(m[1])...)
+		for _, n := range strings.Fields(m[1]) {
+			names = append(names, nginxUnquote(n))
+		}
 	}
 	if m := nginxCertRe.FindStringSubmatch(text); m != nil {
-		cert = m[1]
+		cert = nginxUnquote(m[1])
 	}
 	if m := nginxKeyRe.FindStringSubmatch(text); m != nil {
-		key = m[1]
+		key = nginxUnquote(m[1])
 	}
 	return root, names, cert, key
+}
+
+// nginxUnquote drops the quotes nginx allows around a value: bitrix-env
+// writes root "/home/bitrix/ext_www/<site>"; for its ext sites.
+func nginxUnquote(v string) string {
+	if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
+		return v[1 : len(v)-1]
+	}
+	return v
 }
 
 // readDBSettings takes the connection parameters from bitrix/.settings.php
@@ -253,6 +356,7 @@ func (b *bitrixVMSource) bundle(ctx context.Context, _ string, withSecrets bool)
 		Generated: time.Now().UTC(), SiteNginx: map[string]string{}, Sizes: apitypes.MigrationSizes{Databases: map[string]int64{}},
 		Certificates: []apitypes.MigrationCert{}, Notes: []string{b.fingerprintNote()},
 	}
+	out.Notes = append(out.Notes, b.skipped...)
 	out.User = &store.User{Login: "bitrix", Role: store.RoleUser, Shell: shell != "" && !strings.HasSuffix(shell, "nologin") && !strings.HasSuffix(shell, "/false"), Home: home}
 	seenDB := map[string]bool{}
 	var plain map[string]string
@@ -308,6 +412,32 @@ func (b *bitrixVMSource) bundle(ctx context.Context, _ string, withSecrets bool)
 		}
 	}
 	out.Cron = b.crontab(ctx, "bitrix")
+	rootJobs, rootNotes := b.rootCron(ctx, out.Cron)
+	out.Cron = append(out.Cron, rootJobs...)
+	for _, j := range out.Cron {
+		j.Command = bxCronPHP(j.Command)
+	}
+	out.Notes = append(out.Notes, rootNotes...)
+	out.Notes = append(out.Notes, cronNotes(out.Cron)...)
+	for _, site := range b.sites {
+		if site.cache != "" {
+			out.Notes = append(out.Notes, "сайт "+site.domain+": кеш Битрикса — "+site.cache+". Проверьте, что он работает здесь (memcached: mp stack install memcached; кластерный кеш требует модуля cluster и его таблиц), или переключите на files в bitrix/.settings.php: с неработающим кешем шаблоны пересчитывают всё на каждом хите и занимают все процессы php-fpm")
+		}
+		if n := len(site.hardcoded); n > 0 {
+			list := site.hardcoded
+			if n > 5 {
+				list = list[:5]
+			}
+			more := ""
+			if n > 5 {
+				more = fmt.Sprintf(" и ещё %d", n-5)
+			}
+			if n >= maxHardcoded {
+				more += " (показаны не все)"
+			}
+			out.Notes = append(out.Notes, fmt.Sprintf("сайт %s: путь %s в файлах сайта (%d): %s%s — перепишется на новый путь", site.domain, bitrixHome, n, strings.Join(list, ", "), more))
+		}
+	}
 	out.Notes = append(out.Notes,
 		"кеш Битрикса (bitrix/cache, managed_cache, stack_cache) не переносится — соберётся заново",
 		"push-сервер, memcached и msmtp окружения BitrixVM не переезжают: настройте их здесь отдельно (mp stack install memcached)",
@@ -316,6 +446,54 @@ func (b *bitrixVMSource) bundle(ctx context.Context, _ string, withSecrets bool)
 		out.Secrets = &apitypes.MigrationSecrets{UnixShadow: hash, DBUsers: plain, Mailboxes: map[string]string{}, DKIM: map[string]string{}}
 	}
 	return out, nil
+}
+
+// rootCron picks the jobs of root's crontab that work on the sites: on
+// BitrixVM everything is done as root, exports and imports included. They
+// move to the account (paths rewritten, marked as root's); the rest stays
+// behind and the plan lists it.
+func (b *bitrixVMSource) rootCron(ctx context.Context, have []*store.CronJob) ([]*store.CronJob, []string) {
+	out, _, err := b.conn.exec(ctx, "crontab -l -u root 2>/dev/null")
+	if err != nil {
+		return nil, nil
+	}
+	seen := map[string]bool{}
+	for _, j := range have {
+		seen[j.Schedule+" "+j.Command] = true
+	}
+	var jobs []*store.CronJob
+	var left []string
+	for _, e := range cronEntries(out) {
+		if !strings.Contains(e.command, bitrixHome+"/") {
+			left = append(left, e.schedule+" "+e.command)
+			continue
+		}
+		j := b.cronJob(e)
+		if seen[j.Schedule+" "+j.Command] {
+			continue
+		}
+		seen[j.Schedule+" "+j.Command] = true
+		j.Comment = strings.TrimSuffix("из crontab root; "+j.Comment, "; ")
+		jobs = append(jobs, j)
+	}
+	var notes []string
+	if len(jobs) > 0 {
+		notes = append(notes, fmt.Sprintf("из crontab root перенесено заданий: %d — они работают с %s и здесь выполняются от аккаунта", len(jobs), bitrixHome))
+	}
+	if len(left) > 0 {
+		notes = append(notes, fmt.Sprintf("в crontab root остались задания без путей %s, они не переносятся: %s", bitrixHome, strings.Join(left, "; ")))
+	}
+	return jobs, notes
+}
+
+// bxCronPHPRe matches the system PHP a BitrixVM crontab names by path.
+var bxCronPHPRe = regexp.MustCompile(`(^|[\s;&|(])/usr(?:/local)?/bin/php(\s)`)
+
+// bxCronPHP points cron's PHP at the account's own: /usr/bin/php here is
+// whatever branch the distribution defaults to, while the crontab's PATH
+// starts with data/bin, where php is the branch of the sites.
+func bxCronPHP(cmd string) string {
+	return bxCronPHPRe.ReplaceAllString(cmd, "${1}php$2")
 }
 
 // files streams every site into data/www/<domain>; symlink targets that

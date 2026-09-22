@@ -303,6 +303,23 @@ func siteCmd() *cobra.Command {
 		}})
 	}
 
+	var moveFrom string
+	moveIP := &cobra.Command{Use: "move-ip <новый-адрес>", Short: "перенести сайты на другой адрес этого сервера (после смены IP хоста)", Long: "Переносит разом все сайты прежнего адреса (--from) или всех адресов, которых на сервере больше нет: по одному через site set --ip они не проходят проверку nginx, пока остальные слушают старый адрес.", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		cl, err := newClient()
+		if err != nil {
+			return err
+		}
+		res, err := cl.MoveSitesIP(cmd.Context(), apitypes.SiteMoveIPRequest{From: moveFrom, To: args[0]})
+		if err != nil {
+			return err
+		}
+		if !g.json {
+			fmt.Printf("сайты на %s: %s\n", args[0], strings.Join(res.Sites, ", "))
+		}
+		return followJob(cmd, cl, res.JobID)
+	}}
+	moveIP.Flags().StringVar(&moveFrom, "from", "", "прежний адрес (по умолчанию — все адреса, которых на сервере нет)")
+
 	var purge bool
 	rm := &cobra.Command{Use: "rm <domain>", Short: "удалить сайт (--purge удаляет и файлы)", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
@@ -340,7 +357,7 @@ func siteCmd() *cobra.Command {
 		table([]string{"PRESET", "NAME", "DESCRIPTION"}, rows)
 		return nil
 	}}
-	c.AddCommand(add, list, show, set, rm, siteLogsCmd(), siteNginxCmd(), sitePHPCmd(), siteTLSCmd(), presets)
+	c.AddCommand(add, list, show, set, moveIP, rm, siteLogsCmd(), siteNginxCmd(), sitePHPCmd(), siteTLSCmd(), presets)
 	return c
 }
 

@@ -325,18 +325,11 @@ func (s *Server) jobPHPInstall(ctx context.Context, jc *jobs.Context) error {
 	if _, err := s.agent.EnsureDirs(ctx, &agent.EnsureDirsRequest{Dirs: []agent.DirSpec{{Path: path.Join(s.cfg.RunDir, "php"), Mode: 0o755, Owner: "root", Group: "root"}}}); err != nil {
 		return s.phpFail(ctx, p.Version, err)
 	}
-	tz, _ := s.db.GetSetting(ctx, settingTZ)
-	if tz == "" {
-		tz = "UTC"
-	}
-	ini, err := s.render.Render("php/monopanel.ini.tmpl", render.PHPIni{Version: p.Version, Timezone: tz, OpcacheMemory: 128})
+	ini, err := s.phpIniFiles(ctx, layout, false)
 	if err != nil {
 		return s.phpFail(ctx, p.Version, err)
 	}
-	files := []agent.FileSpec{{Path: "/etc/tmpfiles.d/monopanel-php.conf", Content: fmt.Sprintf("d %s 0755 root root -\n", path.Join(s.cfg.RunDir, "php")), Mode: 0o644}}
-	for _, dir := range layout.IniDirs {
-		files = append(files, agent.FileSpec{Path: path.Join(dir, "99-monopanel.ini"), Content: ini, Mode: 0o644})
-	}
+	files := append([]agent.FileSpec{{Path: "/etc/tmpfiles.d/monopanel-php.conf", Content: fmt.Sprintf("d %s 0755 root root -\n", path.Join(s.cfg.RunDir, "php")), Mode: 0o644}}, ini...)
 	if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Validate: [][]string{layout.FPMCheckArgv}, Reload: []string{layout.FPMService}, Force: true, Origin: "php:" + p.Version}); err != nil {
 		return s.phpFail(ctx, p.Version, err)
 	}
@@ -430,4 +423,72 @@ func (s *Server) jobPHPRemove(ctx context.Context, jc *jobs.Context) error {
 
 func phpLayout(s *Server, version string) *osprofile.PHPLayout {
 	return osprofile.PHP(s.profile, version)
+}
+
+// phpIniFiles renders 99-monopanel.ini of a branch for its ini directories
+// (only the CLI one with cliOnly). The copy the CLI reads opens short tags
+// while a 1C-Bitrix site runs on the branch: its cron scripts and the prolog
+// start with <?, and PHP would print them as text and exit 0. The FPM pools
+// set short_open_tag themselves, so the shared directory of Remi is fine.
+func (s *Server) phpIniFiles(ctx context.Context, layout *osprofile.PHPLayout, cliOnly bool) ([]agent.FileSpec, error) {
+	tz, _ := s.db.GetSetting(ctx, settingTZ)
+	if tz == "" {
+		tz = "UTC"
+	}
+	data := render.PHPIni{Version: layout.Version, Timezone: tz, OpcacheMemory: 128}
+	var files []agent.FileSpec
+	for _, dir := range layout.IniDirs {
+		cli := dir == layout.CLIIniDir
+		if cliOnly && !cli {
+			continue
+		}
+		data.ShortOpenTag = cli && s.branchRunsBitrix(ctx, layout.Version)
+		ini, err := s.render.Render("php/monopanel.ini.tmpl", data)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, agent.FileSpec{Path: path.Join(dir, "99-monopanel.ini"), Content: ini, Mode: 0o644})
+	}
+	return files, nil
+}
+
+func (s *Server) branchRunsBitrix(ctx context.Context, version string) bool {
+	sites, _ := s.db.ListSites(ctx, 0)
+	for _, site := range sites {
+		if site.PHPVersion == version && site.Preset == presetBitrix && site.Mode != store.ModeProxy {
+			return true
+		}
+	}
+	return false
+}
+
+// refreshPHPCLIInis brings the CLI copies of every branch up to date at
+// startup (a panel update that changed them, sites migrated before it).
+// Remi's shared directory waits for a site apply: FPM reads it too, and the
+// pools of that branch must set short_open_tag themselves first.
+func (s *Server) refreshPHPCLIInis(ctx context.Context) {
+	versions, err := s.db.ListPHPVersions(ctx)
+	if err != nil {
+		return
+	}
+	for _, v := range versions {
+		l := phpLayout(s, v.Version)
+		if v.Status != store.PHPInstalled || l == nil || len(l.IniDirs) < 2 {
+			continue
+		}
+		if err := s.refreshPHPCLIIni(ctx, l); err != nil {
+			s.log.Warn("php cli ini", "version", v.Version, "err", err)
+		}
+	}
+}
+
+// refreshPHPCLIIni re-renders the CLI copy after a site changed; the CLI
+// reads it on every start, nothing to reload.
+func (s *Server) refreshPHPCLIIni(ctx context.Context, layout *osprofile.PHPLayout) error {
+	files, err := s.phpIniFiles(ctx, layout, true)
+	if err != nil || len(files) == 0 {
+		return err
+	}
+	_, err = s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Origin: "php:" + layout.Version})
+	return err
 }
