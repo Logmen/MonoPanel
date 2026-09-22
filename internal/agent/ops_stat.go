@@ -164,6 +164,9 @@ var listDirAllowed = []*regexp.Regexp{
 	regexp.MustCompile(`^/etc/php/[0-9]+\.[0-9]+/mods-available$`),
 	regexp.MustCompile(`^/etc/php/[0-9]+\.[0-9]+/(fpm|cli)/conf\.d$`),
 	regexp.MustCompile(`^/etc/opt/remi/php[0-9]+/php\.d$`),
+	// the default servers, one per local address: those of addresses the
+	// host lost are removed, nginx cannot bind them
+	regexp.MustCompile(`^/etc/nginx/monopanel/http\.d$`),
 	// the search index files of the Sphinx extension (recreated on a schema change)
 	regexp.MustCompile(`^/var/lib/sphinx$`),
 	regexp.MustCompile(`^/var/lib/sphinxsearch/data$`),

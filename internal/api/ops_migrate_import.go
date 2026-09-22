@@ -654,6 +654,9 @@ func (s *Server) migrateSite(ctx context.Context, jc *jobs.Context, u *store.Use
 	site.ID, site.UserID, site.CertificateID = 0, u.ID, nil
 	site.Status = store.SitePending
 	site.IP = ""
+	if site.Preset == presetBitrix && site.FPMMaxChildren <= 0 {
+		site.FPMMaxChildren = s.bitrixPoolSize(ctx)
+	}
 	if err := s.db.CreateSite(ctx, &site); err != nil {
 		return fmt.Errorf("сайт %s: %w", src.Domain, err)
 	}

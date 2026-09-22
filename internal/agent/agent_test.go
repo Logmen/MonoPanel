@@ -158,6 +158,24 @@ func TestPathAllowed(t *testing.T) {
 	}
 }
 
+// The panel lists only the directories it manages; the default servers are
+// among them (stale ones are removed after the host's address changed).
+func TestListDirAllowed(t *testing.T) {
+	s := &Server{cfg: config.Default()}
+	for p, want := range map[string]bool{
+		"/etc/nginx/monopanel/http.d":    true,
+		"/etc/php/8.4/cli/conf.d":        true,
+		"/etc/nginx/monopanel":           false,
+		"/etc/nginx/monopanel/http.d/..": false,
+		"/root":                          false,
+	} {
+		_, err := s.listDir(context.Background(), &ListDirRequest{Path: p})
+		if (err == nil) != want {
+			t.Errorf("%s: err %v, want allowed=%v", p, err, want)
+		}
+	}
+}
+
 func TestUnusedHTTPTest(t *testing.T) {
 	// keep httptest imported for future handler-level tests
 	_ = httptest.NewRecorder()
@@ -192,6 +210,14 @@ func TestHomeFileOps(t *testing.T) {
 	}
 	if target, _ := os.Readlink(filepath.Join(www, "alex", "data", "bin-php")); target != "/usr/bin/php8.4" {
 		t.Fatalf("symlink target %q", target)
+	}
+	// Every site apply ensures the link again: an existing one is fine, a
+	// link in a directory above it is not.
+	if err := cl.EnsureSymlink(ctx, &EnsureSymlinkRequest{Path: filepath.Join(www, "alex", "data", "bin-php"), Target: "/usr/bin/php8.4", Owner: me, OnlyIfMissing: true}); err != nil {
+		t.Fatalf("existing link: %v", err)
+	}
+	if err := cl.EnsureSymlink(ctx, &EnsureSymlinkRequest{Path: filepath.Join(www, "alex", "data", "www", "evil", "x"), Target: "/usr/bin/php8.4", Owner: me}); err == nil {
+		t.Fatal("a link through a symlinked directory must be refused")
 	}
 	if _, err := cl.RemovePaths(ctx, &RemovePathsRequest{Paths: []string{filepath.Join(www, "alex", "data")}, Recursive: true}); err == nil {
 		t.Fatal("data dir itself must not be removable")

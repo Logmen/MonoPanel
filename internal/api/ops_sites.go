@@ -264,6 +264,9 @@ func (s *Server) registerSites() {
 		if site.Preset, err = normalizePreset(b.Preset); err != nil {
 			return nil, huma.Error422UnprocessableEntity(err.Error())
 		}
+		if site.Preset == presetBitrix && b.FPMMaxChildren == 0 {
+			site.FPMMaxChildren = s.bitrixPoolSize(ctx)
+		}
 		if site.Preset == presetBitrix && b.ClientMaxBody == "" {
 			site.ClientMaxBody = "256m"
 		}
@@ -418,8 +421,14 @@ func (s *Server) registerSites() {
 			}
 		}
 		if b.Preset != nil {
+			was := site.Preset
 			if site.Preset, err = normalizePreset(*b.Preset); err != nil {
 				return nil, huma.Error422UnprocessableEntity(err.Error())
+			}
+			// A site turning into 1C-Bitrix with the stock pool size gets
+			// the preset's; a size someone set stays.
+			if site.Preset == presetBitrix && was != presetBitrix && b.FPMMaxChildren == 0 && site.FPMMaxChildren == 8 {
+				site.FPMMaxChildren = s.bitrixPoolSize(ctx)
 			}
 		}
 		if site.Status == store.SiteError {
@@ -734,7 +743,7 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 	}
 	maxChildren := site.FPMMaxChildren
 	if maxChildren <= 0 {
-		maxChildren = s.defaultMaxChildren(ctx, site)
+		maxChildren = 8
 	}
 	disable := render.DefaultDisableFunctions
 	if site.AllowExec {
@@ -927,13 +936,12 @@ func modeLabel(mode string) string {
 	return "nginx + php-fpm"
 }
 
-// defaultMaxChildren sizes a pool nobody sized by hand. 1C-Bitrix gets it
-// from RAM: its templates call the site over HTTP from inside a request, and
-// eight workers all waiting for each other stall the site.
-func (s *Server) defaultMaxChildren(ctx context.Context, site *store.Site) int {
-	if site.Preset != presetBitrix {
-		return 8
-	}
+// bitrixPoolSize is pm.max_children of a 1C-Bitrix site nobody sized by
+// hand: its templates call the site over HTTP from inside a request, and the
+// stock eight workers all waiting for each other stall the site. The site
+// keeps the number (the store turns an unset size into 8, so it is chosen
+// when the preset arrives: creation, a preset change, a migration).
+func (s *Server) bitrixPoolSize(ctx context.Context) int {
 	info, err := s.agent.SystemInfo(ctx)
 	if err != nil {
 		return 8

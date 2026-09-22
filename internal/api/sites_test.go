@@ -251,6 +251,30 @@ func TestSitePresetsRenderExpectedRules(t *testing.T) {
 	}
 }
 
+// A Bitrix site gets its pool sized from RAM when the preset arrives; a
+// size set by hand stays.
+func TestBitrixPoolSizedFromRAM(t *testing.T) {
+	f := newSiteFixture(t)
+	f.agent.MemTotalBytes = 4 << 30
+	f.createSite(map[string]any{"domain": "bx.example.com", "user": "alex", "php_version": "8.4", "ssl": "none", "preset": "bitrix"})
+	if pool, _ := f.agent.File("/etc/php/8.4/fpm/pool.d/bx.example.com.conf"); !strings.Contains(pool, "pm.max_children = 16") {
+		t.Errorf("пул bitrix на 4 ГБ:\n%s", pool)
+	}
+	f.createSite(map[string]any{"domain": "wp.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	var out struct {
+		JobID int64 `json:"job_id"`
+	}
+	f.call(http.MethodPatch, "/sites/wp.example.com", map[string]any{"preset": "bitrix"}, http.StatusAccepted, &out)
+	f.waitJob(out.JobID)
+	if site, _ := f.db.GetSiteByDomain(f.ctx, "wp.example.com"); site.FPMMaxChildren != 16 {
+		t.Errorf("смена пресета на bitrix: max_children %d", site.FPMMaxChildren)
+	}
+	f.createSite(map[string]any{"domain": "own.example.com", "user": "alex", "php_version": "8.4", "ssl": "none", "preset": "bitrix", "fpm_max_children": 5})
+	if site, _ := f.db.GetSiteByDomain(f.ctx, "own.example.com"); site.FPMMaxChildren != 5 {
+		t.Errorf("заданный вручную размер: %d", site.FPMMaxChildren)
+	}
+}
+
 func TestBitrixMaxChildren(t *testing.T) {
 	for ram, want := range map[int]int{1024: 8, 2048: 8, 4096: 16, 8192: 32, 65536: 48} {
 		if got := bitrixMaxChildren(ram); got != want {

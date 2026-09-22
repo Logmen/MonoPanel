@@ -69,6 +69,8 @@ type Agent struct {
 	RunAsHook func(req agent.RunAsUserRequest) *agent.RunAsUserResponse
 	// Dirs answers agent.ListDir: directory path -> names inside it.
 	DirEntries map[string][]string
+	// MemTotalBytes is the RAM agent.SystemInfo reports (0 by default).
+	MemTotalBytes uint64
 	// Shadow answers agent.UnixShadow: login -> password hash.
 	Shadow map[string]string
 	// Streams records the streaming calls (tar, mysqldump) with the bytes that
@@ -365,7 +367,7 @@ func (a *Agent) respond(path string, body []byte) any {
 		return agent.UnixShadowResponse{}
 
 	case "/v1/system/info":
-		return map[string]any{"hostname": "test-host", "cpus": 2}
+		return map[string]any{"hostname": "test-host", "cpus": 2, "mem_total_bytes": a.MemTotalBytes}
 	}
 	return map[string]any{}
 }

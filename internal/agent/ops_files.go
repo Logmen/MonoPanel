@@ -104,10 +104,13 @@ func (s *Server) ensureSymlink(_ context.Context, req *EnsureSymlinkRequest) (*s
 	if req.Owner == "" || req.Target == "" {
 		return nil, &Error{Status: http.StatusBadRequest, Message: "owner and target are required"}
 	}
-	p, err := s.safeHomePath(req.Path)
+	// The link itself is expected to exist as a symlink on every re-apply;
+	// only the directories above it must not be ones.
+	dir, err := s.safeHomePath(filepath.Dir(filepath.Clean(req.Path)))
 	if err != nil {
 		return nil, &Error{Status: http.StatusForbidden, Message: err.Error()}
 	}
+	p := filepath.Join(dir, filepath.Base(req.Path))
 	if st, err := os.Lstat(p); err == nil {
 		if st.Mode()&os.ModeSymlink == 0 {
 			return nil, &Error{Status: http.StatusForbidden, Message: "exists and is not a symlink: " + p}
