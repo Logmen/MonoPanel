@@ -78,7 +78,7 @@ func phpCmd() *cobra.Command {
 		}
 		return followJob(cmd, cl, ref.JobID)
 	}}
-	c.AddCommand(list, install, remove, phpExtCmd())
+	c.AddCommand(list, install, remove, phpExtCmd(), phpIniCmd())
 	return c
 }
 
@@ -439,5 +439,75 @@ func siteTLSCmd() *cobra.Command {
 	c.Flags().StringVar(&req.DNS, "dns", "", "DNS-провайдер для DNS-01 (когда порт 80 недоступен снаружи)")
 	c.Flags().BoolVar(&req.Staging, "staging", false, "staging-директория Let's Encrypt (тестовый сертификат)")
 	c.Flags().StringVar(&req.Email, "email", "", "e-mail аккаунта ACME (запоминается)")
+	return c
+}
+
+// phpIniCmd shows and changes the server-wide php.ini layer: what every site
+// inherits unless its preset or the site itself sets the key.
+func phpIniCmd() *cobra.Command {
+	c := &cobra.Command{Use: "ini", Short: "PHP-параметры для всех сайтов сервера (слой «глобально»)", RunE: func(cmd *cobra.Command, _ []string) error {
+		cl, err := newClient()
+		if err != nil {
+			return err
+		}
+		res, err := cl.PHPSettings(cmd.Context())
+		if err != nil {
+			return err
+		}
+		if g.json {
+			return printJSON(res)
+		}
+		rows := make([][]string, 0, len(res.Values))
+		for _, v := range res.Values {
+			src := "панель"
+			if v.Source == "global" {
+				src = "глобально"
+			}
+			rows = append(rows, []string{v.Key, v.Value, src})
+		}
+		table([]string{"KEY", "VALUE", "SOURCE"}, rows)
+		fmt.Println("пресет и значения сайта перекрывают эти; менять: mp php ini set key=value, вернуть панельное: mp php ini unset key")
+		return nil
+	}}
+	change := func(ini map[string]string, cmd *cobra.Command) error {
+		cl, err := newClient()
+		if err != nil {
+			return err
+		}
+		res, err := cl.PHPSettingsSet(cmd.Context(), ini)
+		if err != nil {
+			return err
+		}
+		if g.json {
+			return printJSON(res)
+		}
+		fmt.Printf("сохранено; пулы %d сайтов пересобираются\n", len(res.Jobs))
+		for _, id := range res.Jobs {
+			if err := followJob(cmd, cl, id); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	set := &cobra.Command{Use: "set key=value ...", Short: "задать значения для всех сайтов", Args: cobra.MinimumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		ini, err := parseIni(args)
+		if err != nil {
+			return err
+		}
+		for k, v := range ini {
+			if v == "" {
+				return &exitError{code: 2, msg: "пустое значение для " + k + ": чтобы вернуть панельное, используйте mp php ini unset " + k}
+			}
+		}
+		return change(ini, cmd)
+	}}
+	unset := &cobra.Command{Use: "unset key ...", Short: "убрать глобальные значения (снова действует значение панели)", Args: cobra.MinimumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		ini := map[string]string{}
+		for _, k := range args {
+			ini[strings.TrimSpace(k)] = ""
+		}
+		return change(ini, cmd)
+	}}
+	c.AddCommand(set, unset)
 	return c
 }

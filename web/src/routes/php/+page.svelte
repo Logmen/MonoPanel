@@ -57,6 +57,33 @@
   });
 
   // After an offered extension was installed the branch has one package more.
+  // Глобальный слой php.ini: что наследует каждый сайт, если ни пресет, ни
+  // сам сайт не задают ключ.
+  let gphp = $state<any>(null);
+  let gKey = $state('');
+  let gValue = $state('');
+  let gBusy = $state(false);
+  let gKeyInput = $state<HTMLInputElement | null>(null);
+  async function loadGlobal() { try { gphp = await api('/php/settings'); } catch (e: any) { error = e.text || String(e); } }
+  onMount(loadGlobal);
+  function editGlobal(key: string, value: string) { gKey = key; gValue = value; queueMicrotask(() => gKeyInput?.focus()); }
+  async function saveGlobal(ini: Record<string, string>) {
+    gBusy = true; error = '';
+    try {
+      const r: any = await api('/php/settings', { method: 'PUT', json: { php_ini: ini } });
+      gphp = r.settings;
+      notify(tn('php.globalSaved', r.jobs.length));
+      if (r.jobs.length) job = r.jobs[r.jobs.length - 1];
+      gKey = ''; gValue = '';
+    } catch (e) {
+      error = e instanceof ApiError ? e.text : String(e);
+      notify(error, 'err');
+    } finally {
+      gBusy = false;
+    }
+  }
+  function submitGlobal(e: Event) { e.preventDefault(); const k = gKey.trim(); if (k && gValue.trim()) saveGlobal({ [k]: gValue.trim() }); }
+
   const installedNow = (version: string, name: string) => { const e = exts[version]?.find((x) => x.name === name); if (e && !e.installed) load(); };
   async function setExt(version: string, name: string, enabled: boolean) {
     extBusy = version + name;
@@ -127,6 +154,38 @@
       {/each}
     </tbody>
   </table>
+  {/if}
+</div>
+
+<div class="card p-0 overflow-hidden mt-4 rise" style="--i:1">
+  <div class="px-4 py-3 border-b border-line">
+    <div class="font-medium text-sm">{t('php.globalTitle')}</div>
+    <p class="text-xs text-muted mt-1">{t('php.globalHint')}</p>
+  </div>
+  {#if !gphp}<Skeleton rows={4} />{:else}
+    <form class="flex flex-wrap gap-2 px-4 py-3 border-b border-line" onsubmit={submitGlobal}>
+      <input bind:this={gKeyInput} class="input font-mono text-xs flex-1 min-w-40" list="global-ini-keys" bind:value={gKey} placeholder="memory_limit" aria-label={t('php.globalKey')} />
+      <input class="input font-mono text-xs w-40" bind:value={gValue} placeholder="512M" aria-label={t('php.globalValue')} />
+      <button class="btn btn-primary btn-sm" disabled={gBusy || !gKey.trim() || !gValue.trim()}><Icon name="save" size={13} /> {t('php.globalSave')}</button>
+      <datalist id="global-ini-keys">{#each gphp.allowed as k}<option value={k}></option>{/each}</datalist>
+    </form>
+    <table class="tbl">
+      <thead><tr><th>{t('php.globalKey')}</th><th>{t('php.globalValue')}</th><th>{t('php.globalSource')}</th><th></th></tr></thead>
+      <tbody>
+        {#each gphp.values as v, i (v.key)}
+          <tr class="rise" style="--i:{i}">
+            <td data-label={t('php.globalKey')} class="font-mono text-xs">{v.key}</td>
+            <td data-label={t('php.globalValue')} class="font-mono text-xs">{v.value}</td>
+            <td data-label={t('php.globalSource')}><span class="tag {v.source === 'global' ? 'tag-warn' : 'tag-muted'}">{v.source === 'global' ? t('php.srcGlobal') : t('php.srcPanel')}</span></td>
+            <td data-label="" class="text-right whitespace-nowrap">
+              <button class="btn btn-ghost btn-sm" onclick={() => editGlobal(v.key, v.value)}>{t('php.globalEdit')}</button>
+              {#if v.source === 'global'}<button class="btn btn-ghost btn-sm text-danger" disabled={gBusy} title={t('php.globalReset')} aria-label={t('php.globalReset')} onclick={() => saveGlobal({ [v.key]: '' })}><Icon name="x" size={13} /></button>{/if}
+            </td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+    <p class="text-xs text-muted px-4 py-3 border-t border-line">{t('php.globalAllowed', { keys: gphp.allowed.join(', ') })}</p>
   {/if}
 </div>
 

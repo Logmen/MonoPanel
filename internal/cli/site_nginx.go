@@ -75,7 +75,7 @@ func siteNginxCmd() *cobra.Command {
 }
 
 func sitePHPCmd() *cobra.Command {
-	c := &cobra.Command{Use: "php <domain>", Short: "эффективные PHP-параметры сайта (значения панели + переопределения; менять: mp site set --ini)", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	c := &cobra.Command{Use: "php <domain>", Short: "эффективные PHP-параметры сайта: панель → глобально → пресет → сайт (для сайта: mp site set --ini, для всех: mp php ini set)", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err

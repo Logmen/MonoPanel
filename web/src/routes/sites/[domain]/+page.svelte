@@ -229,7 +229,7 @@
                 <tr class="rise" style="--i:{i}">
                   <td data-label={t('site.phpKey')} class="font-mono text-xs">{v.key}</td>
                   <td data-label={t('site.phpValue')} class="font-mono text-xs">{o ? o.value : v.value}{#if o && o.value !== v.value}<span class="text-muted"> {t('site.phpWas', { value: v.value })}</span>{/if}</td>
-                  <td data-label={t('site.phpSource')}><span class="tag {o || v.source === 'site' ? 'tag-accent' : v.source === 'preset' ? 'tag-ok' : 'tag-muted'}">{o || v.source === 'site' ? t('site.srcSite') : v.source === 'preset' ? t('site.srcPreset') : t('site.srcPanel')}</span></td>
+                  <td data-label={t('site.phpSource')}><span class="tag {o || v.source === 'site' ? 'tag-accent' : v.source === 'preset' ? 'tag-ok' : v.source === 'global' ? 'tag-warn' : 'tag-muted'}">{o || v.source === 'site' ? t('site.srcSite') : v.source === 'preset' ? t('site.srcPreset') : v.source === 'global' ? t('site.srcGlobal') : t('site.srcPanel')}</span></td>
                   <td data-label="" class="text-right"><button class="btn btn-ghost btn-sm" onclick={() => useDefault(v.key, o ? o.value : v.value)}>{t('site.phpEdit')}</button></td>
                 </tr>
               {/each}
@@ -255,6 +255,7 @@
           {:else}<p class="text-xs text-muted">{t('site.phpNoOverrides')}</p>{/if}
           <button class="btn btn-primary mt-3 w-full justify-center" onclick={savePHP}><Icon name="save" size={14} /> {t('site.phpSave')}</button>
         </div>
+        <p class="text-xs text-muted px-1">{t('site.phpLayers')}{#if admin}{' '}<a href="/php" class="text-accent-ink hover:underline">PHP →</a>{/if}</p>
         <p class="text-xs text-muted px-1">{t('site.phpAllowed', { keys: phpInfo?.allowed?.join(', ') ?? '' })}</p>
       </div>
     </div>

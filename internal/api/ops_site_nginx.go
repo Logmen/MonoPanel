@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"os"
 	"path"
-	"sort"
 	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -122,21 +121,8 @@ func (s *Server) registerSiteNginx() {
 			return nil, err
 		}
 		l := s.layoutFor(site, user)
-		out := apitypes.SitePHP{Version: site.PHPVersion, PoolPath: l.poolConf, Socket: l.socket, Allowed: make([]string, 0, len(allowedIniKeys)), Values: []apitypes.PHPValue{}}
-		for k := range allowedIniKeys {
-			out.Allowed = append(out.Allowed, k)
-		}
-		sort.Strings(out.Allowed)
-		for _, kv := range s.poolValues(ctx, site, s.certForSite(ctx, site) != nil) {
-			src := "default"
-			if _, ok := presetIni[site.Preset][kv.Key]; ok || (site.Preset == presetBitrix && kv.Key == "session.cookie_secure") {
-				src = "preset"
-			}
-			if _, ok := site.PHPIni[kv.Key]; ok {
-				src = "site"
-			}
-			out.Values = append(out.Values, apitypes.PHPValue{Key: kv.Key, Value: kv.Value, Source: src})
-		}
+		out := apitypes.SitePHP{Version: site.PHPVersion, PoolPath: l.poolConf, Socket: l.socket, Allowed: allowedKeysSorted(),
+			Values: s.sitePHPValues(ctx, site, s.certForSite(ctx, site) != nil)}
 		return &sitePHPOutput{Body: out}, nil
 	})
 }

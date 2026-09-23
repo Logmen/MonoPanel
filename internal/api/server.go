@@ -144,6 +144,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 		s.registerSiteNginx()
 		s.registerPresets()
 		s.registerPHPExtensions()
+		s.registerPHPGlobal()
 		s.registerUpdate()
 		s.registerMail()
 		s.registerMigrateSource()

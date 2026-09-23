@@ -603,7 +603,7 @@ type SiteNginxRequest struct {
 type PHPValue struct {
 	Key    string `json:"key"`
 	Value  string `json:"value"`
-	Source string `json:"source" enum:"default,preset,site"`
+	Source string `json:"source" enum:"default,global,preset,site" doc:"default: the panel; global: set for the whole server; preset: the site's CMS preset; site: set for this site"`
 }
 
 // SitePHP lists the effective PHP settings of a site.
@@ -613,6 +613,25 @@ type SitePHP struct {
 	Socket   string     `json:"socket"`
 	Allowed  []string   `json:"allowed" doc:"Keys accepted in php_ini"`
 	Values   []PHPValue `json:"values"`
+}
+
+// GlobalPHP is the server-wide php.ini layer: what every site inherits
+// unless its preset or the site itself sets the key.
+type GlobalPHP struct {
+	Allowed []string   `json:"allowed" doc:"Keys accepted in php_ini"`
+	Values  []PHPValue `json:"values" doc:"Effective server-wide values: the panel's own (default) and the ones set globally (global)"`
+}
+
+// GlobalPHPRequest changes server-wide php.ini values; an empty value
+// removes the key, so the panel's default applies again.
+type GlobalPHPRequest struct {
+	PHPIni map[string]string `json:"php_ini"`
+}
+
+// GlobalPHPResult is the new global layer and the jobs re-applying the sites.
+type GlobalPHPResult struct {
+	Settings GlobalPHP `json:"settings"`
+	Jobs     []int64   `json:"jobs" doc:"site.apply jobs, one per PHP site"`
 }
 
 // SitePreset describes a CMS preset selectable when creating a site.

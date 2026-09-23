@@ -957,58 +957,10 @@ func bitrixMaxChildren(ramMB int) int {
 
 // poolValues merges panel defaults with the site's php_ini into ordered php_value lines.
 func (s *Server) poolValues(ctx context.Context, site *store.Site, tls bool) []render.KV {
-	tz, _ := s.db.GetSetting(ctx, settingTZ)
-	if tz == "" {
-		tz = "UTC"
-	}
-	defaults := []render.KV{
-		{Key: "memory_limit", Value: "256M"}, {Key: "upload_max_filesize", Value: "64M"}, {Key: "post_max_size", Value: "64M"},
-		{Key: "max_execution_time", Value: "120"}, {Key: "date.timezone", Value: tz}, {Key: "display_errors", Value: "Off"},
-		// Set here, not left to the global ini: the CLI copy of it opens
-		// short tags for 1C-Bitrix, and on Remi FPM reads the same file.
-		{Key: "short_open_tag", Value: "Off"},
-	}
-	preset := map[string]string{}
-	for k, v := range presetIni[site.Preset] {
-		preset[k] = v
-	}
-	// A secure-only session cookie needs HTTPS to exist: on a site that is
-	// still on HTTP the login would not stick.
-	if site.Preset == presetBitrix && tls {
-		preset["session.cookie_secure"] = "On"
-	}
-	seen := map[string]bool{}
-	out := make([]render.KV, 0, len(defaults)+len(preset)+len(site.PHPIni))
-	for _, kv := range defaults {
-		if v, ok := preset[kv.Key]; ok {
-			kv.Value = v
-		}
-		if v, ok := site.PHPIni[kv.Key]; ok {
-			kv.Value = v
-		}
-		seen[kv.Key] = true
-		out = append(out, kv)
-	}
-	keys := make([]string, 0, len(site.PHPIni)+len(preset))
-	for k := range preset {
-		if !seen[k] {
-			seen[k] = true
-			keys = append(keys, k)
-		}
-	}
-	for k := range site.PHPIni {
-		if !seen[k] {
-			seen[k] = true
-			keys = append(keys, k)
-		}
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		v, ok := site.PHPIni[k]
-		if !ok {
-			v = preset[k]
-		}
-		out = append(out, render.KV{Key: k, Value: v})
+	vals := s.sitePHPValues(ctx, site, tls)
+	out := make([]render.KV, 0, len(vals))
+	for _, v := range vals {
+		out = append(out, render.KV{Key: v.Key, Value: v.Value})
 	}
 	return out
 }

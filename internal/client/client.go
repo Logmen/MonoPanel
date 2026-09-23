@@ -389,6 +389,18 @@ func (c *Client) PHPInstall(ctx context.Context, version string) (*apitypes.JobR
 	return &out, c.do(ctx, http.MethodPost, "/php/versions", apitypes.PHPInstallRequest{Version: version}, &out)
 }
 
+// PHPSettings returns the server-wide php.ini layer.
+func (c *Client) PHPSettings(ctx context.Context) (*apitypes.GlobalPHP, error) {
+	var out apitypes.GlobalPHP
+	return &out, c.do(ctx, http.MethodGet, "/php/settings", nil, &out)
+}
+
+// PHPSettingsSet changes server-wide php.ini values ("" removes a key).
+func (c *Client) PHPSettingsSet(ctx context.Context, ini map[string]string) (*apitypes.GlobalPHPResult, error) {
+	var out apitypes.GlobalPHPResult
+	return &out, c.do(ctx, http.MethodPut, "/php/settings", apitypes.GlobalPHPRequest{PHPIni: ini}, &out)
+}
+
 // PHPRemove starts removing a branch.
 func (c *Client) PHPRemove(ctx context.Context, version string) (*apitypes.JobRef, error) {
 	var out apitypes.JobRef
