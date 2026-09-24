@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>MonoPanel — панель управления веб-сервером</title>
+<meta name="description" content="Сайты, PHP, базы, TLS, почта, бэкапы, firewall и переезд между серверами — одним статическим бинарником для Debian, Ubuntu и RHEL-семейства.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="MonoPanel — панель управления веб-сервером">
+<meta property="og:description" content="Сайты, PHP, базы, TLS, почта, бэкапы, firewall и переезд между серверами — одним статическим бинарником.">
+<meta name="theme-color" content="#eef3f8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#05070c" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/fonts.css">
+<link rel="stylesheet" href="/assets/site.css">
+<!-- Тема до первой отрисовки, как в app.html панели: иначе тёмная мигнёт светлой. -->
+<script>try{var t=localStorage.getItem("theme");if(t==="dark"||t==="light")document.documentElement.dataset.theme=t}catch(e){}</script>
+<script src="/assets/site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">К содержимому</a>
+<div class="glow"></div>
+
+<header class="top">
+  <div class="wrap">
+    <a class="logo" href="/" aria-label="MonoPanel — на главную">
+      <span class="logo-mark" aria-hidden="true">M</span><span class="brand">MonoPanel</span>
+    </a>
+    <nav class="menu" aria-label="Разделы">
+      <a class="tab" href="#features">Возможности</a>
+      <a class="tab" href="#how">Как устроено</a>
+      <a class="tab" href="#os">Где работает</a>
+      <a class="tab" href="/docs/">Документация</a>
+    </nav>
+    <div class="top-end">
+      <div class="seg" role="group" aria-label="Тема">
+        <button type="button" data-theme-mode="system" title="Как в системе" aria-label="Тема как в системе"><svg class="ic"><use href="/assets/icons.svg#i-monitor"/></svg></button>
+        <button type="button" data-theme-mode="light" title="Светлая" aria-label="Светлая тема"><svg class="ic"><use href="/assets/icons.svg#i-sun"/></svg></button>
+        <button type="button" data-theme-mode="dark" title="Тёмная" aria-label="Тёмная тема"><svg class="ic"><use href="/assets/icons.svg#i-moon"/></svg></button>
+      </div>
+      <a class="btn" href="https://github.com/Logmen/MonoPanel">GitHub <svg class="ic"><use href="/assets/icons.svg#i-external"/></svg></a>
+    </div>
+  </div>
+</header>
+
+<main id="main" class="wrap">
+  <section class="hero" id="top">
+    <div>
+      <div class="hero-tags rise">
+        <a class="tag tag-accent" id="ver" href="https://github.com/Logmen/MonoPanel/releases/latest" hidden><span class="dot dot-live"></span><span></span></a>
+        <span class="tag tag-muted">Apache-2.0</span>
+        <span class="tag tag-muted">Go · один бинарник</span>
+      </div>
+      <h1 class="page-title hero-title rise" style="--i:1">Mono<span class="hl">Panel</span></h1>
+      <p class="hero-sub rise" style="--i:2">Панель управления веб-сервером</p>
+      <p class="lead rise" style="--i:3">Сайты, PHP, базы, TLS, почта, бэкапы, firewall и переезд между серверами — одним
+        статическим бинарником, без рантайма и внешних зависимостей. Панель слушает свой порт и не зависит
+        от системного nginx: если конфигурация сайта сломается, панель останется доступной и починит её.</p>
+      <div class="actions rise" style="--i:4">
+        <a class="btn btn-primary btn-lg" href="https://github.com/Logmen/MonoPanel">GitHub <svg class="ic"><use href="/assets/icons.svg#i-external"/></svg></a>
+        <a class="btn btn-lg" href="https://github.com/Logmen/MonoPanel/releases">Релизы</a>
+        <a class="btn btn-ghost btn-lg" href="/docs/">Документация</a>
+      </div>
+    </div>
+
+    <div class="card term rise" style="--i:3">
+      <div class="term-head">
+        <div class="tabs" role="tablist" aria-label="Команды">
+          <button class="tab" type="button" role="tab" id="t-install" aria-controls="p-install" aria-selected="true">Установка</button>
+          <button class="tab" type="button" role="tab" id="t-site" aria-controls="p-site" aria-selected="false" tabindex="-1">Сайт</button>
+          <button class="tab" type="button" role="tab" id="t-mail" aria-controls="p-mail" aria-selected="false" tabindex="-1">Почта</button>
+          <button class="tab" type="button" role="tab" id="t-move" aria-controls="p-move" aria-selected="false" tabindex="-1">Переезд</button>
+        </div>
+        <button class="btn btn-sm" type="button" data-copy title="Скопировать команды"><svg class="ic"><use href="/assets/icons.svg#i-copy"/></svg><span>Копировать</span></button>
+      </div>
+      <div class="term-body panels">
+        <div role="tabpanel" id="p-install" aria-labelledby="t-install">
+          <pre class="code"><span class="ln"><span class="p">$ </span>curl -fsSL https://raw.githubusercontent.com/<wbr>Logmen/<wbr>MonoPanel/<wbr>main/<wbr>packaging/<wbr>install.sh | sh</span><span class="ln"><span class="p">$ </span>mp setup</span></pre>
+          <p class="term-note">Скрипт определит ОС и архитектуру, скачает пакет последнего релиза, сверит контрольную
+            сумму и поставит его. <code>mp setup</code> создаст администратора и напечатает адрес панели и пароль.</p>
+          <div class="term-reqs"><span class="tag tag-muted">root</span><span class="tag tag-muted">systemd</span><span class="tag tag-muted">amd64 · arm64</span></div>
+        </div>
+        <div role="tabpanel" id="p-site" aria-labelledby="t-site" class="off">
+          <pre class="code"><span class="ln"><span class="p">$ </span>mp stack install nginx</span><span class="ln"><span class="p">$ </span>mp stack install percona</span><span class="ln"><span class="p">$ </span>mp php install 8.4</span><span class="ln"><span class="p">$ </span>mp user add alex --generate --shell</span><span class="ln"><span class="p">$ </span>mp site add example.com --user alex --www --preset wordpress</span><span class="ln"><span class="p">$ </span>mp cms install example.com wordpress --force</span></pre>
+          <p class="term-note">Пресет настроит nginx и PHP под CMS, а её установщик панель пройдёт сама и один раз
+            покажет доступы администратора.</p>
+        </div>
+        <div role="tabpanel" id="p-mail" aria-labelledby="t-mail" class="off">
+          <pre class="code"><span class="ln"><span class="p">$ </span>mp mail install --hostname mail.example.com</span><span class="ln"><span class="p">$ </span>mp mail domain add example.com --user alex</span><span class="ln"><span class="p">$ </span>mp mail box add ivan@example.com --quota 2048</span><span class="ln"><span class="p">$ </span>mp mail domain dns example.com</span></pre>
+          <p class="term-note"><code>mail domain dns</code> покажет, что прописать в DNS — MX, SPF, DKIM, DMARC и PTR, —
+            и проверит записи по публичным резолверам.</p>
+        </div>
+        <div role="tabpanel" id="p-move" aria-labelledby="t-move" class="off">
+          <pre class="code"><span class="ln"><span class="p">$ </span>mp migrate plan --from fastpanel --source root@old.example.com --scope user:shop</span><span class="ln"><span class="p">$ </span>mp migrate run  --from fastpanel --source root@old.example.com --scope user:shop</span></pre>
+          <p class="term-note"><code>plan</code> ничего не меняет и показывает, что приедет и что мешает. Источник только
+            читается, так что старый сервер остаётся запасным, пока DNS не переключён.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="kpis" id="facts" aria-label="Коротко">
+    <div class="kpi rise" style="--i:5"><span class="label">ОС в тестовой матрице</span><span class="kpi-v">11</span><span class="small">Debian · Ubuntu · Alma · Rocky · Oracle</span></div>
+    <div class="kpi rise" style="--i:6"><span class="label">Ветки PHP</span><span class="kpi-v">5.6–8.5</span><span class="small">параллельно, пул php-fpm на сайт</span></div>
+    <div class="kpi rise" style="--i:7"><span class="label">Рантайм на хосте</span><span class="kpi-v">0</span><span class="small">один статический Go-бинарник</span></div>
+    <div class="kpi rise" style="--i:8"><span class="label">Обновления</span><span class="kpi-v">ed25519</span><span class="small">подписанные пакеты и откат, если новая версия не ответит</span></div>
+  </section>
+
+  <section class="section" id="ui">
+    <div class="head">
+      <div>
+        <h2 class="page-title">Интерфейс</h2>
+        <p>Светлая и тёмная тема, русский и английский, на телефоне — тоже. Снимок с примерного сервера:
+          Ubuntu 24.04, сайты на example.com.</p>
+      </div>
+      <a class="btn" href="/docs/web-ui/">Все страницы <svg class="ic"><use href="/assets/icons.svg#i-chevron"/></svg></a>
+    </div>
+    <figure class="shot">
+      <a class="shot-frame only-light" href="/docs/web-ui/"><img src="/docs/img/dashboard.webp" width="1440" height="900" alt="Дашборд MonoPanel: нагрузка, память, диск, сервисы, графики и диагностика" loading="lazy" decoding="async"></a>
+      <a class="shot-frame only-dark" href="/docs/web-ui/"><img src="/docs/img/dashboard.dark.webp" width="1440" height="900" alt="Дашборд MonoPanel: нагрузка, память, диск, сервисы, графики и диагностика" loading="lazy" decoding="async"></a>
+    </figure>
+  </section>
+
+  <section class="section" id="features">
+    <div class="head">
+      <div>
+        <h2 class="page-title">Возможности</h2>
+        <p>Всё проходит через один REST API и доступно в Web UI, CLI и TUI.</p>
+      </div>
+    </div>
+    <div class="grid grid-3">
+      <article class="card feat">
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-globe"/></svg></span><h3>Сайты</h3></div>
+        <p>nginx → php-fpm, nginx → Apache или прокси на свой backend. Установка и пресеты WordPress, Joomla,
+          OpenCart и 1С-Битрикс.</p>
+        <span class="tag tag-muted">mp site add</span>
+      </article>
+      <article class="card feat">
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-code"/></svg></span><h3>PHP 5.6–8.5</h3></div>
+        <p>Несколько веток параллельно, свой php-fpm на каждую и пул на сайт. Любой параметр php.ini — для одного
+          сайта или для всех сразу.</p>
+        <span class="tag tag-muted">mp php install 8.4</span>
+      </article>
+      <article class="card feat">
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-db"/></svg></span><h3>Базы данных</h3></div>
+        <p>Percona Server или MySQL 8.4 LTS: root по auth_socket, настройка под объём памяти, сгенерированные
+          пароли.</p>
+        <span class="tag tag-muted">mp db create</span>
+      </article>
+      <article class="card feat">
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-shield"/></svg></span><h3>TLS</h3></div>
+        <p>Let’s Encrypt по HTTP-01 и DNS-01 для wildcard — Cloudflare, Hetzner, DigitalOcean и другие.
+          Автопродление за 30 дней.</p>
+        <span class="tag tag-muted">mp ssl issue</span>
+      </article>
+      <article class="card feat">
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-mail"/></svg></span><h3>Почта</h3></div>
+        <p>postfix, dovecot и opendkim: ящики с квотами, алиасы, DKIM и Roundcube. Панель покажет нужные DNS-записи
+          и проверит их. Пока — Debian 12 и Ubuntu 22.04/24.04.</p>
+        <span class="tag tag-muted">mp mail install</span>
+      </article>
+      <article class="card feat">
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-fire"/></svg></span><h3>Firewall</h3></div>
+        <p>nftables с policy drop и fail2ban с jail’ами sshd, nginx и панели. Правило, которое заперло бы вас самих,
+          панель не примет.</p>
+        <span class="tag tag-muted">mp firewall enable</span>
+      </article>
+      <article class="card feat">
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-archive"/></svg></span><h3>Бэкапы</h3></div>
+        <p>restic в local, SFTP, S3, B2 или REST: файлы, дампы MySQL и база панели по расписанию, восстановление
+          рядом или на место.</p>
+        <span class="tag tag-muted">mp backup run</span>
+      </article>
+      <article class="card feat">
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-refresh"/></svg></span><h3>Переезд</h3></div>
+        <p>Аккаунт целиком — с другой MonoPanel, BitrixVM или FASTPANEL: сайты, базы, cron и сертификаты. Источник
+          только читается.</p>
+        <span class="tag tag-muted">mp migrate run</span>
+      </article>
+      <article class="card feat">
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-terminal"/></svg></span><h3>Web UI, CLI, TUI и API</h3></div>
+        <p>Один REST API на всё: что можно сделать мышкой, можно сделать скриптом. TOTP 2FA, API-токены
+          и webhooks.</p>
+        <span class="tag tag-muted">mp</span>
+      </article>
+    </div>
+  </section>
+
+  <section class="section" id="how">
+    <div class="head">
+      <div>
+        <h2 class="page-title">Как устроено</h2>
+        <p>Один бинарник <code>monopanel</code> (он же <code>mp</code>) работает в четырёх ролях с разделением
+          привилегий. Состояние живёт в SQLite.</p>
+      </div>
+    </div>
+    <div class="grid grid-2">
+      <div class="card roles">
+        <table class="tbl">
+          <thead><tr><th>Роль</th><th>Права</th><th>Зачем</th></tr></thead>
+          <tbody>
+            <tr><td data-label="Роль"><code>api</code></td><td data-label="Права">пользователь <code>monopanel</code></td><td data-label="Зачем">HTTPS :8443, сокет для CLI, очередь задач</td></tr>
+            <tr><td data-label="Роль"><code>agent</code></td><td data-label="Права">root</td><td data-label="Зачем">закрытый набор типизированных операций, никаких строк с командами</td></tr>
+            <tr><td data-label="Роль"><code>helper</code></td><td data-label="Права">setuid, необратимый сброс прав</td><td data-label="Зачем">файловые операции от имени клиента</td></tr>
+            <tr><td data-label="Роль"><code>fsop</code></td><td data-label="Права">права клиента</td><td data-label="Зачем">сама файловая операция</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        <span class="label">Изменение сайта</span>
+        <div class="flow">
+          <span class="tag tag-accent">запись в базу</span><svg class="ic"><use href="/assets/icons.svg#i-chevron"/></svg>
+          <span class="tag tag-accent">рендер шаблонов</span><svg class="ic"><use href="/assets/icons.svg#i-chevron"/></svg>
+          <span class="tag tag-accent">nginx -t · apachectl -t · php-fpm -t</span><svg class="ic"><use href="/assets/icons.svg#i-chevron"/></svg>
+          <span class="tag tag-accent">атомарная запись</span><svg class="ic"><use href="/assets/icons.svg#i-chevron"/></svg>
+          <span class="tag tag-ok"><span class="dot"></span>reload</span>
+        </div>
+        <p>Изменение — это не правка файла на диске, а запись в базу, из которой рендерятся конфиги. Любая неудача
+          на этом пути откатывает весь набор файлов и возвращает текст ошибки.</p>
+        <hr class="divider">
+        <span class="label">Обновление панели</span>
+        <p>Панель сама находит новый релиз, скачивает пакет для своей ОС, проверяет подпись ed25519 и ставит его
+          отдельным systemd-юнитом. Если новая версия не отвечает, возвращается прежний бинарник.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="os">
+    <div class="head">
+      <div>
+        <h2 class="page-title">Где работает</h2>
+        <p>Нужны root и systemd. Установка панели, nginx, PHP, Percona и сценарий e2e проходят на всех
+          одиннадцати ОС тестовой площадки.</p>
+      </div>
+    </div>
+    <div class="card">
+      <ul class="os">
+        <li class="tag tag-ok"><span class="dot"></span>Debian 12</li>
+        <li class="tag tag-ok"><span class="dot"></span>Debian 13</li>
+        <li class="tag tag-ok"><span class="dot"></span>Ubuntu 22.04</li>
+        <li class="tag tag-ok"><span class="dot"></span>Ubuntu 24.04</li>
+        <li class="tag tag-ok"><span class="dot"></span>Ubuntu 26.04</li>
+        <li class="tag tag-ok"><span class="dot"></span>AlmaLinux 9</li>
+        <li class="tag tag-ok"><span class="dot"></span>AlmaLinux 10</li>
+        <li class="tag tag-ok"><span class="dot"></span>Rocky Linux 9</li>
+        <li class="tag tag-ok"><span class="dot"></span>Rocky Linux 10</li>
+        <li class="tag tag-ok"><span class="dot"></span>Oracle Linux 9</li>
+        <li class="tag tag-ok"><span class="dot"></span>Oracle Linux 10</li>
+      </ul>
+      <hr class="divider">
+      <p>На EL SELinux остаётся в enforcing — панель сама настраивает контексты и булевы под хостинг.
+        Пакеты .deb и .rpm для amd64 и arm64.</p>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <a class="logo" href="/" aria-label="MonoPanel — на главную"><span class="logo-mark" aria-hidden="true">M</span><span class="brand">MonoPanel</span></a>
+    <nav aria-label="Ссылки">
+      <a href="https://github.com/Logmen/MonoPanel">GitHub</a>
+      <a href="https://github.com/Logmen/MonoPanel/releases">Релизы</a>
+      <a href="/docs/">Документация</a>
+      <a href="https://github.com/Logmen/MonoPanel/blob/main/SECURITY.md">Безопасность</a>
+      <a href="https://github.com/Logmen/MonoPanel/blob/main/README.en.md">English</a>
+      <a href="https://github.com/Logmen/MonoPanel/blob/main/LICENSE">Apache-2.0</a>
+    </nav>
+  </div>
+</footer>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

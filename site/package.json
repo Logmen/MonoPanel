@@ -1,0 +1,18 @@
+{
+  "name": "monopanel-site",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs && wrangler dev",
+    "deploy": "node build.mjs && wrangler deploy"
+  },
+  "devDependencies": {
+    "marked": "18.0.14",
+    "wrangler": "4.137.0"
+  },
+  "allowScripts": {
+    "workerd@1.20260921.1": true,
+    "esbuild@0.28.1": true
+  }
+}

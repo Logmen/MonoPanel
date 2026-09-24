@@ -1,0 +1,12 @@
+// Публичный сайт MonoPanel: статика из dist/ (npm run build: public/ + документация),
+// Workers отдаёт её без кода воркера. Сборка — Workers Builds, настройки в README.md.
+{
+  // Должно совпадать с именем проекта в дашборде Cloudflare, иначе сборка упадёт.
+  "name": "monopanel",
+  "compatibility_date": "2026-09-01",
+  "assets": {
+    "directory": "./dist",
+    // Неизвестный адрес получает public/404.html со статусом 404.
+    "not_found_handling": "404-page"
+  }
+}

@@ -1,0 +1,9 @@
+# Заголовки для статики Workers (сам файл наружу не отдаётся).
+# Шрифты не меняются от версии к версии — их можно кэшировать надолго.
+/fonts/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: DENY
