@@ -24,6 +24,7 @@ import (
 	"monopanel/internal/apitypes"
 	"monopanel/internal/auth"
 	"monopanel/internal/jobs"
+	"monopanel/internal/render"
 	"monopanel/internal/store"
 )
 
@@ -287,7 +288,10 @@ func (s *Server) jobSiteCMS(ctx context.Context, jc *jobs.Context) error {
 	var entries []apitypes.FileEntry
 	_ = json.Unmarshal(out, &entries)
 	if len(entries) > 0 {
-		if !p.Force {
+		// A fresh site holds only the panel's placeholder page: that is an empty
+		// docroot for a CMS, no force (which would also drop the database) needed.
+		placeholder := !p.Force && s.onlyPlaceholder(ctx, owner, rel, site.Domain, entries)
+		if !p.Force && !placeholder {
 			return fmt.Errorf("the docroot %s is not empty (%d entries); install with force to replace its files", l.docroot, len(entries))
 		}
 		args := []string{"rm"}
@@ -306,7 +310,11 @@ func (s *Server) jobSiteCMS(ctx context.Context, jc *jobs.Context) error {
 		if rmErr != nil {
 			return fmt.Errorf("empty the docroot: %w", rmErr)
 		}
-		jc.Logf("docroot emptied: %d entries removed", len(entries))
+		if placeholder {
+			jc.Logf("placeholder page removed")
+		} else {
+			jc.Logf("docroot emptied: %d entries removed", len(entries))
+		}
 	}
 
 	jc.Progress(15, "database "+p.Database)
@@ -613,4 +621,29 @@ func (s *Server) cmsInstallBitrix(ctx context.Context, jc *jobs.Context, in cmsI
 	}
 	jc.Logf("Bitrix installed through its web wizard: trial licence, %s", what)
 	return nil
+}
+
+// placeholderName is the page site apply puts into an empty docroot.
+const placeholderName = "index.html"
+
+// placeholderPage renders that page for a domain: only the domain, no server
+// details. The CMS install recognises the page by this exact content.
+func (s *Server) placeholderPage(domain string) (string, error) {
+	return s.render.Render("site/index.html.tmpl", render.Welcome{Domain: domain})
+}
+
+// onlyPlaceholder tells whether the docroot holds nothing but the placeholder
+// page, untouched. It is compared byte for byte with what the panel renders for
+// the domain, so an edited or foreign index.html is still the owner's file and
+// needs force.
+func (s *Server) onlyPlaceholder(ctx context.Context, owner *store.User, rel, domain string, entries []apitypes.FileEntry) bool {
+	if len(entries) != 1 || entries[0].Name != placeholderName || entries[0].Type != "file" {
+		return false
+	}
+	welcome, err := s.placeholderPage(domain)
+	if err != nil || entries[0].Size != int64(len(welcome)) {
+		return false
+	}
+	got, err := s.fsop(ctx, owner, nil, "read", path.Join(rel, placeholderName))
+	return err == nil && string(got) == welcome
 }

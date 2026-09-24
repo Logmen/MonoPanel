@@ -247,6 +247,62 @@ func TestCMSInstallOpenCartAndForce(t *testing.T) {
 	}
 }
 
+// A fresh site holds only the placeholder page site apply wrote there. The
+// install takes that for an empty docroot — removes the page and keeps the
+// database — while an edited page or anything next to it still needs force.
+func TestCMSInstallOverPlaceholder(t *testing.T) {
+	src := zipBytes(t, map[string]string{"upload/index.php": "<?php", "upload/config-dist.php": "<?php", "upload/admin/config-dist.php": "<?php"})
+	f := cmsFixture(t, map[string][]byte{"https://github.com/opencart/opencart/releases/download/4.1.0.4/opencart-4.1.0.4.zip": src})
+	site := f.createSite(map[string]any{"domain": "shop.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	welcome, err := f.s.placeholderPage(site.Domain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, extra := welcome, ""
+	prev := f.agent.RunAsHook
+	f.agent.RunAsHook = func(req agent.RunAsUserRequest) *agent.RunAsUserResponse {
+		reply := func(s string) *agent.RunAsUserResponse {
+			return &agent.RunAsUserResponse{StdoutBase64: base64.StdEncoding.EncodeToString([]byte(s))}
+		}
+		switch strings.Join(req.Args, " ") {
+		case "list data/www/shop.example.com":
+			return reply(fmt.Sprintf(`[{"name":"index.html","type":"file","size":%d}%s]`, len(page), extra))
+		case "read data/www/shop.example.com/index.html":
+			return reply(page)
+		}
+		return prev(req)
+	}
+
+	// Same size, other text: the owner's page, not the panel's.
+	page = strings.Replace(welcome, "Скоро", "Позже", 1)
+	if _, job := f.installCMS(t, site.Domain, map[string]any{"cms": "opencart"}); job.Status != store.JobFailed || !strings.Contains(job.Error, "not empty") {
+		t.Fatalf("an edited page must stop the install: %s %s", job.Status, job.Error)
+	}
+	page, extra = welcome, `,{"name":"app.php","type":"file","size":5}`
+	if _, job := f.installCMS(t, site.Domain, map[string]any{"cms": "opencart"}); job.Status != store.JobFailed || !strings.Contains(job.Error, "not empty") {
+		t.Fatalf("a file next to the placeholder must stop the install: %s %s", job.Status, job.Error)
+	}
+
+	extra = ""
+	if _, job := f.installCMS(t, site.Domain, map[string]any{"cms": "opencart"}); job.Status != store.JobDone {
+		t.Fatalf("the untouched placeholder must not need force: %s %s", job.Status, job.Error)
+	}
+	removed := false
+	for _, r := range f.agent.RunAs() {
+		if strings.Join(r.Args, " ") == "rm data/www/shop.example.com/index.html" {
+			removed = true
+		}
+	}
+	if !removed {
+		t.Fatalf("the placeholder must be removed before unpacking: %+v", f.agent.RunAs())
+	}
+	for _, tc := range f.agent.Tools() {
+		if tc.Name == "mysql" && strings.Contains(tc.Stdin, "DROP DATABASE") {
+			t.Fatalf("installing over the placeholder must keep the database: %s", tc.Stdin)
+		}
+	}
+}
+
 // A CMS needs PHP, a database server and a docroot: proxy sites and
 // unknown CMS names are refused up front.
 func TestCMSInstallRefusals(t *testing.T) {

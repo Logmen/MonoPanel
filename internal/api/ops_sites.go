@@ -701,15 +701,14 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 		return s.siteFail(ctx, site, err)
 	}
 	if !proxy {
-		// Static placeholder for an empty docroot: only the domain, no server details.
-		welcome, err := s.render.Render("site/index.html.tmpl", render.Welcome{Domain: site.Domain})
+		welcome, err := s.placeholderPage(site.Domain)
 		if err != nil {
 			return err
 		}
-		if res, err := s.agent.EnsureFile(ctx, &agent.EnsureFileRequest{Path: path.Join(l.docroot, "index.html"), Content: welcome, Mode: 0o644, Owner: login, OnlyIfDirEmpty: true}); err != nil {
+		if res, err := s.agent.EnsureFile(ctx, &agent.EnsureFileRequest{Path: path.Join(l.docroot, placeholderName), Content: welcome, Mode: 0o644, Owner: login, OnlyIfDirEmpty: true}); err != nil {
 			return s.siteFail(ctx, site, err)
 		} else if res.Written {
-			jc.Logf("placeholder page: %s/index.html", l.docroot)
+			jc.Logf("placeholder page: %s/%s", l.docroot, placeholderName)
 		}
 		if err := s.agent.EnsureSymlink(ctx, &agent.EnsureSymlinkRequest{Path: path.Join(l.data, "bin", "php"), Target: l.php.CLIBinary, Owner: login, OnlyIfMissing: true}); err != nil {
 			jc.Logf("warning: php CLI symlink: %v", err)
