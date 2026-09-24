@@ -335,7 +335,8 @@ scripts/testbed/      the testbed: VMs on Proxmox, panel bootstrap, matrix and m
 
 The design documents are in Russian, in [docs/](docs/): architecture, the platform
 matrix, the web stack, the CLI/TUI/API reference, the roadmap, the mail server,
-moving accounts between panels and the testbed.
+moving accounts between panels, the testbed and a page-by-page tour of the Web UI with
+screenshots ([docs/09-web-ui.md](docs/09-web-ui.md)).
 The API reference is served by the panel itself at `/api/v1/docs` (OpenAPI 3.1) once you are signed in or present an API token; the reference and the specification are closed to anonymous visitors, Stoplight Elements is bundled into the binary and the page loads no third-party scripts.
 
 ## Security
