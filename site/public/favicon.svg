@@ -1,5 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <style>.m{fill:#0aa5c2}@media (prefers-color-scheme:dark){.m{fill:#21e6ff}}</style>
-  <path class="m" d="M0 0H23L32 9V32H9L0 23Z"/>
-  <path d="M9.5 22.5V10l6.5 7.5 6.5-7.5v12.5" fill="none" stroke="#05070c" stroke-width="3" stroke-linejoin="miter"/>
+  <!-- Как .logo-mark: квадрат 32px со срезанными углами, «M» из Exo 2 Bold 14px по центру.
+       Цвета — accent и on-accent светлой и тёмной темы из site.css. -->
+  <style>.bg{fill:#0aa5c2}.m{fill:#0b1a2a}@media (prefers-color-scheme:dark){.bg{fill:#21e6ff}.m{fill:#05070c}}</style>
+  <path class="bg" d="M0 0H23L32 9V32H9L0 23Z"/>
+  <path class="m" d="M20.46 12.34Q21.21 12.34 21.24 13.12L21.61 22H19.63L19.31 13.99H19.06L17.5 20.01Q17.38 20.68 16.66 20.68H15.32Q14.61 20.68 14.45 20.01L12.9 13.99H12.66L12.37 22H10.38L10.74 13.12Q10.77 12.34 11.54 12.34H13.54Q14.23 12.34 14.38 13.03L15.63 17.88Q15.71 18.22 15.77 18.56Q15.82 18.91 15.89 19.26H16.08Q16.15 18.91 16.21 18.56Q16.27 18.22 16.34 17.87L17.57 13.03Q17.71 12.34 18.41 12.34Z"/>
 </svg>

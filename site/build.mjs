@@ -280,7 +280,7 @@ function layout({ title, desc, main, active, toc = '' }) {
 <meta property="og:image" content="${ORIGIN}/docs/img/dashboard.dark.webp">
 <meta name="theme-color" content="#eef3f8" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#05070c" media="(prefers-color-scheme: dark)">
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml">
 <link rel="stylesheet" href="/assets/fonts.css">
 <link rel="stylesheet" href="/assets/site.css">
 <script>try{var t=localStorage.getItem("theme");if(t==="dark"||t==="light")document.documentElement.dataset.theme=t}catch(e){}</script>
