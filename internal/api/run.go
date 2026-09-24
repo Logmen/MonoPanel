@@ -50,6 +50,7 @@ func (s *Server) Run(ctx context.Context) error {
 				s.refreshDBConfig(ctx)
 				s.refreshPHPCLIInis(ctx)
 				s.refreshSiteLogrotate(ctx)
+				s.refreshSELinuxModule(ctx)
 				return
 			}
 			select {

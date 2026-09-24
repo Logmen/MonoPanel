@@ -40,6 +40,7 @@ var tools = map[string][]string{
 	"postfix":         {"/usr/sbin/postfix"},
 	"semanage":        {"/usr/sbin/semanage"},
 	"setsebool":       {"/usr/sbin/setsebool"},
+	"semodule":        {"/usr/sbin/semodule"},
 	"restorecon":      {"/usr/sbin/restorecon"},
 	"ausearch":        {"/usr/sbin/ausearch"}, // doctor: SELinux denials of the web domain
 	"setenforce":      {"/usr/sbin/setenforce"},

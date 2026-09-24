@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -150,6 +151,15 @@ func TestNginxInstallOnELPreparesSELinux(t *testing.T) {
 	if v, _ := f.db.GetSetting(f.ctx, settingSELinux); v != selinuxPolicyVersion {
 		t.Fatalf("policy not remembered: %q", v)
 	}
+	// The panel's module lets php-fpm trace a slow worker for the slow log.
+	if cil, _ := f.agent.File(selinuxModulePath); !strings.Contains(cil, "(allow httpd_t self (capability (sys_ptrace)))") || !strings.Contains(cil, "(allow httpd_t self (process (ptrace)))") {
+		t.Fatalf("policy module:\n%s", cil)
+	}
+	if !slices.ContainsFunc(f.agent.Tools(), func(tool agentReq) bool {
+		return tool.Name == "semodule" && slices.Equal(tool.Args, []string{"-i", selinuxModulePath})
+	}) {
+		t.Fatal("the policy module was not loaded")
+	}
 	// Once is enough: a PHP installation later does not repeat it.
 	before := len(f.agent.Tools())
 	f.call(http.MethodPost, "/php/versions", map[string]any{"version": "8.3"}, http.StatusAccepted, &ref)
@@ -157,9 +167,43 @@ func TestNginxInstallOnELPreparesSELinux(t *testing.T) {
 		t.Fatalf("php install on EL: %s %s", job.Status, job.Error)
 	}
 	for _, tool := range f.agent.Tools()[before:] {
-		if tool.Name == "semanage" || tool.Name == "setsebool" {
+		if tool.Name == "semanage" || tool.Name == "setsebool" || tool.Name == "semodule" {
 			t.Fatalf("selinux policy applied twice: %+v", tool)
 		}
+	}
+}
+
+// A host whose hosting policy an older panel applied gets the policy module
+// at start, once, without the policy and its relabel being redone; a host
+// never prepared for hosting is left alone.
+func TestSELinuxModuleReachesPreparedHosts(t *testing.T) {
+	withOSRelease(t, "ID=rocky\nVERSION_ID=9.6\nID_LIKE=\"rhel centos fedora\"\n")
+	loads := func(f *siteFixture) int {
+		n := 0
+		for _, tool := range f.agent.Tools() {
+			if tool.Name == "semodule" {
+				n++
+			}
+			if tool.Name == "semanage" || tool.Name == "restorecon" {
+				t.Fatalf("the hosting policy must not be redone: %+v", tool)
+			}
+		}
+		return n
+	}
+	fresh := newSiteFixture(t)
+	fresh.s.refreshSELinuxModule(fresh.ctx)
+	if n := loads(fresh); n != 0 {
+		t.Fatalf("a host never prepared got the module: %d loads", n)
+	}
+
+	old := newSiteFixture(t)
+	if err := old.db.SetSetting(old.ctx, settingSELinux, "v2"); err != nil {
+		t.Fatal(err)
+	}
+	old.s.refreshSELinuxModule(old.ctx)
+	old.s.refreshSELinuxModule(old.ctx)
+	if n := loads(old); n != 1 {
+		t.Fatalf("the module must be loaded once: %d loads", n)
 	}
 }
 

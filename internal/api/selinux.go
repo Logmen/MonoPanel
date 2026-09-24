@@ -18,6 +18,23 @@ import (
 
 const settingSELinux = "selinux.hosting"
 
+// The panel's own policy module: what the targeted policy lacks for a hosting
+// server. php-fpm writes the PHP backtrace of a slow request into the pool's
+// slow log by attaching to the worker with ptrace, and its master runs as
+// root in httpd_t while the worker runs as the site's account, which takes
+// CAP_SYS_PTRACE; without these rules EL slow logs never get a backtrace.
+// A worker gains nothing: without the capability it may only trace processes
+// of its own account, and only in httpd_t.
+const (
+	selinuxModulePath    = "/etc/monopanel/selinux/monopanel.cil"
+	selinuxModuleVersion = "1"
+	settingSELinuxModule = "selinux.module"
+	selinuxModule        = `; MonoPanel policy module (semodule -i): php-fpm traces slow requests.
+(allow httpd_t self (capability (sys_ptrace)))
+(allow httpd_t self (process (ptrace)))
+`
+)
+
 // selinuxFileContexts are the labels the hosting layout needs beyond what
 // the targeted policy already knows (/var/www is httpd_sys_content_t by
 // default): php-fpm sockets that nginx connects to, and per-site logs that
@@ -72,7 +89,45 @@ func (s *Server) selinuxHostingPolicy(ctx context.Context, jc *jobs.Context) err
 		return fmt.Errorf("restorecon: %w", err)
 	}
 	jc.Logf("selinux: file contexts for %s and per-site logs, booleans %s", s.cfg.RunDir, strings.Join(selinuxBooleans, " "))
+	if err := s.ensureSELinuxModule(ctx); err != nil {
+		return err
+	}
 	return s.db.SetSetting(ctx, settingSELinux, selinuxPolicyVersion)
+}
+
+// ensureSELinuxModule installs the panel's policy module once per version.
+func (s *Server) ensureSELinuxModule(ctx context.Context) error {
+	if s.profile.MAC() != "selinux" {
+		return nil
+	}
+	if v, _ := s.db.GetSetting(ctx, settingSELinuxModule); v == selinuxModuleVersion {
+		return nil
+	}
+	if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{
+		Files:  []agent.FileSpec{{Path: selinuxModulePath, Content: selinuxModule, Mode: 0o644}},
+		Origin: "selinux",
+	}); err != nil {
+		return err
+	}
+	res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "semodule", Args: []string{"-i", selinuxModulePath}, TimeoutSeconds: 300})
+	if err != nil {
+		return fmt.Errorf("semodule: %w", err)
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("semodule: %s", strings.TrimSpace(res.Output))
+	}
+	return s.db.SetSetting(ctx, settingSELinuxModule, selinuxModuleVersion)
+}
+
+// refreshSELinuxModule brings the module to a host that got its hosting
+// policy from an older panel, without redoing the policy and its relabel.
+func (s *Server) refreshSELinuxModule(ctx context.Context) {
+	if v, _ := s.db.GetSetting(ctx, settingSELinux); v == "" {
+		return
+	}
+	if err := s.ensureSELinuxModule(ctx); err != nil {
+		s.log.Warn("selinux module", "err", err)
+	}
 }
 
 // selinuxPolicyVersion changes when the rules above do: a host that applied
