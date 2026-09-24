@@ -23,9 +23,11 @@ mp stack install nginx
 mp stack install percona
 mp php install 8.4
 mp php install 7.4
+mp php ext enable 8.4 redis
 mp stack install apache
 mp stack install fail2ban
 mp stack install memcached
+mp stack install valkey
 mp stack install composer
 mp stack install git
 
@@ -46,6 +48,11 @@ mp cms install shop.example.com opencart --title "Example Shop"
 mp site add old.example.com --user alex --php 7.4 --mode apache --ssl none --ip 203.0.113.10
 mp app add api --user maria --command "/usr/bin/python3 -m http.server 3000" --description "бэкенд app.example.org"
 mp site add app.example.org --user maria --mode proxy --backend http://127.0.0.1:3000 --ssl none --ip 203.0.113.10
+
+step "valkey"
+mp valkey add cache --user alex
+mp valkey add sessions --user alex
+mp site set example.com --sessions valkey
 
 step "databases"
 mp db create analytics --user alex

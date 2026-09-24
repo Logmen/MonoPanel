@@ -17,11 +17,12 @@ depend on the system nginx: if a site's configuration breaks, the panel is still
 reachable and can fix it. The web UI, the CLI, the SSH menu and any integration
 all speak the same REST API — anything you can do with a mouse you can script.
 
-> **The interface is in Russian.** The web UI, the CLI help and the documentation
-> are written in Russian; only the code, this file and the security policy are in
-> English. An English interface is on the roadmap, not in the product.
+> **Languages.** The web UI speaks English and Russian: it follows the browser
+> language and can be switched in Settings. The CLI help, API and job messages and
+> the documentation are in Russian; the code, this file and the security policy are
+> in English.
 
-Status: **0.7.0**, in daily use on a production server hosting several sites and
+Status: **0.8.10**, in daily use on a production server hosting several sites and
 mail. Development moves quickly and breaking changes are possible before 1.0.
 
 ## Install
@@ -52,8 +53,8 @@ Requires root, systemd and one of: Debian 12/13, Ubuntu 22.04/24.04/26.04,
 AlmaLinux, Rocky Linux or Oracle Linux 9/10. The whole matrix runs on a
 [testbed](docs/08-testbed.md): installing the panel, nginx, PHP and Percona and the
 e2e scenario pass on all eleven.
-On EL, SELinux stays enforcing — the panel sets up the file contexts and booleans a
-hosting server needs. Ubuntu 26.04 has no `ppa:ondrej/php` builds yet, so PHP 8.5
+On EL, SELinux stays enforcing — the panel sets up the file contexts, booleans and a
+small policy module of its own that a hosting server needs. Ubuntu 26.04 has no `ppa:ondrej/php` builds yet, so PHP 8.5
 comes from Ubuntu itself there; the panel picks the PPA up on its own once it exists.
 
 ## Quick start
@@ -63,7 +64,7 @@ mp setup --admin-password '…'   # or omit it: a password is generated and show
 mp status                       # panel, host, services, jobs
 mp stack install nginx
 mp config set web.hostname panel.example.com --restart
-mp ssl issue panel.example.com  # Let's Encrypt; the panel serves it on :8443 at once
+mp ssl panel issue              # Let's Encrypt for the panel's name, served on :8443 at once
 
 mp user add alex --generate --shell
 mp php install 8.4              # alongside 7.4, 5.6 …
@@ -72,7 +73,8 @@ mp stack install percona        # Percona Server 8.4, root via auth_socket
 mp site add example.com --user alex --www --preset wordpress
 mp site add old.example.com --user alex --php 7.4 --mode apache
 mp site add app.example.com --user alex --mode proxy --backend http://127.0.0.1:3000
-mp db create shop --user alex --generate
+mp db create shop --user alex   # a password is generated and shown
+mp stack install valkey && mp valkey add cache --user alex   # the account's own Valkey
 mp firewall enable && mp stack install fail2ban
 mp backup target add local1 --repo /var/backups/monopanel --schedule daily
 
@@ -119,11 +121,11 @@ and the terminal menu.
 | Cron | `mp cron add\|list\|enable\|disable\|rm` | the account's crontab is rendered whole from the database, with `~/data/bin` on PATH (the site's PHP version) |
 | Real IP | `mp stack real-ip --cloudflare [--from CIDR]` | trusted proxies for nginx `real_ip` (Cloudflare ranges built in), so allow-lists and logs see the visitor rather than the proxy |
 | Firewall | `mp firewall enable\|allow\|deny\|ban\|unban`, `mp stack install fail2ban` | nftables table `inet monopanel`, drop policy, SSH/80/443/panel always open, unit `monopanel-firewall`; allows with a source are checked before denies, so `deny --port 8443` + `allow --port 8443 --source <VPN>` limits the panel to the VPN, and a deny that would lock you out (SSH/panel with no per-source allow, or your own current address) is refused; fail2ban jails for sshd, nginx and the panel itself |
-| Mail | `mp mail install\|status\|domain\|box\|alias\|dns\|webmail` | postfix + dovecot + opendkim: domains, mailboxes (passwords and quotas in the panel, Maildir owned by `vmail`), aliases and catch-all, IMAP/POP3/submission on the panel's certificate, DKIM signing, sieve filters; `mp mail domain dns` prints the required MX/SPF/DKIM/DMARC/PTR records and checks them against public resolvers; Roundcube webmail installs as a regular panel site or on a port of the mail host (`--port 2096` — no DNS record and no second certificate); a domain can be marked a receiver (`--lenient`) so it also accepts mail from badly configured senders ([docs/06-mail.md](docs/06-mail.md)) |
+| Mail | `mp mail install\|status\|settings\|domain\|box\|alias\|webmail` | postfix + dovecot + opendkim: domains, mailboxes (passwords and quotas in the panel, Maildir owned by `vmail`), aliases and catch-all, IMAP/POP3/submission on the panel's certificate, DKIM signing, sieve filters; `mp mail domain dns` prints the required MX/SPF/DKIM/DMARC/PTR records and checks them against public resolvers; Roundcube webmail installs as a regular panel site or on a port of the mail host (`--port 2096` — no DNS record and no second certificate); a domain can be marked a receiver (`--lenient`) so it also accepts mail from badly configured senders ([docs/06-mail.md](docs/06-mail.md)) |
 | Backups | `mp backup target add\|run\|list\|snapshots\|restore` | restic (local/SFTP/S3/B2/REST), MySQL dumps, a copy of panel.db, retention, a daily schedule, restore into `<data>/restore/<snapshot>` or in place |
 | Files | `mp files ls\|put\|get\|mkdir\|rm\|mv\|chmod\|extract\|size` | `monopanel fsop` behind a helper that drops privileges irreversibly; paths are relative to the account's home. The web UI has a file manager with an editor: browsing, drag-and-drop upload, permissions, archive extraction and editing in the VS Code editor (Monaco: highlighting for php/html/css/js/sql/yaml/ini, find and replace, multiple cursors, folding, F1 for the command palette); a site's Files tab opens at its docroot |
 | SFTP / SSH | `mp user add`, `mp user set --shell\|--sftp-only --password` | SFTP-only means a chroot into `/var/www/<login>` via `sshd_config.d/monopanel.conf`, with one password for the panel and SFTP; `mp user rm <login> [--purge]` removes sites, databases, cron, app services, certificates and the unix account together |
-| Metrics and logs | `mp metrics`, `mp site logs`, `mp logs <unit>`, `mp doctor` | a sampler every 10 s stored as one point per minute for 30 days, site and journald log tails through the agent; doctor checks services, configs, disk, certificates, DNS, jobs and file drift |
+| Metrics and logs | `mp metrics`, `mp site logs`, `mp logs <unit>`, `mp doctor` | a sampler every 10 s stored as one point per minute for 30 days, site and journald log tails through the agent; site logs rotate weekly or at 100 MB under their own account, eight copies compressed from the second one; doctor checks services, configs, disk, certificates, DNS, jobs and file drift |
 | Security | `mp user totp-reset`, `mp webhook add` | TOTP 2FA (QR in the web UI), Bearer tokens, webhooks signed with HMAC-SHA256 on job events |
 | Languages | — | the web UI in English and Russian: picked from the browser language (CIS languages → Russian, everything else → English), switchable in Settings and on the sign-in screen, remembered per browser; API, job and CLI messages are Russian-only for now |
 
@@ -134,9 +136,9 @@ quotas, per-site cgroup limits, a DNS server, a WAF, several servers from one pa
 an apt/yum repository (packages ship as releases and the panel installs them itself).
 Mail runs on Debian/Ubuntu with dovecot 2.3; the configuration for EL and for dovecot
 2.4 (Debian 13, Ubuntu 26.04) is not written yet, and there is no content filter
-(rspamd). Moving accounts works only between two MonoPanel servers and without a
-resync before the DNS switch; adapters for other panels are planned
-([docs/07-migration.md](docs/07-migration.md)).
+(rspamd). Accounts move between two MonoPanel servers and in from BitrixVM and
+FASTPANEL, without a resync before the DNS switch; other panels and servers without a
+panel are planned ([docs/07-migration.md](docs/07-migration.md)).
 
 ## How it works
 
@@ -167,15 +169,15 @@ The principles, briefly:
 
 ## Releases and updates
 
-A version is cut by tagging; CI does the rest. The tag `v0.7.0` builds `.deb` and
+A version is cut by tagging; CI does the rest. The tag `v0.8.10` builds `.deb` and
 `.rpm` for amd64 and arm64, signs the checksum list with an ed25519 key held as a
 repository secret and publishes the release; the annotated tag's message becomes the
 release notes.
 
 ```bash
 make keygen                  # once: a signing key pair (the private half becomes the secret)
-make release VERSION=0.7.0   # tag and push; CI builds and publishes
-make packages VERSION=0.7.0  # the same artefacts locally, without publishing
+make release VERSION=0.8.10  # tag and push; CI builds and publishes
+make packages VERSION=0.8.10 # the same artefacts locally, without publishing
 ```
 
 On a server:
@@ -197,7 +199,8 @@ overall deadline, only a stalled stream is given up.
 ## Moving in
 
 An account moves as a whole: the unix user with its password, the sites, the
-databases with their passwords, cron, certificates. The move runs on the **new**
+databases with their passwords, cron, certificates — and between two MonoPanel servers
+also mail, app services (switched off) and the settings of its Valkey instances. The move runs on the **new**
 server and only ever reads the source — not one file changes there, so the old
 server stays a fallback until DNS is switched. `plan` creates nothing and says what
 would arrive and what stands in the way: a login already taken (`--as <login>`),

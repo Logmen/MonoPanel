@@ -1,6 +1,6 @@
 # 01. Архитектура MonoPanel
 
-Состояние на сентябрь 2026. Версии компонентов указаны на этот момент; их актуальность проверяется отдельным CI-job (см. [05-roadmap.md](05-roadmap.md)).
+Состояние на сентябрь 2026 (MonoPanel 0.8.10). Версии компонентов указаны на этот момент; их актуальность проверяет прогон матрицы ОС на [площадке](08-testbed.md) перед релизом.
 
 > Это проектный документ: он описывает решения и их обоснование, в том числе те части, до которых реализация ещё не дошла. Что действительно работает — в [README](../README.md) и в отметках [x] в [05-roadmap.md](05-roadmap.md). Ниже такие места помечены как «планируется».
 
@@ -69,12 +69,12 @@
 
 - HTTPS-сервер панели (порт 8443, привязка к IP по выбору; сертификат: self-signed при установке → ACME для hostname панели).
 - Раздаёт Web UI (SvelteKit static-сборка, вшита через `embed.FS`).
-- REST API `/api/v1`: OpenAPI 3.1 генерируется из Go-типов (`huma`), SSE для событий и прогресса задач, WebSocket только для терминала.
-- Аутентификация: сессии (cookie `Secure; HttpOnly; SameSite=Strict`), Bearer-токены со scope, TOTP, WebAuthn (passkeys). RBAC: `admin`, `user`.
+- REST API `/api/v1`: OpenAPI 3.1 генерируется из Go-типов (`huma`), SSE для прогресса задач. Веб-терминал на WebSocket — планируется; пока в Web UI есть «Консоль»: команды `mp` с потоковым выводом по HTTP.
+- Аутентификация: сессии (cookie `Secure; HttpOnly; SameSite=Strict`), Bearer-токены, TOTP; WebAuthn (passkeys) — планируется. RBAC: `admin`, `user`. Scope у токена ограничивает только токены переезда (`migrate:user:<логин>`), остальные scope — пометки.
 - Unix-сокет `/run/monopanel/api.sock` для CLI: uid 0 → admin без пароля; uid панельного пользователя → его права (клиент по SSH управляет своими сайтами через `mp`).
 - Job-runner: очередь задач в SQLite, N воркеров, каждая задача — идемпотентная последовательность шагов с логом и прогрессом; одна задача на сущность одновременно (lock по `site_id`/`user_id`).
 - Рендер конфигураций (`text/template`) из встроенных шаблонов с переопределением в `/etc/monopanel/templates/`.
-- Планировщик внутренних задач: продление сертификатов, бэкапы, ротация логов, сбор метрик, проверка обновлений.
+- Планировщик внутренних задач: продление сертификатов, бэкапы по расписанию, сбор метрик, проверка обновлений.
 - Хранит ключи ACME и секреты клиентов в зашифрованном виде (см. 3.6).
 
 ### 3.2 `monopaneld agent` — привилегированный процесс
@@ -82,20 +82,17 @@
 - Тот же бинарник, режим `agent`, unit `monopanel-agent.service`, root.
 - Сокет `/run/monopanel/agent.sock` (0660 root:monopanel). Проверка `SO_PEERCRED`: принимаются только uid `monopanel` и root.
 - Операции — закрытый типизированный набор (нет «выполни строку в shell»):
-  - `ApplyConfigSet{files[], validate[], reload[]}` — транзакционная запись набора файлов: backup → запись во временный файл + `rename` → валидаторы (`nginx -t`, `apachectl -t`, `php-fpm -t`) → при ошибке восстановление из backup и возврат stderr; при успехе reload сервисов и запись в confhistory.
-  - `EnsureUnixUser`, `EnsureGroupMembership`, `EnsureDir`, `SetACL`, `SetQuota`, `RemoveUser{purge}`.
-  - `Service{Start|Stop|Reload|Restart|Enable|Disable|Status}` — через systemd D-Bus (`go-systemd`), а не `systemctl`.
-  - `Pkg{AddRepo|Install|Remove|Upgrade|Query}` — apt/dnf через OS Profile, с глобальной блокировкой и логом в задачу.
-  - `MySQL{Exec, Dump, Restore}` — подключение `root@localhost` через unix-сокет и плагин `auth_socket` (пароль root не хранится).
-  - `Nft{Apply}` — собственная таблица `inet monopanel`; `Firewalld{...}` при выборе firewalld на EL.
-  - `SELinux{Restorecon|SetFcontext|SetPort|SetBool}` / `AppArmor{...}` — по OS Profile.
-  - `RunAsUser{uid, gid, op}` — запуск helper с понижением привилегий для файловых операций клиента.
-  - `Logrotate{Reopen}` — сигналы USR1 мастерам nginx/php-fpm после ротации.
-- Allow-list путей записи: `/etc/nginx/nginx.conf`, `/etc/nginx/monopanel/`, `/etc/apache2/monopanel/` | `/etc/httpd/monopanel/`, каталоги пулов FPM по layout версии, `/etc/monopanel/`, `zz-monopanel.cnf` СУБД, `/etc/nftables.d/monopanel.nft`, `/etc/logrotate.d/monopanel`, `/etc/fail2ban/jail.d/monopanel.local`, `/var/lib/monopanel/`, `/var/spool/cron/*` (через `crontab -u`), `/var/www/<user>/...` — только через `RunAsUser`.
+  - `config/apply` — транзакционная запись набора файлов: прежние версии уходят в `confhistory` → запись во временный файл + `rename` → валидаторы (`nginx -t`, `apachectl -t`, `php-fpm -t`) → при ошибке восстановление и возврат stderr; при успехе reload сервисов.
+  - `user/ensure|remove|password|shadow`, `group/ensure`, `dirs/ensure`, `file/ensure|read`, `symlink/ensure`, `acl/set`, `chown`, `paths/remove`, `dir/list`, `stat`.
+  - `service` — start/stop/reload/restart/enable/disable/status и daemon-reload через systemd D-Bus (`go-systemd`), а не `systemctl`.
+  - `pkg` — install/remove/query/available через apt/dnf по OS Profile, с глобальной блокировкой и логом в задачу.
+  - `tool` — закрытый список программ с проверкой аргументов: `mysql`/`mysqldump` (root через `auth_socket`, пароль root не хранится), `restic`, `nft`, `crontab`, `semanage`/`restorecon`/`setsebool`, `firewall-cmd`, `postfix`/`doveadm` и другие.
+  - `runas` — helper с понижением привилегий для файловых операций клиента; `stream/in|out` — потоки tar для переезда; `panel/install` — установка пакета панели при обновлении.
+- Allow-list путей записи (`DefaultAllowedWritePrefixes` в `internal/config`): `/etc/monopanel/`, каталоги панели в конфигах nginx и Apache, конфиги PHP (`/etc/php/`, `/etc/opt/remi/`), MySQL, почты, memcached, Sphinx, источники пакетов, `/etc/nftables.d/`, `/etc/logrotate.d/`, `/etc/fail2ban/jail.d/`, снимки Valkey `/var/lib/monopanel-valkey/`, `/var/lib/monopanel/`; crontab — через `crontab -u`; файлы клиентов `/var/www/<user>/...` — только через `runas`.
 
 ### 3.3 Helper (drop-privileges)
 
-`monopaneld helper --uid N --gid N --groups ... -- <op> <args>`: агент форкает процесс, который до выполнения операции необратимо понижает привилегии (`setgroups` → `setgid` → `setuid`) и работает с файлами как клиент. Через него идут файловый менеджер, загрузка/распаковка архивов, `composer`, `wp-cli`, git-деплой, терминал. Сам helper не имеет привилегированных путей кода.
+`monopaneld helper --uid N --gid N --groups ... -- <op> <args>`: агент форкает процесс, который до выполнения операции необратимо понижает привилегии (`setgroups` → `setgid` → `setuid`) и работает с файлами как клиент. Через него идут файловый менеджер, загрузка и распаковка архивов, установщики CMS (`wp-cli` и другие); git-деплой и терминал — планируются. Сам helper не имеет привилегированных путей кода.
 
 ### 3.4 Web UI
 
@@ -108,7 +105,7 @@
 ### 3.5 CLI и TUI
 
 - `monopanel` (alias `mp`) — Cobra-команды, вывод таблицей или `--json`.
-- Без аргументов в интерактивном терминале — TUI-меню (Bubble Tea v2 + Huh + Lip Gloss): дашборд, сайты, пользователи, PHP, БД, SSL, бэкапы, сервисы, задачи, настройки. Работает по SSH в 80×24, стримит прогресс задач.
+- Без аргументов в интерактивном терминале — TUI-меню (Bubble Tea v2 + Lip Gloss): сайты, пользователи, PHP, базы данных, SSL, firewall, сервисы и задачи — таблицами для просмотра; для бэкапов и настроек меню подсказывает команды `mp`. Работает по SSH. Формы, дашборд и прогресс задач в TUI — планируются.
 - CLI/TUI — тонкие клиенты API (локально `/run/monopanel/api.sock`, удалённо `https://host:8443` с токеном). Ни одна операция не реализована «только в CLI».
 - Детали — в [04-cli-tui-api.md](04-cli-tui-api.md).
 
@@ -116,8 +113,8 @@
 
 - `/var/lib/monopanel/panel.db` — SQLite, WAL, `foreign_keys=ON`, `busy_timeout`. Драйвер `modernc.org/sqlite` (pure Go → CGO-free статический бинарник). Запросы написаны руками в `internal/store`, миграции — встроенные SQL-файлы, применяются при старте.
 - Секреты (пароли БД клиентов, токены DNS-провайдеров, ключи ACME, пароли SFTP/S3 бэкапов) шифруются AES-256-GCM ключом из `/etc/monopanel/secret.key` (0640 root:monopanel). Бэкап SQLite без ключа для атакующего бесполезен.
-- История конфигов: `/var/lib/monopanel/confhistory/<escaped-path>/<timestamp>` — последние N версий каждого сгенерированного файла, diff в UI, ручной откат.
-- Снимок состояния: `mp backup run --scope panel` = `panel.db` + `/etc/monopanel` + `/var/lib/monopanel/{certs,acme}` — этого достаточно для восстановления панели на новом сервере с последующим `mp config apply --all`.
+- История конфигов: `/var/lib/monopanel/confhistory/` — прежние версии сгенерированных файлов, которые агент сохраняет при записи; diff в UI и ручной откат — планируются.
+- Снимок состояния входит в бэкап сервера (`mp backup run`, область `server`): копия `panel.db` (`VACUUM INTO`), `/etc/monopanel` вместе с ключом секретов, `/var/lib/monopanel/{certs,acme}`, `/var/www` и дампы всех баз. Восстановление панели из него на новом сервере — вручную; переносить аккаунты между живыми серверами удобнее `mp migrate` ([07](07-migration.md)).
 
 ## 4. Стек панели и обоснование
 
@@ -210,8 +207,8 @@ worker: 1) собрать модель сайта из БД (site + user + php_v
 Принципы:
 - Панель владеет только файлами в своих каталогах и главным `nginx.conf` (по шаблону, с `include conf.d/*.conf` для ручных правок). Чужие конфиги не редактируются построчно.
 - Пользовательские правки — только через include-каталоги `<domain>.d/*.conf`; панель их не перезаписывает, но валидирует вместе со всем набором.
-- Шаблоны переопределяются в `/etc/monopanel/templates/` (`mp config templates override nginx/site.conf` копирует встроенный, `diff` показывает расхождение с новой версией панели).
-- Полный reconcile (`mp config apply --all`) перегенерирует всё из БД — восстановление после ручных поломок, миграция на новый сервер, обновление шаблонов.
+- Шаблоны переопределяются файлом с тем же путём в `/etc/monopanel/templates/` (например `nginx/site.conf.tmpl`); `mp config templates` перечисляет встроенные. Команды, которые копируют встроенный шаблон и показывают его расхождение с новой версией панели, — планируются.
+- Сайт перегенерируется из БД целиком командой `mp site apply <домен>` (`mp site fix` — ещё и владелец, права и метки файлов). Полный reconcile всего сервера одной командой — планируется.
 - Смена версии PHP: новый пул создаётся до удаления старого, оба master перезагружаются, затем переключается nginx/Apache — простоя нет.
 
 ## 7. Безопасность
@@ -226,45 +223,53 @@ worker: 1) собрать модель сайта из БД (site + user + php_v
 
 ## 8. Наблюдаемость
 
-- Логи панели: `slog` JSON → journald (`monopanel-api`, `monopanel-agent`), плюс `/var/log/monopanel/audit.log` и логи задач `/var/log/monopanel/jobs/<id>.log`.
-- Метрики: агент раз в 10 с читает `/proc` (CPU, RAM, swap, диск, сеть, load), состояние сервисов, срок сертификатов; api инкрементально парсит access-логи nginx (запросы, трафик, время ответа по сайтам). Ролапы 10s/1m/1h в SQLite, хранение 30 дней; endpoint `/metrics` (Prometheus) по флагу.
-- Логи сайтов: `/var/www/<user>/data/logs/<domain>.{access,error}.log`, `<domain>.php.error.log`, `<domain>.php.slow.log`; ротация logrotate-конфигом панели.
-- Уведомления: email/webhook/Telegram о падении сервиса, истекающем сертификате, неудачном бэкапе, заканчивающемся диске.
-- Диагностика: `mp doctor` — сервисы, порты, валидность конфигов, репозитории, SELinux-denials, свободное место, расхождения desired state ↔ файлы на диске.
+- Логи панели: `slog` → journald (`monopanel-api`, `monopanel-agent`), `mp logs <unit>`. Журнал действий (кто, что, откуда) — таблица `audit_log` в базе панели; лог каждой задачи хранится вместе с задачей (`mp job show <id>`, страница «Задачи»).
+- Метрики: сэмплер раз в 10 с читает `/proc` (CPU, load, память, диск, сеть) и складывает точки по минутам на 30 дней — `mp metrics` и графики на дашборде. Разбор access-логов nginx по сайтам (запросы, трафик, время ответа) и endpoint `/metrics` для Prometheus — планируются.
+- Логи сайтов: `/var/www/<user>/data/logs/<domain>.{access,error}.log`, `<domain>.php.error.log`, `<domain>.php.slow.log`, у сайтов в режиме apache — `<domain>.apache.{access,error}.log`; `mp site logs`, вкладка «Логи» сайта. Ротирует их `/etc/logrotate.d/monopanel-sites`: по блоку на аккаунт с `su <логин>`, раз в неделю или раньше, если лог перевалил за 100 МБ, восемь копий, сжатые начиная со второй; все логи — аккаунта с правами 0660 (панель создаёт их до того, как их откроют nginx, Apache и php-fpm, и передаёт аккаунту уже созданные), nginx и Apache переоткрывают логи по USR1 через свои pid-файлы. Панель переписывает файл при появлении и удалении аккаунта и при старте, а перед записью проверяет его `logrotate --debug`. Трассировки в slow-логе php-fpm на EL разрешает модуль политики панели ([02](02-platform-matrix.md#6-selinux-el9--el10)).
+- Уведомления: webhooks с подписью HMAC-SHA256 на завершение задач — `job.done`, `job.failed` и `<тип задачи>.done|failed` (`site.apply`, `cert.issue`, `backup.run`…). Почта и Telegram — планируются.
+- Диагностика: `mp doctor` и блок на дашборде — сервисы, синтаксис конфигов, диск, память, сертификаты, DNS имени панели, упавшие задачи, отказы SELinux для веб-сервера, дрейф сгенерированных файлов; у части находок есть кнопка «починить».
 
 ## 9. Упаковка, установка, обновление
 
-- Сборка: `make packages` → бинарники amd64/arm64 → `nfpm` → `monopanel_<ver>_amd64.deb` / `monopanel-<ver>.x86_64.rpm` (планируется `monopanel-selinux` для EL). Внутри: бинарник, unit-файлы (`monopanel-api.service`, `monopanel-agent.service`, `monopanel-php-fpm@.service`), `/etc/monopanel/config.yaml`, встроенные шаблоны, SELinux-модуль, logrotate, fail2ban-фильтры, bash/fish-completion.
-- Репозитории: `deb https://repo.<domain>/deb <codename> main` и `https://repo.<domain>/rpm/el$releasever/$basearch` (aptly / `createrepo_c`, подпись GPG). Там же — собственные сборки PHP, phpMyAdmin, restic.
-- Установка: `curl -fsSL https://get.<domain> | bash` → определяет ОС и архитектуру → подключает репозиторий → `apt/dnf install monopanel` → `mp setup` (TUI-мастер: hostname панели, admin-пароль, выбор СУБД, версии PHP, режим по умолчанию, IP, firewall) → установка стека из официальных репозиториев. Полностью неинтерактивный режим — `mp setup --config setup.yaml`.
-- Обновление панели: `mp update` или из UI (задача `self-update`: `apt/dnf upgrade monopanel` → миграции БД → рестарт api, затем agent). Обновление компонентов стека — по инициативе администратора; мажорные апгрейды СУБД не автоматизируются.
+- Сборка: `make packages VERSION=…` → бинарники amd64/arm64 → `nfpm` → `monopanel_<ver>_<arch>.deb`, `monopanel-<ver>.<arch>.rpm`, голые бинарники и `SHA256SUMS`. В пакете: бинарник, unit-файлы `monopanel-api.service` и `monopanel-agent.service`, sysusers/tmpfiles, `/etc/monopanel/config.yaml`; шаблоны конфигов вшиты в бинарник.
+- Релиз: тег `v<ver>` → CI собирает пакеты, подписывает `SHA256SUMS` ключом ed25519 (`SHA256SUMS.sig`) и публикует релиз на GitHub; текст аннотированного тега становится описанием. Своего apt/yum-репозитория нет — планируется; пакеты берутся из релизов.
+- Установка: `curl -fsSL https://monopanel.app/install.sh | sh` (адрес ведёт на `packaging/install.sh`): скрипт определяет ОС и архитектуру, берёт тег последнего релиза из редиректа `/releases/latest` (без GitHub API и его лимита), скачивает пакет, сверяет контрольную сумму и ставит его. Затем `mp setup`: служебный пользователь, каталоги, база, самоподписанный сертификат, администратор; адрес панели и пароль печатаются в конце, параметры задаются флагами (`--hostname`, `--listen`, `--admin-password`…). Стек — nginx, PHP, СУБД и остальное — ставится потом из официальных репозиториев: `mp stack install`, `mp php install` или из Web UI. TUI-мастер установки — планируется.
+- Обновление панели: `mp update apply` или кнопка в «Настройках» (задача `panel.update`): поиск релиза, проверка подписи списка контрольных сумм (если в `config.yaml` задан `update.public_key`), загрузка пакета, установка агентом в transient-юните `monopanel-update.service` — он переживает перезапуск api и агента и возвращает прежний бинарник, если новая версия не отвечает; миграции базы применяются при старте. Проверка идёт по расписанию (раз в сутки), `--auto-apply` ставит найденное само. Обновление компонентов стека — по инициативе администратора; мажорные апгрейды СУБД не автоматизируются.
 
 ## 10. Структура репозитория
 
 ```
 monopanel/
-├── cmd/monopanel/            # единая точка входа: api | agent | helper | CLI/TUI
+├── cmd/monopanel/            # единая точка входа: api | agent | helper | fsop | CLI/TUI
 ├── internal/
-│   ├── api/                  # HTTP-хендлеры (huma), auth, SSE, WS, middleware
-│   ├── agent/                # привилегированные операции + сервер unix-сокета
-│   ├── core/                 # доменные сервисы: users, sites, php, db, certs, backups, cron, firewall, files
-│   ├── jobs/                 # очередь, воркеры, шаги, локи
-│   ├── render/               # рендер шаблонов, модель конфигов, golden-тесты
-│   ├── osprofile/            # debian/, rhel/: пакеты, пути, сервисы, MAC, firewall
-│   ├── store/                # запросы, модели, миграции
-│   ├── cli/                  # cobra-команды
-│   └── tui/                  # bubbletea-экраны
-├── templates/                # nginx/, apache/, php-fpm/, mysql/, systemd/, logrotate/, fail2ban/, nftables/
+│   ├── api/                  # HTTP API (huma + chi), auth, SSE, Web UI, TLS панели, обработчики задач
+│   ├── apitypes/             # типы запросов и ответов API — общие для сервера, CLI и TUI
+│   ├── agent/                # привилегированный агент и его операции; agenttest — фейк для тестов
+│   ├── jobs/                 # очередь задач, воркеры, блокировки по сущности, брокер событий
+│   ├── store/                # SQLite: запросы, модели, встроенные миграции
+│   ├── render/               # рендер шаблонов + golden-тесты
+│   ├── osprofile/            # различия Debian/RHEL: пакеты, пути, сервисы, SELinux
+│   ├── acme/                 # выпуск и продление сертификатов (lego)
+│   ├── auth/, secrets/       # пароли, токены, TOTP; шифрование секретов в базе
+│   ├── updater/              # поиск релиза, проверка подписи, установка с откатом
+│   ├── setup/                # mp setup
+│   ├── cli/, tui/, client/   # команды mp, TUI-меню, Go-клиент API
+│   └── config/, systemd/, sysinfo/, peercred/, buildinfo/
+├── templates/                # nginx/, apache/, php/, php-fpm/, mysql/, mail/, systemd/, nftables/, fail2ban/, …
 ├── web/                      # SvelteKit-приложение (build → embed)
-├── packaging/                # nfpm.yaml, units, selinux/, install.sh, repo/
-├── build/php/                # Dockerfile'ы и скрипты сборки PHP 5.6–8.5 (этап 2)
-├── test/                     # integration: VM/контейнеры по матрице ОС
+├── site/                     # сайт monopanel.app с документацией из README и docs/
+├── packaging/                # nfpm.yaml, units, sysusers/tmpfiles, install.sh
+├── scripts/                  # release (ключ и подпись), testbed (площадка), screenshots (снимки для docs)
+├── e2e/                      # сценарий против живой панели
 └── docs/
 ```
 
+Собственные сборки PHP (`build/php/`, этап 2) — планируются.
+
 ## 11. Тестирование
 
-- Unit: рендер шаблонов (golden-файлы на каждую ОС × режим × версию PHP), валидаторы ввода (домены/IDN, логины, ini-значения), планировщик задач, OS Profile.
-- Integration (обязательная матрица в CI): Debian 12, 13; Ubuntu 22.04, 24.04, 26.04; AlmaLinux 9, 10; Rocky Linux 9, 10 — VM (SELinux, nftables, квоты, systemd-слайсы в контейнерах не проверить). Сценарий: install → setup → пользователь/сайт в режиме A → смена PHP → сайт в режиме B → HTTPS через Pebble (тестовый ACME) → БД → бэкап → восстановление → suspend → purge → `mp doctor` без ошибок.
-- e2e UI: Playwright против тестового сервера.
-- Регресс шаблонов: `nginx -t` / `apachectl -t` / `php-fpm -t` на всех golden-файлах в контейнерах с реальными бинарниками.
+- Unit (`make test`, пара секунд): логика панели проверяется через фейковый агент (`internal/agent/agenttest`) без root и systemd — тест видит сгенерированные файлы и все вызовы агента; шаблоны — golden-файлами (`go test ./internal/render -update` обновляет их); валидаторы ввода, очередь задач, OS Profile. `make check` добавляет `gofmt`, `go vet` и `golangci-lint`.
+- Регресс шаблонов: `scripts/check-templates.sh` скармливает сгенерированные конфиги настоящим `nginx -t` и `apachectl -t` (в CI — на каждый push).
+- E2E (`make e2e HOST=<ssh-алиас>`): на живой панели — пользователь → сайт с пресетом → база → nginx и PHP отвечают → удаление; `mp doctor` без ошибок.
+- Матрица ОС — на площадке Proxmox ([08-testbed.md](08-testbed.md)), а не в CI: одиннадцать VM (Debian 12/13, Ubuntu 22.04/24.04/26.04, AlmaLinux 9/10, Rocky Linux 9/10, Oracle Linux 9/10) с откатом к чистому снимку. Перед релизом — `make testbed-full`: матрица, переносы между панелями, CMS на каждой машине, переезд с BitrixVM и FASTPANEL, doctor везде.
+- Планируются: HTTPS через Pebble (тестовый ACME), бэкап → восстановление → suspend → purge в сценарии e2e, e2e Web UI на Playwright.

@@ -52,11 +52,16 @@ const SHOTS = [
   { name: 'firewall', path: '/firewall' },
   { name: 'backups', path: '/backups' },
   { name: 'users', path: '/users' },
+  { name: 'valkey', path: '/users', step: openValkey('alex'), settle: 2500 },
   { name: 'settings', path: '/settings' }
 ];
 
 function clickText(selector, text) {
   return `(() => { const el = [...document.querySelectorAll(${JSON.stringify(selector)})].find((e) => e.textContent.trim() === ${JSON.stringify(text)}); el?.click(); return !!el; })()`;
+}
+// Кнопка valkey в строке аккаунта: панель с экземплярами открывается под таблицей.
+function openValkey(login) {
+  return `(() => { const row = [...document.querySelectorAll('tbody tr')].find((r) => r.children[0]?.textContent.trim() === ${JSON.stringify(login)}); const b = row && [...row.querySelectorAll('button')].find((e) => e.textContent.trim() === 'valkey'); b?.click(); setTimeout(() => window.scrollTo(0, document.body.scrollHeight), 800); return !!b; })()`;
 }
 function clickRow(type) {
   return `(() => { const row = [...document.querySelectorAll('tbody tr')].find((r) => r.children[1]?.textContent.trim() === ${JSON.stringify(type)}); row?.click(); return !!row; })()`;

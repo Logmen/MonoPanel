@@ -16,7 +16,7 @@ nginx: если конфигурация сайта сломается, пане
 Web UI, CLI, TUI и интеграции работают через один и тот же REST API — то, что можно
 сделать мышкой, можно сделать и скриптом.
 
-Состояние: **0.7.0**, ежедневно используется на боевом сервере с несколькими сайтами
+Состояние: **0.8.10**, ежедневно используется на боевом сервере с несколькими сайтами
 и почтой. Разработка идёт быстро, ломающие изменения до 1.0 возможны.
 
 ## Установка
@@ -45,8 +45,8 @@ mp setup
 AlmaLinux, Rocky Linux или Oracle Linux 9/10. Вся матрица прогоняется на
 [тестовой площадке](docs/08-testbed.md): установка панели, nginx, PHP, Percona и
 сценарий e2e проходят на всех одиннадцати ОС.
-На EL SELinux остаётся в enforcing — панель сама настраивает контексты и булевы под
-хостинг. Для Ubuntu 26.04 у `ppa:ondrej/php` пока нет сборок, поэтому там ставится
+На EL SELinux остаётся в enforcing — панель сама настраивает контексты, булевы и свой
+небольшой модуль политики под хостинг. Для Ubuntu 26.04 у `ppa:ondrej/php` пока нет сборок, поэтому там ставится
 PHP 8.5 из самой Ubuntu; как только PPA появится, панель подключит его сама.
 
 ## Быстрый старт
@@ -56,7 +56,7 @@ mp setup --admin-password '…'   # или без пароля: сгенерир
 mp status                       # панель, хост, сервисы, задачи
 mp stack install nginx
 mp config set web.hostname panel.example.com --restart
-mp ssl issue panel.example.com  # Let's Encrypt; панель сразу отдаёт его на :8443
+mp ssl panel issue              # Let's Encrypt для имени панели, сразу на :8443
 
 mp user add alex --generate --shell
 mp php install 8.4              # + 7.4, 5.6 … параллельно
@@ -65,7 +65,8 @@ mp stack install percona        # Percona Server 8.4, root через auth_socke
 mp site add example.com --user alex --www --preset wordpress
 mp site add old.example.com --user alex --php 7.4 --mode apache
 mp site add app.example.com --user alex --mode proxy --backend http://127.0.0.1:3000
-mp db create shop --user alex --generate
+mp db create shop --user alex   # пароль сгенерирует и покажет
+mp stack install valkey && mp valkey add cache --user alex   # свой Valkey аккаунта
 mp firewall enable && mp stack install fail2ban
 mp backup target add local1 --repo /var/backups/monopanel --schedule daily
 
@@ -112,11 +113,11 @@ mp                              # TUI-меню
 | Cron | `mp cron add\|list\|enable\|disable\|rm` | crontab пользователя целиком из БД, PATH с `~/data/bin` (php нужной версии) |
 | Real IP | `mp stack real-ip --cloudflare [--from CIDR]` | доверенные прокси для nginx `real_ip` (сети Cloudflare встроены): allow-list и логи видят адрес клиента, а не прокси |
 | Firewall | `mp firewall enable\|allow\|deny\|ban\|unban`, `mp stack install fail2ban` | nftables `inet monopanel`, policy drop, SSH/80/443/панель всегда открыты, unit `monopanel-firewall`; allow с источником проверяются раньше deny, так что `deny --port 8443` + `allow --port 8443 --source <VPN>` ограничивает панель адресами VPN, а deny, который запер бы вас самих (SSH/панель без allow с источником или ваш текущий адрес), панель отклоняет; fail2ban с jail'ами sshd, nginx и панели |
-| Почта | `mp mail install\|status\|domain\|box\|alias\|dns\|webmail` | postfix + dovecot + opendkim: домены, ящики (пароли и квоты в панели, Maildir у `vmail`), алиасы и catch-all, IMAP/POP3/submission с TLS панели, подпись DKIM, sieve-фильтры; `mp mail domain dns` показывает нужные MX/SPF/DKIM/DMARC/PTR и проверяет их по публичным резолверам; вебпочта Roundcube ставится отдельным сайтом или на порту почтового хоста (`--port 2096` — без своей записи в DNS и своего сертификата); домен можно объявить приёмником (`--lenient`) — он примет письма и от криво настроенных отправителей ([docs/06-mail.md](docs/06-mail.md)) |
+| Почта | `mp mail install\|status\|settings\|domain\|box\|alias\|webmail` | postfix + dovecot + opendkim: домены, ящики (пароли и квоты в панели, Maildir у `vmail`), алиасы и catch-all, IMAP/POP3/submission с TLS панели, подпись DKIM, sieve-фильтры; `mp mail domain dns` показывает нужные MX/SPF/DKIM/DMARC/PTR и проверяет их по публичным резолверам; вебпочта Roundcube ставится отдельным сайтом или на порту почтового хоста (`--port 2096` — без своей записи в DNS и своего сертификата); домен можно объявить приёмником (`--lenient`) — он примет письма и от криво настроенных отправителей ([docs/06-mail.md](docs/06-mail.md)) |
 | Бэкапы | `mp backup target add\|run\|list\|snapshots\|restore` | restic (local/SFTP/S3/B2/REST), дампы MySQL, копия panel.db, retention, ежедневное расписание, восстановление в `<data>/restore/<snapshot>` или in-place |
 | Файлы | `mp files ls\|put\|get\|mkdir\|rm\|mv\|chmod\|extract\|size` | `monopanel fsop` через helper с необратимым сбросом привилегий, пути относительно домашнего каталога; в Web UI — файловый менеджер с редактором: обзор каталога, загрузка перетаскиванием, права, распаковка архивов и правка файлов в редакторе VS Code (Monaco: подсветка php/html/css/js/sql/yaml/ini, поиск и замена, мультикурсор, свёртка, F1 — палитра команд), вкладка «Файлы» в карточке сайта открывается сразу в его docroot |
 | SFTP / SSH | `mp user add`, `mp user set --shell\|--sftp-only --password` | SFTP-only = chroot в `/var/www/<login>` через `sshd_config.d/monopanel.conf`, пароль общий для панели и SFTP; `mp user rm <login> [--purge]` — удаление вместе с сайтами, базами, cron, app-сервисами и сертификатами |
-| Метрики и логи | `mp metrics`, `mp site logs`, `mp logs <unit>`, `mp doctor` | сэмплер раз в 10 с → точки по минутам (30 дней), хвост логов сайтов и journald через агент; doctor проверяет сервисы, конфиги, диск, сертификаты, DNS, задачи и дрейф файлов |
+| Метрики и логи | `mp metrics`, `mp site logs`, `mp logs <unit>`, `mp doctor` | сэмплер раз в 10 с → точки по минутам (30 дней), хвост логов сайтов и journald через агент; логи сайтов ротируются раз в неделю или по 100 МБ от имени их аккаунта, восемь копий, сжатых со второй; doctor проверяет сервисы, конфиги, диск, сертификаты, DNS, задачи и дрейф файлов |
 | Безопасность | `mp user totp-reset`, `mp webhook add` | TOTP 2FA (QR в Web UI), Bearer-токены, webhooks с HMAC-SHA256 на события задач |
 | Языки | — | Web UI на русском и английском: язык берётся из браузера (языки стран СНГ → русский, остальные → английский), переключается в «Настройках» и на экране входа, выбор запоминается в браузере; сообщения API, задач и CLI пока только на русском |
 
@@ -126,9 +127,9 @@ mp                              # TUI-меню
 дисковые квоты, cgroup-лимиты на сайт, DNS-сервер, WAF, несколько серверов из одной
 панели, apt/yum-репозиторий (пакеты выкладываются релизами, панель ставит их сама).
 Почта работает на Debian/Ubuntu с dovecot 2.3; для EL и для dovecot 2.4 (Debian 13,
-Ubuntu 26.04) конфигурация ещё не написана, контент-фильтра (rspamd) нет. Переезд пока
-только между двумя MonoPanel и без досинхронизации перед переключением DNS; адаптеры
-для чужих панелей — в планах ([docs/07-migration.md](docs/07-migration.md)).
+Ubuntu 26.04) конфигурация ещё не написана, контент-фильтра (rspamd) нет. Переезд —
+между двумя MonoPanel и с BitrixVM и FASTPANEL, без досинхронизации перед переключением
+DNS; другие панели и серверы без панели — в планах ([docs/07-migration.md](docs/07-migration.md)).
 
 ## Как устроено
 
@@ -157,15 +158,15 @@ Ubuntu 26.04) конфигурация ещё не написана, конте�
 
 ## Обновление панели
 
-Версия выпускается тегом; всё остальное делает CI. Тег `v0.7.0` собирает `.deb` и
+Версия выпускается тегом; всё остальное делает CI. Тег `v0.8.10` собирает `.deb` и
 `.rpm` под amd64 и arm64, подписывает список контрольных сумм ключом ed25519 из
 секрета репозитория и публикует релиз; текст аннотированного тега становится
 описанием релиза.
 
 ```bash
 make keygen                  # один раз: ключ подписи (приватный — в секрет MONOPANEL_RELEASE_KEY)
-make release VERSION=0.7.0   # тег + push, дальше CI собирает и публикует
-make packages VERSION=0.7.0  # то же локально, без публикации
+make release VERSION=0.8.10  # тег + push, дальше CI собирает и публикует
+make packages VERSION=0.8.10 # то же локально, без публикации
 ```
 
 На сервере:
@@ -187,7 +188,8 @@ transient-юнит `monopanel-update.service`, который переживае
 ## Переезд
 
 Аккаунт переезжает целиком: unix-пользователь с прежним паролем, сайты, базы с
-прежними паролями, cron, сертификаты. Перенос запускается на **новом** сервере,
+прежними паролями, cron, сертификаты, а между двумя MonoPanel — ещё почта, app-сервисы
+(выключенными) и настройки экземпляров Valkey. Перенос запускается на **новом** сервере,
 источник только читается — там не меняется ни один файл, и старый сервер остаётся
 запасным, пока DNS не переключён. `plan` ничего не создаёт и показывает, что
 приедет и что мешает: занятый логин (`--as <логин>`), домен или база, которые
