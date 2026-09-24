@@ -10,6 +10,8 @@ const SITE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(SITE, '..');
 const OUT = path.join(SITE, 'dist');
 const REPO = 'https://github.com/Logmen/MonoPanel';
+// Основной адрес сайта: canonical, og:url и sitemap указывают сюда, а не на workers.dev.
+const ORIGIN = 'https://monopanel.app';
 
 // Группы меню документации, по порядку.
 const GROUPS = [
@@ -268,6 +270,14 @@ function layout({ title, desc, main, active, toc = '' }) {
 <meta name="color-scheme" content="light dark">
 <title>${esc(title)}</title>
 <meta name="description" content="${esc(desc)}">
+<link rel="canonical" href="${ORIGIN}${active}">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="MonoPanel">
+<meta property="og:locale" content="ru_RU">
+<meta property="og:url" content="${ORIGIN}${active}">
+<meta property="og:title" content="${esc(title)}">
+<meta property="og:description" content="${esc(desc)}">
+<meta property="og:image" content="${ORIGIN}/docs/img/dashboard.dark.webp">
 <meta name="theme-color" content="#eef3f8" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#05070c" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
@@ -419,5 +429,9 @@ write(
   </main>`
   })
 );
+
+// Карта сайта для поисковиков: главная, обзор документации и все её страницы.
+const urls = ['/', '/docs/', ...pages.map((p) => p.url)];
+write('sitemap.xml', `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.map((u) => `  <url><loc>${ORIGIN}${u}</loc></url>`).join('\n')}\n</urlset>\n`);
 
 console.log(`dist: ${pages.length} страниц документации + обзор`);

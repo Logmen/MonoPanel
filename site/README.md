@@ -37,3 +37,14 @@ Workers Builds собирает сайт сам при пуше в `main`, ве�
 | Build watch paths (Settings → Build) | include `site/*`, `docs/*`, `README.md`, `web/src/lib/components/Icon.svelte` — коммиты в код панели сайт не пересобирают |
 
 Имя проекта в дашборде должно совпадать с `name` в `wrangler.jsonc`.
+
+## Домен
+
+Сайт живёт на https://monopanel.app — custom domain воркера `monopanel`; canonical,
+`og:url` и `sitemap.xml` указывают туда (`ORIGIN` в `build.mjs`), так что копия на
+workers.dev поисковикам не мешает. В зоне `monopanel.app` (Cloudflare, тариф Free):
+
+- `www.monopanel.app` — запись AAAA `100::` через прокси и Single Redirect 301 на
+  `https://monopanel.app` с тем же путём и query;
+- Always Use HTTPS включён, минимальная версия TLS — 1.2 (домены `.app` браузеры и так
+  открывают только по HTTPS).
