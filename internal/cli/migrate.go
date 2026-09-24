@@ -112,8 +112,8 @@ func migrateCmd() *cobra.Command {
 		b := plan.Bundle
 		fmt.Printf("Источник: %s (%s, %s)\n", b.Hostname, b.Panel, b.Family)
 		fmt.Printf("Аккаунт:  %s → %s\n", b.User.Login, plan.Login)
-		fmt.Printf("Приедет:  сайтов %d, баз %d, заданий cron %d, app-сервисов %d, почтовых доменов %d, ящиков %d\n",
-			len(b.Sites), len(b.Databases), len(b.Cron), len(b.Apps), len(b.MailDomains), len(b.Mailboxes))
+		fmt.Printf("Приедет:  сайтов %d, баз %d, заданий cron %d, app-сервисов %d, экземпляров Valkey %d, почтовых доменов %d, ящиков %d\n",
+			len(b.Sites), len(b.Databases), len(b.Cron), len(b.Apps), len(b.Valkey), len(b.MailDomains), len(b.Mailboxes))
 		fmt.Printf("Объём:    файлы %s, почта %s\n", humanBytes(uint64(b.Sizes.FilesBytes)), humanBytes(uint64(b.Sizes.MailBytes)))
 		if len(b.Sites) > 0 {
 			rows := make([][]string, 0, len(b.Sites))

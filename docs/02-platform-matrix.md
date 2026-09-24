@@ -25,6 +25,7 @@
 | phpMyAdmin | собственный пакет из upstream-tarball | собственный пакет | Дистрибутивные версии отстают |
 | restic | собственный пакет (upstream binary) | собственный пакет | Бэкапы: дедупликация, шифрование, local/SFTP/S3 |
 | fail2ban | дистрибутив | EPEL | + фильтры панели |
+| Valkey | дистрибутив: `valkey-server` (Debian 13, Ubuntu 24.04/26.04; Debian 12 — backports), иначе `redis-server` (Ubuntu 22.04 — 6.0, Debian 12 без backports — 7.0) | AppStream: `valkey` (8.0) | Экземпляры на аккаунт, общий экземпляр пакета выключен, см. §9 |
 | Прочее | `acl quota cron logrotate unzip nftables openssh-server ca-certificates` | `acl quota cronie logrotate unzip nftables openssh-server policycoreutils-python-utils` + EPEL | |
 
 Вендоры добавляют новые релизы ОС с задержкой (MySQL и Percona для Ubuntu 26.04 и Debian 13 — проверить перед объявлением поддержки). Доступность пакетов по всей матрице проверяет еженедельный CI-job.
@@ -186,3 +187,14 @@ type Profile interface {
 - Символ `_` нельзя ставить одновременно в `charset_table` и `blend_chars` — индекс не поднимается (NOT SERVING).
 - sphinxsearch.com отдаёт архив (40 МБ) медленно, до полутора минут: загрузки панели ограничены не общим таймаутом, а простоем (минута без данных).
 
+## 9. Valkey на аккаунт
+
+`mp stack install valkey` ставит сервер, `mp valkey add cache|sessions --user <login>` — экземпляр аккаунта. Что выяснилось на площадке (Debian 13 — Valkey 8.1, Ubuntu 22.04 — Redis 6.0, AlmaLinux 10 и Rocky 9 — Valkey 8.0, SELinux enforcing):
+
+- **Общий экземпляр пакета** слушает 127.0.0.1:6379 без пароля для всех аккаунтов хоста: Debian и Ubuntu запускают его при установке, EL — нет. Панель его останавливает и выключает (`valkey-server`, `valkey`, `redis-server`).
+- **Конфигурация — в аргументах** `ExecStart`: процесс работает от имени аккаунта, а `/etc/monopanel` ему не читается (0750 root:monopanel). `--port 0`, `--unixsocket … --unixsocketperm 600`, каталог сокета — `RuntimeDirectory=` с правами 0700, снимки — `StateDirectory=`. Одни и те же аргументы понимают Redis 6.0, Valkey 7.2, 8.0 и 8.1.
+- **`Type=notify` и `--supervised systemd`** — как в юнитах самих пакетов. С `Type=simple` перезапуск возвращался раньше, чем сервер загрузит снимок и откроет сокет, и первый запрос PHP терял сессию.
+- **Сессии** держит экземпляр `sessions`: `volatile-lru` (вытесняются только ключи с TTL, а у сессий phpredis он равен `session.gc_maxlifetime`) и `--save 60 1`; при остановке сервер пишет последний снимок, поэтому сессии переживают перезапуск. У `cache` — `allkeys-lru` и `--save ""`.
+- **SELinux: метка каталога снимков.** Сокеты — `redis_var_run_t`, снимки — `redis_var_lib_t`, как у пакета: политика и так пускает php-fpm (`httpd_t`) к сокету `redis_t`. Но у init_t нет `add_name` в каталогах `redis_var_lib_t` (в `redis_var_run_t` есть — через атрибут `pidfile`), поэтому правило стоит на `/var/lib/monopanel-valkey/[^/]+(/.*)?`, а сам `/var/lib/monopanel-valkey` остаётся `var_lib_t`. С меткой на родителе каждый `StateDirectory=` падал с `238/STATE_DIRECTORY` и EACCES от `mkdirat`, причём без AVC, даже с `semodule -DB`.
+- **SELinux: NoNewPrivileges.** `ProtectKernelTunables=`, `ProtectKernelModules=` и `RestrictAddressFamilies=` при `User=` не-root включают NoNewPrivileges. Под ним переход init_t → redis_t разрешён только правилом `nnp_transition`: в политике EL10 оно есть, в EL9 (selinux-policy 38.1) нет — ядро молча оставляло сервер в init_t, и тот не мог записать снимок («Failed opening the temp RDB file … Permission denied»), а при остановке отказывался выходить до SIGKILL. Поэтому в юните только «монтажная» изоляция: `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `ProtectControlGroups`.
+- **Изоляция проверена**: другой аккаунт, `www-data`, `nginx` и `apache` получают «Permission denied» на сокет, TCP-портов нет; PHP-сессия через php-fpm сайта на всех четырёх ОС пишется в экземпляр и переживает `mp valkey restart sessions`.

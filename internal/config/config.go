@@ -129,6 +129,7 @@ var DefaultAllowedWritePrefixes = []string{
 	"/etc/tmpfiles.d/",
 	"/etc/sysusers.d/",
 	"/var/lib/monopanel/",
+	"/var/lib/monopanel-valkey/", // snapshots of the per-account Valkey instances, removed with them
 	"/usr/share/keyrings/",
 }
 

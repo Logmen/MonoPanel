@@ -15,9 +15,15 @@
   let job = $state<number | null>(null);
   let showForm = $state(false);
   let form = $state({ login: '', password: '', email: '', role: 'user', shell: false });
-  let panel = $state<{ login: string; kind: 'cron' | 'apps'; items: any[] } | null>(null);
+  type PanelKind = 'cron' | 'apps' | 'valkey';
+  let panel = $state<{ login: string; kind: PanelKind; items: any[]; engine?: string } | null>(null);
   let cronForm = $state({ schedule: '*/5 * * * *', command: '' });
   let appForm = $state({ name: '', command: '', workdir: '', env_file: '' });
+  // Valkey of an account: a cache and a PHP sessions instance, memory in MB.
+  const vkPurposes = ['cache', 'sessions'] as const;
+  type VkPurpose = (typeof vkPurposes)[number];
+  let vkMem = $state<Record<VkPurpose, number>>({ cache: 128, sessions: 64 });
+  let vkBusy = $state('');
   let del = $state<any>(null);
   let ask = $state<Ask | null>(null);
   let purge = $state(false);
@@ -70,13 +76,41 @@
     : { title: t('users.askAppStopTitle', { name: a.app.name }), danger: true, action: t('users.askAppStopAction'),
         note: t('users.askAppStopNote'),
         run: () => appAction(a.app.name, 'stop') };
-  async function openPanel(login: string, kind: 'cron' | 'apps') {
-    try { panel = { login, kind, items: await api(kind === 'cron' ? `/users/${login}/cron` : `/users/${login}/apps`) }; } catch (e) { fail(e); }
+  async function openPanel(login: string, kind: PanelKind) {
+    try {
+      if (kind === 'valkey') {
+        const r: any = await api(`/users/${login}/valkey`);
+        if (panel?.login !== login || panel.kind !== 'valkey') vkMem = { cache: 128, sessions: 64 };
+        for (const v of r.instances) vkMem[v.instance.purpose as VkPurpose] = v.instance.memory_mb;
+        panel = { login, kind, items: r.instances, engine: r.engine };
+      } else panel = { login, kind, items: await api(kind === 'cron' ? `/users/${login}/cron` : `/users/${login}/apps`) };
+    } catch (e) { fail(e); }
   }
   async function refreshPanel() { if (panel) await openPanel(panel.login, panel.kind); }
   async function addCron(e: Event) { e.preventDefault(); if (!panel) return; try { await api(`/users/${panel.login}/cron`, { method: 'POST', json: cronForm }); cronForm.command = ''; await refreshPanel(); } catch (e) { fail(e); } }
   async function rmCron(id: number) { if (!panel) return; try { await api(`/users/${panel.login}/cron/${id}`, { method: 'DELETE' }); await refreshPanel(); } catch (e) { fail(e); } }
   async function addApp(e: Event) { e.preventDefault(); if (!panel) return; try { const body: any = { ...appForm }; if (!body.workdir) delete body.workdir; if (!body.env_file) delete body.env_file; await api(`/users/${panel.login}/apps`, { method: 'POST', json: body }); appForm = { name: '', command: '', workdir: '', env_file: '' }; await refreshPanel(); notify(t('users.appStarted')); } catch (e) { fail(e); } }
+  const vkOf = (purpose: VkPurpose) => panel?.items.find((v) => v.instance.purpose === purpose);
+  const vkTitle = (purpose: VkPurpose) => (purpose === 'cache' ? t('users.vkCache') : t('users.vkSessions'));
+  async function vkPut(e: Event, purpose: VkPurpose) {
+    e.preventDefault(); if (!panel) return;
+    const had = !!vkOf(purpose); vkBusy = purpose;
+    try {
+      await api(`/users/${panel.login}/valkey/${purpose}`, { method: 'PUT', json: { memory_mb: vkMem[purpose] } });
+      notify(t(had ? 'users.vkSaved' : 'users.vkStarted', { name: vkTitle(purpose) }));
+      await refreshPanel();
+    } catch (e) { fail(e); } finally { vkBusy = ''; }
+  }
+  async function vkRestart(purpose: VkPurpose) {
+    if (!panel) return; vkBusy = purpose;
+    try { await api(`/users/${panel.login}/valkey/${purpose}/restart`, { method: 'POST' }); notify(t('users.vkRestarted', { name: vkTitle(purpose) })); await refreshPanel(); } catch (e) { fail(e); } finally { vkBusy = ''; }
+  }
+  const askValkey = (purpose: VkPurpose): Ask => ({
+    title: purpose === 'cache' ? t('users.askVkCacheTitle', { login: panel?.login ?? '' }) : t('users.askVkSessionsTitle', { login: panel?.login ?? '' }),
+    note: purpose === 'cache' ? t('users.askVkCacheNote') : t('users.askVkSessionsNote'),
+    danger: true, action: t('common.delete'),
+    run: async () => { if (!panel) return; try { await api(`/users/${panel.login}/valkey/${purpose}`, { method: 'DELETE' }); await refreshPanel(); } catch (e) { fail(e); } }
+  });
   async function appAction(name: string, act: string) { if (!panel) return; try { if (act === 'delete') await api(`/users/${panel.login}/apps/${name}`, { method: 'DELETE' }); else await api(`/users/${panel.login}/apps/${name}/${act}`, { method: 'POST' }); await refreshPanel(); } catch (e) { fail(e); } }
 </script>
 
@@ -113,6 +147,7 @@
               <button class="btn btn-sm" onclick={() => (ask = askShell(u))}>{u.shell ? '→ SFTP-only' : '→ shell'}</button>
               <button class="btn btn-sm" onclick={() => openPanel(u.login, 'cron')}><Icon name="clock" size={13} /> cron</button>
               <button class="btn btn-sm" onclick={() => openPanel(u.login, 'apps')}><Icon name="box" size={13} /> apps</button>
+              <button class="btn btn-sm" onclick={() => openPanel(u.login, 'valkey')}><Icon name="db" size={13} /> valkey</button>
               <button class="btn btn-sm" onclick={() => (ask = askStatus(u))}>{u.status === 'active' ? t('users.suspend') : t('users.unsuspend')}</button>
             {/if}
             {#if u.login !== auth.me?.login}<button class="btn btn-danger btn-sm" onclick={() => { del = u; purge = false; confirmLogin = ''; }} title={t('users.delete')}><Icon name="trash" size={13} /></button>{/if}
@@ -126,7 +161,7 @@
 
 {#if panel}
   <div class="card rise" transition:slide={{ duration: dur(180) }}>
-    <div class="flex justify-between items-center mb-3"><span class="font-medium">{panel.kind === 'cron' ? 'Cron' : t('users.appServices')}: <span class="font-mono">{panel.login}</span></span><div class="flex gap-1"><button class="btn btn-sm" onclick={refreshPanel}><Icon name="refresh" size={13} /></button><button class="btn btn-sm" onclick={() => (panel = null)}>{t('users.closePanel')}</button></div></div>
+    <div class="flex justify-between items-center mb-3"><span class="font-medium">{panel.kind === 'cron' ? 'Cron' : panel.kind === 'valkey' ? 'Valkey' : t('users.appServices')}: <span class="font-mono">{panel.login}</span></span><div class="flex gap-1"><button class="btn btn-sm" onclick={refreshPanel}><Icon name="refresh" size={13} /></button><button class="btn btn-sm" onclick={() => (panel = null)}>{t('users.closePanel')}</button></div></div>
     {#if panel.kind === 'cron'}
       <form class="grid md:grid-cols-4 gap-2 items-end mb-3" onsubmit={addCron}>
         <div><label class="label" for="cs">{t('users.schedule')}</label><input id="cs" class="input font-mono" bind:value={cronForm.schedule} /></div>
@@ -137,6 +172,35 @@
         {#each panel.items as j}<tr><td data-label="ID">{j.id}</td><td data-label={t('users.schedule')} class="font-mono">{j.schedule}{#if !j.enabled} <span class="tag tag-muted">off</span>{/if}</td><td data-label={t('users.command')} class="font-mono text-xs">{j.command}</td><td data-label="" class="text-right"><button class="btn btn-danger btn-sm" onclick={() => (ask = askCron(j))}><Icon name="trash" size={13} /></button></td></tr>{/each}
         {#if !panel.items.length}<tr><td colspan="4" class="text-muted text-center py-4">{t('users.noCron')}</td></tr>{/if}
       </tbody></table>
+    {:else if panel.kind === 'valkey'}
+      {#if !panel.engine}
+        <p class="text-sm text-muted">{t('users.vkNotInstalled')} <a href="/stack" class="text-accent-ink hover:underline">{t('users.vkToStack')}</a></p>
+      {:else}
+        <div class="grid md:grid-cols-2 gap-3">
+          {#each vkPurposes as purpose}
+            {@const v = vkOf(purpose)}
+            {@const st = v ? v.service?.active_state || v.instance.status || 'unknown' : ''}
+            <form class="rounded-lg border border-line p-3 flex flex-col gap-2" onsubmit={(e) => vkPut(e, purpose)}>
+              <div class="flex items-start justify-between gap-2">
+                <div><div class="font-medium">{vkTitle(purpose)}</div><div class="text-xs text-muted">{purpose === 'cache' ? t('users.vkCacheHint') : t('users.vkSessionsHint')}</div></div>
+                {#if v}<span class="tag {st === 'active' ? 'tag-ok' : st === 'failed' ? 'tag-err' : 'tag-muted'}">{#if st === 'active'}<span class="dot dot-live"></span>{/if}{st}</span>{:else}<span class="tag tag-muted">{t('users.vkNone')}</span>{/if}
+              </div>
+              {#if v}<div class="text-xs font-mono break-all">{v.socket}</div>{/if}
+              {#if v?.instance.last_error}<div class="text-xs text-danger break-words">{v.instance.last_error}</div>{/if}
+              <div class="flex items-end gap-2 mt-auto">
+                <div class="flex-1"><label class="label" for="vk-{purpose}">{t('users.vkMemory')}</label><input id="vk-{purpose}" class="input" type="number" min="16" max="8192" required bind:value={vkMem[purpose]} /></div>
+                <button class="btn btn-primary" disabled={vkBusy === purpose}>{v ? t('common.save') : t('common.create')}</button>
+                {#if v}
+                  <button type="button" class="btn" disabled={vkBusy === purpose} onclick={() => vkRestart(purpose)} title={t('users.restart')}><Icon name="refresh" size={13} /></button>
+                  <button type="button" class="btn btn-danger" onclick={() => (ask = askValkey(purpose))} title={t('users.delete')}><Icon name="trash" size={13} /></button>
+                {/if}
+              </div>
+              {#if v}<p class="text-xs text-muted break-words">{purpose === 'cache' ? t('users.vkCacheUse', { socket: v.socket }) : t('users.vkSessionsUse')}</p>{/if}
+            </form>
+          {/each}
+        </div>
+        <p class="text-xs text-muted mt-3">{t('users.vkIsolation', { login: panel.login, engine: panel.engine === 'valkey' ? 'Valkey' : 'Redis' })}</p>
+      {/if}
     {:else}
       <form class="grid md:grid-cols-5 gap-2 items-end mb-3" onsubmit={addApp}>
         <div><label class="label" for="an">{t('common.name')}</label><input id="an" class="input font-mono" bind:value={appForm.name} pattern="[a-z0-9][a-z0-9_-]{'{'}0,31{'}'}" required /></div>

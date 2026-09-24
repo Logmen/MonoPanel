@@ -107,6 +107,9 @@ type Pool struct {
 	SendmailFrom     string
 	DisableFunctions string
 	Values           []KV
+	// SessionSocket, when set, sends PHP sessions to the account's Valkey
+	// sessions instance instead of files in TmpDir.
+	SessionSocket string
 	// OpenBasedir confines PHP to the site's data directory; Bitrix asks for
 	// it to be off (its checker flags it, updates and modules reach outside).
 	OpenBasedir bool
@@ -192,6 +195,23 @@ type AppUnit struct {
 	EnvFile     string
 	Env         []string
 	Restart     string
+}
+
+// ValkeyUnit feeds systemd/valkey.service.tmpl: one Valkey (or Redis)
+// instance of an account, configured entirely on its command line. The cache
+// evicts any key and keeps nothing on disk; the sessions instance evicts only
+// keys with a TTL and saves a snapshot, so a restart signs nobody out.
+type ValkeyUnit struct {
+	Login     string
+	Purpose   string
+	Name      string // <login>-<purpose>: the runtime and state directories
+	Engine    string // valkey | redis
+	Binary    string
+	Socket    string
+	DataDir   string
+	MemoryMB  int
+	MemoryMax int // MB, for systemd: room for the snapshot fork
+	Sessions  bool
 }
 
 // RealIP feeds nginx/real-ip.conf.tmpl.

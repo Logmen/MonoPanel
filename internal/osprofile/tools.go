@@ -18,6 +18,32 @@ func Memcached(p Profile) MemcachedLayout {
 	return MemcachedLayout{Package: "memcached", Service: "memcached.service", ConfFile: "/etc/memcached.conf", Template: "memcached/memcached.conf.tmpl", User: "memcache"}
 }
 
+// ValkeyLayout is the key-value server behind the per-account cache and
+// session instances: Valkey where the distribution ships it, Redis — the same
+// protocol and configuration — where it does not (Ubuntu 22.04, Debian 12
+// without backports). Service is the distribution's own shared instance, which
+// the panel keeps off: it listens without a password for every account.
+type ValkeyLayout struct {
+	Engine  string `json:"engine"` // valkey | redis
+	Package string `json:"package"`
+	Binary  string `json:"binary"`
+	Service string `json:"service"`
+}
+
+// ValkeyCandidates lists the choices for a profile, the preferred one first.
+func ValkeyCandidates(p Profile) []ValkeyLayout {
+	if p.Family() == FamilyRHEL {
+		return []ValkeyLayout{
+			{Engine: "valkey", Package: "valkey", Binary: "/usr/bin/valkey-server", Service: "valkey.service"},
+			{Engine: "redis", Package: "redis", Binary: "/usr/bin/redis-server", Service: "redis.service"},
+		}
+	}
+	return []ValkeyLayout{
+		{Engine: "valkey", Package: "valkey-server", Binary: "/usr/bin/valkey-server", Service: "valkey-server.service"},
+		{Engine: "redis", Package: "redis-server", Binary: "/usr/bin/redis-server", Service: "redis-server.service"},
+	}
+}
+
 // ToolPackages names the packages of a small tool; EL pulls jpegoptim from EPEL.
 func ToolPackages(p Profile, tool string) []string {
 	switch tool {

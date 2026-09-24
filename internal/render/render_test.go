@@ -60,6 +60,13 @@ func TestGolden(t *testing.T) {
 		}(), []string{"allow 203.0.113.0/24;", "allow 2001:db8::1;", "deny  all;"}},
 		{"nginx-real-ip.conf", "nginx/real-ip.conf.tmpl", RealIP{Cloudflare: true, CloudflareRanges: CloudflareRanges}, []string{"set_real_ip_from 173.245.48.0/20;", "real_ip_header    CF-Connecting-IP;"}},
 		{"systemd-app.service", "systemd/app.service.tmpl", AppUnit{Login: "alex", Name: "web", Description: "gunicorn", Command: "/var/www/alex/data/venv/bin/gunicorn --bind 127.0.0.1:5000 app:app", WorkDir: "/var/www/alex/data/www/app.example.com", EnvFile: "/var/www/alex/data/.env", Env: []string{"PORT=5000"}, Restart: "always"}, []string{"User=alex", "ExecStart=/var/www/alex/data/venv/bin/gunicorn --bind 127.0.0.1:5000 app:app", "EnvironmentFile=/var/www/alex/data/.env", "Environment=\"PORT=5000\"", "Restart=always"}},
+		{"systemd-valkey-cache.service", "systemd/valkey.service.tmpl", ValkeyUnit{Login: "alex", Purpose: "cache", Name: "alex-cache", Engine: "valkey", Binary: "/usr/bin/valkey-server", Socket: "/run/monopanel-valkey/alex-cache/valkey.sock", DataDir: "/var/lib/monopanel-valkey/alex-cache", MemoryMB: 128, MemoryMax: 320}, []string{"User=alex", "ExecStart=/usr/bin/valkey-server --supervised systemd --daemonize no --port 0 \\", "--maxmemory-policy allkeys-lru --save \"\"", "RuntimeDirectory=monopanel-valkey/alex-cache", "MemoryMax=320M"}},
+		{"systemd-valkey-sessions.service", "systemd/valkey.service.tmpl", ValkeyUnit{Login: "alex", Purpose: "sessions", Name: "alex-sessions", Engine: "redis", Binary: "/usr/bin/redis-server", Socket: "/run/monopanel-valkey/alex-sessions/valkey.sock", DataDir: "/var/lib/monopanel-valkey/alex-sessions", MemoryMB: 64, MemoryMax: 192, Sessions: true}, []string{"ExecStart=/usr/bin/redis-server --supervised systemd --daemonize no --port 0 \\", "--maxmemory-policy volatile-lru --save 60 1", "StateDirectory=monopanel-valkey/alex-sessions"}},
+		{"php-fpm-pool-valkey.conf", "php-fpm/pool.conf.tmpl", func() Pool {
+			p := examplePool()
+			p.SessionSocket = "/run/monopanel-valkey/alex-sessions/valkey.sock"
+			return p
+		}(), []string{"php_admin_value[session.save_handler] = redis", "php_admin_value[session.save_path] = \"unix:///run/monopanel-valkey/alex-sessions/valkey.sock\""}},
 		{"php-fpm-pool.conf", "php-fpm/pool.conf.tmpl", examplePool(), []string{"[example.com]", "listen.group = monopanel-web", "php_value[memory_limit] = 256M", "pm = ondemand"}},
 	}
 	presets := []string{"nginx/presets/wordpress.conf.tmpl", "nginx/presets/joomla.conf.tmpl", "nginx/presets/bitrix.conf.tmpl", "nginx/presets/opencart.conf.tmpl"}

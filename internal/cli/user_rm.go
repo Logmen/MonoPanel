@@ -8,7 +8,7 @@ import (
 
 func userRmCmd() *cobra.Command {
 	var purge, yes bool
-	c := &cobra.Command{Use: "rm <login>", Short: "удалить пользователя: сайты, базы, cron, app-сервисы, сертификаты и unix-аккаунт (--purge удаляет и файлы)", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	c := &cobra.Command{Use: "rm <login>", Short: "удалить пользователя: сайты, базы, cron, app-сервисы, экземпляры Valkey, сертификаты и unix-аккаунт (--purge удаляет и файлы)", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		if !yes {
 			what := "файлы останутся в /var/www/" + args[0]
 			if purge {

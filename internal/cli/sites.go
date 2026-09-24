@@ -285,6 +285,7 @@ func siteCmd() *cobra.Command {
 	set.Flags().StringSliceVar(&allowFrom, "allow", nil, "заменить список разрешённых IP/CIDR")
 	set.Flags().BoolVar(&allowAll, "allow-all", false, "снять ограничение по IP")
 	set.Flags().StringVar(&preset, "preset", "", "пресет CMS: wordpress, joomla, bitrix, opencart; пустая строка — универсальный")
+	set.Flags().StringVar(&upd.SessionStore, "sessions", "", "где PHP хранит сессии: files (tmp аккаунта) или valkey (экземпляр сессий аккаунта, mp valkey add sessions)")
 
 	for _, action := range []string{"apply", "suspend", "unsuspend", "fix"} {
 		action := action

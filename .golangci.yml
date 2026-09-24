@@ -22,6 +22,7 @@ linters:
         - (*monopanel/internal/store.DB).Audit
         - (*monopanel/internal/store.DB).SetSetting
         - (*monopanel/internal/store.DB).SetAppStatus
+        - (*monopanel/internal/store.DB).SetValkeyStatus
         - (*monopanel/internal/store.DB).SetUserStatus
         - (io.Closer).Close
         - (*os.File).Close

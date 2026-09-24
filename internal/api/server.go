@@ -136,6 +136,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 		s.registerUserUpdate()
 		s.registerDNS()
 		s.registerApps()
+		s.registerValkey()
 		s.registerRealIP()
 		s.registerCertImport()
 		s.registerPanelTLS()

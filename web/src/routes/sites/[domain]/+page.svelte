@@ -83,7 +83,8 @@
       aliases: aliases.split(',').map((s) => s.trim()).filter(Boolean), mode: site.mode, backend: site.backend || undefined, php_version: site.php_version || undefined,
       docroot: site.docroot, ssl: site.ssl, http2: site.http2, http3: site.http3, redirect_https: site.redirect_https, redirect_www: site.redirect_www,
       static_by_nginx: site.static_by_nginx, fpm_pm: site.fpm_pm, fpm_max_children: site.fpm_max_children, allow_exec: site.allow_exec, client_max_body: site.client_max_body,
-      allow_from: allow.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean), preset: site.preset || ''
+      allow_from: allow.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean), preset: site.preset || '',
+      session_store: site.mode === 'proxy' ? undefined : site.session_store || 'files'
     };
   }
   async function save(e: Event) {
@@ -156,7 +157,9 @@
       <div><label class="label" for="mode">{t('site.mode')}</label><select id="mode" class="input" bind:value={site.mode}><option value="fpm">nginx + php-fpm</option><option value="apache">nginx + Apache</option><option value="proxy">proxy → backend</option></select></div>
       {#if site.mode === 'proxy'}<div><label class="label" for="be">Backend</label><input id="be" class="input font-mono" bind:value={site.backend} /></div>{:else}
       <div><label class="label" for="php">PHP</label><select id="php" class="input" bind:value={site.php_version}>{#each php as v}<option value={v.version}>{v.version}</option>{/each}</select></div>{/if}
-      {#if site.mode !== 'proxy'}<div><label class="label" for="pr">{t('site.preset')}</label><select id="pr" class="input" bind:value={site.preset}>{#each presets as p}<option value={p.id}>{presetName(p)}</option>{/each}</select></div>{/if}
+      {#if site.mode !== 'proxy'}<div><label class="label" for="pr">{t('site.preset')}</label><select id="pr" class="input" bind:value={site.preset}>{#each presets as p}<option value={p.id}>{presetName(p)}</option>{/each}</select></div>
+      <div><label class="label" for="ss">{t('site.sessions')}</label><select id="ss" class="input" bind:value={site.session_store}><option value="">{t('site.sessionsFiles')}</option><option value="valkey">{t('site.sessionsValkey')}</option></select>
+        {#if site.session_store === 'valkey'}<div class="text-xs text-muted mt-1">{t('site.sessionsHint', { login: site.login, version: site.php_version })}</div>{/if}</div>{/if}
       <div><label class="label" for="dr">{t('site.docrootSub')}</label><input id="dr" class="input" bind:value={site.docroot} placeholder="public" /></div>
       <div><label class="label" for="ssl">SSL</label><select id="ssl" class="input" bind:value={site.ssl}><option value="auto">auto (Let's Encrypt)</option><option value="none">none</option></select>
         <div class="text-xs mt-1 flex flex-wrap items-center gap-2">

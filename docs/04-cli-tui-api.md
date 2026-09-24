@@ -47,8 +47,11 @@ mp php ext list | enable | disable 8.4 imagick
 mp php ini 8.4 [key=value …]         # глобальный ini версии
 mp php default 8.5                   # системный /usr/bin/php
 
-mp stack install|remove memcached|jpegoptim|git|composer|sphinx   # расширения; composer нужна ветка PHP, sphinx — поиск для Bitrix
+mp stack install|remove memcached|valkey|jpegoptim|git|composer|sphinx   # расширения; composer нужна ветка PHP, sphinx — поиск для Bitrix
 mp stack memcached [--memory-mb 256] [--max-conn 2048]    # без флагов — показать
+mp valkey add cache|sessions --user <login> [--memory 128]   # экземпляр аккаунта: создать или сменить память (с перезапуском)
+mp valkey list [--user <login>] | restart | rm cache|sessions --user <login>   # restart опустошает кеш; list без --user у администратора — все
+mp site set <domain> --sessions valkey|files   # PHP-сессии сайта в экземпляр sessions аккаунта (нужно расширение redis ветки PHP) или обратно в файлы
 
 mp db create <name> --user <login> [--db-user …] [--password … | --generate] [--remote]
 mp db list | rm | passwd | dump | restore …

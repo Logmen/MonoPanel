@@ -845,6 +845,35 @@ func (c *Client) DeleteApp(ctx context.Context, login, name string) error {
 	return c.do(ctx, http.MethodDelete, "/users/"+login+"/apps/"+name, nil, nil)
 }
 
+// ValkeyAll lists every Valkey instance on the host (administrators).
+func (c *Client) ValkeyAll(ctx context.Context) (*apitypes.ValkeyList, error) {
+	var out apitypes.ValkeyList
+	return &out, c.do(ctx, http.MethodGet, "/valkey", nil, &out)
+}
+
+// Valkey lists the Valkey instances of a user.
+func (c *Client) Valkey(ctx context.Context, login string) (*apitypes.ValkeyList, error) {
+	var out apitypes.ValkeyList
+	return &out, c.do(ctx, http.MethodGet, "/users/"+login+"/valkey", nil, &out)
+}
+
+// ValkeyPut creates the cache or sessions instance of a user, or changes its memory.
+func (c *Client) ValkeyPut(ctx context.Context, login, purpose string, memoryMB int) (*apitypes.ValkeyStatus, error) {
+	var out apitypes.ValkeyStatus
+	return &out, c.do(ctx, http.MethodPut, "/users/"+login+"/valkey/"+purpose, apitypes.ValkeyRequest{MemoryMB: memoryMB}, &out)
+}
+
+// ValkeyRestart restarts an instance.
+func (c *Client) ValkeyRestart(ctx context.Context, login, purpose string) (*apitypes.ValkeyStatus, error) {
+	var out apitypes.ValkeyStatus
+	return &out, c.do(ctx, http.MethodPost, "/users/"+login+"/valkey/"+purpose+"/restart", nil, &out)
+}
+
+// ValkeyDelete removes an instance with its data.
+func (c *Client) ValkeyDelete(ctx context.Context, login, purpose string) error {
+	return c.do(ctx, http.MethodDelete, "/users/"+login+"/valkey/"+purpose, nil, nil)
+}
+
 // RealIP returns the trusted-proxy settings of nginx.
 func (c *Client) RealIP(ctx context.Context) (*apitypes.RealIPSettings, error) {
 	var out apitypes.RealIPSettings

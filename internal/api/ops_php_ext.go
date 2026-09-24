@@ -154,6 +154,22 @@ func (s *Server) registerPHPExtensions() {
 		if ext == nil {
 			return nil, huma.Error422UnprocessableEntity("нет такого расширения у PHP " + in.Version + ": " + in.Body.Name)
 		}
+		if in.Body.Name == "redis" && !in.Body.Enabled {
+			// Без него session_start() на сайтах с сессиями в Valkey падает.
+			sites, err := s.db.ListSites(ctx, 0)
+			if err != nil {
+				return nil, err
+			}
+			var using []string
+			for _, site := range sites {
+				if site.SessionStore == store.SessionStoreValkey && site.PHPVersion == in.Version {
+					using = append(using, site.Domain)
+				}
+			}
+			if len(using) > 0 {
+				return nil, huma.Error409Conflict("на redis держатся PHP-сессии " + strings.Join(using, ", ") + ": сначала переведите их на файлы (mp site set <домен> --sessions files)")
+			}
+		}
 		if !ext.Installed {
 			if !in.Body.Enabled {
 				return nil, huma.Error422UnprocessableEntity(in.Body.Name + " не установлено — выключать нечего")

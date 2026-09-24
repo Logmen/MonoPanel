@@ -132,6 +132,8 @@ func (s *Server) jobStackInstall(ctx context.Context, jc *jobs.Context) error {
 		return s.installComposer(ctx, jc)
 	case "sphinx":
 		return s.installSphinx(ctx, jc)
+	case "valkey":
+		return s.installValkey(ctx, jc)
 	}
 	return fmt.Errorf("unknown component %q", p.Component)
 }

@@ -34,6 +34,7 @@
     mysql: { title: 'MySQL 8.4', text: 'stack.infoDb' },
     fail2ban: { title: 'fail2ban', text: 'stack.infoFail2ban' },
     memcached: { title: 'Memcached', text: 'stack.infoMemcached' },
+    valkey: { title: 'Valkey', text: 'stack.infoValkey' },
     jpegoptim: { title: 'Jpegoptim', text: 'stack.infoJpegoptim' },
     git: { title: 'Git', text: 'stack.infoGit' },
     composer: { title: 'Composer', text: 'stack.infoComposer' },
@@ -43,7 +44,7 @@
     ['stack.groupWeb', ['nginx', 'apache']],
     ['stack.groupDatabase', ['percona', 'mysql']],
     ['stack.groupSecurity', ['fail2ban']],
-    ['stack.groupTools', ['memcached', 'jpegoptim', 'git', 'composer', 'sphinx']]
+    ['stack.groupTools', ['memcached', 'valkey', 'jpegoptim', 'git', 'composer', 'sphinx']]
   ];
   const byName = $derived(Object.fromEntries((stack ?? []).map((c: any) => [c.name, c])) as Record<string, any>);
   const dbInstalled = $derived(!!(byName.percona?.installed || byName.mysql?.installed));
@@ -53,6 +54,7 @@
     title: t('stack.askInstallTitle', { name: info[name]?.title ?? name }),
     note: name === 'composer' ? t('stack.installNoteComposer') :
       name === 'memcached' ? t('stack.installNoteMemcached') :
+      name === 'valkey' ? t('stack.installNoteValkey') :
       name === 'sphinx' ? t('stack.installNoteSphinx') :
       name === 'percona' || name === 'mysql' ? t('stack.installNoteDb') :
       t('stack.installNoteDefault'),
@@ -62,6 +64,7 @@
   const askRemove = (name: string): Ask => ({
     title: t('stack.askRemoveTitle', { name: info[name]?.title ?? name }),
     note: name === 'memcached' ? t('stack.removeNoteMemcached') :
+      name === 'valkey' ? t('stack.removeNoteValkey') :
       name === 'composer' ? t('stack.removeNoteComposer') :
       name === 'sphinx' ? t('stack.removeNoteSphinx') :
       t('stack.removeNoteDefault'),

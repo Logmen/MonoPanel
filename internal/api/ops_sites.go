@@ -431,6 +431,20 @@ func (s *Server) registerSites() {
 				site.FPMMaxChildren = s.bitrixPoolSize(ctx)
 			}
 		}
+		switch b.SessionStore {
+		case "files":
+			site.SessionStore = ""
+		case store.SessionStoreValkey:
+			site.SessionStore = store.SessionStoreValkey
+		}
+		// A site turning into a proxy has no PHP pool and so no sessions to keep.
+		if site.Mode == store.ModeProxy && b.SessionStore != store.SessionStoreValkey {
+			site.SessionStore = ""
+		}
+		// Checked after every other change: a new PHP branch needs its own redis extension.
+		if err := s.checkSessionStore(ctx, site); err != nil {
+			return nil, huma.Error422UnprocessableEntity(err.Error())
+		}
 		if site.Status == store.SiteError {
 			site.Status = store.SitePending
 		}
@@ -754,6 +768,9 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 		Home: l.home, DataDir: l.data, TmpDir: path.Join(l.data, "tmp"), LogDir: path.Join(l.data, "logs"), BinDir: path.Join(l.data, "bin"),
 		SendmailFrom: "noreply@" + site.Domain, DisableFunctions: disable, Values: values,
 		OpenBasedir: site.Preset != presetBitrix,
+	}
+	if site.SessionStore == store.SessionStoreValkey {
+		pool.SessionSocket = valkeySocketFor(login, store.ValkeySessions)
 	}
 	poolConf := ""
 	if !proxy {

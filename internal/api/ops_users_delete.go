@@ -154,6 +154,11 @@ func (s *Server) jobUserDelete(ctx context.Context, jc *jobs.Context) error {
 		s.db.DeleteApp(ctx, a.ID) //nolint:errcheck
 		jc.Logf("app service %s removed", a.Unit())
 	}
+	if n, err := s.removeUserValkey(ctx, u.ID); err != nil {
+		return fail(err)
+	} else if n > 0 {
+		jc.Logf("valkey instances removed: %d", n)
+	}
 	if u.UnixUID != nil {
 		if res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "crontab", Args: []string{"-r", "-u", u.Login}, TimeoutSeconds: 30}); err == nil && res.ExitCode == 0 {
 			jc.Logf("crontab removed")

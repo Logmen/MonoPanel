@@ -128,6 +128,9 @@ func (s *Server) buildMigrationBundle(ctx context.Context, u *store.User, withSe
 	if b.Apps, err = s.db.ListApps(ctx, u.ID); err != nil {
 		return nil, err
 	}
+	if b.Valkey, err = s.db.ListValkey(ctx, u.ID); err != nil {
+		return nil, err
+	}
 	if b.MailDomains, err = s.db.ListMailDomains(ctx, u.ID); err != nil {
 		return nil, err
 	}
@@ -178,6 +181,9 @@ func (s *Server) buildMigrationBundle(ctx context.Context, u *store.User, withSe
 	}
 	if len(b.Apps) > 0 {
 		b.Notes = append(b.Notes, "app-сервисы приедут выключенными: их окружение и порты нужно проверить руками")
+	}
+	if len(b.Valkey) > 0 {
+		b.Notes = append(b.Notes, "экземпляры Valkey приедут без данных: кеш и сессии начнутся с нуля")
 	}
 	b.Notes = append(b.Notes, "логи сайтов и каталог data/tmp не переносятся")
 

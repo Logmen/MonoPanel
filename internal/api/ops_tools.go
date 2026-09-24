@@ -56,7 +56,7 @@ var sphinxDownload = func(ctx context.Context, url string) ([]byte, error) {
 	return fetchBytesN(ctx, url, 96<<20)
 }
 
-var toolNames = []string{"memcached", "jpegoptim", "git", "composer", "sphinx"}
+var toolNames = []string{"memcached", "jpegoptim", "git", "composer", "sphinx", "valkey"}
 
 func isTool(name string) bool {
 	for _, t := range toolNames {
@@ -153,7 +153,7 @@ func (s *Server) toolComponents(ctx context.Context) []apitypes.StackComponent {
 			c.Service = &st.Status
 		}
 	}
-	return append(out, c)
+	return append(out, c, s.valkeyComponent(ctx))
 }
 
 // installSphinx sets the search server up for 1C-Bitrix: the package (on EL
@@ -524,6 +524,10 @@ func (s *Server) jobStackRemove(ctx context.Context, jc *jobs.Context) error {
 		if _, err := s.agent.Pkg(ctx, "remove", mc.Package); err != nil {
 			return err
 		}
+	case "valkey":
+		if err := s.removeValkeyServer(ctx, jc); err != nil {
+			return err
+		}
 	case "jpegoptim", "git":
 		jc.Progress(30, "removing "+p.Component)
 		if _, err := s.agent.Pkg(ctx, "remove", p.Component); err != nil {
@@ -570,7 +574,7 @@ func (s *Server) jobStackRemove(ctx context.Context, jc *jobs.Context) error {
 
 func (s *Server) registerTools() {
 	huma.Register(s.api, huma.Operation{
-		OperationID: "stack-remove", Method: http.MethodDelete, Path: "/stack/{component}", Summary: "Uninstall a tool (memcached, jpegoptim, git, composer) (async)", Tags: []string{"stack"},
+		OperationID: "stack-remove", Method: http.MethodDelete, Path: "/stack/{component}", Summary: "Uninstall a tool (memcached, jpegoptim, git, composer, sphinx, valkey) (async)", Tags: []string{"stack"},
 		Security: secured, Metadata: adminOnly, DefaultStatus: http.StatusAccepted,
 	}, func(ctx context.Context, in *stackComponentInput) (*jobRefOutput, error) {
 		p := principalFrom(ctx)

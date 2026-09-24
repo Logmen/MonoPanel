@@ -27,7 +27,12 @@ env[TMPDIR] = {{ .TmpDir }}
 php_admin_value[open_basedir]      = {{ .DataDir }}
 {{- end }}
 php_admin_value[upload_tmp_dir]    = {{ .TmpDir }}
+{{- if .SessionSocket }}
+php_admin_value[session.save_handler] = redis
+php_admin_value[session.save_path] = "unix://{{ .SessionSocket }}"
+{{- else }}
 php_admin_value[session.save_path] = {{ .TmpDir }}/sess
+{{- end }}
 php_admin_value[sys_temp_dir]      = {{ .TmpDir }}
 php_admin_value[error_log]         = {{ .LogDir }}/{{ .Name }}.php.error.log
 php_admin_flag[log_errors]         = on

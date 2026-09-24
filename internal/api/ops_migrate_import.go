@@ -243,6 +243,9 @@ func (s *Server) migrationPlan(ctx context.Context, req apitypes.MigrationSource
 	if len(b.Apps) > 0 {
 		warn("user", login, fmt.Sprintf("app-сервисов: %d — они приедут выключенными", len(b.Apps)), "проверьте окружение и порты, затем mp app start")
 	}
+	if len(b.Valkey) > 0 && s.valkeyLayout(ctx) == nil {
+		warn("user", login, fmt.Sprintf("экземпляров Valkey: %d, а здесь Valkey не установлен — они не создадутся", len(b.Valkey)), "mp stack install valkey до переноса")
+	}
 
 	// Место: файлы и почта распакуются целиком, дампы ещё и развернутся.
 	need := b.Sizes.FilesBytes + b.Sizes.MailBytes
@@ -481,6 +484,23 @@ func (s *Server) jobMigrateRun(ctx context.Context, jc *jobs.Context) error {
 	if len(b.Apps) > 0 {
 		jc.Logf("app-сервисов перенесено: %d — они выключены, проверьте окружение и запустите", len(b.Apps))
 	}
+	if len(b.Valkey) > 0 {
+		if l := s.valkeyLayout(ctx); l == nil {
+			jc.Logf("экземпляры Valkey не созданы: здесь он не установлен (mp stack install valkey, затем mp valkey add)")
+		} else {
+			for _, src := range b.Valkey {
+				v := &store.ValkeyInstance{UserID: u.ID, Login: u.Login, Purpose: src.Purpose, MemoryMB: src.MemoryMB}
+				if err := s.db.CreateValkey(ctx, v); err != nil {
+					jc.Logf("valkey %s: %v", src.Purpose, err)
+					continue
+				}
+				if _, err := s.applyValkey(ctx, v, l); err != nil {
+					jc.Logf("valkey %s: %v", v.Name(), err)
+				}
+			}
+			jc.Logf("экземпляров Valkey создано: %d — кеш и сессии начинаются с нуля", len(b.Valkey))
+		}
+	}
 
 	jc.Progress(92, "почта")
 	if err := s.migrateMail(ctx, jc, src, p, u, b); err != nil {
@@ -654,6 +674,17 @@ func (s *Server) migrateSite(ctx context.Context, jc *jobs.Context, u *store.Use
 	site.ID, site.UserID, site.CertificateID = 0, u.ID, nil
 	site.Status = store.SitePending
 	site.IP = ""
+	// Sessions stay in Valkey only where PHP can reach it: the instance
+	// itself comes later in this job, from the bundle.
+	if site.SessionStore == store.SessionStoreValkey {
+		if s.valkeyLayout(ctx) == nil {
+			site.SessionStore = ""
+			jc.Logf("%s: PHP-сессии в файлах — здесь нет Valkey (mp stack install valkey, mp valkey add sessions, mp site set --sessions valkey)", site.Domain)
+		} else if on, _ := s.redisEnabled(ctx, site.PHPVersion); !on {
+			site.SessionStore = ""
+			jc.Logf("%s: PHP-сессии в файлах — у PHP %s здесь выключено расширение redis (mp php ext enable %s redis, затем mp site set %s --sessions valkey)", site.Domain, site.PHPVersion, site.PHPVersion, site.Domain)
+		}
+	}
 	if site.Preset == presetBitrix && site.FPMMaxChildren <= 0 {
 		site.FPMMaxChildren = s.bitrixPoolSize(ctx)
 	}

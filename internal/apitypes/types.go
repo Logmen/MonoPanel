@@ -110,7 +110,7 @@ type StackComponent struct {
 
 // StackInstallRequest installs a component.
 type StackInstallRequest struct {
-	Component string `json:"component" enum:"nginx,apache,percona,mysql,fail2ban,memcached,jpegoptim,git,composer,sphinx"`
+	Component string `json:"component" enum:"nginx,apache,percona,mysql,fail2ban,memcached,jpegoptim,git,composer,sphinx,valkey"`
 }
 
 // MemcachedSettings is the panel's memcached configuration.
@@ -253,6 +253,7 @@ type SiteUpdateRequest struct {
 	ClientMaxBody  string            `json:"client_max_body,omitempty" pattern:"^[0-9]+[kKmMgG]?$"`
 	AllowFrom      *[]string         `json:"allow_from,omitempty" maxItems:"64" doc:"Replace the IP allow-list; [] opens the site to everyone"`
 	Preset         *string           `json:"preset,omitempty" doc:"CMS preset: wordpress, joomla, bitrix, opencart or \"\" for generic"`
+	SessionStore   string            `json:"session_store,omitempty" enum:"files,valkey" doc:"Where PHP keeps sessions: files in the account's tmp, or its Valkey sessions instance (needs the redis extension of the site's PHP)"`
 }
 
 // SiteMoveIPRequest moves the sites of one address to another: after the
@@ -569,6 +570,25 @@ type AppStatus struct {
 	Service *systemd.Status `json:"service,omitempty"`
 }
 
+// ValkeyRequest creates the cache or sessions instance of an account, or
+// changes its memory.
+type ValkeyRequest struct {
+	MemoryMB int `json:"memory_mb,omitempty" minimum:"16" maximum:"8192" doc:"Memory limit in MB; 128 for the cache and 64 for sessions when omitted on create"`
+}
+
+// ValkeyStatus is an instance with its live state and the socket to connect to.
+type ValkeyStatus struct {
+	Instance *store.ValkeyInstance `json:"instance"`
+	Service  *systemd.Status       `json:"service,omitempty"`
+	Socket   string                `json:"socket" doc:"Unix socket, reachable only by the account (mode 600); no password"`
+}
+
+// ValkeyList lists the instances and names the server behind them.
+type ValkeyList struct {
+	Engine    string          `json:"engine,omitempty" doc:"valkey, or redis where the repositories have no Valkey; empty until mp stack install valkey"`
+	Instances []*ValkeyStatus `json:"instances"`
+}
+
 // ImportCertificateRequest installs an existing certificate. Let's Encrypt
 // certificates are renewed through ACME when due unless auto_renew is false.
 type ImportCertificateRequest struct {
@@ -857,16 +877,17 @@ type MigrationBundle struct {
 	Scope     string    `json:"scope" doc:"user:<login>"`
 	Generated time.Time `json:"generated"`
 
-	User         *store.User         `json:"user"`
-	Sites        []*store.Site       `json:"sites"`
-	SiteNginx    map[string]string   `json:"site_nginx,omitempty" doc:"Свои директивы nginx на сайт"`
-	Databases    []*store.Database   `json:"databases"`
-	Cron         []*store.CronJob    `json:"cron"`
-	Apps         []*store.App        `json:"apps"`
-	MailDomains  []*store.MailDomain `json:"mail_domains"`
-	Mailboxes    []*store.Mailbox    `json:"mailboxes"`
-	MailAliases  []*store.MailAlias  `json:"mail_aliases"`
-	Certificates []MigrationCert     `json:"certificates"`
+	User         *store.User             `json:"user"`
+	Sites        []*store.Site           `json:"sites"`
+	SiteNginx    map[string]string       `json:"site_nginx,omitempty" doc:"Свои директивы nginx на сайт"`
+	Databases    []*store.Database       `json:"databases"`
+	Cron         []*store.CronJob        `json:"cron"`
+	Apps         []*store.App            `json:"apps"`
+	Valkey       []*store.ValkeyInstance `json:"valkey,omitempty" doc:"Экземпляры Valkey аккаунта: только настройки, данные кеша и сессий не переносятся"`
+	MailDomains  []*store.MailDomain     `json:"mail_domains"`
+	Mailboxes    []*store.Mailbox        `json:"mailboxes"`
+	MailAliases  []*store.MailAlias      `json:"mail_aliases"`
+	Certificates []MigrationCert         `json:"certificates"`
 
 	// Secrets travel only over an authenticated channel and only when the
 	// receiving side asks for the full state: без них пришлось бы менять всем
