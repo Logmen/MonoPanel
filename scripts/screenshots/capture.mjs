@@ -43,6 +43,7 @@ const SHOTS = [
   { name: 'sites', path: '/sites' },
   { name: 'site', path: '/sites/example.com' },
   { name: 'php', path: '/php' },
+  { name: 'stack', path: '/stack' },
   { name: 'databases', path: '/databases' },
   { name: 'mail', path: '/mail' },
   { name: 'files', path: '/files?user=alex&path=/data/www/example.com' },

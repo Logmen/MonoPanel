@@ -40,9 +40,9 @@ step "sites"
 dev=$(ip route show default | awk '{print $5; exit}')
 ip addr add 203.0.113.10/32 dev "$dev" 2>/dev/null || true
 mp site add example.com --user alex --www --preset wordpress --ssl none --ip 203.0.113.10
-mp cms install example.com wordpress --title "Example Blog" --force
+mp cms install example.com wordpress --title "Example Blog"
 mp site add shop.example.com --user shop --preset opencart --ssl none --ip 203.0.113.10
-mp cms install shop.example.com opencart --title "Example Shop" --force
+mp cms install shop.example.com opencart --title "Example Shop"
 mp site add old.example.com --user alex --php 7.4 --mode apache --ssl none --ip 203.0.113.10
 mp app add api --user maria --command "/usr/bin/python3 -m http.server 3000" --description "бэкенд app.example.org"
 mp site add app.example.org --user maria --mode proxy --backend http://127.0.0.1:3000 --ssl none --ip 203.0.113.10
