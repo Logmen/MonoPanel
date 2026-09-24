@@ -303,6 +303,58 @@ func TestCMSInstallOverPlaceholder(t *testing.T) {
 	}
 }
 
+// Force empties only the database the panel made for this site's own CMS. A
+// database that merely carries the name — made by hand, or another site's — is
+// left alone and the CMS gets a new one; a deleted database is forgotten, so a
+// later one of the same name is never taken for the site's.
+func TestCMSForceDropsOnlyItsOwnDatabase(t *testing.T) {
+	src := zipBytes(t, map[string]string{"upload/index.php": "<?php", "upload/config-dist.php": "<?php", "upload/admin/config-dist.php": "<?php"})
+	f := cmsFixture(t, map[string][]byte{"https://github.com/opencart/opencart/releases/download/4.1.0.4/opencart-4.1.0.4.zip": src})
+	a := f.createSite(map[string]any{"domain": "shop.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	b := f.createSite(map[string]any{"domain": "shop2.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	var manual apitypes.DatabaseResponse
+	f.call(http.MethodPost, "/databases", map[string]any{"name": "opencart", "user": "alex"}, http.StatusCreated, &manual)
+	if manual.Database == nil || manual.Database.Name != "alex_opencart" {
+		t.Fatalf("hand-made database: %+v", manual.Database)
+	}
+	drops := func() []string {
+		var out []string
+		for _, tc := range f.agent.Tools() {
+			if tc.Name == "mysql" && strings.Contains(tc.Stdin, "DROP DATABASE") {
+				out = append(out, strings.TrimSpace(tc.Stdin))
+			}
+		}
+		return out
+	}
+	force := func(site *store.Site, want string) {
+		t.Helper()
+		res, job := f.installCMS(t, site.Domain, map[string]any{"cms": "opencart", "force": true})
+		if job.Status != store.JobDone || res.Database != want {
+			t.Fatalf("%s: %s %s, database %q, want %q", site.Domain, job.Status, job.Error, res.Database, want)
+		}
+	}
+
+	force(a, "alex_opencart2")
+	force(b, "alex_opencart3")
+	if d := drops(); len(d) != 0 {
+		t.Fatalf("no site had a CMS yet, yet force dropped: %q", d)
+	}
+	force(a, "alex_opencart2")
+	if d := drops(); len(d) != 1 || !strings.Contains(d[0], "`alex_opencart2`") {
+		t.Fatalf("a reinstall over the site's own CMS must empty its database only: %q", d)
+	}
+
+	f.call(http.MethodDelete, "/databases/alex_opencart2", nil, http.StatusNoContent, nil)
+	if stored, _ := f.db.GetSiteByDomain(f.ctx, a.Domain); stored.CMSDatabase != "" {
+		t.Fatalf("a deleted database must be forgotten by the site: %q", stored.CMSDatabase)
+	}
+	before := len(drops()) // the deletion itself drops it
+	force(a, "alex_opencart2")
+	if d := drops(); len(d) != before {
+		t.Fatalf("a new database of a deleted one's name must not be dropped: %q", d[before:])
+	}
+}
+
 // A CMS needs PHP, a database server and a docroot: proxy sites and
 // unknown CMS names are refused up front.
 func TestCMSInstallRefusals(t *testing.T) {

@@ -75,7 +75,7 @@ func cmsCmd() *cobra.Command {
 	install.Flags().StringVar(&req.AdminEmail, "admin-email", "", "e-mail администратора (по умолчанию e-mail владельца или admin@<домен>)")
 	install.Flags().StringVar(&req.Edition, "edition", "", "редакция Битрикса: start (по умолчанию), standard, small_business или business")
 	install.Flags().StringVar(&req.Solution, "solution", "", "решение Битрикса: clean (чистая установка из Маркетплейса, по умолчанию), demo (демо-сайт из дистрибутива) или id решения из Маркетплейса")
-	install.Flags().BoolVar(&req.Force, "force", false, "ставить в непустой docroot: его файлы удаляются")
+	install.Flags().BoolVar(&req.Force, "force", false, "ставить в непустой docroot: его файлы удаляются, прежняя база этой CMS на сайте очищается (чужие базы не трогаются)")
 	c.AddCommand(install)
 	return c
 }

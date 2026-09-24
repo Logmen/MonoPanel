@@ -982,7 +982,7 @@ type CMSInstallRequest struct {
 	AdminEmail    string `json:"admin_email,omitempty" maxLength:"254" doc:"The owner's e-mail, else admin@<domain>"`
 	Edition       string `json:"edition,omitempty" enum:"start,standard,small_business,business" doc:"Bitrix: the trial edition to download (start when empty)"`
 	Solution      string `json:"solution,omitempty" maxLength:"120" doc:"Bitrix: clean (the marketplace «Чистая установка», default), demo (the demo site bundled with the edition) or a marketplace solution id"`
-	Force         bool   `json:"force,omitempty" doc:"Install into a docroot that is not empty: its files are removed first"`
+	Force         bool   `json:"force,omitempty" doc:"Install into a docroot that is not empty: its files are removed first. The database is emptied only when it is the one the panel made for this site's same CMS; otherwise the CMS gets a new database and no other is touched"`
 }
 
 // CMSInstallResult is what the caller needs to keep: the job and the

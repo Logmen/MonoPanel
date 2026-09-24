@@ -75,7 +75,10 @@ type cmsPayload struct {
 	Database         string `json:"database"`
 	DBPasswordEnc    string `json:"db_password_enc"`
 	Force            bool   `json:"force,omitempty"`
-	ApplyPreset      bool   `json:"apply_preset,omitempty"`
+	// ReuseDatabase: Database is the one this site's CMS already had, and the
+	// forced reinstall empties it; any other database is never dropped.
+	ReuseDatabase bool `json:"reuse_database,omitempty"`
+	ApplyPreset   bool `json:"apply_preset,omitempty"`
 }
 
 // Test hooks: the downloads and the release lookup.
@@ -171,9 +174,18 @@ func (s *Server) registerCMS() {
 		if title == "" {
 			title = site.Domain
 		}
-		dbName, err := s.freeDatabaseName(ctx, owner, def.ID, in.Body.Force)
-		if err != nil {
-			return nil, err
+		// A forced reinstall starts over with an empty database only when it is
+		// the one the panel made for this site's CMS. A database that merely has
+		// the name — another site's, one made by hand — is never dropped: the
+		// CMS then gets a new one.
+		reuse := in.Body.Force && site.CMS == def.ID && site.CMSDatabase != "" && s.ownsDatabase(ctx, owner, site.CMSDatabase)
+		dbName := site.CMSDatabase
+		if !reuse {
+			name, err := s.freeDatabaseName(ctx, owner, def.ID)
+			if err != nil {
+				return nil, err
+			}
+			dbName = name
 		}
 		dbPassword, _ := auth.NewPassword(20)
 		pwEnc, err := s.secrets.Encrypt(password)
@@ -184,7 +196,7 @@ func (s *Server) registerCMS() {
 		if err != nil {
 			return nil, err
 		}
-		payload := cmsPayload{SiteID: site.ID, CMS: def.ID, Title: title, AdminLogin: login, AdminEmail: email, AdminPasswordEnc: pwEnc, Edition: in.Body.Edition, Solution: in.Body.Solution, Database: dbName, DBPasswordEnc: dbEnc, Force: in.Body.Force}
+		payload := cmsPayload{SiteID: site.ID, CMS: def.ID, Title: title, AdminLogin: login, AdminEmail: email, AdminPasswordEnc: pwEnc, Edition: in.Body.Edition, Solution: in.Body.Solution, Database: dbName, DBPasswordEnc: dbEnc, Force: in.Body.Force, ReuseDatabase: reuse}
 		if site.Preset != def.Preset {
 			site.Preset = def.Preset
 			if err := s.db.UpdateSite(ctx, site); err != nil {
@@ -213,15 +225,11 @@ func (s *Server) siteURL(ctx context.Context, site *store.Site) string {
 	return "http://" + site.Domain
 }
 
-// freeDatabaseName is <login>_<cms>, with a number when that is taken. A
-// forced reinstall takes the plain name back: the job empties it first.
-func (s *Server) freeDatabaseName(ctx context.Context, owner *store.User, cms string, reuse bool) (string, error) {
+// freeDatabaseName is <login>_<cms>, with a number when that is taken.
+func (s *Server) freeDatabaseName(ctx context.Context, owner *store.User, cms string) (string, error) {
 	base := owner.Login + "_" + cms
 	if len(base) > 32 {
 		return "", huma.Error422UnprocessableEntity("login_cms exceeds MySQL's 32-character account limit")
-	}
-	if reuse {
-		return base, nil
 	}
 	for i := 0; i < 20; i++ {
 		name := base
@@ -234,7 +242,13 @@ func (s *Server) freeDatabaseName(ctx context.Context, owner *store.User, cms st
 			return "", err
 		}
 	}
-	return "", huma.Error422UnprocessableEntity("too many " + cms + " databases already; reinstall with force to reuse " + base)
+	return "", huma.Error422UnprocessableEntity("too many " + cms + " databases already; remove the ones no site uses")
+}
+
+// ownsDatabase tells whether name is one of the account's databases in the panel.
+func (s *Server) ownsDatabase(ctx context.Context, owner *store.User, name string) bool {
+	db, err := s.db.GetDatabaseByName(ctx, name)
+	return err == nil && db.UserID == owner.ID
 }
 
 // jobSiteCMS does the install: the preset (when it changed), an empty
@@ -322,8 +336,10 @@ func (s *Server) jobSiteCMS(ctx context.Context, jc *jobs.Context) error {
 	if err != nil {
 		return err
 	}
-	if p.Force {
-		// a forced reinstall starts from an empty database, as it starts from an empty docroot
+	if p.ReuseDatabase {
+		// a forced reinstall over this site's own CMS starts from its database
+		// emptied, as it starts from an empty docroot
+		jc.Logf("database %s: emptied for the reinstall", p.Database)
 		if _, err := s.mysqlExec(ctx, "DROP DATABASE IF EXISTS `"+p.Database+"`;\n"); err != nil {
 			return fmt.Errorf("drop database %s: %w", p.Database, err)
 		}
@@ -357,7 +373,7 @@ func (s *Server) jobSiteCMS(ctx context.Context, jc *jobs.Context) error {
 	}
 	s.relabel(ctx, nil, l.docroot, true)
 
-	site.CMS, site.CMSVersion, site.CMSAt = def.ID, version, time.Now().UTC().Format(time.RFC3339)
+	site.CMS, site.CMSVersion, site.CMSAt, site.CMSDatabase = def.ID, version, time.Now().UTC().Format(time.RFC3339), p.Database
 	if err := s.db.UpdateSite(ctx, site); err != nil {
 		return err
 	}

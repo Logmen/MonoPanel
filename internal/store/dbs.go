@@ -175,8 +175,12 @@ func (d *DB) SetDatabaseSize(ctx context.Context, id, size int64) error {
 	return err
 }
 
-// DeleteDatabase removes the row (users cascade).
+// DeleteDatabase removes the row (users cascade) and forgets it as a site's
+// CMS database, so a later database of the same name is never taken for it.
 func (d *DB) DeleteDatabase(ctx context.Context, id int64) error {
+	if _, err := d.sql.ExecContext(ctx, `UPDATE sites SET cms_database='' WHERE (user_id, cms_database) IN (SELECT user_id, name FROM databases WHERE id=?)`, id); err != nil {
+		return err
+	}
 	res, err := d.sql.ExecContext(ctx, `DELETE FROM databases WHERE id=?`, id)
 	if err != nil {
 		return err
