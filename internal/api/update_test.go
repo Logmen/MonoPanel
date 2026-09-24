@@ -162,6 +162,32 @@ func TestUpdateInstallsSignedRelease(t *testing.T) {
 	}
 }
 
+// Installing the newest release is a check too: after it the status must not
+// keep offering, as the latest one, the older release an earlier check saw.
+func TestUpdateApplyRemembersTheReleaseItFound(t *testing.T) {
+	rel := newRelease(t, "9.9.9")
+	f := newFixture(t, func(c *config.Config) { c.Update.PublicKey = rel.pub })
+	f.configureUpdates(rel)
+	c := f.s.loadUpdateConfig(f.ctx)
+	c.Latest = &updater.Release{Version: "9.9.8", Tag: "v9.9.8"}
+	if err := f.s.saveUpdateConfig(f.ctx, c); err != nil {
+		t.Fatal(err)
+	}
+
+	var ref struct {
+		JobID int64 `json:"job_id"`
+	}
+	f.call(http.MethodPost, "/system/update/apply", map[string]any{}, http.StatusAccepted, &ref)
+	if job := f.waitJob(ref.JobID); job.Status != store.JobDone {
+		t.Fatalf("update job failed: %s", job.Error)
+	}
+	var st apitypes.UpdateStatus
+	f.call(http.MethodGet, "/system/update", nil, http.StatusOK, &st)
+	if st.Latest != "9.9.9" || st.Tag != "v9.9.9" || st.CheckedAt == nil {
+		t.Fatalf("the status still shows what the earlier check saw: %+v", st)
+	}
+}
+
 func TestUpdateRefusesAPackageTheChecksumsDoNotDescribe(t *testing.T) {
 	rel := newRelease(t, "9.9.9", withWrongSums)
 	f := newFixture(t, func(c *config.Config) { c.Update.PublicKey = rel.pub })

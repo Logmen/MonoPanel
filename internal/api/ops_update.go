@@ -307,7 +307,9 @@ func (s *Server) jobPanelUpdate(ctx context.Context, jc *jobs.Context) error {
 	if p.Version != "" {
 		rel, err = cl.ByTag(ctx, p.Version)
 	} else {
-		rel, err = cl.Latest(ctx, c.channel())
+		// Asking for the newest release is a check like any other: the status
+		// must show what it found, not what an earlier check saw.
+		_, rel, err = s.checkForUpdate(ctx, c)
 	}
 	if err != nil {
 		return err
