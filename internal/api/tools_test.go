@@ -369,3 +369,39 @@ func TestSphinxRecreatesStaleIndex(t *testing.T) {
 		t.Fatalf("a matching index must be kept: %v", f.agent.Removed()[before:])
 	}
 }
+
+// fail2ban is part of the stack listing («Защита» on the page): installed with
+// its service state when the package is there, not installed otherwise, and
+// never removable — the panel only installs it.
+func TestStackListsFail2ban(t *testing.T) {
+	f := newSiteFixture(t)
+	type component struct {
+		Name      string
+		Kind      string
+		Installed bool
+		Version   string
+		Removable bool
+		Service   *struct {
+			ActiveState string `json:"active_state"`
+		}
+	}
+	fail2ban := func() component {
+		t.Helper()
+		var list []component
+		f.call(http.MethodGet, "/stack", nil, http.StatusOK, &list)
+		for _, c := range list {
+			if c.Name == "fail2ban" {
+				return c
+			}
+		}
+		t.Fatalf("fail2ban missing from the stack listing: %+v", list)
+		return component{}
+	}
+	if c := fail2ban(); !c.Installed || c.Kind != "security" || c.Version == "" || c.Removable || c.Service == nil || c.Service.ActiveState != "active" {
+		t.Fatalf("installed fail2ban: %+v", c)
+	}
+	f.agent.MissingPackages = map[string]bool{"fail2ban": true}
+	if c := fail2ban(); c.Installed || c.Version != "" || c.Service != nil {
+		t.Fatalf("absent fail2ban reported as installed: %+v", c)
+	}
+}

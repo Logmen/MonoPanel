@@ -454,7 +454,7 @@ func serviceCmd() *cobra.Command {
 }
 
 func stackCmd() *cobra.Command {
-	c := &cobra.Command{Use: "stack", Short: "компоненты веб-стека и расширения (nginx, apache, php, mysql, memcached, jpegoptim, git, composer, sphinx)"}
+	c := &cobra.Command{Use: "stack", Short: "компоненты веб-стека и расширения (nginx, apache, php, mysql, fail2ban, memcached, jpegoptim, git, composer, sphinx)"}
 	list := &cobra.Command{Use: "list", Short: "установленные компоненты", RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {

@@ -405,6 +405,22 @@ func (s *Server) registerFirewall() {
 	}
 }
 
+// fail2banComponent is fail2ban's row in the stack listing: the page
+// «Расширения» shows it in the «Защита» group, and without it an installed
+// fail2ban looked missing there and in mp stack list.
+func (s *Server) fail2banComponent(ctx context.Context) apitypes.StackComponent {
+	c := apitypes.StackComponent{Name: "fail2ban", Kind: "security"}
+	if q, err := s.agent.Pkg(ctx, "query", "fail2ban"); err == nil {
+		if v, ok := q.Installed["fail2ban"]; ok {
+			c.Installed, c.Version = true, v
+			if st, err := s.agent.Service(ctx, "fail2ban.service", "status"); err == nil {
+				c.Service = &st.Status
+			}
+		}
+	}
+	return c
+}
+
 // installFail2ban installs fail2ban with jails for sshd, nginx and the panel.
 func (s *Server) installFail2ban(ctx context.Context, jc *jobs.Context) error {
 	jc.Progress(10, "installing fail2ban")

@@ -92,6 +92,7 @@ func (s *Server) registerStack() {
 				out.Body = append(out.Body, pc)
 			}
 		}
+		out.Body = append(out.Body, s.fail2banComponent(actx))
 		out.Body = append(out.Body, s.toolComponents(actx)...)
 		return out, nil
 	})
