@@ -269,6 +269,9 @@ func (s *Server) provisionUser(ctx context.Context, p userProvisionPayload, logf
 	if err := s.db.SetUserStatus(ctx, p.UserID, store.UserActive); err != nil {
 		return err
 	}
+	if err := s.applySiteLogrotate(ctx); err != nil {
+		logf("site log rotation not updated: %v", err)
+	}
 	progress(100, "user ready")
 	return nil
 }

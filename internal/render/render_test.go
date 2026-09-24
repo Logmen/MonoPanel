@@ -67,6 +67,7 @@ func TestGolden(t *testing.T) {
 			p.SessionSocket = "/run/monopanel-valkey/alex-sessions/valkey.sock"
 			return p
 		}(), []string{"php_admin_value[session.save_handler] = redis", "php_admin_value[session.save_path] = \"unix:///run/monopanel-valkey/alex-sessions/valkey.sock\""}},
+		{"logrotate-sites", "logrotate/sites.tmpl", SiteLogrotate{NginxPID: "/run/nginx.pid", ApachePID: "/run/apache2/apache2.pid", Accounts: []LogrotateAccount{{Login: "alex", LogDir: "/var/www/alex/data/logs"}, {Login: "shop", LogDir: "/var/www/shop/data/logs"}}}, []string{"/var/www/alex/data/logs/*.access.log /var/www/alex/data/logs/*.error.log /var/www/alex/data/logs/*.php.slow.log {", "su alex alex", "su shop shop", "kill -USR1 \"$(cat /run/nginx.pid)\"", "kill -USR1 \"$(cat /run/apache2/apache2.pid)\"", "/var/www/shop/data/logs/*.access.log /var/www/shop/data/logs/*.error.log /var/www/shop/data/logs/*.php.slow.log {", "create 0660 shop shop"}},
 		{"php-fpm-pool.conf", "php-fpm/pool.conf.tmpl", examplePool(), []string{"[example.com]", "listen.group = monopanel-web", "php_value[memory_limit] = 256M", "pm = ondemand"}},
 	}
 	presets := []string{"nginx/presets/wordpress.conf.tmpl", "nginx/presets/joomla.conf.tmpl", "nginx/presets/bitrix.conf.tmpl", "nginx/presets/opencart.conf.tmpl"}

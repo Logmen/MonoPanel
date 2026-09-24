@@ -390,6 +390,9 @@ func (s *Server) applyWebmailPort(ctx context.Context, logf func(string, ...any)
 	if err != nil {
 		return err
 	}
+	if err := s.ensureSiteLogs(ctx, owner.Login, path.Join(l.data, "logs"), "webmail.access.log", "webmail.error.log"); err != nil {
+		logf("предупреждение: логи вебпочты: %v", err)
+	}
 	res, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{
 		Files:    []agent.FileSpec{{Path: conf, Content: body, Mode: 0o644}},
 		Validate: [][]string{web.NginxCheckArgv}, Reload: []string{web.NginxService}, Origin: "mail:webmail",

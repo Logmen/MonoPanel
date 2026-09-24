@@ -35,6 +35,7 @@ func (p *rhelProfile) Web() WebLayout {
 		NginxCheckArgv:  []string{"/usr/sbin/nginx", "-t", "-q"},
 		ApacheUser:      "apache",
 		ApacheService:   "httpd.service",
+		ApachePID:       "/run/httpd/httpd.pid",
 		ApacheConfDir:   "/etc/httpd",
 		ApacheCheckArgv: []string{"/usr/sbin/apachectl", "-t"},
 	}

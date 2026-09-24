@@ -91,6 +91,7 @@ type WebLayout struct {
 	NginxCheckArgv  []string `json:"nginx_check_argv"`
 	ApacheUser      string   `json:"apache_user"`
 	ApacheService   string   `json:"apache_service"`
+	ApachePID       string   `json:"apache_pid"` // SIGUSR1 there is a graceful restart: logs reopen
 	ApacheConfDir   string   `json:"apache_conf_dir"`
 	ApacheCheckArgv []string `json:"apache_check_argv"`
 }

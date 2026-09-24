@@ -185,6 +185,20 @@ type CronLine struct {
 	Comment  string
 }
 
+// SiteLogrotate feeds logrotate/sites.tmpl: the rotation of the site logs in
+// the accounts' homes, one stanza per account.
+type SiteLogrotate struct {
+	Accounts  []LogrotateAccount
+	NginxPID  string
+	ApachePID string
+}
+
+// LogrotateAccount is an account whose data/logs rotate under its own rights.
+type LogrotateAccount struct {
+	Login  string
+	LogDir string
+}
+
 // AppUnit feeds systemd/app.service.tmpl.
 type AppUnit struct {
 	Login       string

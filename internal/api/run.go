@@ -49,6 +49,7 @@ func (s *Server) Run(ctx context.Context) error {
 				s.refreshDefaultServers(ctx)
 				s.refreshDBConfig(ctx)
 				s.refreshPHPCLIInis(ctx)
+				s.refreshSiteLogrotate(ctx)
 				return
 			}
 			select {

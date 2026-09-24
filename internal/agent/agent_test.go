@@ -261,3 +261,39 @@ func TestToolAllowList(t *testing.T) {
 		t.Fatalf("exit code must be reported: %+v", res)
 	}
 }
+
+// A log the web server created as root is handed to the account with a mode
+// of the panel's choosing, through the file itself: a log name that the
+// account swapped for a symlink is refused, and its target keeps its mode.
+func TestChownModeGoesThroughTheFile(t *testing.T) {
+	ctx := context.Background()
+	www := t.TempDir()
+	s, cl := testServer(t, t.TempDir())
+	s.cfg.WWWRoot = www
+	me := currentUserName(t)
+	logs := filepath.Join(www, "alex", "data", "logs")
+	os.MkdirAll(logs, 0o750)
+	log := filepath.Join(logs, "example.com.access.log")
+	os.WriteFile(log, []byte("GET /\n"), 0o644)
+	res, err := cl.Chown(ctx, &ChownRequest{Path: log, Owner: me, Mode: 0o660})
+	if err != nil || res.Changed != 1 {
+		t.Fatalf("chown with mode: %+v %v", res, err)
+	}
+	if st, _ := os.Stat(log); st.Mode().Perm() != 0o660 {
+		t.Fatalf("mode %v, want 0660", st.Mode().Perm())
+	}
+	if res, _ := cl.Chown(ctx, &ChownRequest{Path: log, Owner: me, Mode: 0o660}); res.Changed != 0 {
+		t.Fatal("an unchanged file counts as changed")
+	}
+
+	target := filepath.Join(t.TempDir(), "secret")
+	os.WriteFile(target, []byte("x"), 0o600)
+	swapped := filepath.Join(logs, "example.com.error.log")
+	os.Symlink(target, swapped)
+	if _, err := cl.Chown(ctx, &ChownRequest{Path: swapped, Owner: me, Mode: 0o666}); err == nil {
+		t.Fatal("a symlink in place of a log must be refused")
+	}
+	if st, _ := os.Stat(target); st.Mode().Perm() != 0o600 {
+		t.Fatalf("the symlink target changed to %v", st.Mode().Perm())
+	}
+}

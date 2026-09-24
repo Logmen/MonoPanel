@@ -626,7 +626,10 @@ func (s *Server) siteTree(ctx context.Context, jc *jobs.Context, l *siteLayout, 
 		return err
 	}
 	webACL := "g:" + s.cfg.WebGroup
-	for _, d := range []string{l.home, l.data, path.Join(l.data, "www")} {
+	// data/logs too: after USR1 the nginx workers, not the master, reopen the
+	// site logs, and without passing through the directory they keep writing
+	// into the rotated files.
+	for _, d := range []string{l.home, l.data, path.Join(l.data, "www"), path.Join(l.data, "logs")} {
 		if err := s.agent.SetACL(ctx, &agent.SetACLRequest{Path: d, Entries: []string{webACL + ":x"}}); err != nil {
 			return err
 		}
@@ -867,6 +870,10 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 			}
 			jc.Logf("%s released the pool socket", unit)
 		}
+	}
+	// The logs belong to the account before nginx or Apache opens them.
+	if err := s.ensureSiteLogs(ctx, login, path.Join(l.data, "logs"), siteLogNames(site)...); err != nil {
+		jc.Logf("warning: site logs: %v", err)
 	}
 	// A default server of an address the host lost fails the check below.
 	if gone := s.pruneDefaultServers(ctx); len(gone) > 0 {

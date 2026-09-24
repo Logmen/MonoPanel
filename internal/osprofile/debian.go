@@ -21,6 +21,7 @@ func (p *debianProfile) Web() WebLayout {
 		NginxCheckArgv:  []string{"/usr/sbin/nginx", "-t", "-q"},
 		ApacheUser:      "www-data",
 		ApacheService:   "apache2.service",
+		ApachePID:       "/run/apache2/apache2.pid",
 		ApacheConfDir:   "/etc/apache2",
 		ApacheCheckArgv: []string{"/usr/sbin/apache2ctl", "-t"},
 	}

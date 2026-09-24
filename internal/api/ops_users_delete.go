@@ -167,6 +167,11 @@ func (s *Server) jobUserDelete(ctx context.Context, jc *jobs.Context) error {
 
 	jc.Progress(75, "unix account")
 	if u.UnixUID != nil {
+		// The account is "deleting" and drops out of the log rotation before
+		// its unix user goes: logrotate must not meet an unknown su user.
+		if err := s.applySiteLogrotate(ctx); err != nil {
+			jc.Logf("site log rotation not updated: %v", err)
+		}
 		home := u.Home
 		if home == "" {
 			home = s.cfg.WWWRoot + "/" + u.Login

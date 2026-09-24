@@ -169,11 +169,37 @@ type ChownRequest struct {
 	Owner     string `json:"owner"`
 	Group     string `json:"group,omitempty"`
 	Recursive bool   `json:"recursive,omitempty"`
+	// Mode, when set, also sets the permissions of regular files. Both go
+	// through the opened file, not the name: a name swapped for a symlink
+	// meanwhile changes nothing. Other file types keep their mode.
+	Mode uint32 `json:"mode,omitempty"`
 }
 
 // ChownResponse counts what was touched.
 type ChownResponse struct {
 	Changed int `json:"changed"`
+}
+
+// chownFile sets owner, group and mode of a regular file through the file
+// itself: opened without following a symlink (and without blocking on a
+// FIFO), checked to be a regular file, then fchown and fchmod.
+func chownFile(path string, uid, gid int, mode os.FileMode) (bool, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil || !st.Mode().IsRegular() {
+		return false, err
+	}
+	if sys, ok := st.Sys().(*syscall.Stat_t); ok && int(sys.Uid) == uid && (gid < 0 || int(sys.Gid) == gid) && st.Mode().Perm() == mode {
+		return false, nil
+	}
+	if err := f.Chown(uid, gid); err != nil {
+		return false, err
+	}
+	return true, f.Chmod(mode)
 }
 
 func (s *Server) chown(_ context.Context, req *ChownRequest) (*ChownResponse, error) {
@@ -195,6 +221,13 @@ func (s *Server) chown(_ context.Context, req *ChownRequest) (*ChownResponse, er
 	fix := func(path string) error {
 		st, err := os.Lstat(path)
 		if err != nil {
+			return err
+		}
+		if req.Mode != 0 && st.Mode().IsRegular() {
+			changed, err := chownFile(path, uid, gid, os.FileMode(req.Mode)&os.ModePerm)
+			if changed {
+				resp.Changed++
+			}
 			return err
 		}
 		if sys, ok := st.Sys().(*syscall.Stat_t); ok && int(sys.Uid) == uid && (gid < 0 || int(sys.Gid) == gid) {
