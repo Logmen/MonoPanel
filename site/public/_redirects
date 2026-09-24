@@ -1,0 +1,3 @@
+# Короткая команда установки: curl -fsSL https://monopanel.app/install.sh | sh
+# Адрес ведёт на скрипт в репозитории, поэтому он всегда тот же, что в main.
+/install.sh https://raw.githubusercontent.com/Logmen/MonoPanel/main/packaging/install.sh 302

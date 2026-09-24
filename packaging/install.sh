@@ -1,7 +1,9 @@
 #!/bin/sh
 # MonoPanel bootstrap: installs the latest release package for this system.
 #
-#   curl -fsSL https://raw.githubusercontent.com/Logmen/MonoPanel/main/packaging/install.sh | sh
+#   curl -fsSL https://monopanel.app/install.sh | sh
+#
+# monopanel.app/install.sh redirects here, to this file on the main branch.
 #
 # Set MONOPANEL_VERSION to pin a version (0.6.0), MONOPANEL_REPO to install
 # from a fork, and MONOPANEL_TOKEN to read a private repository.

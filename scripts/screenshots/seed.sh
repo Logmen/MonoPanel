@@ -14,7 +14,7 @@ hostnamectl set-hostname web-01
 
 step "panel"
 if ! command -v mp >/dev/null 2>&1; then
-	curl -fsSL https://raw.githubusercontent.com/Logmen/MonoPanel/main/packaging/install.sh | sh
+	curl -fsSL https://monopanel.app/install.sh | sh
 fi
 mp setup --hostname panel.example.com
 

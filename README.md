@@ -22,10 +22,11 @@ Web UI, CLI, TUI и интеграции работают через один и
 ## Установка
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Logmen/MonoPanel/main/packaging/install.sh | sh
+curl -fsSL https://monopanel.app/install.sh | sh
 mp setup
 ```
 
+Адрес ведёт на [packaging/install.sh](packaging/install.sh) из этого репозитория.
 Скрипт определяет ОС и архитектуру, скачивает пакет последнего релиза, сверяет
 контрольную сумму и ставит его. Можно и вручную — `.deb` и `.rpm` для amd64 и arm64
 лежат в [релизах](https://github.com/Logmen/MonoPanel/releases).

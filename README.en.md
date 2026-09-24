@@ -27,10 +27,11 @@ mail. Development moves quickly and breaking changes are possible before 1.0.
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Logmen/MonoPanel/main/packaging/install.sh | sh
+curl -fsSL https://monopanel.app/install.sh | sh
 mp setup
 ```
 
+The address leads to [packaging/install.sh](packaging/install.sh) in this repository.
 The script detects the OS and architecture, downloads the latest release package,
 checks it against the published checksums and installs it. You can also do it by
 hand — `.deb` and `.rpm` for amd64 and arm64 are attached to every
