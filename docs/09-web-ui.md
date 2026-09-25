@@ -6,7 +6,7 @@ Web UI работает через тот же REST API, что CLI, TUI и ин
 Долгие операции — установка пакетов, применение конфигов, выпуск сертификатов, бэкапы —
 идут задачами: страница не ждёт, прогресс и лог видны в «Задачах».
 
-Скриншоты сняты с примерного сервера — Ubuntu 24.04, MonoPanel 0.8.9, сайты на
+Скриншоты сняты с примерного сервера — Ubuntu 24.04, MonoPanel 0.8.10, сайты на
 example.com. Как их переснять — [в конце страницы](#как-переснять-скриншоты).
 
 ## Вход
@@ -148,13 +148,15 @@ Valkey у себя в настройках — поле «PHP-сессии».
 что и в README, поднимает стек и заводит аккаунты, сайты с WordPress и OpenCart, базы,
 cron, почту, firewall и бэкап на example.com; адреса сайтов — из диапазона для
 документации. `scripts/screenshots/capture.mjs` открывает панель в headless Chrome по
-временному API-токену и снимает каждую страницу в светлой и тёмной теме в `docs/img/`.
+временному API-токену и снимает каждую страницу в светлой и тёмной теме в `docs/img/`;
+с `--lang en` — английский интерфейс в `docs/en/img/` для английской документации.
 
 ```bash
 make testbed-reset VM=ubuntu2404
 ssh mp-ubuntu2404 sh -s < scripts/screenshots/seed.sh
 node scripts/screenshots/capture.mjs --ssh mp-ubuntu2404          # все страницы
 node scripts/screenshots/capture.mjs --ssh mp-ubuntu2404 jobs     # только одну
+node scripts/screenshots/capture.mjs --lang en --ssh mp-ubuntu2404  # английские
 ```
 
 Рядом с каждым снимком лежит тёмный вариант (`<имя>.dark.webp`): на сайте документации

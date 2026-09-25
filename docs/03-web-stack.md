@@ -43,7 +43,7 @@
 ```
 /etc/nginx/nginx.conf                          шаблон панели (worker_processes auto, http{} с include)
 /etc/nginx/monopanel/http.d/*.conf             глобальные: ssl defaults, gzip/brotli, maps, limit zones, log format,
-                                               ip-<ip>.conf — default-server на IP (acme, quic reuseport, заглушка)
+                                               ip-<ip>.conf — default-server на IP (acme, quic reuseport, 444 чужим именам)
 /etc/nginx/monopanel/snippets/*.conf           фрагменты: fastcgi, static-cache, deny-dotfiles, acme, ssl, proxy-apache
 /etc/nginx/monopanel/sites/<domain>.conf       сгенерированный server{} сайта
 /etc/nginx/monopanel/sites/<domain>.d/*.conf   пользовательские include внутри server{} — не перезаписываются
@@ -99,7 +99,7 @@ server {
 
 Режим B отличается блоками location: статика по regex расширений отдаётся nginx (переключатель `static_by_nginx`), всё остальное — `proxy_pass http://127.0.0.1:8080` со сниппетом `proxy-apache.conf` (`proxy_http_version 1.1`, `Host`, `X-Real-IP`, `X-Forwarded-Proto`, `X-Forwarded-For`, буферы, таймауты).
 
-HTTP/3: `listen … quic reuseport` допускается один раз на IP:порт, поэтому панель держит на каждый IP отдельный default-server (`http.d/ip-<ip>.conf`) с `reuseport`, а сайты объявляют `quic` без него. Default-server также отдаёт ACME-challenge и заглушку для неизвестных доменов.
+HTTP/3: `listen … quic reuseport` допускается один раз на IP:порт, поэтому панель держит на каждый IP отдельный default-server (`http.d/ip-<ip>.conf`) с `reuseport`, а сайты объявляют `quic` без него. Он же принимает ACME-проверки и закрывает соединения к неизвестным доменам — об этом абзац ниже.
 
 Сервер по умолчанию на каждом адресе (`http.d/ip-<адрес>.conf`) принимает ACME-проверки, имя самой панели без порта перенаправляет на её HTTPS-порт (`http://panel.example.com/` → `https://panel.example.com:8443/`), а всё остальное закрывает без ответа (444). Если у имени панели есть свой сайт, побеждает сайт: точное `server_name` в nginx старше блока по умолчанию. Файлы перегенерируются при старте API, так что смена `web.hostname` доезжает до nginx после `--restart`.
 
@@ -209,7 +209,7 @@ php_admin_value[session.save_path]    = "unix:///run/monopanel-valkey/alex-sessi
 
 ## 8. Логи и ротация
 
-- `/etc/logrotate.d/monopanel`: `/var/www/*/data/logs/*.log` — daily, 14 ротаций, `compress`, `delaycompress`, `sharedscripts`, `postrotate` → агент-операция `Logrotate{Reopen}` (USR1 nginx, reload Apache, USR1 master'ам php-fpm).
+- Ротация — `/etc/logrotate.d/monopanel-sites`, блок на аккаунт с `su <логин> <логин>`: раз в неделю или раньше, если лог перевалил за 100 МБ, восемь копий, сжатие со второй; после ротации nginx получает USR1, Apache — graceful restart, оба через pid-файлы. Подробно — в [разделе 2](#2-файловая-структура-на-сервере).
 - Анализ access-логов для метрик — инкрементальный (позиция файла запоминается), формат `main` с `$request_time`, `$upstream_response_time`, `$host`, `$server_protocol`.
 - В UI: просмотр хвоста и follow (SSE) для access/error/php-error/php-slow, фильтр по коду ответа и пути.
 

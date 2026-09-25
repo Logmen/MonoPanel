@@ -1,6 +1,7 @@
 #!/bin/sh
 # Примерный сервер для скриншотов документации: ставит последний релиз тем же
 # способом, что и README, поднимает стек и заводит данные на example.com / example.org.
+# Данные — на английском: с них снимаются и русские, и английские скриншоты.
 # Запускается от root на чистой машине, например на площадке:
 #   make testbed-reset VM=ubuntu2404
 #   ssh mp-ubuntu2404 sh -s < scripts/screenshots/seed.sh
@@ -46,7 +47,7 @@ mp cms install example.com wordpress --title "Example Blog"
 mp site add shop.example.com --user shop --preset opencart --ssl none --ip 203.0.113.10
 mp cms install shop.example.com opencart --title "Example Shop"
 mp site add old.example.com --user alex --php 7.4 --mode apache --ssl none --ip 203.0.113.10
-mp app add api --user maria --command "/usr/bin/python3 -m http.server 3000" --description "бэкенд app.example.org"
+mp app add api --user maria --command "/usr/bin/python3 -m http.server 3000" --description "app.example.org backend"
 mp site add app.example.org --user maria --mode proxy --backend http://127.0.0.1:3000 --ssl none --ip 203.0.113.10
 
 step "valkey"
@@ -60,18 +61,18 @@ mp db create crm --user shop
 
 step "cron"
 mp cron add --user alex --schedule "*/5 * * * *" --command "php ~/data/www/example.com/wp-cron.php" --comment "WordPress cron"
-mp cron add --user shop --schedule "@daily" --command "find ~/data/tmp -type f -mtime +7 -delete" --comment "чистка tmp"
+mp cron add --user shop --schedule "@daily" --command "find ~/data/tmp -type f -mtime +7 -delete" --comment "tmp cleanup"
 
 step "mail"
 mp mail install --hostname mail.example.com
 mp mail domain add example.com --user alex
-mp mail box add ivan@example.com --name "Иван Петров" --quota 2048
+mp mail box add ivan@example.com --name "Ivan Petrov" --quota 2048
 mp mail box add info@example.com --name "Example" --quota 1024
 mp mail alias add sales@example.com ivan@example.com info@example.com
 
 step "firewall"
 mp firewall enable
-mp firewall allow --port 3306 --source 10.10.0.0/24 --comment "MySQL для офиса"
+mp firewall allow --port 3306 --source 10.10.0.0/24 --comment "MySQL for the office"
 mp firewall ban 203.0.113.45
 
 step "backups"

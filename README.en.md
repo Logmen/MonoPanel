@@ -18,9 +18,9 @@ reachable and can fix it. The web UI, the CLI, the SSH menu and any integration
 all speak the same REST API — anything you can do with a mouse you can script.
 
 > **Languages.** The web UI speaks English and Russian: it follows the browser
-> language and can be switched in Settings. The CLI help, API and job messages and
-> the documentation are in Russian; the code, this file and the security policy are
-> in English.
+> language and can be switched in Settings. The documentation comes in both: English
+> in [docs/en/](docs/en/), Russian in [docs/](docs/). The CLI help, API and job
+> messages are in Russian for now; the code and the security policy are in English.
 
 Status: **0.8.10**, in daily use on a production server hosting several sites and
 mail. Development moves quickly and breaking changes are possible before 1.0.
@@ -51,7 +51,7 @@ to the same links when it checks for updates and the quota is exhausted.
 
 Requires root, systemd and one of: Debian 12/13, Ubuntu 22.04/24.04/26.04,
 AlmaLinux, Rocky Linux or Oracle Linux 9/10. The whole matrix runs on a
-[testbed](docs/08-testbed.md): installing the panel, nginx, PHP and Percona and the
+[testbed](docs/en/08-testbed.md): installing the panel, nginx, PHP and Percona and the
 e2e scenario pass on all eleven.
 On EL, SELinux stays enforcing — the panel sets up the file contexts, booleans and a
 small policy module of its own that a hosting server needs. Ubuntu 26.04 has no `ppa:ondrej/php` builds yet, so PHP 8.5
@@ -114,14 +114,14 @@ and the terminal menu.
 | Apache 2.4 | `mp stack install apache` | Debian/Ubuntu: mpm_event + proxy_fcgi, `conf-available/monopanel.conf` |
 | Databases | `mp stack install percona\|mysql`, `mp db create\|list\|passwd\|rm` | Percona Server / MySQL 8.4 LTS, root over `auth_socket` (on EL the panel moves it off the package's temporary password itself), tuning from available RAM, `mysql_native_password` only for PHP < 7.4, databases named `<login>_<name>`, generated passwords satisfy `validate_password` |
 | TLS | `mp ssl panel issue\|import\|self-signed`, `mp site tls <domain>`, `mp ssl issue\|list\|renew\|rm`, `mp dns-provider add` | lego: HTTP-01 through the nginx webroot, DNS-01 (Cloudflare, Hetzner, DigitalOcean, Gandi, deSEC, Namecheap, RFC2136) for wildcards, renewal 30 days ahead; the panel's own certificate and the sites' certificates are kept apart — the panel orders for its hostname only and picks it up live, a site orders for its domain and aliases and switches itself to HTTPS, a certificate in use cannot be deleted; `mp ssl import --cert --key` for certificates issued elsewhere |
-| Migration between panels | `mp migrate grant\|plan\|run` | a whole account moves to another MonoPanel server: the source issues a token scoped to one account and only ever reads, the target reports conflicts first (`plan` changes nothing) and then takes it — files and dumps stream straight through, and panel, SFTP, MySQL and mailbox passwords travel as hashes, so users never notice the move ([docs/07-migration.md](docs/07-migration.md)) |
+| Migration between panels | `mp migrate grant\|plan\|run` | a whole account moves to another MonoPanel server: the source issues a token scoped to one account and only ever reads, the target reports conflicts first (`plan` changes nothing) and then takes it — files and dumps stream straight through, and panel, SFTP, MySQL and mailbox passwords travel as hashes, so users never notice the move ([docs/en/07-migration.md](docs/en/07-migration.md)) |
 | Moving in from BitrixVM and FASTPANEL | `mp migrate plan\|run --from bitrixvm\|fastpanel` | the same dry run and move from a foreign server over ssh (password or key, the source is only read): BitrixVM — sites from `/etc/nginx/bx`, database credentials from `.settings.php`, link-site symlinks and the paths in `dbconn.php`/cron rewritten for the new home; FASTPANEL — the account, sites, PHP backends, databases with their hashes, allow-lists, certificates and cron from its database and files; the CMS preset is detected from the site's files |
 | Self-update | `mp update`, `mp update apply` | from this repository's releases: the panel finds a new version, downloads the package for its OS, verifies an ed25519 signature and installs it from a separate systemd unit, restoring the previous binary if the new one does not answer |
 | API tokens | `mp token create\|list\|revoke` | a token belongs to an account; an administrator can mint one for another account (`--user`), and root on the local socket gets one for the single administrator with no flags |
 | Cron | `mp cron add\|list\|enable\|disable\|rm` | the account's crontab is rendered whole from the database, with `~/data/bin` on PATH (the site's PHP version) |
 | Real IP | `mp stack real-ip --cloudflare [--from CIDR]` | trusted proxies for nginx `real_ip` (Cloudflare ranges built in), so allow-lists and logs see the visitor rather than the proxy |
 | Firewall | `mp firewall enable\|allow\|deny\|ban\|unban`, `mp stack install fail2ban` | nftables table `inet monopanel`, drop policy, SSH/80/443/panel always open, unit `monopanel-firewall`; allows with a source are checked before denies, so `deny --port 8443` + `allow --port 8443 --source <VPN>` limits the panel to the VPN, and a deny that would lock you out (SSH/panel with no per-source allow, or your own current address) is refused; fail2ban jails for sshd, nginx and the panel itself |
-| Mail | `mp mail install\|status\|settings\|domain\|box\|alias\|webmail` | postfix + dovecot + opendkim: domains, mailboxes (passwords and quotas in the panel, Maildir owned by `vmail`), aliases and catch-all, IMAP/POP3/submission on the panel's certificate, DKIM signing, sieve filters; `mp mail domain dns` prints the required MX/SPF/DKIM/DMARC/PTR records and checks them against public resolvers; Roundcube webmail installs as a regular panel site or on a port of the mail host (`--port 2096` — no DNS record and no second certificate); a domain can be marked a receiver (`--lenient`) so it also accepts mail from badly configured senders ([docs/06-mail.md](docs/06-mail.md)) |
+| Mail | `mp mail install\|status\|settings\|domain\|box\|alias\|webmail` | postfix + dovecot + opendkim: domains, mailboxes (passwords and quotas in the panel, Maildir owned by `vmail`), aliases and catch-all, IMAP/POP3/submission on the panel's certificate, DKIM signing, sieve filters; `mp mail domain dns` prints the required MX/SPF/DKIM/DMARC/PTR records and checks them against public resolvers; Roundcube webmail installs as a regular panel site or on a port of the mail host (`--port 2096` — no DNS record and no second certificate); a domain can be marked lenient (`--lenient`) so it also accepts mail from badly configured senders ([docs/en/06-mail.md](docs/en/06-mail.md)) |
 | Backups | `mp backup target add\|run\|list\|snapshots\|restore` | restic (local/SFTP/S3/B2/REST), MySQL dumps, a copy of panel.db, retention, a daily schedule, restore into `<data>/restore/<snapshot>` or in place |
 | Files | `mp files ls\|put\|get\|mkdir\|rm\|mv\|chmod\|extract\|size` | `monopanel fsop` behind a helper that drops privileges irreversibly; paths are relative to the account's home. The web UI has a file manager with an editor: browsing, drag-and-drop upload, permissions, archive extraction and editing in the VS Code editor (Monaco: highlighting for php/html/css/js/sql/yaml/ini, find and replace, multiple cursors, folding, F1 for the command palette); a site's Files tab opens at its docroot |
 | SFTP / SSH | `mp user add`, `mp user set --shell\|--sftp-only --password` | SFTP-only means a chroot into `/var/www/<login>` via `sshd_config.d/monopanel.conf`, with one password for the panel and SFTP; `mp user rm <login> [--purge]` removes sites, databases, cron, app services, certificates and the unix account together |
@@ -138,7 +138,7 @@ Mail runs on Debian/Ubuntu with dovecot 2.3; the configuration for EL and for do
 2.4 (Debian 13, Ubuntu 26.04) is not written yet, and there is no content filter
 (rspamd). Accounts move between two MonoPanel servers and in from BitrixVM and
 FASTPANEL, without a resync before the DNS switch; other panels and servers without a
-panel are planned ([docs/07-migration.md](docs/07-migration.md)).
+panel are planned ([docs/en/07-migration.md](docs/en/07-migration.md)).
 
 ## How it works
 
@@ -258,7 +258,7 @@ mailboxes to recreate.
 
 If DNS is broken on the old server (a dead nameserver in `resolv.conf`), every ssh
 command of the dry run takes seconds — fix `resolv.conf` there. What moves and what
-does not, in detail: [docs/07-migration.md](docs/07-migration.md) (in Russian).
+does not, in detail: [docs/en/07-migration.md](docs/en/07-migration.md).
 
 ## Stack
 
@@ -312,7 +312,7 @@ CI on every push: tests with the race detector and coverage, the linter, templat
 validation against real nginx and Apache, the web UI build with type checking, and
 binaries for amd64 and arm64. E2E runs on demand (`workflow_dispatch`) because it
 needs a live host. The OS matrix runs from a workstation against a Proxmox testbed
-([docs/08-testbed.md](docs/08-testbed.md)): the scripts live in `scripts/testbed/`, the
+([docs/en/08-testbed.md](docs/en/08-testbed.md)): the scripts live in `scripts/testbed/`, the
 host and network in the git-ignored `.dev/testbed.env`.
 
 ### Layout
@@ -338,10 +338,19 @@ scripts/testbed/      the testbed: VMs on Proxmox, panel bootstrap, matrix and m
 
 ## Documentation
 
-The design documents are in Russian, in [docs/](docs/): architecture, the platform
-matrix, the web stack, the CLI/TUI/API reference, the roadmap, the mail server,
-moving accounts between panels, the testbed and a page-by-page tour of the Web UI with
-screenshots ([docs/09-web-ui.md](docs/09-web-ui.md)).
+| Document | Contents |
+|---|---|
+| [docs/en/01-architecture.md](docs/en/01-architecture.md) | Goals, architectural decisions, components, the data model, the pipeline that applies configuration, security, observability, packaging |
+| [docs/en/02-platform-matrix.md](docs/en/02-platform-matrix.md) | Supported OSes, package sources, the PHP and extension matrix, MySQL/Percona, the OS profile, SELinux, the firewall |
+| [docs/en/03-web-stack.md](docs/en/03-web-stack.md) | The nginx+php-fpm and nginx+Apache modes, the file layout, templates, isolation and limits, TLS/ACME, HTTP/3, logs |
+| [docs/en/04-cli-tui-api.md](docs/en/04-cli-tui-api.md) | CLI commands, TUI screens, the REST API, billing integration (WHMCS) |
+| [docs/en/05-roadmap.md](docs/en/05-roadmap.md) | Development stages, the CI matrix, test scenarios, risks |
+| [docs/en/06-mail.md](docs/en/06-mail.md) | Mail: postfix + dovecot + opendkim, the path of a message, files and ports, DNS records, webmail, limits |
+| [docs/en/07-migration.md](docs/en/07-migration.md) | Moving in: between two MonoPanel servers and from BitrixVM/FASTPANEL over ssh — what moves and how, the order around the DNS switch, the migration bundle and the other adapters (design) |
+| [docs/en/08-testbed.md](docs/en/08-testbed.md) | The testbed: a VM on Proxmox for every distribution in the matrix, the e2e and panel-to-panel migration runs, what it found |
+| [docs/en/09-web-ui.md](docs/en/09-web-ui.md) | The web UI page by page, with screenshots in the light and dark themes: dashboard, sites, PHP, databases, mail, files, jobs, firewall, backups, settings; how to retake the screenshots |
+
+The same documents in Russian are in [docs/](docs/).
 The API reference is served by the panel itself at `/api/v1/docs` (OpenAPI 3.1) once you are signed in or present an API token; the reference and the specification are closed to anonymous visitors, Stoplight Elements is bundled into the binary and the page loads no third-party scripts.
 
 ## Security

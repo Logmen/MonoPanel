@@ -1,10 +1,11 @@
 // Скриншоты Web UI для документации: headless Chrome по DevTools-протоколу, без
 // зависимостей (нужны Node 22+ и Chrome). Панель открывается по имени из примеров —
 // panel.example.com подменяется на адрес машины, — вход по API-токену заголовком,
-// каждая страница снимается в светлой и тёмной теме: docs/img/<имя>.webp и <имя>.dark.webp.
+// каждая страница снимается в светлой и тёмной теме: docs/img/<имя>.webp и <имя>.dark.webp,
+// с --lang en — английский интерфейс в docs/en/img/ для английской документации.
 //
-//   node scripts/screenshots/capture.mjs --ssh mp-ubuntu2404 [имя...]
-//   MP_TOKEN=<токен> node scripts/screenshots/capture.mjs <адрес> [имя...]
+//   node scripts/screenshots/capture.mjs [--lang en] --ssh mp-ubuntu2404 [имя...]
+//   MP_TOKEN=<токен> node scripts/screenshots/capture.mjs [--lang en] <адрес> [имя...]
 //
 // С --ssh токен выпускается на машине на время съёмки и потом отзывается, адрес
 // берётся из ssh-конфига.
@@ -15,6 +16,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const argv = process.argv.slice(2);
+let lang = 'ru';
+if (argv[0] === '--lang') lang = argv.splice(0, 2)[1];
+if (lang !== 'ru' && lang !== 'en') {
+  console.error('--lang: ru или en');
+  process.exit(2);
+}
 let alias = null;
 if (argv[0] === '--ssh') alias = argv.splice(0, 2)[1];
 const ssh = (cmd) => execFileSync('ssh', ['-o', 'BatchMode=yes', alias, cmd], { encoding: 'utf8' });
@@ -29,7 +36,7 @@ if (!ip || !token) {
 }
 const HOST = 'panel.example.com';
 const BASE = `https://${HOST}:8443`;
-const OUT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../docs/img');
+const OUT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), lang === 'en' ? '../../docs/en/img' : '../../docs/img');
 const CHROME = process.env.CHROME || 'google-chrome-stable';
 const WIDTH = 1440;
 const HEIGHT = 900;
@@ -76,7 +83,7 @@ const chrome = spawn(CHROME, [
   '--ignore-certificate-errors',
   `--host-resolver-rules=MAP ${HOST} ${ip}`,
   '--hide-scrollbars',
-  '--lang=ru',
+  `--lang=${lang}`,
   '--no-first-run',
   `--window-size=${WIDTH},${HEIGHT}`,
   'about:blank'
@@ -124,7 +131,7 @@ async function capture(shot, theme) {
   await s('Network.enable');
   await s('Emulation.setDeviceMetricsOverride', { width: WIDTH, height: HEIGHT, deviceScaleFactor: 1, mobile: false });
   await s('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }, { name: 'prefers-reduced-motion', value: 'reduce' }] });
-  await s('Page.addScriptToEvaluateOnNewDocument', { source: "localStorage.setItem('lang','ru');localStorage.removeItem('theme')" });
+  await s('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('lang','${lang}');localStorage.removeItem('theme')` });
   if (!shot.anonymous) await s('Network.setExtraHTTPHeaders', { headers: { Authorization: `Bearer ${token}` } });
   const loaded = once('Page.loadEventFired');
   await s('Page.navigate', { url: BASE + shot.path });
