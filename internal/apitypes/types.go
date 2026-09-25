@@ -1022,4 +1022,5 @@ type CMSInstallResult struct {
 // "mp", run with the caller's rights.
 type ConsoleRequest struct {
 	Args []string `json:"args" minItems:"1" maxItems:"64" doc:"The arguments after mp, e.g. [\"site\", \"list\"]"`
+	Lang string   `json:"lang,omitempty" doc:"Language of the command's own texts, ru or en (the interface's); English by default"`
 }

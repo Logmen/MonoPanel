@@ -11,10 +11,15 @@ import (
 	"testing"
 )
 
-// consoleRaw posts to the console and returns the streamed text as is.
-func consoleRaw(f *siteFixture, args []string) (int, string, string) {
+// consoleRaw posts to the console and returns the streamed text as is; lang
+// is the interface language the page sends along.
+func consoleRaw(f *siteFixture, args []string, lang ...string) (int, string, string) {
 	f.t.Helper()
-	raw, _ := json.Marshal(map[string]any{"args": args})
+	payload := map[string]any{"args": args}
+	if len(lang) > 0 {
+		payload["lang"] = lang[0]
+	}
+	raw, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(f.ctx, http.MethodPost, f.ts.URL+"/api/v1/system/console", bytes.NewReader(raw))
 	if err != nil {
 		f.t.Fatal(err)
@@ -35,7 +40,7 @@ func consoleRaw(f *siteFixture, args []string) (int, string, string) {
 func TestConsoleRunsMPWithAOneOffToken(t *testing.T) {
 	f := newSiteFixture(t)
 	script := filepath.Join(t.TempDir(), "mp")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\necho \"args: $*\"\necho \"home: $HOME\"\necho oops 1>&2\nexit 3\n"), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho \"args: $*\"\necho \"home: $HOME\"\necho \"lang: $MP_LANG\"\necho oops 1>&2\nexit 3\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	prev := consoleBinary
@@ -51,6 +56,13 @@ func TestConsoleRunsMPWithAOneOffToken(t *testing.T) {
 	}
 	if strings.Contains(body, "--token \n") {
 		t.Fatalf("a token must be passed: %s", body)
+	}
+	// mp speaks the interface's language, English unless the page says ru.
+	if !strings.Contains(body, "lang: en\n") {
+		t.Fatalf("default language: %s", body)
+	}
+	if _, _, body := consoleRaw(f, []string{"status"}, "ru"); !strings.Contains(body, "lang: ru\n") {
+		t.Fatalf("Russian interface: %s", body)
 	}
 	admin, err := f.db.GetUserByLogin(f.ctx, "admin")
 	if err != nil {

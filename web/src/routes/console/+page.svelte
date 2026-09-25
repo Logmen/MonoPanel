@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { auth, notify } from '$lib/state.svelte';
-  import { t } from '$lib/i18n/index.svelte';
+  import { t, lang } from '$lib/i18n/index.svelte';
   import PageHead from '$lib/components/PageHead.svelte';
   import Icon from '$lib/components/Icon.svelte';
   // The console runs mp on the server with this account's rights and streams
@@ -37,7 +37,7 @@
     try { localStorage.setItem('mp.console.history', JSON.stringify(history)); } catch { /* ignore */ }
     running = true; ctrl = new AbortController();
     try {
-      const res = await fetch('/api/v1/system/console', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ args }), signal: ctrl.signal });
+      const res = await fetch('/api/v1/system/console', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ args, lang: lang.locale }), signal: ctrl.signal });
       if (!res.ok || !res.body) { const body = await res.text(); let msg = body; try { msg = JSON.parse(body).detail || body; } catch { /* plain */ } output += `$ mp ${text}\n${msg}\n\n`; notify(msg, 'err'); return; }
       const reader = res.body.getReader(); const dec = new TextDecoder();
       for (;;) { const { value, done } = await reader.read(); if (done) break; output += dec.decode(value, { stream: true }); await tick(); if (pre) pre.scrollTop = pre.scrollHeight; }

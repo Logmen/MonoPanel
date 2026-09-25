@@ -99,7 +99,13 @@ func (s *Server) registerConsole() {
 			cctx, cancel := context.WithTimeout(hctx.Context(), 30*time.Minute)
 			defer cancel()
 			cmd := exec.CommandContext(cctx, consoleBinary(), append(append([]string{}, args...), "--server", server, "--token", plain, "--insecure")...)
-			cmd.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C.UTF-8", "LC_ALL=C.UTF-8", "NO_COLOR=1", "TERM=dumb", "HOME=" + s.cfg.DataDir}
+			// mp speaks the language of the interface that asked, not of the
+			// server's locale.
+			mpLang := "en"
+			if in.Body.Lang == "ru" {
+				mpLang = "ru"
+			}
+			cmd.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C.UTF-8", "LC_ALL=C.UTF-8", "MP_LANG=" + mpLang, "NO_COLOR=1", "TERM=dumb", "HOME=" + s.cfg.DataDir}
 			cmd.Stdout, cmd.Stderr = out, out
 			cmd.WaitDelay = 5 * time.Second
 			fmt.Fprintf(out, "$ mp %s\n", strings.Join(args, " "))
