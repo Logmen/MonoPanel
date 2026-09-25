@@ -17,7 +17,10 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web /src/web/build ./web/build
+# Workers Builds clones without tags: then the version is the release named in
+# README.en.md plus the commit.
 RUN version=$(git describe --tags --always 2>/dev/null | sed 's/^v//'); \
+    case "$version" in *.*) ;; *) version="$(sed -n 's/^Status: \*\*\([0-9.]*\)\*\*.*/\1/p' README.en.md)+${version}" ;; esac; \
     CGO_ENABLED=0 go build -trimpath -tags demo \
       -ldflags "-s -w -X monopanel/internal/buildinfo.Version=${version:-demo} -X monopanel/internal/buildinfo.Commit=$(git rev-parse --short HEAD 2>/dev/null || echo none) -X monopanel/internal/buildinfo.Repo=Logmen/MonoPanel" \
       -o /out/monopanel ./cmd/monopanel
