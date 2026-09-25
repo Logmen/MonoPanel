@@ -7,6 +7,9 @@
 <title>MonoPanel — панель управления веб-сервером</title>
 <meta name="description" content="Сайты, PHP, базы, TLS, почта, бэкапы, firewall и переезд между серверами — одним статическим бинарником для Debian, Ubuntu и RHEL-семейства.">
 <link rel="canonical" href="https://monopanel.app/">
+<link rel="alternate" hreflang="ru" href="https://monopanel.app/">
+<link rel="alternate" hreflang="en" href="https://monopanel.app/en/">
+<link rel="alternate" hreflang="x-default" href="https://monopanel.app/en/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="MonoPanel">
 <meta property="og:locale" content="ru_RU">
@@ -42,6 +45,8 @@
       <a class="tab" href="/docs/">Документация</a>
     </nav>
     <div class="top-end">
+      <!-- Выбор языка запоминает воркер (src/worker.js) по ?lang=. -->
+      <div class="seg seg-lang" role="group" aria-label="Язык"><a href="/" hreflang="ru" lang="ru" aria-current="true">RU</a><a href="/en/?lang=en" hreflang="en" lang="en">EN</a></div>
       <div class="seg" role="group" aria-label="Тема">
         <button type="button" data-theme-mode="system" title="Как в системе" aria-label="Тема как в системе"><svg class="ic"><use href="/assets/icons.svg#i-monitor"/></svg></button>
         <button type="button" data-theme-mode="light" title="Светлая" aria-label="Светлая тема"><svg class="ic"><use href="/assets/icons.svg#i-sun"/></svg></button>
@@ -271,7 +276,7 @@
       <a href="https://github.com/Logmen/MonoPanel/releases">Релизы</a>
       <a href="/docs/">Документация</a>
       <a href="https://github.com/Logmen/MonoPanel/blob/main/SECURITY.md">Безопасность</a>
-      <a href="https://github.com/Logmen/MonoPanel/blob/main/README.en.md">English</a>
+      <a href="/en/?lang=en" hreflang="en" lang="en">English</a>
       <a href="https://github.com/Logmen/MonoPanel/blob/main/LICENSE">Apache-2.0</a>
     </nav>
   </div>

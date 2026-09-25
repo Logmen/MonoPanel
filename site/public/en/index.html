@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>MonoPanel — a web server control panel</title>
+<meta name="description" content="Sites, PHP, databases, TLS, mail, backups, firewall and moving between servers — in one static binary for Debian, Ubuntu and the RHEL family.">
+<link rel="canonical" href="https://monopanel.app/en/">
+<link rel="alternate" hreflang="ru" href="https://monopanel.app/">
+<link rel="alternate" hreflang="en" href="https://monopanel.app/en/">
+<link rel="alternate" hreflang="x-default" href="https://monopanel.app/en/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="MonoPanel">
+<meta property="og:locale" content="en_US">
+<meta property="og:url" content="https://monopanel.app/en/">
+<meta property="og:title" content="MonoPanel — a web server control panel">
+<meta property="og:description" content="Sites, PHP, databases, TLS, mail, backups, firewall and moving between servers — in one static binary.">
+<meta property="og:image" content="https://monopanel.app/en/docs/img/dashboard.dark.webp">
+<meta property="og:image:width" content="1440">
+<meta property="og:image:height" content="900">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#eef3f8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#05070c" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/fonts.css">
+<link rel="stylesheet" href="/assets/site.css">
+<!-- Тема до первой отрисовки, как в app.html панели: иначе тёмная мигнёт светлой. -->
+<script>try{var t=localStorage.getItem("theme");if(t==="dark"||t==="light")document.documentElement.dataset.theme=t}catch(e){}</script>
+<script src="/assets/site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="glow"></div>
+
+<header class="top">
+  <div class="wrap">
+    <a class="logo" href="/en/" aria-label="MonoPanel — home">
+      <span class="logo-mark" aria-hidden="true">M</span><span class="brand">MonoPanel</span>
+    </a>
+    <nav class="menu" aria-label="Sections">
+      <a class="tab" href="#features">Features</a>
+      <a class="tab" href="#how">How it works</a>
+      <a class="tab" href="#os">Where it runs</a>
+      <a class="tab" href="/en/docs/">Documentation</a>
+    </nav>
+    <div class="top-end">
+      <!-- Выбор языка запоминает воркер (src/worker.js) по ?lang=. -->
+      <div class="seg seg-lang" role="group" aria-label="Language"><a href="/?lang=ru" hreflang="ru" lang="ru">RU</a><a href="/en/" hreflang="en" lang="en" aria-current="true">EN</a></div>
+      <div class="seg" role="group" aria-label="Theme">
+        <button type="button" data-theme-mode="system" title="System" aria-label="System theme"><svg class="ic"><use href="/assets/icons.svg#i-monitor"/></svg></button>
+        <button type="button" data-theme-mode="light" title="Light" aria-label="Light theme"><svg class="ic"><use href="/assets/icons.svg#i-sun"/></svg></button>
+        <button type="button" data-theme-mode="dark" title="Dark" aria-label="Dark theme"><svg class="ic"><use href="/assets/icons.svg#i-moon"/></svg></button>
+      </div>
+      <a class="btn" href="https://github.com/Logmen/MonoPanel">GitHub <svg class="ic"><use href="/assets/icons.svg#i-external"/></svg></a>
+    </div>
+  </div>
+</header>
+
+<main id="main" class="wrap">
+  <section class="hero" id="top">
+    <div>
+      <div class="hero-tags rise">
+        <a class="tag tag-accent" id="ver" href="https://github.com/Logmen/MonoPanel/releases/latest" hidden><span class="dot dot-live"></span><span></span></a>
+        <span class="tag tag-muted">Apache-2.0</span>
+        <span class="tag tag-muted">Go · one binary</span>
+      </div>
+      <h1 class="page-title hero-title rise" style="--i:1">Mono<span class="hl">Panel</span></h1>
+      <p class="hero-sub rise" style="--i:2">A web server control panel</p>
+      <p class="lead rise" style="--i:3">Sites, PHP, databases, TLS, mail, backups, firewall and moving between servers — in one
+        static binary, with no runtime and no external dependencies. The panel listens on its own port and does not depend
+        on the system nginx: if a site’s configuration breaks, the panel stays reachable and can fix it.</p>
+      <div class="actions rise" style="--i:4">
+        <a class="btn btn-primary btn-lg" href="https://github.com/Logmen/MonoPanel">GitHub <svg class="ic"><use href="/assets/icons.svg#i-external"/></svg></a>
+        <a class="btn btn-lg" href="https://github.com/Logmen/MonoPanel/releases">Releases</a>
+        <a class="btn btn-ghost btn-lg" href="/en/docs/">Documentation</a>
+      </div>
+    </div>
+
+    <div class="card term rise" style="--i:3">
+      <div class="term-head">
+        <div class="tabs" role="tablist" aria-label="Commands">
+          <button class="tab" type="button" role="tab" id="t-install" aria-controls="p-install" aria-selected="true">Install</button>
+          <button class="tab" type="button" role="tab" id="t-site" aria-controls="p-site" aria-selected="false" tabindex="-1">Site</button>
+          <button class="tab" type="button" role="tab" id="t-mail" aria-controls="p-mail" aria-selected="false" tabindex="-1">Mail</button>
+          <button class="tab" type="button" role="tab" id="t-move" aria-controls="p-move" aria-selected="false" tabindex="-1">Move</button>
+        </div>
+        <button class="btn btn-sm" type="button" data-copy title="Copy the commands"><svg class="ic"><use href="/assets/icons.svg#i-copy"/></svg><span>Copy</span></button>
+      </div>
+      <div class="term-body panels">
+        <div role="tabpanel" id="p-install" aria-labelledby="t-install">
+          <pre class="code"><span class="ln"><span class="p">$ </span>curl -fsSL https://monopanel.app/install.sh | sh</span><span class="ln"><span class="p">$ </span>mp setup</span></pre>
+          <p class="term-note">That is <a href="https://github.com/Logmen/MonoPanel/blob/main/packaging/install.sh">packaging/install.sh</a>
+            from the repository: it detects the OS and architecture, downloads the latest release package, checks it against the published checksum and installs it. <code>mp setup</code> creates the administrator and prints the panel address and password.</p>
+          <div class="term-reqs"><span class="tag tag-muted">root</span><span class="tag tag-muted">systemd</span><span class="tag tag-muted">amd64 · arm64</span></div>
+        </div>
+        <div role="tabpanel" id="p-site" aria-labelledby="t-site" class="off">
+          <pre class="code"><span class="ln"><span class="p">$ </span>mp stack install nginx</span><span class="ln"><span class="p">$ </span>mp stack install percona</span><span class="ln"><span class="p">$ </span>mp php install 8.4</span><span class="ln"><span class="p">$ </span>mp user add alex --generate --shell</span><span class="ln"><span class="p">$ </span>mp site add example.com --user alex --www --preset wordpress</span><span class="ln"><span class="p">$ </span>mp cms install example.com wordpress</span></pre>
+          <p class="term-note">The preset tunes nginx and PHP for the CMS; the panel runs the CMS installer itself and shows
+            the administrator credentials once.</p>
+        </div>
+        <div role="tabpanel" id="p-mail" aria-labelledby="t-mail" class="off">
+          <pre class="code"><span class="ln"><span class="p">$ </span>mp mail install --hostname mail.example.com</span><span class="ln"><span class="p">$ </span>mp mail domain add example.com --user alex</span><span class="ln"><span class="p">$ </span>mp mail box add ivan@example.com --quota 2048</span><span class="ln"><span class="p">$ </span>mp mail domain dns example.com</span></pre>
+          <p class="term-note"><code>mail domain dns</code> shows what to add to DNS — MX, SPF, DKIM, DMARC and PTR —
+            and checks the records against public resolvers.</p>
+        </div>
+        <div role="tabpanel" id="p-move" aria-labelledby="t-move" class="off">
+          <pre class="code"><span class="ln"><span class="p">$ </span>mp migrate plan --from fastpanel --source root@old.example.com --scope user:shop</span><span class="ln"><span class="p">$ </span>mp migrate run  --from fastpanel --source root@old.example.com --scope user:shop</span></pre>
+          <p class="term-note"><code>plan</code> changes nothing: it shows what will come over and what stands in the way.
+            The source is only read, so the old server stays as a fallback until DNS is switched.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="kpis" id="facts" aria-label="At a glance">
+    <div class="kpi rise" style="--i:5"><span class="label">OSes in the test matrix</span><span class="kpi-v">11</span><span class="small">Debian · Ubuntu · Alma · Rocky · Oracle</span></div>
+    <div class="kpi rise" style="--i:6"><span class="label">PHP branches</span><span class="kpi-v">5.6–8.5</span><span class="small">side by side, a php-fpm pool per site</span></div>
+    <div class="kpi rise" style="--i:7"><span class="label">Runtime on the host</span><span class="kpi-v">0</span><span class="small">one static Go binary</span></div>
+    <div class="kpi rise" style="--i:8"><span class="label">Updates</span><span class="kpi-v">ed25519</span><span class="small">signed packages and a rollback if the new version does not respond</span></div>
+  </section>
+
+  <section class="section" id="ui">
+    <div class="head">
+      <div>
+        <h2 class="page-title">Interface</h2>
+        <p>Light and dark themes, English and Russian, on a phone too. A shot of a sample server:
+          Ubuntu 24.04, sites on example.com.</p>
+      </div>
+      <a class="btn" href="/en/docs/web-ui/">All pages <svg class="ic"><use href="/assets/icons.svg#i-chevron"/></svg></a>
+    </div>
+    <figure class="shot">
+      <a class="shot-frame only-light" href="/en/docs/web-ui/"><img src="/en/docs/img/dashboard.webp" width="1440" height="900" alt="The MonoPanel dashboard: load, memory, disk, services, charts and diagnostics" loading="lazy" decoding="async"></a>
+      <a class="shot-frame only-dark" href="/en/docs/web-ui/"><img src="/en/docs/img/dashboard.dark.webp" width="1440" height="900" alt="The MonoPanel dashboard: load, memory, disk, services, charts and diagnostics" loading="lazy" decoding="async"></a>
+    </figure>
+  </section>
+
+  <section class="section" id="features">
+    <div class="head">
+      <div>
+        <h2 class="page-title">Features</h2>
+        <p>Everything goes through one REST API and is available in the web UI, CLI and TUI.</p>
+      </div>
+    </div>
+    <div class="grid grid-3">
+      <article class="card feat">
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-globe"/></svg></span><h3>Sites</h3></div>
+        <p>nginx → php-fpm, nginx → Apache or a proxy to your own backend. Installers and presets for WordPress,
+          Joomla, OpenCart and 1C-Bitrix.</p>
+        <span class="tag tag-muted">mp site add</span>
+      </article>
+      <article class="card feat">
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-code"/></svg></span><h3>PHP 5.6–8.5</h3></div>
+        <p>Several branches side by side, a php-fpm for each and a pool per site. Any php.ini setting — for one
+          site or for all of them at once.</p>
+        <span class="tag tag-muted">mp php install 8.4</span>
+      </article>
+      <article class="card feat">
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-db"/></svg></span><h3>Databases</h3></div>
+        <p>Percona Server or MySQL 8.4 LTS: root over auth_socket, tuning to the amount of memory, generated
+          passwords. Every account gets its own Valkey for cache and PHP sessions.</p>
+        <span class="tag tag-muted">mp db create</span>
+      </article>
+      <article class="card feat">
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-shield"/></svg></span><h3>TLS</h3></div>
+        <p>Let’s Encrypt over HTTP-01, and DNS-01 for wildcards — Cloudflare, Hetzner, DigitalOcean and more.
+          Renewal 30 days before expiry.</p>
+        <span class="tag tag-muted">mp ssl issue</span>
+      </article>
+      <article class="card feat">
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-mail"/></svg></span><h3>Mail</h3></div>
+        <p>postfix, dovecot and opendkim: mailboxes with quotas, aliases, DKIM and Roundcube. The panel shows the
+          DNS records you need and checks them. For now — Debian 12 and Ubuntu 22.04/24.04.</p>
+        <span class="tag tag-muted">mp mail install</span>
+      </article>
+      <article class="card feat">
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-fire"/></svg></span><h3>Firewall</h3></div>
+        <p>nftables with a drop policy and fail2ban with jails for sshd, nginx and the panel. A rule that would
+          lock you out is refused.</p>
+        <span class="tag tag-muted">mp firewall enable</span>
+      </article>
+      <article class="card feat">
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-archive"/></svg></span><h3>Backups</h3></div>
+        <p>restic to local, SFTP, S3, B2 or REST: files, MySQL dumps and the panel database on a schedule,
+          restored alongside or in place.</p>
+        <span class="tag tag-muted">mp backup run</span>
+      </article>
+      <article class="card feat">
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-refresh"/></svg></span><h3>Moving in</h3></div>
+        <p>A whole account — from another MonoPanel, BitrixVM or FASTPANEL: sites, databases, cron and
+          certificates. The source is only read.</p>
+        <span class="tag tag-muted">mp migrate run</span>
+      </article>
+      <article class="card feat">
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-terminal"/></svg></span><h3>Web UI, CLI, TUI and API</h3></div>
+        <p>One REST API for everything: anything you can do with a mouse you can script. TOTP 2FA, API tokens
+          and webhooks.</p>
+        <span class="tag tag-muted">mp</span>
+      </article>
+    </div>
+  </section>
+
+  <section class="section" id="how">
+    <div class="head">
+      <div>
+        <h2 class="page-title">How it works</h2>
+        <p>One binary, <code>monopanel</code> (also known as <code>mp</code>), runs in four roles with privilege
+          separation. State lives in SQLite.</p>
+      </div>
+    </div>
+    <div class="grid grid-2">
+      <div class="card roles">
+        <table class="tbl">
+          <thead><tr><th>Role</th><th>Privileges</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td data-label="Role"><code>api</code></td><td data-label="Privileges">the <code>monopanel</code> user</td><td data-label="Purpose">HTTPS :8443, a socket for the CLI, the job queue</td></tr>
+            <tr><td data-label="Role"><code>agent</code></td><td data-label="Privileges">root</td><td data-label="Purpose">a closed set of typed operations, never command strings</td></tr>
+            <tr><td data-label="Role"><code>helper</code></td><td data-label="Privileges">setuid, irreversible privilege drop</td><td data-label="Purpose">file operations on behalf of a client</td></tr>
+            <tr><td data-label="Role"><code>fsop</code></td><td data-label="Privileges">the client’s privileges</td><td data-label="Purpose">the file operation itself</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        <span class="label">Changing a site</span>
+        <div class="flow">
+          <span class="tag tag-accent">database write</span><svg class="ic"><use href="/assets/icons.svg#i-chevron"/></svg>
+          <span class="tag tag-accent">template render</span><svg class="ic"><use href="/assets/icons.svg#i-chevron"/></svg>
+          <span class="tag tag-accent">nginx -t · apachectl -t · php-fpm -t</span><svg class="ic"><use href="/assets/icons.svg#i-chevron"/></svg>
+          <span class="tag tag-accent">atomic write</span><svg class="ic"><use href="/assets/icons.svg#i-chevron"/></svg>
+          <span class="tag tag-ok"><span class="dot"></span>reload</span>
+        </div>
+        <p>A change is not an edit to a file on disk but a database write that the configs are rendered from. Any
+          failure along the way rolls back the whole set of files and returns the error text.</p>
+        <hr class="divider">
+        <span class="label">Panel updates</span>
+        <p>The panel finds a new release itself, downloads the package for its OS, verifies the ed25519 signature and
+          installs it from a separate systemd unit. If the new version does not respond, the previous binary comes back.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="os">
+    <div class="head">
+      <div>
+        <h2 class="page-title">Where it runs</h2>
+        <p>Root and systemd are required. Installing the panel, nginx, PHP and Percona and the e2e scenario pass on
+          all eleven OSes of the testbed.</p>
+      </div>
+    </div>
+    <div class="card">
+      <ul class="os">
+        <li class="tag tag-ok"><span class="dot"></span>Debian 12</li>
+        <li class="tag tag-ok"><span class="dot"></span>Debian 13</li>
+        <li class="tag tag-ok"><span class="dot"></span>Ubuntu 22.04</li>
+        <li class="tag tag-ok"><span class="dot"></span>Ubuntu 24.04</li>
+        <li class="tag tag-ok"><span class="dot"></span>Ubuntu 26.04</li>
+        <li class="tag tag-ok"><span class="dot"></span>AlmaLinux 9</li>
+        <li class="tag tag-ok"><span class="dot"></span>AlmaLinux 10</li>
+        <li class="tag tag-ok"><span class="dot"></span>Rocky Linux 9</li>
+        <li class="tag tag-ok"><span class="dot"></span>Rocky Linux 10</li>
+        <li class="tag tag-ok"><span class="dot"></span>Oracle Linux 9</li>
+        <li class="tag tag-ok"><span class="dot"></span>Oracle Linux 10</li>
+      </ul>
+      <hr class="divider">
+      <p>On EL, SELinux stays enforcing — the panel sets up the contexts and booleans that hosting needs itself.
+        .deb and .rpm packages for amd64 and arm64.</p>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <a class="logo" href="/en/" aria-label="MonoPanel — home"><span class="logo-mark" aria-hidden="true">M</span><span class="brand">MonoPanel</span></a>
+    <nav aria-label="Links">
+      <a href="https://github.com/Logmen/MonoPanel">GitHub</a>
+      <a href="https://github.com/Logmen/MonoPanel/releases">Releases</a>
+      <a href="/en/docs/">Documentation</a>
+      <a href="https://github.com/Logmen/MonoPanel/blob/main/SECURITY.md">Security</a>
+      <a href="/?lang=ru" hreflang="ru" lang="ru">Русский</a>
+      <a href="https://github.com/Logmen/MonoPanel/blob/main/LICENSE">Apache-2.0</a>
+    </nav>
+  </div>
+</footer>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

@@ -1,12 +1,17 @@
-// Публичный сайт MonoPanel: статика из dist/ (npm run build: public/ + документация),
-// Workers отдаёт её без кода воркера. Сборка — Workers Builds, настройки в README.md.
+// Публичный сайт MonoPanel: статика из dist/ (npm run build: public/ + документация)
+// и воркер, который выбирает язык страницы. Сборка — Workers Builds, настройки в README.md.
 {
   // Должно совпадать с именем проекта в дашборде Cloudflare, иначе сборка упадёт.
   "name": "monopanel",
   "compatibility_date": "2026-09-01",
+  "main": "src/worker.js",
   "assets": {
     "directory": "./dist",
-    // Неизвестный адрес получает public/404.html со статусом 404.
-    "not_found_handling": "404-page"
+    "binding": "ASSETS",
+    // Неизвестный адрес получает ближайший 404.html (public/ или public/en/) со статусом 404.
+    "not_found_handling": "404-page",
+    // Воркер решает только за страницы: русская или английская версия (src/worker.js).
+    // Стили, шрифты, картинки и install.sh отдаются как статика, мимо него.
+    "run_worker_first": ["/", "/docs/*", "/en", "/en/*", "!/docs/img/*", "!/en/docs/img/*"]
   }
 }

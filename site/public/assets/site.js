@@ -26,6 +26,12 @@
   );
   paint();
 
+  // Сообщения — на языке страницы: <html lang="en"> у английской версии.
+  const T =
+    root.lang === 'en'
+      ? { cmds: 'Commands copied', cmdsSel: 'Commands selected — copy them manually', copied: 'Copied', sel: 'Text selected — copy it manually' }
+      : { cmds: 'Команды скопированы', cmdsSel: 'Команды выделены — скопируйте их вручную', copied: 'Скопировано', sel: 'Текст выделен — скопируйте его вручную' };
+
   const toast = document.getElementById('toast');
   let toastTimer;
   const notify = (text) => {
@@ -65,11 +71,11 @@
     });
     try {
       await navigator.clipboard.writeText(lines.join('\n') + '\n');
-      notify('Команды скопированы');
+      notify(T.cmds);
     } catch {
       // Буфер недоступен (не HTTPS, запрет браузера): выделяем команды, «$» в выделение не попадёт.
       getSelection().selectAllChildren(document.querySelector('[role="tabpanel"]:not(.off) pre'));
-      notify('Команды выделены — скопируйте их вручную');
+      notify(T.cmdsSel);
     }
   });
 
@@ -92,10 +98,10 @@
       const pre = b.parentElement.querySelector('pre');
       try {
         await navigator.clipboard.writeText(pre.textContent);
-        notify('Скопировано');
+        notify(T.copied);
       } catch {
         getSelection().selectAllChildren(pre);
-        notify('Текст выделен — скопируйте его вручную');
+        notify(T.sel);
       }
     })
   );

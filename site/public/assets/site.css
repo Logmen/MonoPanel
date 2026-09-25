@@ -230,6 +230,9 @@ code, pre { font-family: var(--font-mono); }
 .seg button:hover { color: var(--ink); }
 .seg button[aria-pressed="true"] { background: var(--surface); color: var(--accent-ink); }
 .seg .ic { width: 15px; height: 15px; }
+.seg a { display: grid; place-items: center; min-width: 30px; height: 26px; padding: 0 0.375rem; color: var(--muted); font-family: var(--font-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-decoration: none; transition: color 0.15s var(--ease), background-color 0.15s var(--ease); }
+.seg a:hover { color: var(--ink); }
+.seg a[aria-current="true"] { background: var(--surface); color: var(--accent-ink); }
 
 /* ── Первый экран ───────────────────────────────────────────────────────── */
 .hero { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2rem; padding: 3rem 0 2.5rem; }
