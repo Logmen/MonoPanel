@@ -344,11 +344,12 @@ func suspiciousCron(cmd string) bool {
 	return cronTmpExecRe.MatchString(cmd) || cronFetchRe.MatchString(cmd)
 }
 
-// cronNotes lists the jobs switched off on the way, for the plan.
+// cronNotes lists the jobs switched off on the way, for the plan. The mark
+// is not always first: a job from BitrixVM's root crontab says so before it.
 func cronNotes(jobs []*store.CronJob) []string {
 	var out []string
 	for _, j := range jobs {
-		if !j.Enabled && strings.HasPrefix(j.Comment, cronSuspectMark) {
+		if !j.Enabled && strings.Contains(j.Comment, cronSuspectMark) {
 			out = append(out, fmt.Sprintf("cron job \"%s %s\" looks like a planted backdoor (runs something from /tmp or pipes a downloaded script into a shell): it will arrive disabled; check the source for a break-in", j.Schedule, j.Command))
 		}
 	}
