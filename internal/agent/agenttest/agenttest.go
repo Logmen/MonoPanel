@@ -58,6 +58,9 @@ type Agent struct {
 	// MissingPackages are absent from every repository: "available" leaves
 	// them out and "query" reports them as not installed.
 	MissingPackages map[string]bool
+	// PackageVersions overrides the version "query" and "available" report
+	// (default 1.0-test).
+	PackageVersions map[string]string
 	// ToolHook, when set, may answer a tool call itself (nil = default).
 	ToolHook func(req agent.ToolRequest) *agent.ToolResponse
 	// WriteThrough, when set, says which applied files also land on disk —
@@ -281,6 +284,9 @@ func (a *Agent) respond(path string, body []byte) any {
 		for _, p := range req.Packages {
 			if !a.MissingPackages[p] {
 				versions[p] = "1.0-test"
+				if v, ok := a.PackageVersions[p]; ok {
+					versions[p] = v
+				}
 			}
 		}
 		if req.Action == "available" {

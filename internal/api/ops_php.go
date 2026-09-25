@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -119,13 +120,26 @@ func (s *Server) registerPHP() {
 // the PPA is probed again at the next installation.
 const phpRepoDistro = "distro"
 
-// ppaClient asks Launchpad; SetOutbound replaces it.
+// ppaClient asks Launchpad and packages.sury.org; SetOutbound replaces it.
 var ppaClient = &http.Client{Timeout: 20 * time.Second}
 
 // ppaHasRelease reports whether ppa:ondrej/php publishes packages for an
 // Ubuntu codename. Tests replace it.
 var ppaHasRelease = func(ctx context.Context, codename string) (bool, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, "https://ppa.launchpadcontent.net/ondrej/php/ubuntu/dists/"+codename+"/Release", nil)
+	return repoHasRelease(ctx, "https://ppa.launchpadcontent.net/ondrej/php/ubuntu/dists/"+codename+"/Release")
+}
+
+// suryHasRelease reports whether packages.sury.org/php, the same maintainer's
+// own repository, publishes a codename. For a new Ubuntu it usually does long
+// before the PPA (Ubuntu 26.04: all branches 5.6–8.6 while the PPA had none),
+// and it is signed with the key the panel already pins for Debian. Tests
+// replace it.
+var suryHasRelease = func(ctx context.Context, codename string) (bool, error) {
+	return repoHasRelease(ctx, "https://packages.sury.org/php/dists/"+codename+"/Release")
+}
+
+func repoHasRelease(ctx context.Context, url string) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
 	if err != nil {
 		return false, err
 	}
@@ -158,18 +172,29 @@ func (s *Server) ensurePHPRepo(ctx context.Context, jc *jobs.Context) error {
 	switch s.profile.Family() {
 	case osprofile.FamilyDebian:
 		var files []agent.FileSpec
-		if strings.EqualFold(rel.ID, "ubuntu") {
+		useSury := !strings.EqualFold(rel.ID, "ubuntu")
+		if !useSury {
 			if ok, err := ppaHasRelease(ctx, rel.Codename); err != nil {
 				jc.Logf("cannot check ppa:ondrej/php for %s (%v), trying it anyway", rel.Codename, err)
 			} else if !ok {
-				jc.Logf("ppa:ondrej/php has no packages for Ubuntu %s (%s) yet: using Ubuntu's own PHP", rel.VersionID, rel.Codename)
 				// An earlier attempt may have left the source behind, and
 				// with it every apt-get update fails.
 				if _, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: []string{"/etc/apt/sources.list.d/ondrej-php.list"}}); err != nil {
 					jc.Logf("cannot remove the stale PPA source: %v", err)
 				}
-				return s.db.SetSetting(ctx, key, phpRepoDistro)
+				if has, err := suryHasRelease(ctx, rel.Codename); err == nil && has {
+					jc.Logf("ppa:ondrej/php has no packages for Ubuntu %s (%s) yet; packages.sury.org/php does: using it", rel.VersionID, rel.Codename)
+					useSury = true
+				} else {
+					if err != nil {
+						jc.Logf("cannot check packages.sury.org/php for %s: %v", rel.Codename, err)
+					}
+					jc.Logf("neither ppa:ondrej/php nor packages.sury.org/php has packages for Ubuntu %s (%s) yet: using Ubuntu's own PHP", rel.VersionID, rel.Codename)
+					return s.db.SetSetting(ctx, key, phpRepoDistro)
+				}
 			}
+		}
+		if !useSury {
 			keyPEM, err := fetchText(ctx, ondrejKeyURL)
 			if err != nil {
 				return fmt.Errorf("download ondrej PPA key: %w", err)
@@ -182,7 +207,8 @@ func (s *Server) ensurePHPRepo(ctx context.Context, jc *jobs.Context) error {
 				{Path: "/etc/apt/sources.list.d/ondrej-php.list", Content: fmt.Sprintf("deb [signed-by=/etc/apt/keyrings/ondrej-php.asc] https://ppa.launchpadcontent.net/ondrej/php/ubuntu %s main\n", rel.Codename), Mode: 0o644},
 			}
 			jc.Logf("repository: ppa:ondrej/php (%s)", rel.Codename)
-		} else {
+		}
+		if useSury {
 			keyBin, err := fetchBytes(ctx, suryKeyURL)
 			if err != nil {
 				return fmt.Errorf("download packages.sury.org key: %w", err)
@@ -244,7 +270,7 @@ func (s *Server) phpUnavailableNote(ctx context.Context, version string) string 
 				native, _, _ = strings.Cut(ver, "+")
 			}
 		}
-		note := "ppa:ondrej/php has no packages for Ubuntu " + rel.VersionID + " (" + rel.Codename + ") yet"
+		note := "neither ppa:ondrej/php nor packages.sury.org/php has packages for Ubuntu " + rel.VersionID + " (" + rel.Codename + ") yet"
 		if native != "" {
 			note += "; Ubuntu itself ships only PHP " + native
 		}
@@ -258,6 +284,11 @@ func (s *Server) phpUnavailableNote(ctx context.Context, version string) string 
 func (s *Server) phpAvailable(ctx context.Context) []osprofile.PHPVersionInfo {
 	list := osprofile.PHPVersions(s.profile)
 	if v, _ := s.db.GetSetting(ctx, settingPHPRepo+"."+string(s.profile.Family())); v != phpRepoDistro {
+		return list
+	}
+	// Once Sury publishes this Ubuntu the whole matrix is installable again:
+	// the next installation re-probes and switches the host to it.
+	if s.suryCovers(ctx) {
 		return list
 	}
 	pkgs := make([]string, 0, len(list))
@@ -276,6 +307,33 @@ func (s *Server) phpAvailable(ctx context.Context) []osprofile.PHPVersionInfo {
 		}
 	}
 	return list
+}
+
+// suryCovers remembers for an hour whether packages.sury.org/php publishes
+// this host's codename: the PHP page asks on every load, the answer changes
+// once in a release's lifetime.
+func (s *Server) suryCovers(ctx context.Context) bool {
+	codename := s.profile.Release().Codename
+	suryProbe.mu.Lock()
+	defer suryProbe.mu.Unlock()
+	if suryProbe.codename == codename && time.Since(suryProbe.at) < time.Hour {
+		return suryProbe.ok
+	}
+	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	ok, err := suryHasRelease(pctx, codename)
+	if err != nil {
+		return false // unknown: keep what apt says, ask again next time
+	}
+	suryProbe.codename, suryProbe.ok, suryProbe.at = codename, ok, time.Now()
+	return ok
+}
+
+var suryProbe struct {
+	mu       sync.Mutex
+	codename string
+	ok       bool
+	at       time.Time
 }
 
 func (s *Server) phpFail(ctx context.Context, version string, err error) error {

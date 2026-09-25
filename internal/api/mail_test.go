@@ -21,7 +21,15 @@ import (
 // would go looking for one in real DNS.
 func newMailFixture(t *testing.T) *siteFixture {
 	t.Helper()
+	return newMailFixtureWith(t, nil)
+}
+
+// newMailFixtureWith lets a test pick package versions before the install,
+// e.g. the dovecot of Debian 13 / Ubuntu 26.04.
+func newMailFixtureWith(t *testing.T, versions map[string]string) *siteFixture {
+	t.Helper()
 	f := newSiteFixture(t)
+	f.agent.PackageVersions = versions
 	// За фейковым агентом никто портов не занимает: считаем, что слушает наш
 	// же postfix — его установка узнаёт по баннеру с именем хоста.
 	f.s.SetPortProbe(func(int, bool) (bool, string) { return true, "220 mail.example.com ESMTP" })
@@ -315,5 +323,58 @@ func TestDKIMKeyMatchesItsRecord(t *testing.T) {
 	}
 	if key.N.BitLen() != 2048 {
 		t.Errorf("длина ключа %d бит", key.N.BitLen())
+	}
+}
+
+// Debian 13 and Ubuntu 26.04 ship dovecot 2.4, whose configuration syntax is
+// not compatible with 2.3. The panel installs there too, with the 2.4
+// template and the 2.4 quota field; a host that moves 2.3 → 2.4 in a release
+// upgrade gets the new syntax at the next apply.
+func TestMailInstallOnDovecot24(t *testing.T) {
+	f := newMailFixtureWith(t, map[string]string{"dovecot-core": "1:2.4.1+dfsg1-6ubuntu1"})
+	dove, ok := f.agent.File("/etc/dovecot/dovecot.conf")
+	if !ok {
+		t.Fatal("dovecot.conf не записан")
+	}
+	for _, want := range []string{
+		"dovecot_config_version = 2.4.0",
+		"mail_driver = maildir",
+		"mail_path = /var/mail/monopanel/%{user | domain}/%{user | username}",
+		"passdb passwd-file {",
+		"passwd_file_path = /etc/dovecot/monopanel/users",
+		"auth_allow_cleartext = no",
+		"ssl_server_cert_file = ",
+		"quota \"User quota\" {",
+		"unix_listener /var/spool/postfix/private/dovecot-lmtp",
+	} {
+		if !strings.Contains(dove, want) {
+			t.Errorf("dovecot.conf (2.4) без %q", want)
+		}
+	}
+	for _, old := range []string{"mail_location", "disable_plaintext_auth", "ssl_cert = <", "default_fields", "userdb_quota_rule"} {
+		if strings.Contains(dove, old) {
+			t.Errorf("dovecot.conf (2.4) содержит синтаксис 2.3: %q", old)
+		}
+	}
+	f.call(http.MethodPost, "/mail/domains", map[string]any{"name": "example.com", "user": "alex"}, http.StatusCreated, nil)
+	f.call(http.MethodPost, "/mail/mailboxes", map[string]any{"address": "ivan@example.com", "quota_mb": 512}, http.StatusCreated, nil)
+	users, _ := f.agent.File("/etc/dovecot/monopanel/users")
+	if !strings.Contains(users, "::::::userdb_quota_storage_size=512M") {
+		t.Fatalf("квота в формате 2.4 не записана:\n%s", users)
+	}
+
+	// A release upgrade back on a 2.3 host is the reverse case: the apply
+	// follows whatever dovecot is installed now.
+	f.agent.PackageVersions = map[string]string{"dovecot-core": "1:2.3.21+dfsg1-3"}
+	var ref struct {
+		JobID int64 `json:"job_id"`
+	}
+	f.call(http.MethodPost, "/mail/apply", nil, http.StatusAccepted, &ref)
+	if job := f.waitJob(ref.JobID); job.Status != store.JobDone {
+		t.Fatalf("mail apply: %s %s", job.Status, job.Error)
+	}
+	dove, _ = f.agent.File("/etc/dovecot/dovecot.conf")
+	if !strings.Contains(dove, "mail_location = maildir:") {
+		t.Fatalf("после смены версии dovecot шаблон не сменился:\n%s", dove[:200])
 	}
 }

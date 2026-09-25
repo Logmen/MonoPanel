@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -33,6 +34,7 @@ func TestPHPUbuntuWithoutPPAStaysWithDistroPackages(t *testing.T) {
 	prev := ppaHasRelease
 	ppaHasRelease = func(context.Context, string) (bool, error) { return false, nil }
 	t.Cleanup(func() { ppaHasRelease = prev })
+	stubSury(t, false)
 	f := newSiteFixture(t)
 	f.agent.MissingPackages = map[string]bool{"php8.3-fpm": true}
 
@@ -41,7 +43,7 @@ func TestPHPUbuntuWithoutPPAStaysWithDistroPackages(t *testing.T) {
 	}
 	f.call(http.MethodPost, "/php/versions", map[string]any{"version": "8.3"}, http.StatusAccepted, &ref)
 	job := f.waitJob(ref.JobID)
-	if job.Status != store.JobFailed || !strings.Contains(job.Error, "ppa:ondrej/php has no packages for Ubuntu 26.04 (resolute)") {
+	if job.Status != store.JobFailed || !strings.Contains(job.Error, "neither ppa:ondrej/php nor packages.sury.org/php has packages for Ubuntu 26.04 (resolute)") {
 		t.Fatalf("install of a branch Ubuntu lacks: status=%s error=%q", job.Status, job.Error)
 	}
 	// A branch this OS cannot install must not linger as a phantom row in error.
@@ -98,6 +100,90 @@ func TestPHPUbuntuWithoutPPAStaysWithDistroPackages(t *testing.T) {
 	}
 	if !written {
 		t.Fatal("the PPA source was not written once the PPA had the release")
+	}
+}
+
+// stubSury answers the packages.sury.org probe and serves a stand-in for its
+// key, so the tests never reach the network.
+func stubSury(t *testing.T, has bool) {
+	t.Helper()
+	prev, prevClient := suryHasRelease, fetchClient
+	suryHasRelease = func(context.Context, string) (bool, error) { return has, nil }
+	fetchClient = &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() == suryKeyURL {
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("sury-key")), Header: http.Header{}, Request: r}, nil
+		}
+		return prevClient.Transport.RoundTrip(r)
+	})}
+	suryProbe.mu.Lock()
+	suryProbe.codename = ""
+	suryProbe.mu.Unlock()
+	t.Cleanup(func() {
+		suryHasRelease, fetchClient = prev, prevClient
+		suryProbe.mu.Lock()
+		suryProbe.codename = ""
+		suryProbe.mu.Unlock()
+	})
+}
+
+type roundTrip func(*http.Request) (*http.Response, error)
+
+func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// Ubuntu 26.04 had no ppa:ondrej/php builds for months while the same
+// maintainer's packages.sury.org carried every branch for it. The panel takes
+// Sury then: the matrix is whole again, and even a host that already settled
+// on Ubuntu's own packages switches at its next installation.
+func TestPHPUbuntuWithoutPPAUsesSury(t *testing.T) {
+	withOSRelease(t, "ID=ubuntu\nVERSION_ID=26.04\nVERSION_CODENAME=resolute\n")
+	prev := ppaHasRelease
+	ppaHasRelease = func(context.Context, string) (bool, error) { return false, nil }
+	t.Cleanup(func() { ppaHasRelease = prev })
+	stubSury(t, true)
+	f := newSiteFixture(t)
+	// A host that ran an older panel: it settled on Ubuntu's own packages.
+	if err := f.db.SetSetting(f.ctx, settingPHPRepo+".debian", phpRepoDistro); err != nil {
+		t.Fatal(err)
+	}
+
+	var list struct {
+		Available []struct {
+			Version   string
+			Available bool
+		}
+	}
+	f.call(http.MethodGet, "/php/versions", nil, http.StatusOK, &list)
+	for _, v := range list.Available {
+		if v.Version == "8.3" && !v.Available {
+			t.Fatalf("with Sury publishing resolute, 8.3 must be installable: %+v", v)
+		}
+	}
+
+	var ref struct {
+		JobID int64 `json:"job_id"`
+	}
+	f.call(http.MethodPost, "/php/versions", map[string]any{"version": "8.3"}, http.StatusAccepted, &ref)
+	if job := f.waitJob(ref.JobID); job.Status != store.JobDone {
+		t.Fatalf("install 8.3 via Sury: %s %s", job.Status, job.Error)
+	}
+	sury, ppa := false, false
+	for _, c := range f.agent.Calls() {
+		if c.Path != "/v1/config/apply" {
+			continue
+		}
+		body := string(c.Body)
+		if strings.Contains(body, "sury-php.list") && strings.Contains(body, "packages.sury.org/php/ resolute main") {
+			sury = true
+		}
+		if strings.Contains(body, "ondrej-php.list") {
+			ppa = true
+		}
+	}
+	if !sury || ppa {
+		t.Fatalf("sources written: sury=%v ppa=%v", sury, ppa)
+	}
+	if v, _ := f.db.GetSetting(f.ctx, settingPHPRepo+".debian"); v != "ready" {
+		t.Fatalf("repository state after the switch: %q", v)
 	}
 }
 

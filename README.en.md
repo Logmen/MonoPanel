@@ -56,8 +56,9 @@ AlmaLinux, Rocky Linux or Oracle Linux 9/10. The whole matrix runs on a
 [testbed](docs/en/08-testbed.md): installing the panel, nginx, PHP and Percona and the
 e2e scenario pass on all eleven.
 On EL, SELinux stays enforcing — the panel sets up the file contexts, booleans and a
-small policy module of its own that a hosting server needs. Ubuntu 26.04 has no `ppa:ondrej/php` builds yet, so PHP 8.5
-comes from Ubuntu itself there; the panel picks the PPA up on its own once it exists.
+small policy module of its own that a hosting server needs. Ubuntu 26.04 has no `ppa:ondrej/php` builds yet, so PHP comes
+from `packages.sury.org` there — the same maintainer's own repository, which carries every branch for 26.04; without
+it too, PHP comes from Ubuntu itself.
 
 ## Quick start
 
@@ -136,9 +137,9 @@ and the terminal menu.
 Own PHP builds (Sury/Remi are used instead), tested Apache on EL, phpMyAdmin, disk
 quotas, per-site cgroup limits, a DNS server, a WAF, several servers from one panel,
 an apt/yum repository (packages ship as releases and the panel installs them itself).
-Mail runs on Debian/Ubuntu with dovecot 2.3; the configuration for EL and for dovecot
-2.4 (Debian 13, Ubuntu 26.04) is not written yet, and there is no content filter
-(rspamd). Accounts move between two MonoPanel servers and in from BitrixVM and
+Mail runs on Debian/Ubuntu with dovecot 2.3 and 2.4 (Debian 13, Ubuntu 26.04 get a
+configuration in the 2.4 syntax); the configuration for EL is not written yet, and
+there is no content filter (rspamd). Accounts move between two MonoPanel servers and in from BitrixVM and
 FASTPANEL, without a resync before the DNS switch; other panels and servers without a
 panel are planned ([docs/en/07-migration.md](docs/en/07-migration.md)).
 

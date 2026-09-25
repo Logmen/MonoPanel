@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -178,11 +179,7 @@ func (s *Server) mailMaps(ctx context.Context, c mailConfig) ([]agent.FileSpec, 
 		byAddress[b.Address] = b
 		boxLines = append(boxLines, fmt.Sprintf("%s %s/%s/", b.Address, d.Name, b.LocalPart))
 		senderLines = append(senderLines, b.Address+" "+b.Address)
-		quota := "*:storage=" + fmt.Sprint(b.QuotaMB) + "M"
-		if b.QuotaMB <= 0 {
-			quota = "*:storage=0"
-		}
-		users = append(users, fmt.Sprintf("%s:%s::::::userdb_quota_rule=%s", b.Address, b.PasswordHash, quota))
+		users = append(users, fmt.Sprintf("%s:%s::::::%s", b.Address, b.PasswordHash, dovecotQuotaField(c, b.QuotaMB)))
 	}
 
 	var aliasLines []string
@@ -254,6 +251,17 @@ func (s *Server) applyMailConfig(ctx context.Context, logf func(string, ...any),
 	if !c.Installed {
 		return errors.New("mail server is not installed: mp mail install")
 	}
+	// The OS may have moved dovecot 2.3 → 2.4 in a release upgrade since the
+	// install: the syntax follows the version installed now.
+	if q, err := s.agent.Pkg(ctx, "query", "dovecot-core"); err == nil {
+		if v := q.Installed["dovecot-core"]; v != "" && v != c.DovecotVersion {
+			logf("dovecot %s → %s", c.DovecotVersion, v)
+			c.DovecotVersion = v
+			if err := s.saveMailConfig(ctx, c); err != nil {
+				return err
+			}
+		}
+	}
 	files, maps, err := s.mailMaps(ctx, c)
 	if err != nil {
 		return err
@@ -300,7 +308,11 @@ func (s *Server) applyMailConfig(ctx context.Context, logf func(string, ...any),
 	if err != nil {
 		return err
 	}
-	dove, err := s.render.Render("mail/dovecot.conf.tmpl", render.Dovecot{
+	doveTemplate := "mail/dovecot.conf.tmpl"
+	if dovecot24(c) {
+		doveTemplate = "mail/dovecot24.conf.tmpl"
+	}
+	dove, err := s.render.Render(doveTemplate, render.Dovecot{
 		Hostname: c.Hostname, MailBase: mailBase, UsersFile: dovecotUsers, VmailUser: vmailUser,
 		VmailUID: c.VmailUID, VmailGID: c.VmailGID, TLS: tls, CertPath: certPath, KeyPath: keyPath,
 		POP3: c.POP3, Postmaster: "postmaster@" + c.Hostname,
@@ -476,6 +488,34 @@ func (s *Server) probePorts(ports []int) map[int]probeResult {
 	}
 	wg.Wait()
 	return out
+}
+
+// dovecot24 says whether the installed dovecot reads the 2.4 configuration
+// syntax: Debian 13 and Ubuntu 26.04 ship it, and it is not compatible with
+// 2.3 — settings are renamed, blocks are named, quota and sieve changed.
+func dovecot24(c mailConfig) bool {
+	m := dovecotVersionRe.FindStringSubmatch(c.DovecotVersion)
+	if m == nil {
+		return false
+	}
+	major, _ := strconv.Atoi(m[1])
+	minor, _ := strconv.Atoi(m[2])
+	return major > 2 || (major == 2 && minor >= 4)
+}
+
+// dovecotQuotaField is a mailbox's quota as an extra field of the users file,
+// in the syntax of the installed dovecot; 0 means no limit.
+func dovecotQuotaField(c mailConfig, quotaMB int) string {
+	if dovecot24(c) {
+		if quotaMB <= 0 {
+			return "userdb_quota_storage_size=unlimited"
+		}
+		return fmt.Sprintf("userdb_quota_storage_size=%dM", quotaMB)
+	}
+	if quotaMB <= 0 {
+		return "userdb_quota_rule=*:storage=0"
+	}
+	return fmt.Sprintf("userdb_quota_rule=*:storage=%dM", quotaMB)
 }
 
 // hashMailPassword produces what dovecot's passwd-file expects. BLF-CRYPT is

@@ -98,8 +98,8 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 	}
 	c.PostfixVersion, c.DovecotVersion = q.Installed["postfix"], q.Installed["dovecot-core"]
 	jc.Logf("postfix %s, dovecot %s, opendkim %s", c.PostfixVersion, c.DovecotVersion, q.Installed["opendkim"])
-	if m := dovecotVersionRe.FindStringSubmatch(c.DovecotVersion); m != nil && (m[1] > "2" || (m[1] == "2" && m[2] >= "4")) {
-		return fmt.Errorf("dovecot %s.%s: the panel writes the configuration in 2.3 syntax, which changed in 2.4; updated templates are still to come", m[1], m[2])
+	if dovecot24(c) {
+		jc.Logf("dovecot 2.4: the configuration is written in the 2.4 syntax")
 	}
 
 	jc.Progress(35, "vmail system user")
