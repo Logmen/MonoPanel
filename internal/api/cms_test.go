@@ -19,6 +19,7 @@ import (
 
 	"monopanel/internal/agent"
 	"monopanel/internal/apitypes"
+	"monopanel/internal/render"
 	"monopanel/internal/store"
 )
 
@@ -274,7 +275,7 @@ func TestCMSInstallOverPlaceholder(t *testing.T) {
 	}
 
 	// Same size, other text: the owner's page, not the panel's.
-	page = strings.Replace(welcome, "Скоро", "Позже", 1)
+	page = strings.Replace(welcome, "coming", "moving", 1)
 	if _, job := f.installCMS(t, site.Domain, map[string]any{"cms": "opencart"}); job.Status != store.JobFailed || !strings.Contains(job.Error, "not empty") {
 		t.Fatalf("an edited page must stop the install: %s %s", job.Status, job.Error)
 	}
@@ -300,6 +301,34 @@ func TestCMSInstallOverPlaceholder(t *testing.T) {
 		if tc.Name == "mysql" && strings.Contains(tc.Stdin, "DROP DATABASE") {
 			t.Fatalf("installing over the placeholder must keep the database: %s", tc.Stdin)
 		}
+	}
+}
+
+// Sites made by earlier versions hold their Russian-only placeholder: that is
+// the panel's page too, not the owner's.
+func TestCMSInstallOverOldPlaceholder(t *testing.T) {
+	src := zipBytes(t, map[string]string{"upload/index.php": "<?php", "upload/config-dist.php": "<?php", "upload/admin/config-dist.php": "<?php"})
+	f := cmsFixture(t, map[string][]byte{"https://github.com/opencart/opencart/releases/download/4.1.0.4/opencart-4.1.0.4.zip": src})
+	site := f.createSite(map[string]any{"domain": "shop.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	var old bytes.Buffer
+	if err := placeholderRUTemplate.Execute(&old, render.Welcome{Domain: site.Domain}); err != nil || !strings.Contains(old.String(), "<h1>Скоро здесь будет сайт</h1>") {
+		t.Fatalf("the old placeholder: %v\n%s", err, old.String())
+	}
+	prev := f.agent.RunAsHook
+	f.agent.RunAsHook = func(req agent.RunAsUserRequest) *agent.RunAsUserResponse {
+		reply := func(s string) *agent.RunAsUserResponse {
+			return &agent.RunAsUserResponse{StdoutBase64: base64.StdEncoding.EncodeToString([]byte(s))}
+		}
+		switch strings.Join(req.Args, " ") {
+		case "list data/www/shop.example.com":
+			return reply(fmt.Sprintf(`[{"name":"index.html","type":"file","size":%d}]`, old.Len()))
+		case "read data/www/shop.example.com/index.html":
+			return reply(old.String())
+		}
+		return prev(req)
+	}
+	if _, job := f.installCMS(t, site.Domain, map[string]any{"cms": "opencart"}); job.Status != store.JobDone {
+		t.Fatalf("the placeholder of earlier versions must not need force: %s %s", job.Status, job.Error)
 	}
 }
 

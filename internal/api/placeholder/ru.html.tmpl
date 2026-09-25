@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="en">
+<html lang="ru">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>example.com</title>
+<title>{{ .Domain }}</title>
 <style>
   :root { color-scheme: light dark; --bg: #F5F7F8; --ink: #18212B; --muted: #6B7A88; --a: #0E7C73; --b: #3FC9B8; }
   @media (prefers-color-scheme: dark) { :root { --bg: #0F151B; --ink: #E6ECF0; --muted: #8C9AA6; } }
@@ -30,9 +30,8 @@
 <body>
 <main class="scene">
   <div class="orb" aria-hidden="true"><div class="core"></div><div class="dot"></div></div>
-  <h1 id="soon">A website is coming soon</h1>
-  <script>try{var n=((navigator.languages&&navigator.languages.length?navigator.languages:[navigator.language||""])[0]||"").toLowerCase().split(/[-_]/);if(/^(ru|uk|be|kk|ky|uz|tg|tk|hy|az|ka|os|tt|ba)$/.test(n[0])||(n[0]==="ro"&&n[1]==="md")){document.documentElement.lang="ru";document.getElementById("soon").textContent="Скоро здесь будет сайт"}}catch(e){}</script>
-  <p><span class="domain">example.com</span></p>
+  <h1>Скоро здесь будет сайт</h1>
+  <p><span class="domain">{{ .Domain }}</span></p>
 </main>
 </body>
 </html>

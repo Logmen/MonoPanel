@@ -2,7 +2,10 @@
 // browser set to a language of the CIS, English for everything else. Only
 // the first (preferred) language decides — that is the interface language.
 // The same rule is inlined in src/app.html so <html lang> is right before
-// the app boots; keep the two lists identical.
+// the app boots, and repeated by the pages nginx serves for a new or a
+// suspended site (templates/site/index.html.tmpl,
+// templates/nginx/site-suspended.conf.tmpl) and by the monopanel.app worker
+// (site/src/worker.js); keep the lists identical.
 export type Locale = 'ru' | 'en';
 
 const CIS = new Set(['ru', 'uk', 'be', 'kk', 'ky', 'uz', 'tg', 'tk', 'hy', 'az', 'ka', 'os', 'tt', 'ba']);

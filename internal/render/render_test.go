@@ -51,8 +51,8 @@ func TestGolden(t *testing.T) {
 		{"fail2ban-jail.local", "fail2ban/jail.local.tmpl", Fail2ban{BanTime: "1h", FindTime: "10m", MaxRetry: 5, PanelPort: "8443", Nginx: true}, []string{"[monopanel]", "port = 8443", "enabled = true"}},
 		{"crontab", "cron/crontab.tmpl", Crontab{Login: "alex", BinDir: "/var/www/alex/data/bin", Jobs: []CronLine{{Schedule: "*/5 * * * *", Command: "php cron.php", Enabled: true, Comment: "wp"}, {Schedule: "@daily", Command: "echo x", Enabled: false}}}, []string{"*/5 * * * * php cron.php  # wp", "#DISABLED# @daily echo x"}},
 		{"php-ini.conf", "php/monopanel.ini.tmpl", PHPIni{Version: "8.4", Timezone: "UTC", OpcacheMemory: 128}, []string{"opcache.memory_consumption = 128", "date.timezone = UTC"}},
-		{"nginx-site-suspended.conf", "nginx/site-suspended.conf.tmpl", exampleSite("fpm"), []string{"return 503", "listen 203.0.113.10:443 ssl;"}},
-		{"site-index.html", "site/index.html.tmpl", Welcome{Domain: "example.com"}, []string{"Скоро здесь будет сайт", "example.com", "prefers-reduced-motion"}},
+		{"nginx-site-suspended.conf", "nginx/site-suspended.conf.tmpl", exampleSite("fpm"), []string{"return 503", "listen 203.0.113.10:443 ssl;", "The site is temporarily unavailable", "Сайт временно недоступен"}},
+		{"site-index.html", "site/index.html.tmpl", Welcome{Domain: "example.com"}, []string{"<html lang=\"en\">", "A website is coming soon", "Скоро здесь будет сайт", "example.com", "prefers-reduced-motion"}},
 		{"nginx-site-allow.conf", "nginx/site.conf.tmpl", func() Site {
 			s := exampleSite("fpm")
 			s.AllowFrom = []string{"203.0.113.0/24", "2001:db8::1"}

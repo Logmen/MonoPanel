@@ -10,6 +10,6 @@ server {
     include monopanel/snippets/acme.conf;
     location / {
         default_type text/html;
-        return 503 '<!doctype html><html lang="ru"><meta charset="utf-8"><title>example.com</title><body style="font-family:system-ui;margin:10% auto;max-width:36em;text-align:center"><h1>Сайт временно недоступен</h1><p>example.com приостановлен администратором хостинга.</p></body></html>';
+        return 503 '<!doctype html><html lang="en"><meta charset="utf-8"><title>example.com</title><body style="font-family:system-ui;margin:10% auto;max-width:36em;text-align:center"><h1 id="h">The site is temporarily unavailable</h1><p id="p">example.com has been suspended by the hosting administrator.</p><script>try{var n=((navigator.languages&&navigator.languages.length?navigator.languages:[navigator.language||""])[0]||"").toLowerCase().split(/[-_]/);if("|ru|uk|be|kk|ky|uz|tg|tk|hy|az|ka|os|tt|ba|".indexOf("|"+n[0]+"|")>=0||(n[0]==="ro"&&n[1]==="md")){document.documentElement.lang="ru";document.getElementById("h").textContent="Сайт временно недоступен";document.getElementById("p").textContent="example.com приостановлен администратором хостинга."}}catch(e){}</script></body></html>';
     }
 }

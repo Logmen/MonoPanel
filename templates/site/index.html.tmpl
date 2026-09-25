@@ -1,5 +1,6 @@
+{{- /* English by default, Russian for a browser set to a CIS language: the rule of the web UI (web/src/lib/i18n/detect.ts). The CMS install recognises the rendered page byte for byte. */ -}}
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -30,7 +31,8 @@
 <body>
 <main class="scene">
   <div class="orb" aria-hidden="true"><div class="core"></div><div class="dot"></div></div>
-  <h1>Скоро здесь будет сайт</h1>
+  <h1 id="soon">A website is coming soon</h1>
+  <script>try{var n=((navigator.languages&&navigator.languages.length?navigator.languages:[navigator.language||""])[0]||"").toLowerCase().split(/[-_]/);if(/^(ru|uk|be|kk|ky|uz|tg|tk|hy|az|ka|os|tt|ba)$/.test(n[0])||(n[0]==="ro"&&n[1]==="md")){document.documentElement.lang="ru";document.getElementById("soon").textContent="Скоро здесь будет сайт"}}catch(e){}</script>
   <p><span class="domain">{{ .Domain }}</span></p>
 </main>
 </body>

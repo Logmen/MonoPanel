@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha512"
+	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -15,7 +16,9 @@ import (
 	"net/http"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
+	"text/template"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -648,6 +651,29 @@ func (s *Server) placeholderPage(domain string) (string, error) {
 	return s.render.Render("site/index.html.tmpl", render.Welcome{Domain: domain})
 }
 
+// placeholderRU is the Russian-only page earlier versions put into every new
+// docroot. The sites made then still hold it, so it counts as the placeholder
+// too.
+//
+//go:embed placeholder/ru.html.tmpl
+var placeholderRU string
+
+var placeholderRUTemplate = template.Must(template.New("ru").Option("missingkey=error").Parse(placeholderRU))
+
+// placeholderPages are the pages the panel may have put into the domain's
+// docroot: the current one and the one of earlier versions.
+func (s *Server) placeholderPages(domain string) []string {
+	var pages []string
+	if page, err := s.placeholderPage(domain); err == nil {
+		pages = append(pages, page)
+	}
+	var old bytes.Buffer
+	if err := placeholderRUTemplate.Execute(&old, render.Welcome{Domain: domain}); err == nil {
+		pages = append(pages, old.String())
+	}
+	return pages
+}
+
 // onlyPlaceholder tells whether the docroot holds nothing but the placeholder
 // page, untouched. It is compared byte for byte with what the panel renders for
 // the domain, so an edited or foreign index.html is still the owner's file and
@@ -656,10 +682,10 @@ func (s *Server) onlyPlaceholder(ctx context.Context, owner *store.User, rel, do
 	if len(entries) != 1 || entries[0].Name != placeholderName || entries[0].Type != "file" {
 		return false
 	}
-	welcome, err := s.placeholderPage(domain)
-	if err != nil || entries[0].Size != int64(len(welcome)) {
+	pages := slices.DeleteFunc(s.placeholderPages(domain), func(page string) bool { return int64(len(page)) != entries[0].Size })
+	if len(pages) == 0 {
 		return false
 	}
 	got, err := s.fsop(ctx, owner, nil, "read", path.Join(rel, placeholderName))
-	return err == nil && string(got) == welcome
+	return err == nil && slices.Contains(pages, string(got))
 }
