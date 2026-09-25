@@ -74,6 +74,14 @@ func (s *Server) SetLookup(fn func(ctx context.Context, name string) ([]string, 
 // tests, where no daemon actually binds anything.
 func (s *Server) SetPortProbe(fn func(port int, banner bool) (bool, string)) { s.probe = fn }
 
+// SetOutbound routes the panel's own downloads (repository keys, release
+// packages, the PPA probe) through rt. Intended for the demo, which has no
+// internet access; it affects every Server in the process.
+func SetOutbound(rt http.RoundTripper) {
+	fetchClient = &http.Client{Transport: rt}
+	ppaClient = &http.Client{Transport: rt, Timeout: 20 * time.Second}
+}
+
 var secured = []map[string][]string{{"bearer": {}}, {"session": {}}}
 
 // New builds the server and registers every route and job handler.

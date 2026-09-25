@@ -119,6 +119,9 @@ func (s *Server) registerPHP() {
 // the PPA is probed again at the next installation.
 const phpRepoDistro = "distro"
 
+// ppaClient asks Launchpad; SetOutbound replaces it.
+var ppaClient = &http.Client{Timeout: 20 * time.Second}
+
 // ppaHasRelease reports whether ppa:ondrej/php publishes packages for an
 // Ubuntu codename. Tests replace it.
 var ppaHasRelease = func(ctx context.Context, codename string) (bool, error) {
@@ -126,7 +129,7 @@ var ppaHasRelease = func(ctx context.Context, codename string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	res, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	res, err := ppaClient.Do(req)
 	if err != nil {
 		return false, err
 	}

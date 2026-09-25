@@ -77,6 +77,10 @@ func Main(args []string) int {
 	return 0
 }
 
+// extraCommands are added by build variants: the demo build (-tags demo)
+// brings `monopanel demo`; the released binary has none.
+var extraCommands []func() *cobra.Command
+
 func newRoot() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "mp",
@@ -110,6 +114,9 @@ locally over /run/monopanel/api.sock (root = administrator), remotely with --ser
 	pf.BoolVar(&g.insecure, "insecure", false, T("не проверять TLS-сертификат панели", "do not verify the panel's TLS certificate"))
 	pf.BoolVar(&g.json, "json", false, T("машинный вывод JSON", "machine-readable JSON output"))
 	pf.BoolVar(&g.noWait, "no-wait", false, T("не ждать завершения задач", "do not wait for jobs to finish"))
+	for _, extra := range extraCommands {
+		root.AddCommand(extra())
+	}
 	root.AddCommand(versionCmd(), apiCmd(), agentCmd(), helperCmd(), fsopCmd(), setupCmd(), statusCmd(), userCmd(), jobCmd(), tokenCmd(), serviceCmd(), stackCmd(), configCmd(), sslCmd(), webCmd(), phpCmd(), siteCmd(), cmsCmd(), dbCmd(), cronCmd(), firewallCmd(), doctorCmd(), selinuxCmd(), logsCmd(), metricsCmd(), backupCmd(), webhookCmd(), filesCmd(), dnsProviderCmd(), appCmd(), valkeyCmd(), updateCmd(), updateRunCmd(), mailCmd(), migrateCmd())
 	return root
 }

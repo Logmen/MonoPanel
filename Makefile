@@ -19,7 +19,7 @@ DEV_SSH  ?= ssh
 DEV_SCP  ?= scp
 GOLANGCI_VERSION ?= v2.13.2
 
-.PHONY: build build-arm64 test test-race test-short cover cover-html lint vet fmt fmt-check check web web-check web-stub e2e deb rpm packages arch-artifacts sign release keygen deploy-dev clean help testbed-up testbed-reset testbed-down testbed-status testbed-deploy testbed-e2e testbed-matrix testbed-migrate testbed-dns testbed-cms
+.PHONY: build build-arm64 demo test test-race test-short cover cover-html lint vet fmt fmt-check check web web-check web-stub e2e deb rpm packages arch-artifacts sign release keygen deploy-dev clean help testbed-up testbed-reset testbed-down testbed-status testbed-deploy testbed-e2e testbed-matrix testbed-migrate testbed-dns testbed-cms
 
 help: ## Show the available targets
 	@grep -hE '^[a-z0-9-]+:.*##' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*## "} {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -34,6 +34,9 @@ build: web-stub ## Build the panel binary into dist/
 
 build-arm64:
 	$(MAKE) build ARCH=arm64
+
+demo: web-stub ## Build the live demo binary (the panel over a pretend server, demo/README.md)
+	CGO_ENABLED=0 $(GO) build -trimpath -tags demo -ldflags '$(LDFLAGS)' -o dist/monopanel-demo ./cmd/monopanel
 
 test: web-stub ## Run the unit tests (a couple of seconds)
 	$(GO) test ./...
@@ -55,6 +58,7 @@ cover-html: cover ## Open the coverage report in a browser
 
 vet: web-stub
 	$(GO) vet ./...
+	$(GO) vet -tags demo ./internal/cli/
 
 lint: web-stub ## Run golangci-lint (installs it into dist/ when missing)
 	@command -v golangci-lint >/dev/null 2>&1 || [ -x dist/golangci-lint ] || \

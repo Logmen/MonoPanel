@@ -21,6 +21,8 @@ jobs:
           cache-dependency-path: go.sum
       - run: make web-stub
       - run: go vet ./...
+      # The live demo's build (demo/README.md) must keep compiling.
+      - run: go vet -tags demo ./internal/cli/ && make demo
       - name: test (race detector, coverage)
         run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
       - name: coverage summary
