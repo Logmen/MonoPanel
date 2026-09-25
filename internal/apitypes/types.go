@@ -635,6 +635,27 @@ type SitePHP struct {
 	Values   []PHPValue `json:"values"`
 }
 
+// DBParam is one MySQL server setting with its source: default — the panel's
+// value for this host, custom — set by the administrator.
+type DBParam struct {
+	Key    string `json:"key"`
+	Value  string `json:"value"`
+	Source string `json:"source" enum:"default,custom"`
+}
+
+// DBConfig lists the MySQL server settings the panel writes.
+type DBConfig struct {
+	Allowed []string  `json:"allowed" doc:"Keys the administrator may set"`
+	Values  []DBParam `json:"values"`
+	RAMMB   int       `json:"ram_mb" doc:"Host memory the panel's defaults are sized for"`
+}
+
+// DBConfigRequest changes MySQL server settings; an empty value removes the
+// key so the panel's value applies again, ” sets an empty value (sql_mode).
+type DBConfigRequest struct {
+	Settings map[string]string `json:"settings"`
+}
+
 // GlobalPHP is the server-wide php.ini layer: what every site inherits
 // unless its preset or the site itself sets the key.
 type GlobalPHP struct {
@@ -799,12 +820,17 @@ type MailDomainRequest struct {
 	User    string `json:"user,omitempty" doc:"Owner (required for administrators)"`
 	DKIM    *bool  `json:"dkim,omitempty" doc:"Generate a DKIM key (default: yes)"`
 	Lenient bool   `json:"lenient,omitempty" doc:"Lenient domain: accept mail even from misconfigured senders"`
+	// SendOnly: the domain's mail is received elsewhere (MX at a mail
+	// provider); this server only signs and sends the sites' mail.
+	SendOnly bool `json:"send_only,omitempty" doc:"Send only: another server receives the domain's mail; this one signs (DKIM) and sends, and has no mailboxes or aliases for it"`
 }
 
 // MailDomainUpdateRequest patches a mail domain.
 type MailDomainUpdateRequest struct {
 	Active  *bool `json:"active,omitempty"`
 	Lenient *bool `json:"lenient,omitempty" doc:"Accept the domain's mail without HELO and sender domain checks (lenient domain)"`
+	// SendOnly switches the domain between receiving here and sending only.
+	SendOnly *bool `json:"send_only,omitempty" doc:"Send only: another server receives the domain's mail (needs a domain without mailboxes and aliases)"`
 }
 
 // MailboxRequest creates a mailbox.

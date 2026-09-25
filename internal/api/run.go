@@ -51,6 +51,7 @@ func (s *Server) Run(ctx context.Context) error {
 				s.refreshPHPCLIInis(ctx)
 				s.refreshSiteLogrotate(ctx)
 				s.refreshSELinuxModule(ctx)
+				s.refreshSFTPHomes(ctx)
 				return
 			}
 			select {

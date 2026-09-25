@@ -478,6 +478,19 @@ func (c *Client) DBEngineTune(ctx context.Context) (*apitypes.DBEngineStatus, er
 	return &out, c.do(ctx, http.MethodPost, "/db/engine/tune", nil, &out)
 }
 
+// DBConfig returns the MySQL server settings the panel writes.
+func (c *Client) DBConfig(ctx context.Context) (*apitypes.DBConfig, error) {
+	var out apitypes.DBConfig
+	return &out, c.do(ctx, http.MethodGet, "/db/engine/config", nil, &out)
+}
+
+// DBConfigSet changes MySQL server settings ("" removes a key) and restarts
+// the server.
+func (c *Client) DBConfigSet(ctx context.Context, settings map[string]string) (*apitypes.DBConfig, error) {
+	var out apitypes.DBConfig
+	return &out, c.do(ctx, http.MethodPut, "/db/engine/config", apitypes.DBConfigRequest{Settings: settings}, &out)
+}
+
 // DBEngine returns the database server status.
 func (c *Client) DBEngine(ctx context.Context) (*apitypes.DBEngineStatus, error) {
 	var out apitypes.DBEngineStatus

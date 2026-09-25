@@ -166,6 +166,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 		s.registerPresets()
 		s.registerPHPExtensions()
 		s.registerPHPGlobal()
+		s.registerDBConfig()
 		s.registerUpdate()
 		s.registerMail()
 		s.registerMigrateSource()

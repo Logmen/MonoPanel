@@ -48,6 +48,7 @@ func (s *Server) Handler() http.Handler {
 	r.Post("/v1/file/ensure", handle(s.ensureFile))
 	r.Post("/v1/symlink/ensure", handle(s.ensureSymlink))
 	r.Post("/v1/acl/set", handle(s.setACL))
+	r.Post("/v1/acl/site", handle(s.siteACL))
 	r.Post("/v1/paths/remove", handle(s.removePaths))
 	r.Post("/v1/apache/ctl", handle(s.apacheCtl))
 	r.Post("/v1/tool", handle(s.tool))

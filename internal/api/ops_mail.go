@@ -148,8 +148,13 @@ func (s *Server) mailMaps(ctx context.Context, c mailConfig) ([]agent.FileSpec, 
 		if !d.Active {
 			continue
 		}
-		domainLines = append(domainLines, d.Name+" OK")
-		if d.Lenient {
+		// A send-only domain is not in the maps postfix receives by: mail
+		// from the sites to its addresses goes to the real MX instead of a
+		// mailbox that does not exist here. Its DKIM key still signs.
+		if !d.SendOnly {
+			domainLines = append(domainLines, d.Name+" OK")
+		}
+		if d.Lenient && !d.SendOnly {
 			lenientLines = append(lenientLines, d.Name+" OK")
 		}
 		trusted = append(trusted, d.Name)

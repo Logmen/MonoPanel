@@ -125,6 +125,12 @@ func (c *Client) SetACL(ctx context.Context, req *SetACLRequest) error {
 	return c.call(ctx, "/v1/acl/set", req, nil)
 }
 
+// SiteACL sets the web group's ACLs on a whole site tree.
+func (c *Client) SiteACL(ctx context.Context, req *SiteACLRequest) (*SiteACLResponse, error) {
+	var r SiteACLResponse
+	return &r, c.call(ctx, "/v1/acl/site", req, &r)
+}
+
 // RemovePaths deletes files or trees.
 func (c *Client) RemovePaths(ctx context.Context, req *RemovePathsRequest) (*RemovePathsResponse, error) {
 	var r RemovePathsResponse

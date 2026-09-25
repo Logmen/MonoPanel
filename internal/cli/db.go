@@ -139,6 +139,71 @@ func dbCmd() *cobra.Command {
 		return nil
 	}}
 	engine.AddCommand(tune)
-	c.AddCommand(engine, create, list, rm, passwd)
+	c.AddCommand(engine, create, list, rm, passwd, dbConfigCmd())
+	return c
+}
+
+// dbConfigCmd shows and changes the MySQL server settings: the panel's values
+// for this host and the ones set by the administrator.
+func dbConfigCmd() *cobra.Command {
+	show := func(cmd *cobra.Command, cfg *apitypes.DBConfig) error {
+		if g.json {
+			return printJSON(cfg)
+		}
+		rows := make([][]string, 0, len(cfg.Values))
+		for _, v := range cfg.Values {
+			src := T("панель", "panel")
+			if v.Source == "custom" {
+				src = T("задано", "custom")
+			}
+			rows = append(rows, []string{v.Key, v.Value, src})
+		}
+		table([]string{"KEY", "VALUE", "SOURCE"}, rows)
+		fmt.Printf(T("значения панели рассчитаны на %d МБ памяти; менять: mp db config set key=value, вернуть панельное: mp db config unset key\n",
+			"the panel's values are sized for %d MB of memory; change: mp db config set key=value, back to the panel's value: mp db config unset key\n"), cfg.RAMMB)
+		return nil
+	}
+	c := &cobra.Command{Use: "config", Short: T("параметры сервера MySQL (значения панели и заданные вручную)", "MySQL server settings (the panel's values and the ones you set)"), RunE: func(cmd *cobra.Command, _ []string) error {
+		cl, err := newClient()
+		if err != nil {
+			return err
+		}
+		cfg, err := cl.DBConfig(cmd.Context())
+		if err != nil {
+			return err
+		}
+		return show(cmd, cfg)
+	}}
+	change := func(cmd *cobra.Command, settings map[string]string) error {
+		cl, err := newClient()
+		if err != nil {
+			return err
+		}
+		fmt.Println(T("проверяю конфигурацию и перезапускаю MySQL…", "validating the configuration and restarting MySQL…"))
+		cfg, err := cl.DBConfigSet(cmd.Context(), settings)
+		if err != nil {
+			return err
+		}
+		return show(cmd, cfg)
+	}
+	set := &cobra.Command{Use: "set key=value ...", Short: T("задать параметры и перезапустить MySQL (при ошибке вернутся прежние)", "set parameters and restart MySQL (the previous ones come back on failure)"), Args: cobra.MinimumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		settings := map[string]string{}
+		for _, a := range args {
+			k, v, ok := strings.Cut(a, "=")
+			if !ok || strings.TrimSpace(v) == "" {
+				return &exitError{code: 2, msg: T("ожидается key=value (пустое значение — key=''): ", "expected key=value (an empty value is key=''): ") + a}
+			}
+			settings[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		}
+		return change(cmd, settings)
+	}}
+	unset := &cobra.Command{Use: "unset key ...", Short: T("вернуть значения панели и перезапустить MySQL", "return to the panel's values and restart MySQL"), Args: cobra.MinimumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		settings := map[string]string{}
+		for _, k := range args {
+			settings[strings.TrimSpace(k)] = ""
+		}
+		return change(cmd, settings)
+	}}
+	c.AddCommand(set, unset)
 	return c
 }

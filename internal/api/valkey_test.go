@@ -191,12 +191,37 @@ func TestSiteSessionsInValkey(t *testing.T) {
 	if !strings.Contains(pool, "php_admin_value[session.save_handler] = redis") || !strings.Contains(pool, `php_admin_value[session.save_path] = "unix:///run/monopanel-valkey/alex-sessions/valkey.sock"`) {
 		t.Fatalf("pool does not send sessions to valkey:\n%s", pool)
 	}
+	// Sessions in Valkey are locked like files are: without it parallel AJAX
+	// requests of one visitor overwrite each other's changes.
+	for _, want := range []string{"php_value[redis.session.locking_enabled] = 1", "php_value[redis.session.lock_retries] = -1", "php_value[redis.session.lock_wait_time] = 20000"} {
+		if !strings.Contains(pool, want) {
+			t.Fatalf("pool lacks %q:\n%s", want, pool)
+		}
+	}
+	// The keys can be tuned per site like any other php.ini value.
+	var upd apitypes.SiteWithJob
+	f.call(http.MethodPatch, "/sites/example.com", map[string]any{"php_ini": map[string]string{"redis.session.lock_retries": "3000"}}, http.StatusAccepted, &upd)
+	if job := f.waitJob(upd.JobID); job.Status != store.JobDone {
+		t.Fatalf("apply: %s %s", job.Status, job.Error)
+	}
+	if pool, _ := f.agent.File("/etc/php/8.4/fpm/pool.d/example.com.conf"); !strings.Contains(pool, "php_value[redis.session.lock_retries] = 3000") || strings.Contains(pool, "lock_retries] = -1") {
+		t.Fatalf("site override of the lock retries:\n%s", pool)
+	}
+	var php apitypes.SitePHP
+	f.call(http.MethodGet, "/sites/example.com/php", nil, http.StatusOK, &php)
+	sources := map[string]string{}
+	for _, v := range php.Values {
+		sources[v.Key] = v.Source
+	}
+	if sources["redis.session.locking_enabled"] != "default" || sources["redis.session.lock_retries"] != "site" {
+		t.Fatalf("sources: %v", sources)
+	}
 
 	f.call(http.MethodPost, "/php/versions/8.4/extensions", map[string]any{"name": "redis", "enabled": false}, http.StatusConflict, nil)
 	f.call(http.MethodDelete, "/users/alex/valkey/sessions", nil, http.StatusConflict, nil)
 
 	patch("files", http.StatusAccepted)
-	if pool, _ := f.agent.File("/etc/php/8.4/fpm/pool.d/example.com.conf"); !strings.Contains(pool, "php_admin_value[session.save_path] = /var/www/alex/data/tmp/sess") || strings.Contains(pool, "save_handler") {
+	if pool, _ := f.agent.File("/etc/php/8.4/fpm/pool.d/example.com.conf"); !strings.Contains(pool, "php_admin_value[session.save_path] = /var/www/alex/data/tmp/sess") || strings.Contains(pool, "save_handler") || strings.Contains(pool, "locking_enabled") {
 		t.Fatalf("back to files:\n%s", pool)
 	}
 

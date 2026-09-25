@@ -98,6 +98,14 @@ func (s *Server) mailDNS(ctx context.Context, d *store.MailDomain) apitypes.Mail
 	}
 	add(hostRec)
 
+	if d.SendOnly {
+		add(sendOnlyMX(ctx, d.Name, c.Hostname))
+		add(sendOnlySPF(ctx, d.Name, c.Hostname, out.IPv4))
+		s.addDKIMAndDMARC(ctx, d, add)
+		add(s.mailPTR(ctx, c.Hostname, out.IPv4))
+		return out
+	}
+
 	mx := apitypes.MailDNSRecord{Name: d.Name, Type: "MX", Value: "10 " + c.Hostname, Status: "unknown", Required: true,
 		Note: "where the domain's mail is delivered"}
 	if answers, err := mailLookup(ctx, d.Name, dns.TypeMX); err == nil {
@@ -132,6 +140,14 @@ func (s *Server) mailDNS(ctx context.Context, d *store.MailDomain) apitypes.Mail
 	}
 	add(spf)
 
+	s.addDKIMAndDMARC(ctx, d, add)
+	add(s.mailPTR(ctx, c.Hostname, out.IPv4))
+	return out
+}
+
+// addDKIMAndDMARC adds the signing key and the policy records: the same for
+// a domain received here and a send-only one.
+func (s *Server) addDKIMAndDMARC(ctx context.Context, d *store.MailDomain, add func(apitypes.MailDNSRecord)) {
 	if d.DKIMSelector != "" && d.DKIMPublic != "" {
 		name := d.DKIMSelector + "._domainkey." + d.Name
 		value := "v=DKIM1; h=sha256; k=rsa; p=" + d.DKIMPublic
@@ -167,15 +183,19 @@ func (s *Server) mailDNS(ctx context.Context, d *store.MailDomain) apitypes.Mail
 	}
 	add(dmarc)
 
-	ptr := apitypes.MailDNSRecord{Name: strings.Join(out.IPv4, ", "), Type: "PTR", Value: c.Hostname, Status: "unknown",
+}
+
+// mailPTR checks the reverse record of the server's first address.
+func (s *Server) mailPTR(ctx context.Context, hostname string, ipv4 []string) apitypes.MailDNSRecord {
+	ptr := apitypes.MailDNSRecord{Name: strings.Join(ipv4, ", "), Type: "PTR", Value: hostname, Status: "unknown",
 		Note: "the reverse zone is set up by the hosting provider; without PTR, mail ends up in spam more often"}
-	if len(out.IPv4) > 0 {
-		if rev, err := dns.ReverseAddr(out.IPv4[0]); err == nil {
+	if len(ipv4) > 0 {
+		if rev, err := dns.ReverseAddr(ipv4[0]); err == nil {
 			if answers, err := mailLookup(ctx, rev, dns.TypePTR); err == nil {
 				ptr.Status = "missing"
 				for _, a := range answers {
 					ptr.Found = a
-					if strings.EqualFold(strings.TrimSuffix(a, "."), c.Hostname) {
+					if strings.EqualFold(strings.TrimSuffix(a, "."), hostname) {
 						ptr.Status = "ok"
 					} else {
 						ptr.Status = "mismatch"
@@ -184,6 +204,76 @@ func (s *Server) mailDNS(ctx context.Context, d *store.MailDomain) apitypes.Mail
 			}
 		}
 	}
-	add(ptr)
-	return out
+	return ptr
+}
+
+// sendOnlyMX: another server receives the domain's mail, so the MX must stay
+// there. Pointing it here would bounce everything — this server does not
+// accept mail for a send-only domain.
+func sendOnlyMX(ctx context.Context, domain, hostname string) apitypes.MailDNSRecord {
+	rec := apitypes.MailDNSRecord{Name: domain, Type: "MX", Value: "your mail provider's servers, not " + hostname, Status: "unknown",
+		Note: "the domain is send-only here: its mail is received by another server"}
+	answers, err := mailLookup(ctx, domain, dns.TypeMX)
+	if err != nil {
+		return rec
+	}
+	rec.Found = strings.Join(answers, "; ")
+	switch {
+	case len(answers) == 0:
+		rec.Status = "missing"
+		rec.Note = "without an MX the domain receives no mail at all; your mail provider gives the value"
+	default:
+		rec.Status = "ok"
+		for _, a := range answers {
+			if f := strings.Fields(a); len(f) == 2 && strings.EqualFold(f[1], hostname) {
+				rec.Status, rec.Required = "mismatch", true
+				rec.Note = "the MX points to this server, which only sends for the domain: incoming mail would be refused"
+			}
+		}
+	}
+	return rec
+}
+
+// sendOnlySPF: the provider already has an SPF record for the domain; this
+// server has to be added to it, not put in its place — "-all" with this
+// server alone would fail the provider's own mail.
+func sendOnlySPF(ctx context.Context, domain, hostname string, ipv4 []string) apitypes.MailDNSRecord {
+	mech := "a:" + hostname
+	rec := apitypes.MailDNSRecord{Name: domain, Type: "TXT", Value: "v=spf1 " + mech + " ~all", Status: "unknown", Required: true,
+		Note: "add " + mech + " to the SPF record of your mail provider instead of replacing it"}
+	answers, err := mailLookup(ctx, domain, dns.TypeTXT)
+	if err != nil {
+		return rec
+	}
+	rec.Status = "missing"
+	for _, a := range answers {
+		if !strings.HasPrefix(strings.ToLower(a), "v=spf1") {
+			continue
+		}
+		rec.Found, rec.Status = a, "mismatch"
+		rec.Value = spfWith(a, mech)
+		if strings.Contains(a, mech) {
+			rec.Status = "ok"
+		}
+		for _, ip := range ipv4 {
+			if strings.Contains(a, "ip4:"+ip) {
+				rec.Status = "ok"
+			}
+		}
+	}
+	return rec
+}
+
+// spfWith inserts a mechanism into an SPF record before its "all" term.
+func spfWith(record, mech string) string {
+	if strings.Contains(record, mech) {
+		return record
+	}
+	f := strings.Fields(record)
+	for i, t := range f {
+		if strings.HasSuffix(strings.ToLower(t), "all") && (len(t) == 3 || strings.ContainsAny(t[:1], "+-~?")) {
+			return strings.Join(append(append(append([]string{}, f[:i]...), mech), f[i:]...), " ")
+		}
+	}
+	return record + " " + mech
 }

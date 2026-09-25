@@ -121,12 +121,19 @@ const DefaultDisableFunctions = "passthru,shell_exec,system,proc_open,popen,pcnt
 // MySQLConf feeds mysql/monopanel.cnf.tmpl.
 type MySQLConf struct {
 	RAMMB          int
-	BindAddress    string
-	BufferPoolMB   int
-	RedoLogMB      int
-	MaxConnections int
-	SlowLog        string
+	Settings       []MySQLSetting
 	NativePassword bool
+}
+
+// MySQLSetting is one line of the [mysqld] section: the panel's own value or
+// one the administrator set in the panel.
+type MySQLSetting struct {
+	Key   string
+	Value string
+	// Flag is an option without a value (disable_log_bin).
+	Flag bool
+	// Comment lines are printed above the setting, without the leading "# ".
+	Comment []string
 }
 
 // Memcached feeds memcached/memcached.conf.tmpl (Debian) and

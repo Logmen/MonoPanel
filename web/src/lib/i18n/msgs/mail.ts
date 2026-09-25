@@ -2,6 +2,17 @@ import { frag } from '../frag';
 
 export const mail = frag({
   en: {
+    'mail.sendOnly': 'Send only',
+    'mail.sendOnlyHint': 'Another server receives the domain\'s mail (MX at your mail provider); here the sites\' mail is signed with DKIM and sent. No mailboxes or aliases.',
+    'mail.sendOnlyBadge': 'send only',
+    'mail.sendOnlyOnTitle': 'Make the domain send-only',
+    'mail.sendOnlyOffTitle': 'Receive the domain\'s mail here',
+    'mail.askSendOnlyTitle': 'Make {name} send-only?',
+    'mail.askSendOnlyNote': 'This server stops receiving the domain\'s mail: the sites\' letters to its addresses go to the domain\'s MX at your mail provider instead of local mailboxes. DKIM keeps signing. The domain must have no mailboxes or aliases here.',
+    'mail.askSendOnlyAction': 'Send only',
+    'mail.askReceiveTitle': 'Receive {name} mail here?',
+    'mail.askReceiveNote': 'The domain becomes a regular mail domain of this server: mailboxes and aliases can be created, and letters from the sites to its addresses are delivered here. For mail from outside, the MX has to point to this server.',
+    'mail.askReceiveAction': 'Receive here',
     'mail.title': 'Mail',
     'mail.subNotInstalled': 'IMAP, POP3, SMTP and Roundcube webmail',
     'mail.settings': 'Settings',
@@ -107,6 +118,17 @@ export const mail = frag({
     'mail.askDkimAction': 'Issue'
   },
   ru: {
+    'mail.sendOnly': 'только отправка',
+    'mail.sendOnlyHint': 'Почту домена принимает другой сервер (MX у почтового провайдера), здесь письма сайтов подписываются DKIM и отправляются. Ящиков и алиасов нет.',
+    'mail.sendOnlyBadge': 'только отправка',
+    'mail.sendOnlyOnTitle': 'Сделать домен «только отправка»',
+    'mail.sendOnlyOffTitle': 'Принимать почту домена здесь',
+    'mail.askSendOnlyTitle': 'Сделать {name} «только отправка»?',
+    'mail.askSendOnlyNote': 'Этот сервер перестанет принимать почту домена: письма сайтов на его адреса уйдут на MX домена у почтового провайдера, а не в локальные ящики. Подпись DKIM сохраняется. У домена не должно быть ящиков и алиасов здесь.',
+    'mail.askSendOnlyAction': 'Только отправка',
+    'mail.askReceiveTitle': 'Принимать почту {name} здесь?',
+    'mail.askReceiveNote': 'Домен станет обычным почтовым доменом этого сервера: можно заводить ящики и алиасы, письма сайтов на его адреса будут доставляться сюда. Чтобы принимать почту извне, MX должен указывать на этот сервер.',
+    'mail.askReceiveAction': 'Принимать здесь',
     'mail.title': 'Почта',
     'mail.subNotInstalled': 'IMAP, POP3, SMTP и вебпочта Roundcube',
     'mail.settings': 'Настройки',

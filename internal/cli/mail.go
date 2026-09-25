@@ -183,6 +183,9 @@ func mailDomainCmd() *cobra.Command {
 			if d.Lenient {
 				state += T(", приёмник", ", lenient")
 			}
+			if d.SendOnly {
+				state += T(", только отправка", ", send only")
+			}
 			rows = append(rows, []string{d.Name, d.Login, state, strconv.Itoa(d.Mailboxes), strconv.Itoa(d.Aliases), d.DKIMSelector})
 		}
 		table([]string{T("ДОМЕН", "DOMAIN"), T("ВЛАДЕЛЕЦ", "OWNER"), T("СОСТОЯНИЕ", "STATE"), T("ЯЩИКОВ", "MAILBOXES"), T("АЛИАСОВ", "ALIASES"), "DKIM"}, rows)
@@ -215,15 +218,16 @@ func mailDomainCmd() *cobra.Command {
 	add.Flags().StringVar(&req.User, "user", "", T("владелец (обязателен для администратора)", "owner (required for an administrator)"))
 	add.Flags().BoolVar(&noDKIM, "no-dkim", false, T("не выпускать ключ DKIM", "do not issue a DKIM key"))
 	add.Flags().BoolVar(&req.Lenient, "lenient", false, T("домен-приёмник: принимать письма и от криво настроенных отправителей", "lenient domain: accept mail even from badly configured senders"))
+	add.Flags().BoolVar(&req.SendOnly, "send-only", false, T("только отправка: почту домена принимает другой сервер (MX у почтового провайдера), здесь — подпись DKIM и отправка писем сайтов", "send only: another server receives the domain's mail (MX at your mail provider); this one signs (DKIM) and sends the sites' mail"))
 
-	var lenient, activeFlag string
-	set := &cobra.Command{Use: "set <domain>", Short: T("включить домен, выключить или сделать приёмником", "enable or disable a domain, or make it lenient"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	var lenient, activeFlag, sendOnly string
+	set := &cobra.Command{Use: "set <domain>", Short: T("включить или выключить домен, сделать приёмником или «только отправка»", "enable or disable a domain, make it lenient or send-only"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
 		}
 		var patch apitypes.MailDomainUpdateRequest
-		for name, raw := range map[string]string{"lenient": lenient, "active": activeFlag} {
+		for name, raw := range map[string]string{"lenient": lenient, "active": activeFlag, "send-only": sendOnly} {
 			if raw == "" {
 				continue
 			}
@@ -231,9 +235,12 @@ func mailDomainCmd() *cobra.Command {
 			if err != nil {
 				return &exitError{code: 2, msg: "--" + name + T(": нужно true или false", ": must be true or false")}
 			}
-			if name == "lenient" {
+			switch name {
+			case "lenient":
 				patch.Lenient = &v
-			} else {
+			case "send-only":
+				patch.SendOnly = &v
+			default:
 				patch.Active = &v
 			}
 		}
@@ -244,11 +251,12 @@ func mailDomainCmd() *cobra.Command {
 		if g.json {
 			return printJSON(d)
 		}
-		fmt.Printf(T("домен %s: активен %v, приём без строгих проверок %v\n", "domain %s: active %v, lenient %v\n"), d.Name, d.Active, d.Lenient)
+		fmt.Printf(T("домен %s: активен %v, приём без строгих проверок %v, только отправка %v\n", "domain %s: active %v, lenient %v, send only %v\n"), d.Name, d.Active, d.Lenient, d.SendOnly)
 		return nil
 	}}
 	set.Flags().StringVar(&lenient, "lenient", "", T("true|false — принимать письма без проверок HELO и домена отправителя", "true|false — accept mail without the HELO and sender domain checks"))
 	set.Flags().StringVar(&activeFlag, "active", "", "true|false")
+	set.Flags().StringVar(&sendOnly, "send-only", "", T("true|false — только отправка: почту домена принимает другой сервер (у домена не должно быть ящиков и алиасов)", "true|false — send only: another server receives the domain's mail (the domain must have no mailboxes or aliases)"))
 
 	rm := &cobra.Command{Use: "rm <domain>", Short: T("удалить домен вместе с ящиками и письмами", "delete a domain along with its mailboxes and messages"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()

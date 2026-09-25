@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -167,6 +168,103 @@ func (s *Server) setACL(ctx context.Context, req *SetACLRequest) (*struct{}, err
 		return nil, &Error{Message: "setfacl failed", Output: out}
 	}
 	return &struct{}{}, nil
+}
+
+var aclGroupRe = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+
+// siteACLBatch keeps one setfacl call well under the argv limit.
+const siteACLBatch = 256
+
+// siteACL walks a site tree without following symlinks and sets the web
+// group's entries: directories get r-x plus the same default entry, files
+// r-- (r-x when the owner may execute them) with an explicit mask. The mask
+// keeps the file's group read/write bits, gains r for the web group and
+// never gains an x the owner did not give — recalculated by setfacl it would
+// take the x of the group:: entry inherited from the directory's default ACL.
+// setfacl -P skips a path that became a symlink after the walk.
+func (s *Server) siteACL(ctx context.Context, req *SiteACLRequest) (*SiteACLResponse, error) {
+	root, err := s.safeHomePath(req.Root)
+	if err != nil {
+		return nil, &Error{Status: http.StatusForbidden, Message: err.Error()}
+	}
+	if !aclGroupRe.MatchString(req.Group) {
+		return nil, &Error{Status: http.StatusBadRequest, Message: "invalid group: " + req.Group}
+	}
+	st, err := os.Lstat(root)
+	if err != nil {
+		return nil, &Error{Status: http.StatusNotFound, Message: err.Error()}
+	}
+	if !st.IsDir() {
+		return nil, &Error{Status: http.StatusBadRequest, Message: root + " is not a directory"}
+	}
+	g := "g:" + req.Group + ":"
+	var dirs []string
+	files := map[[2]string][]string{} // {named entry, mask} -> paths
+	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil //nolint:nilerr // a vanished or unreadable entry is skipped, not the whole tree
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		switch {
+		case d.Type()&fs.ModeSymlink != 0:
+		case d.IsDir():
+			dirs = append(dirs, p)
+		case d.Type().IsRegular():
+			info, err := d.Info()
+			if err != nil {
+				return nil //nolint:nilerr // the file vanished between the listing and the stat
+			}
+			key := fileACL(info.Mode().Perm())
+			files[key] = append(files[key], p)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, &Error{Message: "walking " + root + ": " + err.Error()}
+	}
+	run := func(entries []string, paths []string) error {
+		for len(paths) > 0 {
+			n := min(len(paths), siteACLBatch)
+			argv := []string{"setfacl", "-P"}
+			for _, e := range entries {
+				argv = append(argv, "-m", e)
+			}
+			argv = append(argv, "--")
+			argv = append(argv, paths[:n]...)
+			if out, err := runArgv(ctx, nil, argv...); err != nil {
+				return &Error{Message: "setfacl failed", Output: out}
+			}
+			paths = paths[n:]
+		}
+		return nil
+	}
+	if err := run([]string{g + "r-x", "d:" + g + "r-x"}, dirs); err != nil {
+		return nil, err
+	}
+	resp := &SiteACLResponse{Dirs: len(dirs)}
+	for key, paths := range files {
+		if err := run([]string{g + key[0], "m::" + key[1]}, paths); err != nil {
+			return nil, err
+		}
+		resp.Files += len(paths)
+	}
+	return resp, nil
+}
+
+// fileACL is the web group's entry and the mask for a file with this mode:
+// read for the web group, x only where the owner has it, the group's own
+// write bit kept as it was.
+func fileACL(mode fs.FileMode) [2]string {
+	named, mask := "r--", []byte("r--")
+	if mode&0o020 != 0 {
+		mask[1] = 'w'
+	}
+	if mode&0o100 != 0 {
+		named, mask[2] = "r-x", 'x'
+	}
+	return [2]string{named, string(mask)}
 }
 
 func (s *Server) removePaths(ctx context.Context, req *RemovePathsRequest) (*RemovePathsResponse, error) {

@@ -46,6 +46,9 @@ type Agent struct {
 	// Fail makes the endpoint at the given path answer with an error; the
 	// message is returned to the panel as the agent's failure output.
 	Fail map[string]string
+	// FailStatus is the HTTP status of a Fail answer (default 502), e.g. 422
+	// for a configuration a validator refused.
+	FailStatus map[string]int
 	// Stat answers agent.Stat for these paths as existing files; a path with
 	// a trailing "/" is reported as a directory. Unknown paths do not exist.
 	Stat map[string]bool
@@ -168,12 +171,16 @@ func (a *Agent) handle(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	a.calls = append(a.calls, Call{Path: r.URL.Path, Body: body})
 	msg, failing := a.Fail[r.URL.Path]
+	status := a.FailStatus[r.URL.Path]
 	a.mu.Unlock()
 
 	if failing {
+		if status == 0 {
+			status = http.StatusBadGateway
+		}
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadGateway)
-		json.NewEncoder(w).Encode(agent.Error{Status: http.StatusBadGateway, Message: msg, Output: msg}) //nolint:errcheck // test double
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(agent.Error{Status: status, Message: msg, Output: msg}) //nolint:errcheck // test double
 		return
 	}
 

@@ -31,7 +31,7 @@
   let ask = $state<Ask | null>(null);
 
   let install = $state({ hostname: '' });
-  let domainForm = $state({ name: '', user: '', lenient: false });
+  let domainForm = $state({ name: '', user: '', lenient: false, send_only: false });
   let boxForm = $state({ address: '', password: '', name: '', quota_mb: 1024 });
   let aliasForm = $state({ address: '', destinations: '' });
   let webmailForm = $state({ domain: '', user: '', port: 2096 });
@@ -74,7 +74,7 @@
   async function addDomain(e: Event) {
     e.preventDefault(); error = '';
     try {
-      const body: any = { name: domainForm.name.trim(), lenient: domainForm.lenient };
+      const body: any = { name: domainForm.name.trim(), lenient: domainForm.send_only ? false : domainForm.lenient, send_only: domainForm.send_only };
       if (admin) body.user = domainForm.user;
       await api('/mail/domains', { method: 'POST', json: body });
       domainForm.name = ''; notify(t('mail.domainAdded')); await load();
@@ -129,6 +129,12 @@
   async function toggleLenient(d: any) {
     try { await api(`/mail/domains/${d.name}`, { method: 'PATCH', json: { lenient: !d.lenient } }); await load(); } catch (e) { fail(e); }
   }
+  async function toggleSendOnly(d: any) {
+    try { await api(`/mail/domains/${d.name}`, { method: 'PATCH', json: { send_only: !d.send_only } }); await load(); } catch (e) { fail(e); }
+  }
+  const askSendOnly = (d: any): Ask => d.send_only
+    ? { title: t('mail.askReceiveTitle', { name: d.name }), note: t('mail.askReceiveNote'), action: t('mail.askReceiveAction'), run: () => toggleSendOnly(d) }
+    : { title: t('mail.askSendOnlyTitle', { name: d.name }), note: t('mail.askSendOnlyNote'), action: t('mail.askSendOnlyAction'), run: () => toggleSendOnly(d) };
   const askLenient = (d: any): Omit<Ask, 'run'> => d.lenient
     ? { title: t('mail.askStrictTitle', { name: d.name }), action: t('mail.askStrictAction'),
         note: t('mail.askStrictNote') }
@@ -258,9 +264,14 @@
     <form class="card grid md:grid-cols-4 gap-3 items-end mb-3 rise" onsubmit={addDomain}>
       <div><label class="label" for="dn">{t('mail.domain')}</label><input id="dn" class="input font-mono" bind:value={domainForm.name} placeholder="example.com" required /></div>
       {#if admin}<div><label class="label" for="du">{t('mail.owner')}</label><select id="du" class="input" bind:value={domainForm.user} required><option value="">—</option>{#each users as u}<option value={u.login}>{u.login}</option>{/each}</select></div>{/if}
-      <label class="flex items-center gap-2 text-sm pb-2" title={t('mail.lenientHint')}>
-        <input type="checkbox" bind:checked={domainForm.lenient} /> {t('mail.lenient')}
-      </label>
+      <div class="flex flex-col gap-1 pb-1">
+        <label class="flex items-center gap-2 text-sm" title={t('mail.sendOnlyHint')}>
+          <input type="checkbox" bind:checked={domainForm.send_only} /> {t('mail.sendOnly')}
+        </label>
+        <label class="flex items-center gap-2 text-sm" title={t('mail.lenientHint')}>
+          <input type="checkbox" bind:checked={domainForm.lenient} disabled={domainForm.send_only} /> {t('mail.lenient')}
+        </label>
+      </div>
       <button class="btn btn-primary">{t('mail.addDomain')}</button>
     </form>
     <div class="card overflow-x-auto p-0 rise">
@@ -268,7 +279,7 @@
         <tbody>
           {#each domains as d, i}
             <tr class="rise" style="--i:{i}">
-              <td data-label={t('mail.domain')} class="font-mono font-medium">{d.name}{#if d.lenient}<span class="ml-2 text-[10px] px-1.5 py-0.5 rounded border border-warn/40 text-warn font-sans">{t('mail.lenientBadge')}</span>{/if}</td>
+              <td data-label={t('mail.domain')} class="font-mono font-medium">{d.name}{#if d.lenient}<span class="ml-2 text-[10px] px-1.5 py-0.5 rounded border border-warn/40 text-warn font-sans">{t('mail.lenientBadge')}</span>{/if}{#if d.send_only}<span class="ml-2 text-[10px] px-1.5 py-0.5 rounded border border-accent/40 text-accent-ink font-sans" title={t('mail.sendOnlyHint')}>{t('mail.sendOnlyBadge')}</span>{/if}</td>
               <td data-label={t('mail.owner')}>{d.login}</td>
               <td data-label={t('mail.colBoxes')} class="tabular-nums">{d.mailboxes}</td>
               <td data-label={t('mail.colAliases')} class="tabular-nums">{d.aliases}</td>
@@ -276,7 +287,8 @@
               <td data-label=""><div class="row-actions">
                 <button class="btn btn-sm" onclick={() => showDNS(d.name)}><Icon name="globe" size={13} /> DNS</button>
                 <button class="btn btn-sm" onclick={() => (ask = askDKIM(d))} title={t('mail.rotateDkimTitle')}><Icon name="key" size={13} /></button>
-                <button class="btn btn-sm" onclick={() => (ask = { ...askLenient(d), run: () => toggleLenient(d) })} title={d.lenient ? t('mail.strictTitle') : t('mail.lenientTitle')}><Icon name="shield" size={13} /></button>
+                <button class="btn btn-sm" onclick={() => (ask = askSendOnly(d))} title={d.send_only ? t('mail.sendOnlyOffTitle') : t('mail.sendOnlyOnTitle')} aria-pressed={d.send_only}><Icon name="mail" size={13} /></button>
+                {#if !d.send_only}<button class="btn btn-sm" onclick={() => (ask = { ...askLenient(d), run: () => toggleLenient(d) })} title={d.lenient ? t('mail.strictTitle') : t('mail.lenientTitle')}><Icon name="shield" size={13} /></button>{/if}
                 <button class="btn btn-danger btn-sm" onclick={() => (del = { kind: 'domain', name: d.name, note: t('mail.delDomainNote') })}><Icon name="trash" size={13} /></button>
               </div></td>
             </tr>

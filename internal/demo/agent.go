@@ -157,6 +157,9 @@ func (a *Agent) Handler() http.Handler {
 	r.Post("/v1/file/ensure", handle(a.ensureFile))
 	r.Post("/v1/symlink/ensure", handle(a.ensureSymlink))
 	r.Post("/v1/acl/set", handle(ok[agent.SetACLRequest]))
+	r.Post("/v1/acl/site", handle(func(context.Context, *agent.SiteACLRequest) (*agent.SiteACLResponse, error) {
+		return &agent.SiteACLResponse{}, nil
+	}))
 	r.Post("/v1/paths/remove", handle(a.removePaths))
 	r.Post("/v1/apache/ctl", handle(a.apacheCtl))
 	r.Post("/v1/tool", handle(a.tool))

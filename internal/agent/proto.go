@@ -192,6 +192,22 @@ type SetACLRequest struct {
 	Recursive bool     `json:"recursive,omitempty"`
 }
 
+// SiteACLRequest gives the web group read access to a site tree: r-x and a
+// matching default ACL on directories, read on files (r-x only on files the
+// owner may execute). The files' mask is set explicitly: recalculated, it
+// would take the x of the group entry every file inherits from its
+// directory, and files would show as 650/654 instead of 640/644.
+type SiteACLRequest struct {
+	Root  string `json:"root"`
+	Group string `json:"group"`
+}
+
+// SiteACLResponse counts what was set.
+type SiteACLResponse struct {
+	Dirs  int `json:"dirs"`
+	Files int `json:"files"`
+}
+
 // RemovePathsRequest deletes files or trees. Trees are only removed below
 // WWWRoot; single files must be inside the allow-list.
 type RemovePathsRequest struct {

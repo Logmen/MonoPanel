@@ -408,3 +408,65 @@ func TestMailInstallRestartsPostfixAndSeesLoopbackOnly(t *testing.T) {
 		t.Fatalf("no outside address, yet ports reported: %v", missing)
 	}
 }
+
+// A send-only domain is received by another server: this one signs its mail
+// and sends it, but does not list it among the domains it receives — mail
+// from a site to the domain's own addresses then goes to the real MX instead
+// of a mailbox that does not exist here. It takes no mailboxes or aliases,
+// cannot be lenient, and a domain with mailboxes cannot turn send-only
+// without deleting them first.
+func TestMailSendOnlyDomain(t *testing.T) {
+	f := newMailFixture(t)
+	f.call(http.MethodPost, "/mail/domains", map[string]any{"name": "shop.example.com", "user": "alex", "send_only": true, "lenient": true}, http.StatusUnprocessableEntity, nil)
+	var d store.MailDomain
+	f.call(http.MethodPost, "/mail/domains", map[string]any{"name": "shop.example.com", "user": "alex", "send_only": true}, http.StatusCreated, &d)
+	if !d.SendOnly || d.DKIMSelector == "" {
+		t.Fatalf("send-only domain: %+v", d)
+	}
+	domains, _ := f.agent.File("/etc/postfix/monopanel/domains")
+	if strings.Contains(domains, "shop.example.com") {
+		t.Fatalf("a send-only domain must not be received here:\n%s", domains)
+	}
+	signing, _ := f.agent.File("/etc/opendkim/SigningTable")
+	keys, _ := f.agent.File("/etc/opendkim/KeyTable")
+	if !strings.Contains(signing, "*@shop.example.com ") || !strings.Contains(keys, "._domainkey.shop.example.com shop.example.com:") {
+		t.Fatalf("a send-only domain must still be signed:\n%s\n%s", signing, keys)
+	}
+	f.call(http.MethodPost, "/mail/mailboxes", map[string]any{"address": "info@shop.example.com"}, http.StatusUnprocessableEntity, nil)
+	f.call(http.MethodPost, "/mail/aliases", map[string]any{"address": "sales@shop.example.com", "destinations": []string{"a@b.example"}}, http.StatusUnprocessableEntity, nil)
+	f.call(http.MethodPatch, "/mail/domains/shop.example.com", map[string]any{"lenient": true}, http.StatusUnprocessableEntity, nil)
+
+	// A receiving domain with a mailbox: turning it send-only would strand
+	// the mailbox, so the panel asks for it to go first.
+	f.call(http.MethodPost, "/mail/domains", map[string]any{"name": "example.com", "user": "alex"}, http.StatusCreated, nil)
+	f.call(http.MethodPost, "/mail/mailboxes", map[string]any{"address": "ivan@example.com"}, http.StatusCreated, nil)
+	f.call(http.MethodPatch, "/mail/domains/example.com", map[string]any{"send_only": true}, http.StatusConflict, nil)
+	f.call(http.MethodDelete, "/mail/mailboxes/ivan@example.com", nil, http.StatusNoContent, nil)
+	f.call(http.MethodPatch, "/mail/domains/example.com", map[string]any{"send_only": true}, http.StatusOK, &d)
+	if !d.SendOnly {
+		t.Fatal("the domain did not turn send-only")
+	}
+	if domains, _ := f.agent.File("/etc/postfix/monopanel/domains"); strings.Contains(domains, "example.com OK") {
+		t.Fatalf("still received here:\n%s", domains)
+	}
+	// And back: received here again.
+	f.call(http.MethodPatch, "/mail/domains/example.com", map[string]any{"send_only": false}, http.StatusOK, &d)
+	if domains, _ := f.agent.File("/etc/postfix/monopanel/domains"); !strings.Contains(domains, "example.com OK") || strings.Contains(domains, "shop.example.com") {
+		t.Fatalf("receiving domains:\n%s", domains)
+	}
+}
+
+// The provider's SPF record gets this server added, never replaced.
+func TestSPFWith(t *testing.T) {
+	for in, want := range map[string]string{
+		"v=spf1 include:_spf.yandex.net ~all": "v=spf1 include:_spf.yandex.net a:mail.example.com ~all",
+		"v=spf1 include:_spf.google.com -all": "v=spf1 include:_spf.google.com a:mail.example.com -all",
+		"v=spf1 a:mail.example.com ~all":      "v=spf1 a:mail.example.com ~all",
+		"v=spf1 include:mx.ovh.com":           "v=spf1 include:mx.ovh.com a:mail.example.com",
+		"v=spf1 include:spf.allmail.net ?all": "v=spf1 include:spf.allmail.net a:mail.example.com ?all",
+	} {
+		if got := spfWith(in, "a:mail.example.com"); got != want {
+			t.Errorf("spfWith(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

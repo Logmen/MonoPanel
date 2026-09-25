@@ -185,6 +185,56 @@ Match Group monopanel-sftp
     PermitTunnel no
 `
 
+// homeDirSpec is the account's home directory. An SFTP-only account is
+// chrooted into it, and sshd refuses a ChrootDirectory that is not
+// root-owned or is group-writable: root:<login> 0750 lets the client list
+// the chroot root while data/ below stays theirs. A shell account owns its
+// home. Every place that (re)creates the home goes through here — creating
+// a site used to hand an SFTP-only home to the client, and sshd then turned
+// the account away.
+func homeDirSpec(home, login string, shell bool) agent.DirSpec {
+	if !shell {
+		return agent.DirSpec{Path: home, Mode: 0o750, Owner: "root", Group: login}
+	}
+	return agent.DirSpec{Path: home, Mode: 0o710, Owner: login, Group: login}
+}
+
+// sftpHomeGroupACL lets an SFTP-only client list the root of its chroot. A
+// home that already carries ACLs keeps its old group entry through chmod
+// (chmod only moves the mask): one that was 0710 would stay traversable but
+// not listable, and SFTP clients greet the login with "permission denied".
+const sftpHomeGroupACL = "g::r-x"
+
+// refreshSFTPHomes gives SFTP-only accounts back a chroot sshd accepts: up to
+// 0.8.11 creating a site handed the home over to the client, and the account
+// could not log in until someone ran mp site fix. Idempotent; only the home
+// directory itself is touched.
+func (s *Server) refreshSFTPHomes(ctx context.Context) {
+	users, err := s.db.ListUsers(ctx)
+	if err != nil {
+		return
+	}
+	var dirs []agent.DirSpec
+	for _, u := range users {
+		if u.Shell || u.UnixUID == nil || u.Home == "" || u.Status != store.UserActive {
+			continue
+		}
+		dirs = append(dirs, homeDirSpec(u.Home, u.Login, false))
+	}
+	if len(dirs) == 0 {
+		return
+	}
+	if _, err := s.agent.EnsureDirs(ctx, &agent.EnsureDirsRequest{Dirs: dirs}); err != nil {
+		s.log.Warn("sftp homes", "err", err)
+		return
+	}
+	for _, d := range dirs {
+		if err := s.agent.SetACL(ctx, &agent.SetACLRequest{Path: d.Path, Entries: []string{sftpHomeGroupACL}}); err != nil {
+			s.log.Warn("sftp home group entry", "home", d.Path, "err", err)
+		}
+	}
+}
+
 // ensureSSHConfig installs the sshd drop-in once (validated with sshd -t).
 func (s *Server) ensureSSHConfig(ctx context.Context) error {
 	_, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{
@@ -241,15 +291,9 @@ func (s *Server) provisionUser(ctx context.Context, p userProvisionPayload, logf
 	}
 	progress(60, "home layout")
 	data := filepath.Join(home, "data")
-	homeOwner, homeMode := p.Login, uint32(0o710)
-	if !p.Shell {
-		// ChrootDirectory must be root-owned and not group-writable; 0750 lets
-		// the client list the chroot root, data/ below stays theirs.
-		homeOwner, homeMode = "root", 0o750
-	}
 	dirs := []agent.DirSpec{
 		{Path: s.cfg.WWWRoot, Mode: 0o711, Owner: "root", Group: "root"},
-		{Path: home, Mode: homeMode, Owner: homeOwner, Group: p.Login},
+		homeDirSpec(home, p.Login, p.Shell),
 		{Path: data, Mode: 0o750, Owner: p.Login, Group: p.Login},
 		{Path: filepath.Join(data, "www"), Mode: 0o750, Owner: p.Login, Group: p.Login},
 		{Path: filepath.Join(data, "logs"), Mode: 0o750, Owner: p.Login, Group: p.Login},

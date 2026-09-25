@@ -22,7 +22,10 @@ type MailDomain struct {
 	// Lenient принимает почту домена без проверок HELO и домена отправителя:
 	// диагностическому приёмнику нужны и те письма, которые обычный домен
 	// отверг бы.
-	Lenient   bool `json:"lenient"`
+	Lenient bool `json:"lenient"`
+	// SendOnly: другой сервер принимает почту домена, этот только подписывает
+	// и отправляет. Ящиков и алиасов у такого домена нет.
+	SendOnly  bool `json:"send_only"`
 	CreatedAt Time `json:"created_at"`
 	UpdatedAt Time `json:"updated_at"`
 	// Mailboxes and Aliases are filled by the listing calls.
@@ -71,19 +74,19 @@ func (a *MailAlias) Destinations() []string {
 	return out
 }
 
-const mailDomainCols = `d.id, d.user_id, u.login, d.name, d.active, d.dkim_selector, d.dkim_public, d.dkim_key_enc, d.lenient, d.created_at, d.updated_at`
+const mailDomainCols = `d.id, d.user_id, u.login, d.name, d.active, d.dkim_selector, d.dkim_public, d.dkim_key_enc, d.lenient, d.send_only, d.created_at, d.updated_at`
 
 func scanMailDomain(sc scanner) (*MailDomain, error) {
 	var d MailDomain
-	var active, lenient int
+	var active, lenient, sendOnly int
 	var created, updated string
-	if err := sc.Scan(&d.ID, &d.UserID, &d.Login, &d.Name, &active, &d.DKIMSelector, &d.DKIMPublic, &d.DKIMKeyEnc, &lenient, &created, &updated); err != nil {
+	if err := sc.Scan(&d.ID, &d.UserID, &d.Login, &d.Name, &active, &d.DKIMSelector, &d.DKIMPublic, &d.DKIMKeyEnc, &lenient, &sendOnly, &created, &updated); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
-	d.Active, d.Lenient = active != 0, lenient != 0
+	d.Active, d.Lenient, d.SendOnly = active != 0, lenient != 0, sendOnly != 0
 	d.CreatedAt, d.UpdatedAt = Time(parseTime(created)), Time(parseTime(updated))
 	return &d, nil
 }
@@ -91,8 +94,8 @@ func scanMailDomain(sc scanner) (*MailDomain, error) {
 // CreateMailDomain inserts a domain.
 func (d *DB) CreateMailDomain(ctx context.Context, m *MailDomain) error {
 	ts := now()
-	err := d.sql.QueryRowContext(ctx, `INSERT INTO mail_domains(user_id, name, active, dkim_selector, dkim_public, dkim_key_enc, lenient, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?) RETURNING id`,
-		m.UserID, m.Name, boolInt(m.Active), m.DKIMSelector, m.DKIMPublic, m.DKIMKeyEnc, boolInt(m.Lenient), ts, ts).Scan(&m.ID)
+	err := d.sql.QueryRowContext(ctx, `INSERT INTO mail_domains(user_id, name, active, dkim_selector, dkim_public, dkim_key_enc, lenient, send_only, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+		m.UserID, m.Name, boolInt(m.Active), m.DKIMSelector, m.DKIMPublic, m.DKIMKeyEnc, boolInt(m.Lenient), boolInt(m.SendOnly), ts, ts).Scan(&m.ID)
 	if err != nil {
 		if isUnique(err) {
 			return ErrExists
@@ -105,8 +108,8 @@ func (d *DB) CreateMailDomain(ctx context.Context, m *MailDomain) error {
 
 // UpdateMailDomain saves the mutable fields.
 func (d *DB) UpdateMailDomain(ctx context.Context, m *MailDomain) error {
-	_, err := d.sql.ExecContext(ctx, `UPDATE mail_domains SET user_id=?, active=?, dkim_selector=?, dkim_public=?, dkim_key_enc=?, lenient=?, updated_at=? WHERE id=?`,
-		m.UserID, boolInt(m.Active), m.DKIMSelector, m.DKIMPublic, m.DKIMKeyEnc, boolInt(m.Lenient), now(), m.ID)
+	_, err := d.sql.ExecContext(ctx, `UPDATE mail_domains SET user_id=?, active=?, dkim_selector=?, dkim_public=?, dkim_key_enc=?, lenient=?, send_only=?, updated_at=? WHERE id=?`,
+		m.UserID, boolInt(m.Active), m.DKIMSelector, m.DKIMPublic, m.DKIMKeyEnc, boolInt(m.Lenient), boolInt(m.SendOnly), now(), m.ID)
 	return err
 }
 

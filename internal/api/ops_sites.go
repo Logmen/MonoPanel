@@ -42,6 +42,11 @@ var allowedIniKeys = map[string]bool{
 	"session.cookie_secure": true, "session.cookie_httponly": true, "session.cookie_samesite": true, "session.use_strict_mode": true,
 	"opcache.jit": true, "opcache.jit_buffer_size": true, "opcache.memory_consumption": true, "opcache.interned_strings_buffer": true,
 	"opcache.max_accelerated_files": true, "mbstring.language": true, "intl.default_locale": true, "pcre.backtrack_limit": true, "pcre.recursion_limit": true,
+	// phpredis sessions (sites with sessions in Valkey): locking and its timing,
+	// compression, TTL refresh on read.
+	"redis.session.locking_enabled": true, "redis.session.lock_expire": true, "redis.session.lock_wait_time": true,
+	"redis.session.lock_retries": true, "redis.session.lock_failure_readonly": true, "redis.session.early_refresh": true,
+	"redis.session.compression": true, "redis.session.compression_level": true,
 }
 
 type sitesOutput struct {
@@ -604,9 +609,10 @@ func (s *Server) certForSite(ctx context.Context, site *store.Site) *store.Certi
 // siteTree makes the client's directories with their modes and gives the
 // web group its ACLs: on creation, and again by site.fix after someone
 // reshaped the tree by hand.
-func (s *Server) siteTree(ctx context.Context, jc *jobs.Context, l *siteLayout, login string) error {
+func (s *Server) siteTree(ctx context.Context, jc *jobs.Context, l *siteLayout, user *store.User) error {
+	login := user.Login
 	dirs := []agent.DirSpec{
-		{Path: l.home, Mode: 0o710, Owner: login, Group: login},
+		homeDirSpec(l.home, login, user.Shell),
 		{Path: l.data, Mode: 0o750, Owner: login, Group: login},
 		{Path: path.Join(l.data, "www"), Mode: 0o750, Owner: login, Group: login},
 		{Path: l.siteRoot, Mode: 0o750, Owner: login, Group: login},
@@ -630,11 +636,22 @@ func (s *Server) siteTree(ctx context.Context, jc *jobs.Context, l *siteLayout, 
 	// site logs, and without passing through the directory they keep writing
 	// into the rotated files.
 	for _, d := range []string{l.home, l.data, path.Join(l.data, "www"), path.Join(l.data, "logs")} {
-		if err := s.agent.SetACL(ctx, &agent.SetACLRequest{Path: d, Entries: []string{webACL + ":x"}}); err != nil {
+		entries := []string{webACL + ":x"}
+		if d == l.home && !user.Shell {
+			entries = append(entries, sftpHomeGroupACL)
+		}
+		if err := s.agent.SetACL(ctx, &agent.SetACLRequest{Path: d, Entries: entries}); err != nil {
 			return err
 		}
 	}
-	return s.agent.SetACL(ctx, &agent.SetACLRequest{Path: l.siteRoot, Entries: []string{webACL + ":rX"}, Default: true, Recursive: true})
+	res, err := s.agent.SiteACL(ctx, &agent.SiteACLRequest{Root: l.siteRoot, Group: s.cfg.WebGroup})
+	if err != nil {
+		return err
+	}
+	if jc != nil {
+		jc.Logf("ACL for %s: %d directories, %d files", s.cfg.WebGroup, res.Dirs, res.Files)
+	}
+	return nil
 }
 
 // jobSiteFix puts a site's files back in order after someone worked on them
@@ -659,7 +676,7 @@ func (s *Server) jobSiteFix(ctx context.Context, jc *jobs.Context) error {
 	}
 	l := s.layoutFor(site, user)
 	jc.Progress(10, "directories and ACLs")
-	if err := s.siteTree(ctx, jc, l, user.Login); err != nil {
+	if err := s.siteTree(ctx, jc, l, user); err != nil {
 		return err
 	}
 	jc.Progress(40, "owner")
@@ -714,7 +731,7 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 	suspended := site.Status == store.SiteSuspended
 
 	jc.Progress(10, "directories and permissions")
-	if err := s.siteTree(ctx, jc, l, login); err != nil {
+	if err := s.siteTree(ctx, jc, l, user); err != nil {
 		return s.siteFail(ctx, site, err)
 	}
 	if !proxy {

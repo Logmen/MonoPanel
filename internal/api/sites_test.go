@@ -597,7 +597,7 @@ func TestSiteFixRestoresOwnerACLsAndLabels(t *testing.T) {
 		switch {
 		case c.Path == "/v1/chown" && strings.Contains(body, root) && strings.Contains(body, `"recursive":true`) && strings.Contains(body, `"owner":"alex"`):
 			chown = true
-		case c.Path == "/v1/acl/set" && strings.Contains(body, root) && strings.Contains(body, `"default":true`):
+		case c.Path == "/v1/acl/site" && strings.Contains(body, root) && strings.Contains(body, `"group":"monopanel-web"`):
 			acl = true
 		case c.Path == "/v1/tool" && strings.Contains(body, "restorecon"):
 			relabel = true

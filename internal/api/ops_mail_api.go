@@ -243,7 +243,10 @@ func (s *Server) registerMail() {
 		if err != nil {
 			return nil, err
 		}
-		d := &store.MailDomain{UserID: owner.ID, Name: name, Active: true, Lenient: in.Body.Lenient}
+		if in.Body.SendOnly && in.Body.Lenient {
+			return nil, huma.Error422UnprocessableEntity("a send-only domain receives no mail here, so it cannot be lenient")
+		}
+		d := &store.MailDomain{UserID: owner.ID, Name: name, Active: true, Lenient: in.Body.Lenient, SendOnly: in.Body.SendOnly}
 		wantDKIM := c.DKIM && (in.Body.DKIM == nil || *in.Body.DKIM)
 		if wantDKIM {
 			if s.secrets == nil {
@@ -308,13 +311,34 @@ func (s *Server) registerMail() {
 		if in.Body.Lenient != nil {
 			d.Lenient = *in.Body.Lenient
 		}
+		if in.Body.SendOnly != nil && *in.Body.SendOnly && !d.SendOnly {
+			// Mail that the domain's mailboxes hold would be stranded: the
+			// server stops accepting it the moment the domain turns send-only.
+			boxes, err := s.db.ListMailboxes(ctx, d.ID, 0)
+			if err != nil {
+				return nil, err
+			}
+			aliases, err := s.db.ListMailAliases(ctx, d.ID, 0)
+			if err != nil {
+				return nil, err
+			}
+			if len(boxes)+len(aliases) > 0 {
+				return nil, huma.Error409Conflict(fmt.Sprintf("the domain has %d mailboxes and %d aliases here; delete them before it becomes send-only", len(boxes), len(aliases)))
+			}
+		}
+		if in.Body.SendOnly != nil {
+			d.SendOnly = *in.Body.SendOnly
+		}
+		if d.SendOnly && d.Lenient {
+			return nil, huma.Error422UnprocessableEntity("a send-only domain receives no mail here, so it cannot be lenient")
+		}
 		if err := s.db.UpdateMailDomain(ctx, d); err != nil {
 			return nil, err
 		}
 		if err := s.applyMail(ctx, nil); err != nil {
 			return nil, huma.Error502BadGateway(err.Error())
 		}
-		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "mail.domain.update", Target: d.Name, IP: requestInfo(ctx).IP, Details: map[string]any{"active": d.Active, "lenient": d.Lenient}})
+		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "mail.domain.update", Target: d.Name, IP: requestInfo(ctx).IP, Details: map[string]any{"active": d.Active, "lenient": d.Lenient, "send_only": d.SendOnly}})
 		return &mailDomainOutput{Status: http.StatusOK, Body: d}, nil
 	})
 
@@ -397,6 +421,9 @@ func (s *Server) registerMail() {
 		d, err := s.mailDomainFor(ctx, domain)
 		if err != nil {
 			return nil, huma.Error422UnprocessableEntity(err.Error())
+		}
+		if d.SendOnly {
+			return nil, huma.Error422UnprocessableEntity(sendOnlyRefusal(d.Name))
 		}
 		password, generated := in.Body.Password, false
 		if password == "" {
@@ -535,6 +562,9 @@ func (s *Server) registerMail() {
 		if err != nil {
 			return nil, huma.Error422UnprocessableEntity(err.Error())
 		}
+		if d.SendOnly {
+			return nil, huma.Error422UnprocessableEntity(sendOnlyRefusal(d.Name))
+		}
 		dests := []string{}
 		for _, to := range in.Body.Destinations {
 			to = strings.ToLower(strings.TrimSpace(to))
@@ -636,4 +666,9 @@ func (s *Server) mailboxFor(ctx context.Context, address string) (*store.Mailbox
 		return nil, errors.New("mailbox not found")
 	}
 	return b, err
+}
+
+// sendOnlyRefusal explains why a send-only domain takes no mailboxes.
+func sendOnlyRefusal(domain string) string {
+	return domain + " is send-only: its mail is received by another server, so it has no mailboxes or aliases here (mp mail domain set " + domain + " --send-only=false to receive here)"
 }

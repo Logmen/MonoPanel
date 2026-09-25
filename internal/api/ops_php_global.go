@@ -110,9 +110,26 @@ type layer = struct {
 	values map[string]string
 }
 
+// valkeySessionDefaults turn on phpredis session locking for a site whose
+// sessions live in Valkey. Without it parallel AJAX requests of one visitor
+// (Aspro makes plenty) overwrite each other's session changes; with files PHP
+// locks the session by itself. lock_retries -1 waits the way a file lock
+// does — the lock itself expires after max_execution_time, so a stuck request
+// never holds it for good — where the default of 100 retries × 20 ms gave
+// up after two seconds and failed session_start().
+var valkeySessionDefaults = []apitypes.PHPValue{
+	{Key: "redis.session.locking_enabled", Value: "1"},
+	{Key: "redis.session.lock_wait_time", Value: "20000"},
+	{Key: "redis.session.lock_retries", Value: "-1"},
+}
+
 // sitePHPValues are the effective php.ini values of a site with their source.
 func (s *Server) sitePHPValues(ctx context.Context, site *store.Site, tls bool) []apitypes.PHPValue {
-	return layerValues(s.panelIniDefaults(ctx),
+	defaults := s.panelIniDefaults(ctx)
+	if site.SessionStore == store.SessionStoreValkey {
+		defaults = append(defaults, valkeySessionDefaults...)
+	}
+	return layerValues(defaults,
 		layer{"global", s.globalIni(ctx)},
 		layer{"preset", presetValues(site, tls)},
 		layer{"site", site.PHPIni},
