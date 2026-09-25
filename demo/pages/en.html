@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>MonoPanel demo — a web server control panel</title>
+<meta name="description" content="A live MonoPanel demo: the panel's real web UI on a sample server, with no sign-up and nothing to install.">
+<link rel="canonical" href="https://demo.monopanel.app/">
+<link rel="alternate" hreflang="ru" href="https://demo.monopanel.app/?lang=ru">
+<link rel="alternate" hreflang="en" href="https://demo.monopanel.app/?lang=en">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/fonts.css">
+<link rel="stylesheet" href="/assets/site.css">
+<style>
+  .demo-box { max-width: 34rem; }
+  .demo-box .page-title { font-size: 2.25rem; line-height: 1.15; }
+  .demo-box form { margin-top: 1.25rem; }
+  .demo-notice { margin-top: 1rem; padding: 0.625rem 0.75rem; border: 1px solid var(--line); color: var(--ink); }
+  .demo-small { margin-top: 1rem; color: var(--muted); }
+  .demo-links { display: flex; flex-wrap: wrap; gap: 0.5rem 1.25rem; margin-top: 1.25rem; font-size: 0.875rem; }
+  .demo-links a { color: var(--muted); }
+</style>
+<script>try{var t=localStorage.getItem("theme");if(t==="dark"||t==="light")document.documentElement.dataset.theme=t}catch(e){}</script>
+</head>
+<body>
+<div class="glow"></div>
+<main class="lost">
+  <div class="lost-box demo-box rise">
+    <a class="logo" href="https://monopanel.app/en/" aria-label="MonoPanel — home"><span class="logo-mark" aria-hidden="true">M</span><span class="brand">MonoPanel</span></a>
+    <div class="card">
+      <span class="label">Live demo</span>
+      <h1 class="page-title">The panel at work</h1>
+      <p>MonoPanel's real web UI on a sample Ubuntu 24.04 server: WordPress and OpenCart sites, PHP 7.4 and 8.4, databases, mail, files, the firewall, backups and the console.</p>
+      <p>Create sites, install PHP, edit files, run a backup. A pretend server carries all of it out; there is no real server behind the demo. After 15 idle minutes, or after an hour, the demo closes and starts over.</p>
+      <p id="notice" class="demo-notice" role="status" hidden></p>
+      <form method="post" action="/start"><button class="btn btn-primary btn-lg" type="submit">Open the demo</button></form>
+      <p class="small demo-small">Every visitor gets their own copy, with no sign-up. Installing a CMS, Let's Encrypt and panel updates need the internet, so the demo leaves them out.</p>
+    </div>
+    <nav class="demo-links" aria-label="Links"><a href="https://monopanel.app/en/">monopanel.app</a><a href="https://monopanel.app/en/docs/">Documentation</a><a href="https://github.com/Logmen/MonoPanel">GitHub</a><a href="/?lang=ru" hreflang="ru" lang="ru">Русский</a></nav>
+  </div>
+</main>
+</body>
+</html>

@@ -1,0 +1,11 @@
+# Build context of the demo image (demo/Dockerfile): the sources, not what the
+# machine that builds it has lying around.
+**/node_modules
+web/build
+web/.svelte-kit
+site/dist
+dist
+.dev
+.claude
+docs/img
+docs/en/img

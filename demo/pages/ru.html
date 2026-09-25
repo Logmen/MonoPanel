@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Демо MonoPanel — панель управления веб-сервером</title>
+<meta name="description" content="Живое демо MonoPanel: настоящий веб-интерфейс панели на примерном сервере — без регистрации и установки.">
+<link rel="canonical" href="https://demo.monopanel.app/">
+<link rel="alternate" hreflang="ru" href="https://demo.monopanel.app/?lang=ru">
+<link rel="alternate" hreflang="en" href="https://demo.monopanel.app/?lang=en">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/fonts.css">
+<link rel="stylesheet" href="/assets/site.css">
+<style>
+  .demo-box { max-width: 34rem; }
+  .demo-box .page-title { font-size: 2.25rem; line-height: 1.15; }
+  .demo-box form { margin-top: 1.25rem; }
+  .demo-notice { margin-top: 1rem; padding: 0.625rem 0.75rem; border: 1px solid var(--line); color: var(--ink); }
+  .demo-small { margin-top: 1rem; color: var(--muted); }
+  .demo-links { display: flex; flex-wrap: wrap; gap: 0.5rem 1.25rem; margin-top: 1.25rem; font-size: 0.875rem; }
+  .demo-links a { color: var(--muted); }
+</style>
+<script>try{var t=localStorage.getItem("theme");if(t==="dark"||t==="light")document.documentElement.dataset.theme=t}catch(e){}</script>
+</head>
+<body>
+<div class="glow"></div>
+<main class="lost">
+  <div class="lost-box demo-box rise">
+    <a class="logo" href="https://monopanel.app/" aria-label="MonoPanel — на главную"><span class="logo-mark" aria-hidden="true">M</span><span class="brand">MonoPanel</span></a>
+    <div class="card">
+      <span class="label">Живое демо</span>
+      <h1 class="page-title">Панель в деле</h1>
+      <p>Настоящий веб-интерфейс MonoPanel на примерном сервере с Ubuntu 24.04: сайты на WordPress и OpenCart, PHP 7.4 и 8.4, базы, почта, файлы, firewall, бэкапы и консоль.</p>
+      <p>Создавайте сайты, ставьте PHP, правьте файлы, запускайте бэкап. Всё это выполняет сервер-имитация, настоящего сервера за демо нет. Через 15 минут без действий или через час демо закроется и начнётся заново.</p>
+      <p id="notice" class="demo-notice" role="status" hidden></p>
+      <form method="post" action="/start"><button class="btn btn-primary btn-lg" type="submit">Открыть демо</button></form>
+      <p class="small demo-small">Каждому посетителю — своя копия, без регистрации. Установка CMS, Let's Encrypt и обновление панели требуют интернета, в демо их нет.</p>
+    </div>
+    <nav class="demo-links" aria-label="Ссылки"><a href="https://monopanel.app/">monopanel.app</a><a href="https://monopanel.app/docs/">Документация</a><a href="https://github.com/Logmen/MonoPanel">GitHub</a><a href="/?lang=en" hreflang="en" lang="en">English</a></nav>
+  </div>
+</main>
+</body>
+</html>

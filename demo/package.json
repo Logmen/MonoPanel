@@ -1,0 +1,20 @@
+{
+  "name": "monopanel-demo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs && wrangler dev",
+    "deploy": "node build.mjs && wrangler deploy"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "0.3.7"
+  },
+  "devDependencies": {
+    "wrangler": "4.137.0"
+  },
+  "allowScripts": {
+    "workerd@1.20260921.1": true,
+    "esbuild@0.28.1": true
+  }
+}
