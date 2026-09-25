@@ -378,3 +378,33 @@ func TestMailInstallOnDovecot24(t *testing.T) {
 		t.Fatalf("после смены версии dovecot шаблон не сменился:\n%s", dove[:200])
 	}
 }
+
+// The install stub starts postfix on loopback only, and a reload never
+// rebinds its listeners: the install has to restart it. A port that still
+// answers on 127.0.0.1 alone is reported as unreachable, not as listening.
+func TestMailInstallRestartsPostfixAndSeesLoopbackOnly(t *testing.T) {
+	f := newMailFixture(t)
+	restarted := false
+	for _, c := range f.agent.Calls() {
+		if c.Path == "/v1/service" && strings.Contains(string(c.Body), `"postfix.service"`) && strings.Contains(string(c.Body), `"restart"`) {
+			restarted = true
+		}
+	}
+	if !restarted {
+		t.Fatal("установка не перезапустила postfix — он остался бы на 127.0.0.1")
+	}
+
+	c := f.s.loadMailConfig(f.ctx)
+	f.s.SetHostIPs(func() []string { return []string{"203.0.113.10"} })
+	f.s.SetReach(func(ip string, port int) bool { return ip == "203.0.113.10" && port != 25 && port != 587 })
+	missing := missingMailPorts(c, f.s.probePorts(allMailPorts()))
+	joined := strings.Join(missing, ", ")
+	if !strings.Contains(joined, "25/SMTP (only on 127.0.0.1)") || !strings.Contains(joined, "587/") || strings.Contains(joined, "993") {
+		t.Fatalf("loopback-only listeners not reported: %v", missing)
+	}
+	// Without an outside address there is nothing to compare with.
+	f.s.SetHostIPs(func() []string { return nil })
+	if missing := missingMailPorts(c, f.s.probePorts(allMailPorts())); len(missing) != 0 {
+		t.Fatalf("no outside address, yet ports reported: %v", missing)
+	}
+}

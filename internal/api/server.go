@@ -51,6 +51,10 @@ type Server struct {
 	// probe answers whether a local port has a listener. Mail installs verify
 	// their own listeners this way; tests with a fake agent replace it.
 	probe func(port int, banner bool) (bool, string)
+	// reach answers whether a port accepts connections on one of the host's
+	// own outside addresses: a daemon bound to 127.0.0.1 answers the probe
+	// above and still serves nobody. Tests replace it with the probe.
+	reach func(ip string, port int) bool
 	// hostIPs lists the host's IPv4 addresses; tests move the host.
 	hostIPs func() []string
 	// lookup resolves a name in public DNS; tests answer themselves.
@@ -72,7 +76,14 @@ func (s *Server) SetLookup(fn func(ctx context.Context, name string) ([]string, 
 
 // SetPortProbe overrides how the panel checks a local listener. Intended for
 // tests, where no daemon actually binds anything.
-func (s *Server) SetPortProbe(fn func(port int, banner bool) (bool, string)) { s.probe = fn }
+func (s *Server) SetPortProbe(fn func(port int, banner bool) (bool, string)) {
+	s.probe = fn
+	s.reach = func(_ string, port int) bool { open, _ := fn(port, false); return open }
+}
+
+// SetReach overrides the check on the host's outside address. Intended for
+// tests.
+func (s *Server) SetReach(fn func(ip string, port int) bool) { s.reach = fn }
 
 // SetOutbound routes the panel's own downloads (repository keys, release
 // packages, the PPA probe) through rt. Intended for the demo, which has no
@@ -92,6 +103,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	s := &Server{cfg: cfg, db: db, agent: ag, jobs: runner, profile: profile, render: render.New(cfg.TemplatesDir), log: log, started: time.Now(), limiter: newLoginLimiter(8, time.Minute)}
 	s.poolSocketWait, s.nginxWait = 10*time.Second, 15*time.Second
 	s.probe = probePort
+	s.reach = reachPort
 	s.hostIPs = localIPv4s
 	s.lookup = publicLookup
 	s.tls = newCertHolder(cfg, log)

@@ -460,10 +460,24 @@ func probePort(port int, banner bool) (bool, string) {
 	return true, strings.TrimSpace(string(buf[:n]))
 }
 
+// reachPort dials a port on one of the host's own addresses.
+func reachPort(ip string, port int) bool {
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, fmt.Sprint(port)), 400*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	conn.Close() //nolint:errcheck // проба порта, закрывать нечего
+	return true
+}
+
 // probeResult is one answered (or unanswered) port.
 type probeResult struct {
 	Open   bool
 	Banner string
+	// LocalOnly: the port answers on 127.0.0.1 but not on the host's own
+	// outside address — postfix still bound to loopback after the install
+	// stub, for one. Clients cannot reach such a listener.
+	LocalOnly bool
 }
 
 // plaintextPorts are the ones that greet a client in the clear; only there is
@@ -474,6 +488,10 @@ var plaintextPorts = map[int]bool{25: true, 587: true, 143: true, 110: true, 419
 // ожиданием баннера превращали страницу почты в четыре секунды ожидания.
 func (s *Server) probePorts(ports []int) map[int]probeResult {
 	out := make(map[int]probeResult, len(ports))
+	outside := ""
+	if ips := s.hostIPs(); len(ips) > 0 {
+		outside = ips[0]
+	}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for _, port := range ports {
@@ -481,8 +499,9 @@ func (s *Server) probePorts(ports []int) map[int]probeResult {
 		go func(port int) {
 			defer wg.Done()
 			open, banner := s.probe(port, plaintextPorts[port])
+			local := open && outside != "" && !s.reach(outside, port)
 			mu.Lock()
-			out[port] = probeResult{Open: open, Banner: banner}
+			out[port] = probeResult{Open: open, Banner: banner, LocalOnly: local}
 			mu.Unlock()
 		}(port)
 	}

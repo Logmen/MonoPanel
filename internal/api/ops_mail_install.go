@@ -141,6 +141,13 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 	if err := s.applyMailConfig(ctx, jc.Logf, true); err != nil {
 		return err
 	}
+	// A reload keeps postfix on the listeners it started with: the install
+	// stub bound it to loopback only, and inet_interfaces changes need a full
+	// restart — without one, ports 25/465/587 stay unreachable from outside
+	// until the next reboot.
+	if _, err := s.agent.Service(ctx, postfixService, "restart"); err != nil {
+		return err
+	}
 	for _, unit := range []string{postfixService, dovecotService, dkimService} {
 		if unit == dkimService && !c.DKIM {
 			continue
@@ -200,8 +207,11 @@ func missingMailPorts(c mailConfig, probes map[int]probeResult) []string {
 	}
 	missing := []string{}
 	for _, port := range mailPortsFor(c) {
-		if !probes[port].Open {
+		switch {
+		case !probes[port].Open:
 			missing = append(missing, fmt.Sprintf("%d/%s", port, names[port]))
+		case probes[port].LocalOnly:
+			missing = append(missing, fmt.Sprintf("%d/%s (only on 127.0.0.1)", port, names[port]))
 		}
 	}
 	sort.Strings(missing)
