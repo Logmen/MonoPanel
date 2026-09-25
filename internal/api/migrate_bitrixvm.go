@@ -62,7 +62,7 @@ type bxDB struct {
 func (s *Server) openBitrixVM(ctx context.Context, req apitypes.MigrationSourceRequest) (migrateSource, error) {
 	login := "bitrix"
 	if req.Scope != "" && scopeLogin(req.Scope) != login {
-		return nil, huma.Error422UnprocessableEntity("у BitrixVM один аккаунт — bitrix; область переноса user:bitrix (другой логин здесь: --as)")
+		return nil, huma.Error422UnprocessableEntity("BitrixVM has one account, bitrix: the scope is user:bitrix (another login here: --as)")
 	}
 	if req.As != "" {
 		login = req.As
@@ -74,7 +74,7 @@ func (s *Server) openBitrixVM(ctx context.Context, req apitypes.MigrationSourceR
 	src := &bitrixVMSource{foreignSource: foreignSource{s: s, conn: conn, req: req, login: login, home: path.Join(s.cfg.WWWRoot, login)}}
 	if !conn.exists(ctx, "/etc/nginx/bx") || !conn.exists(ctx, bitrixHome) {
 		conn.close()
-		return nil, huma.Error422UnprocessableEntity("на " + req.Source + " не видно BitrixVM: нет /etc/nginx/bx и /home/bitrix")
+		return nil, huma.Error422UnprocessableEntity("BitrixVM not found on " + req.Source + ": /etc/nginx/bx or /home/bitrix is missing")
 	}
 	return src, nil
 }
@@ -86,7 +86,7 @@ func (b *bitrixVMSource) inventory(ctx context.Context) error {
 	}
 	confs := b.conn.glob(ctx, "/etc/nginx/bx/site_enabled/*.conf")
 	if len(confs) == 0 {
-		return errors.New("в /etc/nginx/bx/site_enabled нет ни одного сайта")
+		return errors.New("no sites in /etc/nginx/bx/site_enabled")
 	}
 	byRoot := map[string]*bxSite{}
 	var order []string
@@ -100,7 +100,7 @@ func (b *bitrixVMSource) inventory(ctx context.Context) error {
 			continue // push server, status pages: nothing to serve from disk
 		}
 		if !strings.HasPrefix(root, bitrixHome+"/") {
-			b.skipped = append(b.skipped, fmt.Sprintf("%s пропущен: root %s вне %s", path.Base(c), root, bitrixHome))
+			b.skipped = append(b.skipped, fmt.Sprintf("%s skipped: root %s is outside %s", path.Base(c), root, bitrixHome))
 			continue
 		}
 		site := byRoot[root]
@@ -116,7 +116,7 @@ func (b *bitrixVMSource) inventory(ctx context.Context) error {
 		}
 	}
 	if len(order) == 0 {
-		msg := "в /etc/nginx/bx/site_enabled нет сайтов с root внутри /home/bitrix"
+		msg := "no site in /etc/nginx/bx/site_enabled has its root inside /home/bitrix"
 		if len(b.skipped) > 0 {
 			msg += ": " + strings.Join(b.skipped, "; ")
 		}
@@ -136,7 +136,7 @@ func (b *bitrixVMSource) inventory(ctx context.Context) error {
 		}
 		if site.domain == "" {
 			if root == mainRoot {
-				return errors.New("у основного сайта BitrixVM нет доменного имени (server_name _): задайте его через --domain")
+				return errors.New("the main BitrixVM site has no domain name (server_name _): set one with --domain")
 			}
 			site.domain = path.Base(root)
 		}
@@ -373,7 +373,7 @@ func (b *bitrixVMSource) bundle(ctx context.Context, _ string, withSecrets bool)
 		out.Sites = append(out.Sites, row)
 		out.Sizes.FilesBytes += b.duBytes(ctx, site.root)
 		if site.link {
-			out.Notes = append(out.Notes, fmt.Sprintf("сайт %s типа link: ядро общее с основным сайтом, симлинки перепишутся на новый путь", site.domain))
+			out.Notes = append(out.Notes, fmt.Sprintf("site %s is a link site: it shares the core with the main site, and its symlinks will be rewritten to the new path", site.domain))
 		}
 		if site.db.name != "" && !seenDB[site.db.name] {
 			seenDB[site.db.name] = true
@@ -399,7 +399,7 @@ func (b *bitrixVMSource) bundle(ctx context.Context, _ string, withSecrets bool)
 			out.Databases = append(out.Databases, d)
 			out.Sizes.Databases[d.Name] = d.SizeBytes
 		} else if site.db.name == "" && row.CMS == "bitrix" {
-			out.Notes = append(out.Notes, "сайт "+site.domain+": реквизиты базы в bitrix/.settings.php не найдены, база не переносится")
+			out.Notes = append(out.Notes, "site "+site.domain+": no database credentials found in bitrix/.settings.php, so the database is not moved")
 		}
 		if site.cert != "" {
 			certPEM, cerr := b.conn.readFile(ctx, site.cert)
@@ -421,7 +421,7 @@ func (b *bitrixVMSource) bundle(ctx context.Context, _ string, withSecrets bool)
 	out.Notes = append(out.Notes, cronNotes(out.Cron)...)
 	for _, site := range b.sites {
 		if site.cache != "" {
-			out.Notes = append(out.Notes, "сайт "+site.domain+": кеш Битрикса — "+site.cache+". Проверьте, что он работает здесь (memcached: mp stack install memcached; кластерный кеш требует модуля cluster и его таблиц), или переключите на files в bitrix/.settings.php: с неработающим кешем шаблоны пересчитывают всё на каждом хите и занимают все процессы php-fpm")
+			out.Notes = append(out.Notes, "site "+site.domain+": the Bitrix cache is "+site.cache+". Check that it works here (memcached: mp stack install memcached; the cluster cache needs the cluster module and its tables) or switch to files in bitrix/.settings.php: with a broken cache the templates recompute everything on every hit and tie up all the php-fpm processes")
 		}
 		if n := len(site.hardcoded); n > 0 {
 			list := site.hardcoded
@@ -430,18 +430,18 @@ func (b *bitrixVMSource) bundle(ctx context.Context, _ string, withSecrets bool)
 			}
 			more := ""
 			if n > 5 {
-				more = fmt.Sprintf(" и ещё %d", n-5)
+				more = fmt.Sprintf(" and %d more", n-5)
 			}
 			if n >= maxHardcoded {
-				more += " (показаны не все)"
+				more += " (not all are listed)"
 			}
-			out.Notes = append(out.Notes, fmt.Sprintf("сайт %s: путь %s в файлах сайта (%d): %s%s — перепишется на новый путь", site.domain, bitrixHome, n, strings.Join(list, ", "), more))
+			out.Notes = append(out.Notes, fmt.Sprintf("site %s: %s is hard-coded in the site's files (%d): %s%s — it will be rewritten to the new path", site.domain, bitrixHome, n, strings.Join(list, ", "), more))
 		}
 	}
 	out.Notes = append(out.Notes,
-		"кеш Битрикса (bitrix/cache, managed_cache, stack_cache) не переносится — соберётся заново",
-		"push-сервер, memcached и msmtp окружения BitrixVM не переезжают: настройте их здесь отдельно (mp stack install memcached)",
-		"пароль веб-панели у аккаунта не задан: mp user set "+b.login+" --generate")
+		"the Bitrix cache (bitrix/cache, managed_cache, stack_cache) is not moved: it will be rebuilt",
+		"the push server, memcached and msmtp of the BitrixVM environment do not move: set them up here separately (mp stack install memcached)",
+		"the account has no web-panel password: mp user set "+b.login+" --generate")
 	if withSecrets {
 		out.Secrets = &apitypes.MigrationSecrets{UnixShadow: hash, DBUsers: plain, Mailboxes: map[string]string{}, DKIM: map[string]string{}}
 	}
@@ -473,15 +473,15 @@ func (b *bitrixVMSource) rootCron(ctx context.Context, have []*store.CronJob) ([
 			continue
 		}
 		seen[j.Schedule+" "+j.Command] = true
-		j.Comment = strings.TrimSuffix("из crontab root; "+j.Comment, "; ")
+		j.Comment = strings.TrimSuffix("from root's crontab; "+j.Comment, "; ")
 		jobs = append(jobs, j)
 	}
 	var notes []string
 	if len(jobs) > 0 {
-		notes = append(notes, fmt.Sprintf("из crontab root перенесено заданий: %d — они работают с %s и здесь выполняются от аккаунта", len(jobs), bitrixHome))
+		notes = append(notes, fmt.Sprintf("cron jobs moved from root's crontab: %d; they work with %s and run as the account here", len(jobs), bitrixHome))
 	}
 	if len(left) > 0 {
-		notes = append(notes, fmt.Sprintf("в crontab root остались задания без путей %s, они не переносятся: %s", bitrixHome, strings.Join(left, "; ")))
+		notes = append(notes, fmt.Sprintf("jobs in root's crontab without %s paths are not moved: %s", bitrixHome, strings.Join(left, "; ")))
 	}
 	return jobs, notes
 }
@@ -500,7 +500,7 @@ func bxCronPHP(cmd string) string {
 // pointed into /home/bitrix are rewritten on the way.
 func (b *bitrixVMSource) files(ctx context.Context, req migrateFilesRequest) (io.ReadCloser, error) {
 	if req.part != "home" {
-		return nil, fmt.Errorf("BitrixVM: часть %s не переносится", req.part)
+		return nil, fmt.Errorf("BitrixVM: the %s part is not moved", req.part)
 	}
 	if err := b.inventory(ctx); err != nil {
 		return nil, err

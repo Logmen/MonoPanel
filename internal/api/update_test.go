@@ -198,7 +198,7 @@ func TestUpdateRefusesAPackageTheChecksumsDoNotDescribe(t *testing.T) {
 	}
 	f.call(http.MethodPost, "/system/update/apply", map[string]any{}, http.StatusAccepted, &ref)
 	job := f.waitJob(ref.JobID)
-	if job.Status != store.JobFailed || !strings.Contains(job.Error, "контрольная сумма") {
+	if job.Status != store.JobFailed || !strings.Contains(job.Error, "checksum") {
 		t.Fatalf("a package that does not match its signed digest must not install: %s %s", job.Status, job.Error)
 	}
 	if f.agent.Called("/v1/panel/install") {
@@ -216,7 +216,7 @@ func TestUpdateRefusesAnUnsignedReleaseWhenAKeyIsPinned(t *testing.T) {
 	}
 	f.call(http.MethodPost, "/system/update/apply", map[string]any{}, http.StatusAccepted, &ref)
 	job := f.waitJob(ref.JobID)
-	if job.Status != store.JobFailed || !strings.Contains(job.Error, "не подписан") {
+	if job.Status != store.JobFailed || !strings.Contains(job.Error, "not signed") {
 		t.Fatalf("an unsigned release must be refused where a key is pinned: %s %s", job.Status, job.Error)
 	}
 

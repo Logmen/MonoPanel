@@ -17,6 +17,10 @@
   let presets = $state<any[]>([]);
   // Имена пресетов приходят с сервера по-русски; два не латинских подменяем по id.
   const presetName = (p: any) => (p.id === '' ? t('sites.presetUniversal') : p.id === 'bitrix' ? t('sites.presetBitrix') : p.name);
+  // Каталог CMS приходит с сервера по-английски: пояснения к известным — из словаря.
+  const cmsNotes: Record<string, MsgKey> = { wordpress: 'site.cmsNoteWordpress', joomla: 'site.cmsNoteJoomla', opencart: 'site.cmsNoteOpencart', bitrix: 'site.cmsNoteBitrix' };
+  const cmsLabel = (c: any) => (c.id === 'bitrix' ? t('sites.presetBitrix') : c.name);
+  const cmsNote = (c: any) => (c.id in cmsNotes ? t(cmsNotes[c.id]) : (c.notes ?? ''));
   let tab = $state<'settings' | 'php' | 'nginx' | 'files' | 'logs' | 'cms'>('settings');
   let logType = $state('access');
   let log = $state<any>(null);
@@ -72,7 +76,10 @@
       notify(t('site.cmsInstallStarted', { cms: cmsForm.cms }));
     } catch (e: any) { error = e.text || String(e); notify(error, 'err'); } finally { cmsBusy = false; }
   }
-  const cmsName = (id: string) => cmsList.find((c) => c.id === id)?.name ?? id;
+  const cmsName = (id: string) => {
+    const c = cmsList.find((c) => c.id === id);
+    return c ? cmsLabel(c) : id;
+  };
   const cmsAdminPath = (id: string) => ({ wordpress: 'wp-admin/', joomla: 'administrator/', opencart: 'admin/', bitrix: 'bitrix/admin/' } as Record<string, string>)[id] ?? '';
   async function issueTLS(e: Event) { e.preventDefault(); error = ''; try { const r: any = await api(`/sites/${domain}/tls/issue`, { method: 'POST', json: { staging: tform.staging, dns: tform.dns || undefined } }); job = r.job_id; tlsOpen = false; site.ssl = 'auto'; } catch (e: any) { error = e.text || String(e); notify(error, 'err'); } }
   onMount(() => { load().catch((e) => (error = e.text || String(e))); });
@@ -203,7 +210,7 @@
       {/if}
       <form class="grid md:grid-cols-3 gap-3 mt-4 items-end" onsubmit={installCMS}>
         <div class="md:col-span-3 text-sm text-muted">{t('site.cmsIntro')}</div>
-        <div><label class="label" for="cms">CMS</label><select id="cms" class="input" bind:value={cmsForm.cms}>{#each cmsList as c}<option value={c.id}>{c.name}</option>{/each}</select></div>
+        <div><label class="label" for="cms">CMS</label><select id="cms" class="input" bind:value={cmsForm.cms}>{#each cmsList as c}<option value={c.id}>{cmsLabel(c)}</option>{/each}</select></div>
         <div><label class="label" for="ct">{t('site.cmsTitle')}</label><input id="ct" class="input" bind:value={cmsForm.title} placeholder={domain} /></div>
         <div><label class="label" for="cl">{t('site.cmsAdminLogin')}</label><input id="cl" class="input" bind:value={cmsForm.admin_login} placeholder="admin" /></div>
         <div><label class="label" for="cp">{t('site.cmsAdminPassword')}</label><input id="cp" class="input" type="password" bind:value={cmsForm.admin_password} placeholder={t('site.cmsPasswordPh')} /></div>
@@ -214,7 +221,7 @@
           {#if cmsForm.solution === 'custom'}<div><label class="label" for="csid">{t('site.bitrixSolutionId')}</label><input id="csid" class="input font-mono" bind:value={cmsForm.solutionId} placeholder="vendor.solution" /></div>{/if}
         {/if}
         <label class="flex items-center gap-1.5 text-sm md:col-span-2"><input type="checkbox" bind:checked={cmsForm.force} /> {t('site.cmsForce')}</label>
-        <div class="md:col-span-3 text-xs text-muted">{cmsList.find((c) => c.id === cmsForm.cms)?.notes ?? ''}</div>
+        <div class="md:col-span-3 text-xs text-muted">{cmsNote(cmsList.find((c) => c.id === cmsForm.cms) ?? {})}</div>
         <div class="md:col-span-3"><button class="btn btn-primary" disabled={cmsBusy}><Icon name="plus" size={14} /> {cmsBusy ? t('site.cmsStarting') : t('site.cmsInstall')}</button></div>
       </form>
     </div>

@@ -111,7 +111,8 @@
 - [x] The whole web UI is translated into English; Russian and English live in the dictionary `web/src/lib/i18n/msgs/*.ts` (one fragment per page), `t()`/`tn()` take the current language from the state — switching redraws the interface without a reload.
 - [x] The default language comes from the browser language: Russian for the languages of CIS countries (ru, uk, be, kk, ky, uz, tg, tk, hy, az, ka, ro-MD…), English for everyone else; the same list is in `app.html`, so that `<html lang>` is correct before the app starts.
 - [x] The "Auto / Русский / English" switch in Settings and on the sign-in screen; the choice is kept in `localStorage.lang`; dates and units (`when()`, `bytes()`) follow the language.
-- [ ] API messages, job logs, doctor and the CLI are Russian-only for now — they need a dictionary on the Go side and a language on the job.
+- [x] API messages, job logs and doctor are in English (2026-09-25); the placeholder page of a new site and the page of a suspended one follow the visitor's browser language, and the interface translates the presets and the CMS catalogue itself.
+- [ ] The CLI and the TUI are Russian-only for now; Russian API messages for the Russian interface need a dictionary on the Go side and a language on the job.
 
 ### Firewall: rule order and lockout protection (2026-09-14)
 - [x] The chain is assembled in tiers: allow with a source → deny → always-open ports and allow without a source. Previously deny came first, and "deny 8443 + allow 8443 from the VPN" closed the panel to everyone, the VPN included.

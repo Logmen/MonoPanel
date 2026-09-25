@@ -43,14 +43,14 @@ type phpExtToggleInput struct {
 func (s *Server) phpLayoutFor(ctx context.Context, version string) (*store.PHPVersion, *osprofile.PHPLayout, error) {
 	row, err := s.db.GetPHPVersion(ctx, version)
 	if err != nil {
-		return nil, nil, huma.Error404NotFound("PHP " + version + " не установлен")
+		return nil, nil, huma.Error404NotFound("PHP " + version + " is not installed")
 	}
 	if row.Status != store.PHPInstalled {
 		return nil, nil, huma.Error409Conflict("PHP " + version + ": " + row.Status)
 	}
 	layout := osprofile.PHP(s.profile, version)
 	if layout == nil {
-		return nil, nil, huma.Error501NotImplemented("управление расширениями не поддержано на этой ОС")
+		return nil, nil, huma.Error501NotImplemented("extension management is not supported on this OS")
 	}
 	return row, layout, nil
 }
@@ -152,7 +152,7 @@ func (s *Server) registerPHPExtensions() {
 			}
 		}
 		if ext == nil {
-			return nil, huma.Error422UnprocessableEntity("нет такого расширения у PHP " + in.Version + ": " + in.Body.Name)
+			return nil, huma.Error422UnprocessableEntity("PHP " + in.Version + " has no such extension: " + in.Body.Name)
 		}
 		if in.Body.Name == "redis" && !in.Body.Enabled {
 			// Без него session_start() на сайтах с сессиями в Valkey падает.
@@ -167,16 +167,16 @@ func (s *Server) registerPHPExtensions() {
 				}
 			}
 			if len(using) > 0 {
-				return nil, huma.Error409Conflict("на redis держатся PHP-сессии " + strings.Join(using, ", ") + ": сначала переведите их на файлы (mp site set <домен> --sessions files)")
+				return nil, huma.Error409Conflict("PHP sessions of " + strings.Join(using, ", ") + " depend on redis: switch them to files first (mp site set <domain> --sessions files)")
 			}
 		}
 		if !ext.Installed {
 			if !in.Body.Enabled {
-				return nil, huma.Error422UnprocessableEntity(in.Body.Name + " не установлено — выключать нечего")
+				return nil, huma.Error422UnprocessableEntity(in.Body.Name + " is not installed, nothing to switch off")
 			}
 			// The package brings the ini along (and on Debian enables it).
 			if _, err := s.agent.Pkg(ctx, "install", ext.Package); err != nil {
-				return nil, huma.Error502BadGateway(fmt.Sprintf("установка %s: %v", ext.Package, err))
+				return nil, huma.Error502BadGateway(fmt.Sprintf("install %s: %v", ext.Package, err))
 			}
 			s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "php.extension.install", Target: in.Version + ":" + in.Body.Name, IP: requestInfo(ctx).IP, Details: map[string]any{"package": ext.Package}})
 		}
@@ -223,7 +223,7 @@ var extLineRe = regexp.MustCompile(`^(\s*)(;\s*)?((?:zend_)?extension\s*=.*)$`)
 func (s *Server) phpModulesEL(ctx context.Context, version string) ([]apitypes.PHPExtension, error) {
 	layout := osprofile.PHP(s.profile, version)
 	if layout == nil || len(layout.IniDirs) == 0 {
-		return nil, huma.Error501NotImplemented("управление расширениями не поддержано на этой ОС")
+		return nil, huma.Error501NotImplemented("extension management is not supported on this OS")
 	}
 	dir, err := s.agent.ListDir(ctx, layout.IniDirs[0])
 	if err != nil {
@@ -275,7 +275,7 @@ func (s *Server) phpToggleEL(ctx context.Context, layout *osprofile.PHPLayout, n
 		}
 	}
 	if file == "" {
-		return huma.Error422UnprocessableEntity("нет такого расширения: " + name)
+		return huma.Error422UnprocessableEntity("no such extension: " + name)
 	}
 	f, err := s.agent.ReadFile(ctx, file, 64*1024)
 	if err != nil {

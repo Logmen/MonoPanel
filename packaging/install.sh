@@ -117,6 +117,6 @@ else
 fi
 
 echo
-echo "Установлено. Дальше:"
-echo "  mp setup     # администратор, каталоги, сервисы"
-echo "  mp update    # обновления: релизы $REPO (сборка знает свой репозиторий; сменить — mp update settings --repo owner/name)"
+echo "Installed. Next:"
+echo "  mp setup     # administrator, directories, services"
+echo "  mp update    # updates: releases of $REPO (the build knows its repository; to change it: mp update settings --repo owner/name)"

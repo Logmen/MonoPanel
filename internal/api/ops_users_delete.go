@@ -129,16 +129,16 @@ func (s *Server) jobUserDelete(ctx context.Context, jc *jobs.Context) error {
 	}
 	for _, d := range mailDomains {
 		if _, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: []string{mailBase + "/" + d.Name, dkimDir + "/keys/" + d.Name}, Recursive: true}); err != nil {
-			jc.Logf("почтовый домен %s: файлы не удалены: %v", d.Name, err)
+			jc.Logf("mail domain %s: files not removed: %v", d.Name, err)
 		}
 		if err := s.db.DeleteMailDomain(ctx, d.ID); err != nil {
 			return fail(err)
 		}
-		jc.Logf("почтовый домен %s удалён (%d ящиков)", d.Name, d.Mailboxes)
+		jc.Logf("mail domain %s removed (%d mailboxes)", d.Name, d.Mailboxes)
 	}
 	if len(mailDomains) > 0 {
 		if err := s.applyMail(ctx, jc.Logf); err != nil {
-			jc.Logf("предупреждение: конфигурация почты не перегенерирована: %v", err)
+			jc.Logf("warning: mail configuration not regenerated: %v", err)
 		}
 	}
 

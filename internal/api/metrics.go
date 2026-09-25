@@ -368,15 +368,15 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 	if c := s.loadUpdateConfig(actx); c.Repo != "" {
 		switch {
 		case c.LastError != "":
-			add(check("update", "warn", "проверка обновлений: "+c.LastError))
+			add(check("update", "warn", "update check: "+c.LastError))
 		case c.Latest != nil && updater.Newer(buildinfo.Version, c.Latest.Version):
-			add(check("update", "warn", "доступна версия "+c.Latest.Version+" (mp update apply)"))
+			add(check("update", "warn", "version "+c.Latest.Version+" available (mp update apply)"))
 		default:
-			add(check("update", "ok", "версия "+buildinfo.Version))
+			add(check("update", "ok", "version "+buildinfo.Version))
 		}
 	}
 	if st, err := updater.ReadState(s.cfg.UpdatesDir()); err == nil && st != nil && (st.Status == updater.StatusFailed || st.Status == updater.StatusRolledBack) {
-		add(check("update attempt", "warn", "установка "+st.To+": "+st.Status+", "+st.Error))
+		add(check("update attempt", "warn", "install of "+st.To+": "+st.Status+", "+st.Error))
 	}
 	if jobs, err := s.db.ListJobs(actx, 200, store.JobFailed); err == nil {
 		// A failure a later run of the same work (same lock key) has fixed
@@ -467,6 +467,12 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 			warns++
 		}
 	}
-	out.Summary = fmt.Sprintf("%d checks, %d failed, %d warnings", len(out.Checks), fails, warns)
+	count := func(n int, noun string) string {
+		if n == 1 {
+			return "1 " + noun
+		}
+		return fmt.Sprintf("%d %ss", n, noun)
+	}
+	out.Summary = fmt.Sprintf("%s, %d failed, %s", count(len(out.Checks), "check"), fails, count(warns, "warning"))
 	return out
 }

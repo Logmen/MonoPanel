@@ -119,16 +119,16 @@ func (s *Server) firewallProtected(ctx context.Context) []int {
 
 func (s *Server) portName(port int) string {
 	if port == s.panelPort() {
-		return fmt.Sprintf("панель (порт %d)", port)
+		return fmt.Sprintf("the panel (port %d)", port)
 	}
-	return fmt.Sprintf("SSH (порт %d)", port)
+	return fmt.Sprintf("SSH (port %d)", port)
 }
 
 // lockoutError says why a rule set would lock the administrator out: a
 // source-less deny on a protected port with no per-source allow to get
 // through it (Deny set), or a deny that covers the caller's own address (Self).
 type lockoutError struct {
-	Port     string              // "панель (порт 8443)"
+	Port     string              // "the panel (port 8443)"
 	Deny     *store.FirewallRule // the source-less deny that closes the port
 	Self     *store.FirewallRule // the deny covering the caller
 	CallerIP string
@@ -136,13 +136,13 @@ type lockoutError struct {
 
 func (e *lockoutError) Error() string {
 	if e.Self != nil {
-		return fmt.Sprintf("deny%s закрывает %s с вашего текущего адреса %s", ruleRef(e.Self), e.Port, e.CallerIP)
+		return fmt.Sprintf("deny%s closes %s to your current address %s", ruleRef(e.Self), e.Port, e.CallerIP)
 	}
-	hint := "с источником"
+	hint := "with a source"
 	if net.ParseIP(e.CallerIP) != nil {
-		hint = fmt.Sprintf("с источником (например, вашим адресом %s)", e.CallerIP)
+		hint = fmt.Sprintf("with a source (such as your address %s)", e.CallerIP)
 	}
-	return fmt.Sprintf("deny%s без источника закроет %s для всех, включая вас; сначала добавьте allow на этот порт %s", ruleRef(e.Deny), e.Port, hint)
+	return fmt.Sprintf("deny%s without a source would close %s to everyone, including you; first add an allow for this port %s", ruleRef(e.Deny), e.Port, hint)
 }
 
 // onDelete words the same lockout for removing the rule that prevented it.
@@ -150,7 +150,7 @@ func (e *lockoutError) onDelete(id int64) string {
 	if e.Self != nil {
 		return e.Error()
 	}
-	return fmt.Sprintf("правило #%d — последний allow с источником для %s, без него deny%s закроет её для всех, включая вас; сначала удалите deny%s", id, e.Port, ruleRef(e.Deny), ruleRef(e.Deny))
+	return fmt.Sprintf("rule #%d is the last allow with a source for %s: without it, deny%s would close that port to everyone, including you; first delete deny%s", id, e.Port, ruleRef(e.Deny), ruleRef(e.Deny))
 }
 
 func (s *Server) firewallLockout(rules []*store.FirewallRule, protected []int, callerIP string) *lockoutError {

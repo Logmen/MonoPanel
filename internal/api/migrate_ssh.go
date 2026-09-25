@@ -33,7 +33,7 @@ func parseSSHTarget(s string) (sshTarget, error) {
 	}
 	t.host = strings.Trim(s, "[]")
 	if t.host == "" || t.user == "" || strings.ContainsAny(t.host, " /") {
-		return t, fmt.Errorf("адрес источника должен быть вида root@host или root@host:22, получено %q", s)
+		return t, fmt.Errorf("the source address must look like root@host or root@host:22, got %q", s)
 	}
 	return t, nil
 }
@@ -59,7 +59,7 @@ func dialSSH(ctx context.Context, target, password, key string) (*sshConn, error
 	if strings.TrimSpace(key) != "" {
 		signer, err := ssh.ParsePrivateKey([]byte(key))
 		if err != nil {
-			return nil, fmt.Errorf("приватный ключ не разобрать: %w", err)
+			return nil, fmt.Errorf("cannot parse the private key: %w", err)
 		}
 		auth = append(auth, ssh.PublicKeys(signer))
 	}
@@ -73,7 +73,7 @@ func dialSSH(ctx context.Context, target, password, key string) (*sshConn, error
 		}))
 	}
 	if len(auth) == 0 {
-		return nil, errors.New("для доступа по ssh нужен пароль или приватный ключ")
+		return nil, errors.New("ssh access needs a password or a private key")
 	}
 	c := &sshConn{target: t}
 	cfg := &ssh.ClientConfig{
@@ -89,13 +89,13 @@ func dialSSH(ctx context.Context, target, password, key string) (*sshConn, error
 	d := net.Dialer{Timeout: cfg.Timeout}
 	raw, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return nil, fmt.Errorf("источник %s недоступен: %w", addr, err)
+		return nil, fmt.Errorf("the source %s is unreachable: %w", addr, err)
 	}
 	conn, chans, reqs, err := ssh.NewClientConn(raw, addr, cfg)
 	if err != nil {
 		raw.Close() //nolint:errcheck // соединение и так не состоялось
 		if strings.Contains(err.Error(), "unable to authenticate") {
-			return nil, fmt.Errorf("источник %s не принял пароль или ключ для %s", addr, t.user)
+			return nil, fmt.Errorf("the source %s rejected the password or key for %s", addr, t.user)
 		}
 		return nil, fmt.Errorf("ssh %s: %w", addr, err)
 	}
@@ -132,7 +132,7 @@ func (c *sshConn) exec(ctx context.Context, cmd string) (string, int, error) {
 		if errors.As(err, &exit) {
 			msg := strings.TrimSpace(stderr.String())
 			if msg == "" {
-				msg = fmt.Sprintf("код %d", exit.ExitStatus())
+				msg = fmt.Sprintf("exit code %d", exit.ExitStatus())
 			}
 			return stdout.String(), exit.ExitStatus(), errors.New(msg)
 		}

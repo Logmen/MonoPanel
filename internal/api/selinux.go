@@ -175,9 +175,9 @@ var selinuxConfigPath = "/etc/selinux/config"
 
 // selinuxWarning is what the administrator reads before switching to
 // permissive, and sees while it is on.
-const selinuxWarning = "SELinux в permissive ничего не блокирует, а только записывает отказы в журнал. " +
-	"Взломанный сайт сможет прочитать /etc/shadow, /root и чужие домашние каталоги, данные почты и баз; " +
-	"postfix, dovecot, mysqld и fail2ban лишатся своих доменов. Панель продолжит работать; вернуть: mp selinux enforcing."
+const selinuxWarning = "SELinux in permissive mode blocks nothing and only logs denials. " +
+	"A compromised site can read /etc/shadow, /root, other users' home directories, mail data and databases; " +
+	"postfix, dovecot, mysqld and fail2ban are no longer confined to their domains. The panel keeps working; to switch back: mp selinux enforcing."
 
 // selinuxStatus reads the live mode and the configured one.
 func (s *Server) selinuxStatus() apitypes.SELinuxStatus {
@@ -224,11 +224,11 @@ func (s *Server) registerSELinux() {
 		p := principalFrom(ctx)
 		st := s.selinuxStatus()
 		if !st.Supported {
-			return nil, huma.Error422UnprocessableEntity("SELinux отсутствует на этом сервере")
+			return nil, huma.Error422UnprocessableEntity("SELinux is not present on this server")
 		}
 		flag := map[string]string{"enforcing": "1", "permissive": "0"}[in.Body.Mode]
 		if flag == "" {
-			return nil, huma.Error422UnprocessableEntity("режим: enforcing или permissive")
+			return nil, huma.Error422UnprocessableEntity("mode: enforcing or permissive")
 		}
 		if st.Mode != in.Body.Mode {
 			res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "setenforce", Args: []string{flag}, TimeoutSeconds: 30})

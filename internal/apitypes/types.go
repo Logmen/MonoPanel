@@ -522,7 +522,7 @@ type FileOpRequest struct {
 	Paths []string `json:"paths,omitempty" doc:"extra paths for rm"`
 	Dest  string   `json:"dest,omitempty"`
 	Mode  string   `json:"mode,omitempty" pattern:"^[0-7]{3,4}$"`
-	Force bool     `json:"force,omitempty" doc:"Для touch: перезаписать существующий файл пустым"`
+	Force bool     `json:"force,omitempty" doc:"For touch: overwrite an existing file with an empty one"`
 }
 
 // FileOpResult reports success and an optional value (size, extracted count).
@@ -663,22 +663,22 @@ type SitePreset struct {
 
 // UpdateSettings says where the panel looks for new versions of itself.
 type UpdateSettings struct {
-	Repo        string `json:"repo" doc:"Репозиторий с релизами в виде owner/name"`
-	RepoBuiltIn bool   `json:"repo_builtin" doc:"Репозиторий взят из сборки панели, а не из настроек"`
-	API         string `json:"api,omitempty" doc:"Адрес API репозитория; пусто — api.github.com (для GitHub Enterprise)"`
-	Channel     string `json:"channel" doc:"stable — только релизы, beta — ещё и предрелизы"`
-	HasToken    bool   `json:"has_token" doc:"Токен доступа сохранён (обязателен для приватного репозитория)"`
-	CheckHours  int    `json:"check_hours" doc:"Как часто проверять обновления; 0 — не проверять"`
-	AutoApply   bool   `json:"auto_apply" doc:"Устанавливать найденное обновление без подтверждения"`
+	Repo        string `json:"repo" doc:"Release repository as owner/name"`
+	RepoBuiltIn bool   `json:"repo_builtin" doc:"The repository comes from the panel build, not from the settings"`
+	API         string `json:"api,omitempty" doc:"Repository API URL (for GitHub Enterprise); empty means api.github.com"`
+	Channel     string `json:"channel" doc:"stable: releases only; beta: pre-releases too"`
+	HasToken    bool   `json:"has_token" doc:"An access token is stored (required for a private repository)"`
+	CheckHours  int    `json:"check_hours" doc:"How often to check for updates, in hours; 0 means never"`
+	AutoApply   bool   `json:"auto_apply" doc:"Install an update as soon as it is found, without confirmation"`
 }
 
 // UpdateSettingsRequest changes them. Omitted fields keep their value.
 type UpdateSettingsRequest struct {
-	Repo       string `json:"repo,omitempty" maxLength:"140" doc:"owner/name; \"-\" отключает проверку обновлений"`
-	API        string `json:"api,omitempty" maxLength:"200" doc:"Адрес API репозитория; \"-\" возвращает api.github.com"`
+	Repo       string `json:"repo,omitempty" maxLength:"140" doc:"owner/name; \"-\" turns update checks off"`
+	API        string `json:"api,omitempty" maxLength:"200" doc:"Repository API URL; \"-\" restores api.github.com"`
 	Channel    string `json:"channel,omitempty" enum:"stable,beta"`
-	Token      string `json:"token,omitempty" maxLength:"512" doc:"Токен доступа к репозиторию; хранится зашифрованным"`
-	ClearToken bool   `json:"clear_token,omitempty" doc:"Удалить сохранённый токен"`
+	Token      string `json:"token,omitempty" maxLength:"512" doc:"Repository access token; stored encrypted"`
+	ClearToken bool   `json:"clear_token,omitempty" doc:"Remove the stored token"`
 	CheckHours *int   `json:"check_hours,omitempty" minimum:"0" maximum:"720"`
 	AutoApply  *bool  `json:"auto_apply,omitempty"`
 }
@@ -686,7 +686,7 @@ type UpdateSettingsRequest struct {
 // UpdateAttempt is the outcome of the last installation, read back from disk
 // after the panel restarted itself.
 type UpdateAttempt struct {
-	Status   string     `json:"status" doc:"installing, done, failed или rolled-back"`
+	Status   string     `json:"status" doc:"installing, done, failed or rolled-back"`
 	From     string     `json:"from,omitempty"`
 	To       string     `json:"to,omitempty"`
 	Started  *time.Time `json:"started,omitempty"`
@@ -702,8 +702,8 @@ type UpdateStatus struct {
 	Tag         string         `json:"tag,omitempty"`
 	Notes       string         `json:"notes,omitempty"`
 	PublishedAt *time.Time     `json:"published_at,omitempty"`
-	Available   bool           `json:"available" doc:"Latest новее текущей версии"`
-	KeyPinned   bool           `json:"key_pinned" doc:"Настроен ключ, которым подписаны релизы"`
+	Available   bool           `json:"available" doc:"Latest is newer than the current version"`
+	KeyPinned   bool           `json:"key_pinned" doc:"A release signing key is configured"`
 	Settings    UpdateSettings `json:"settings"`
 	CheckedAt   *time.Time     `json:"checked_at,omitempty"`
 	LastError   string         `json:"last_error,omitempty"`
@@ -712,7 +712,7 @@ type UpdateStatus struct {
 
 // UpdateApplyRequest installs a version; empty means the latest one.
 type UpdateApplyRequest struct {
-	Version string `json:"version,omitempty" maxLength:"64" doc:"Версия или тег; по умолчанию последняя в канале"`
+	Version string `json:"version,omitempty" maxLength:"64" doc:"Version or tag; the latest in the channel by default"`
 }
 
 // PHPExtension is one module of a branch: it exists (a package installed it)
@@ -720,7 +720,7 @@ type UpdateApplyRequest struct {
 type PHPExtension struct {
 	Name     string `json:"name"`
 	Enabled  bool   `json:"enabled"`
-	Critical bool   `json:"critical,omitempty" doc:"Без него типовой сайт перестанет работать"`
+	Critical bool   `json:"critical,omitempty" doc:"A typical site stops working without it"`
 	// Installed is false for an extension the branch's repository offers but
 	// nobody installed yet; switching it on installs Package first.
 	Installed bool   `json:"installed"`
@@ -777,42 +777,42 @@ type MailPort struct {
 
 // MailSettingsRequest changes the server-wide mail settings.
 type MailSettingsRequest struct {
-	Hostname  string    `json:"hostname,omitempty" doc:"Имя почтового сервера (MX, HELO, имя в сертификате)"`
+	Hostname  string    `json:"hostname,omitempty" doc:"Mail server hostname (MX, HELO, certificate name)"`
 	MaxSizeMB int       `json:"max_size_mb,omitempty" minimum:"1" maximum:"512"`
 	POP3      *bool     `json:"pop3,omitempty"`
 	DKIM      *bool     `json:"dkim,omitempty"`
-	Port25    *bool     `json:"port25,omitempty" doc:"Принимать почту на 25 порту"`
-	RBL       *[]string `json:"rbl,omitempty" maxItems:"8" doc:"Чёрные списки для входящих, например zen.spamhaus.org"`
+	Port25    *bool     `json:"port25,omitempty" doc:"Accept mail on port 25"`
+	RBL       *[]string `json:"rbl,omitempty" maxItems:"8" doc:"Blocklists for incoming mail, e.g. zen.spamhaus.org"`
 	// WebmailPort публикует вебпочту на порту почтового хоста; 0 выключает.
 	WebmailPort *int `json:"webmail_port,omitempty" minimum:"0" maximum:"65535"`
 }
 
 // MailInstallRequest installs the mail stack.
 type MailInstallRequest struct {
-	Hostname string `json:"hostname,omitempty" doc:"Имя почтового сервера; по умолчанию FQDN хоста"`
+	Hostname string `json:"hostname,omitempty" doc:"Mail server hostname; the host's FQDN by default"`
 	POP3     *bool  `json:"pop3,omitempty"`
 }
 
 // MailDomainRequest adds a mail domain.
 type MailDomainRequest struct {
-	Name    string `json:"name" doc:"Домен, например example.com"`
-	User    string `json:"user,omitempty" doc:"Владелец (администратору обязателен)"`
-	DKIM    *bool  `json:"dkim,omitempty" doc:"Сгенерировать ключ DKIM (по умолчанию да)"`
-	Lenient bool   `json:"lenient,omitempty" doc:"Домен-приёмник: принимать письма и от криво настроенных отправителей"`
+	Name    string `json:"name" doc:"Domain, e.g. example.com"`
+	User    string `json:"user,omitempty" doc:"Owner (required for administrators)"`
+	DKIM    *bool  `json:"dkim,omitempty" doc:"Generate a DKIM key (default: yes)"`
+	Lenient bool   `json:"lenient,omitempty" doc:"Lenient domain: accept mail even from misconfigured senders"`
 }
 
 // MailDomainUpdateRequest patches a mail domain.
 type MailDomainUpdateRequest struct {
 	Active  *bool `json:"active,omitempty"`
-	Lenient *bool `json:"lenient,omitempty" doc:"Принимать почту домена без проверок HELO и домена отправителя (домен-приёмник)"`
+	Lenient *bool `json:"lenient,omitempty" doc:"Accept the domain's mail without HELO and sender domain checks (lenient domain)"`
 }
 
 // MailboxRequest creates a mailbox.
 type MailboxRequest struct {
 	Address  string `json:"address" doc:"user@example.com"`
-	Password string `json:"password,omitempty" minLength:"8" maxLength:"1024" doc:"Пустой — сгенерируется"`
+	Password string `json:"password,omitempty" minLength:"8" maxLength:"1024" doc:"Generated when empty"`
 	Name     string `json:"name,omitempty" maxLength:"128"`
-	QuotaMB  int    `json:"quota_mb,omitempty" minimum:"0" maximum:"1048576" doc:"0 — без ограничения"`
+	QuotaMB  int    `json:"quota_mb,omitempty" minimum:"0" maximum:"1048576" doc:"0 means no limit"`
 }
 
 // MailboxUpdateRequest patches a mailbox.
@@ -833,7 +833,7 @@ type MailboxResponse struct {
 
 // MailAliasRequest creates or changes an alias.
 type MailAliasRequest struct {
-	Address      string   `json:"address" doc:"info@example.com или @example.com (catch-all)"`
+	Address      string   `json:"address" doc:"info@example.com or @example.com (catch-all)"`
 	Destinations []string `json:"destinations" minItems:"1" maxItems:"32"`
 }
 
@@ -859,8 +859,8 @@ type MailDNSRecord struct {
 
 // WebmailRequest installs Roundcube as a site of the panel.
 type WebmailRequest struct {
-	Domain     string `json:"domain" doc:"Имя сайта вебпочты, например webmail.example.com"`
-	User       string `json:"user,omitempty" doc:"Владелец сайта (администратору обязателен)"`
+	Domain     string `json:"domain" doc:"Domain of the webmail site, e.g. webmail.example.com"`
+	User       string `json:"user,omitempty" doc:"Site owner (required for administrators)"`
 	PHPVersion string `json:"php_version,omitempty"`
 	// Port публикует вебпочту ещё и на порту почтового хоста — тогда для неё
 	// не нужны ни своя запись в DNS, ни свой сертификат.
@@ -871,19 +871,19 @@ type WebmailRequest struct {
 // of an account. Files and database dumps travel separately as streams — this
 // is the part that tells the receiving panel what to build.
 type MigrationBundle struct {
-	Panel     string    `json:"panel" doc:"Версия панели-источника"`
+	Panel     string    `json:"panel" doc:"Version of the source panel"`
 	Hostname  string    `json:"hostname"`
-	Family    string    `json:"family" doc:"Семейство ОС источника: debian | rhel"`
+	Family    string    `json:"family" doc:"OS family of the source: debian | rhel"`
 	Scope     string    `json:"scope" doc:"user:<login>"`
 	Generated time.Time `json:"generated"`
 
 	User         *store.User             `json:"user"`
 	Sites        []*store.Site           `json:"sites"`
-	SiteNginx    map[string]string       `json:"site_nginx,omitempty" doc:"Свои директивы nginx на сайт"`
+	SiteNginx    map[string]string       `json:"site_nginx,omitempty" doc:"Custom nginx directives per site"`
 	Databases    []*store.Database       `json:"databases"`
 	Cron         []*store.CronJob        `json:"cron"`
 	Apps         []*store.App            `json:"apps"`
-	Valkey       []*store.ValkeyInstance `json:"valkey,omitempty" doc:"Экземпляры Valkey аккаунта: только настройки, данные кеша и сессий не переносятся"`
+	Valkey       []*store.ValkeyInstance `json:"valkey,omitempty" doc:"The account's Valkey instances: settings only; cache and session data are not moved"`
 	MailDomains  []*store.MailDomain     `json:"mail_domains"`
 	Mailboxes    []*store.Mailbox        `json:"mailboxes"`
 	MailAliases  []*store.MailAlias      `json:"mail_aliases"`
@@ -895,17 +895,17 @@ type MigrationBundle struct {
 	Secrets *MigrationSecrets `json:"secrets,omitempty"`
 
 	Sizes MigrationSizes `json:"sizes"`
-	Notes []string       `json:"notes,omitempty" doc:"Что не переносится и почему"`
+	Notes []string       `json:"notes,omitempty" doc:"What is not moved and why"`
 }
 
 // MigrationSecrets carries hashes, never plaintext: панель и сама не знает
 // паролей своих пользователей.
 type MigrationSecrets struct {
-	PanelPassword string            `json:"panel_password,omitempty" doc:"argon2id-хеш пароля панели"`
-	UnixShadow    string            `json:"unix_shadow,omitempty" doc:"Хеш unix-пароля из shadow"`
-	Mailboxes     map[string]string `json:"mailboxes,omitempty" doc:"Адрес → хеш {BLF-CRYPT}"`
-	DKIM          map[string]string `json:"dkim,omitempty" doc:"Домен → приватный ключ PEM"`
-	DBUsers       map[string]string `json:"db_users,omitempty" doc:"'user'@'host' → строка аутентификации MySQL"`
+	PanelPassword string            `json:"panel_password,omitempty" doc:"argon2id hash of the panel password"`
+	UnixShadow    string            `json:"unix_shadow,omitempty" doc:"Unix password hash from shadow"`
+	Mailboxes     map[string]string `json:"mailboxes,omitempty" doc:"Address → {BLF-CRYPT} hash"`
+	DKIM          map[string]string `json:"dkim,omitempty" doc:"Domain → PEM private key"`
+	DBUsers       map[string]string `json:"db_users,omitempty" doc:"'user'@'host' → MySQL authentication string"`
 }
 
 // MigrationCert is a certificate with its files, so HTTPS не рвётся в момент
@@ -933,7 +933,7 @@ type MigrationSizes struct {
 // MigrationGrantRequest opens a source panel for one migration.
 type MigrationGrantRequest struct {
 	Scope string `json:"scope" doc:"user:<login>"`
-	Hours int    `json:"hours,omitempty" minimum:"1" maximum:"168" doc:"Срок жизни токена, по умолчанию 24"`
+	Hours int    `json:"hours,omitempty" minimum:"1" maximum:"168" doc:"Token lifetime in hours, 24 by default"`
 }
 
 // MigrationGrantResponse is shown once: the token is stored hashed.
@@ -941,36 +941,36 @@ type MigrationGrantResponse struct {
 	Token     string    `json:"token"`
 	Scope     string    `json:"scope"`
 	ExpiresAt time.Time `json:"expires_at"`
-	Command   string    `json:"command" doc:"Готовая команда для целевой панели"`
+	Command   string    `json:"command" doc:"Ready-to-run command for the target panel"`
 }
 
 // MigrationSourceRequest points the target panel at a source: another
 // MonoPanel over its API, or a foreign panel read over ssh.
 type MigrationSourceRequest struct {
 	// Panel names the adapter: monopanel (default), fastpanel, bitrixvm.
-	Panel  string `json:"panel,omitempty" enum:"monopanel,fastpanel,bitrixvm" doc:"Откуда переносим: monopanel (по умолчанию) | fastpanel | bitrixvm"`
-	Source string `json:"source" doc:"MonoPanel: https://исходная-панель:8443; чужие панели: root@host[:port]"`
-	Token  string `json:"token,omitempty" doc:"Токен, выданный источником (MonoPanel)"`
-	Scope  string `json:"scope,omitempty" doc:"user:<login>; у BitrixVM по умолчанию user:bitrix"`
-	As     string `json:"as,omitempty" pattern:"^[a-z_][a-z0-9_-]{0,31}$" doc:"Принять под другим логином, если этот занят"`
+	Panel  string `json:"panel,omitempty" enum:"monopanel,fastpanel,bitrixvm" doc:"Where to migrate from: monopanel (default) | fastpanel | bitrixvm"`
+	Source string `json:"source" doc:"MonoPanel: https://source-panel:8443; foreign panels: root@host[:port]"`
+	Token  string `json:"token,omitempty" doc:"Token issued by the source (MonoPanel)"`
+	Scope  string `json:"scope,omitempty" doc:"user:<login>; user:bitrix by default for BitrixVM"`
+	As     string `json:"as,omitempty" pattern:"^[a-z_][a-z0-9_-]{0,31}$" doc:"Use a different login here if this one is taken"`
 	// Insecure принимает самоподписанный сертификат источника: у переезжающей
 	// панели он часто ещё не выпущен.
 	Insecure bool `json:"insecure,omitempty"`
 	// Доступ по ssh для чужих панелей: пароль root и/или приватный ключ PEM.
 	// В задачу они попадают зашифрованными и стираются вместе с ней.
-	Password string `json:"password,omitempty" doc:"Пароль ssh (чужие панели)"`
-	Key      string `json:"key,omitempty" doc:"Приватный ключ ssh в PEM (чужие панели)"`
+	Password string `json:"password,omitempty" doc:"SSH password (foreign panels)"`
+	Key      string `json:"key,omitempty" doc:"SSH private key in PEM (foreign panels)"`
 	// Domain даёт имя основному сайту BitrixVM: в его nginx стоит server_name _.
-	Domain string `json:"domain,omitempty" doc:"BitrixVM: домен основного сайта, если в nginx его нет"`
+	Domain string `json:"domain,omitempty" doc:"BitrixVM: domain of the main site if its nginx config has none"`
 }
 
 // MigrationPlan is the dry-run: что приедет и что этому мешает.
 type MigrationPlan struct {
 	Bundle    *MigrationBundle `json:"bundle"`
-	Login     string           `json:"login" doc:"Под каким логином аккаунт появится здесь"`
+	Login     string           `json:"login" doc:"The login the account gets here"`
 	Conflicts []MigrationIssue `json:"conflicts"`
 	Warnings  []MigrationIssue `json:"warnings"`
-	OK        bool             `json:"ok" doc:"Можно запускать перенос"`
+	OK        bool             `json:"ok" doc:"The migration can start"`
 }
 
 // MigrationIssue is one thing that blocks or complicates the move.
@@ -1002,7 +1002,7 @@ type CMSInstallRequest struct {
 	AdminPassword string `json:"admin_password,omitempty" minLength:"12" maxLength:"20" doc:"Generated and shown once when empty"`
 	AdminEmail    string `json:"admin_email,omitempty" maxLength:"254" doc:"The owner's e-mail, else admin@<domain>"`
 	Edition       string `json:"edition,omitempty" enum:"start,standard,small_business,business" doc:"Bitrix: the trial edition to download (start when empty)"`
-	Solution      string `json:"solution,omitempty" maxLength:"120" doc:"Bitrix: clean (the marketplace «Чистая установка», default), demo (the demo site bundled with the edition) or a marketplace solution id"`
+	Solution      string `json:"solution,omitempty" maxLength:"120" doc:"Bitrix: clean (the marketplace's clean install, default), demo (the demo site bundled with the edition) or a marketplace solution id"`
 	Force         bool   `json:"force,omitempty" doc:"Install into a docroot that is not empty: its files are removed first. The database is emptied only when it is the one the panel made for this site's same CMS; otherwise the CMS gets a new database and no other is touched"`
 }
 

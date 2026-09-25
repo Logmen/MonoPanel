@@ -47,7 +47,7 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 		return err
 	}
 	if s.profile.Family() != osprofile.FamilyDebian {
-		return errors.New("почтовый сервер пока реализован для Debian/Ubuntu")
+		return errors.New("the mail server is only implemented for Debian/Ubuntu so far")
 	}
 	c := s.loadMailConfig(ctx)
 	if p.Hostname != "" {
@@ -61,12 +61,12 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 		c.Hostname = info.Hostname
 	}
 	if !strings.Contains(c.Hostname, ".") {
-		return fmt.Errorf("имя почтового сервера должно быть полным: %q не подойдёт для HELO и сертификата", c.Hostname)
+		return fmt.Errorf("mail server hostname must be fully qualified: %q cannot be used for HELO and the certificate", c.Hostname)
 	}
 	if p.POP3 != nil {
 		c.POP3 = *p.POP3
 	}
-	jc.Logf("почтовый сервер: %s", c.Hostname)
+	jc.Logf("mail server: %s", c.Hostname)
 
 	// Порты проверяются до установки: пакет postfix стартует сам, и если 25-й
 	// уже занят чужим демоном, установка упала бы на его postinst.
@@ -79,16 +79,16 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 	// приёмник mail-tester). Свой postfix узнаётся по баннеру с именем хоста.
 	if open, banner := s.probe(25, true); open && !strings.Contains(banner, c.Hostname) {
 		c.Port25 = false
-		jc.Logf("порт 25 занят другим сервисом (%s) — приём почты снаружи выключен; освободите порт и включите его в настройках", defaultBanner(firstLine(banner)))
+		jc.Logf("port 25 is taken by another service (%s), so accepting mail from outside is off; free the port and enable it in the settings", defaultBanner(firstLine(banner)))
 	}
 	if fresh {
-		jc.Progress(5, "заготовка конфигурации postfix")
+		jc.Progress(5, "stub postfix configuration")
 		if err := s.stubPostfix(ctx, c); err != nil {
 			return err
 		}
 	}
 
-	jc.Progress(10, "установка пакетов")
+	jc.Progress(10, "installing packages")
 	if err := s.ensurePackages(ctx, jc, mailPackages...); err != nil {
 		return err
 	}
@@ -99,10 +99,10 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 	c.PostfixVersion, c.DovecotVersion = q.Installed["postfix"], q.Installed["dovecot-core"]
 	jc.Logf("postfix %s, dovecot %s, opendkim %s", c.PostfixVersion, c.DovecotVersion, q.Installed["opendkim"])
 	if m := dovecotVersionRe.FindStringSubmatch(c.DovecotVersion); m != nil && (m[1] > "2" || (m[1] == "2" && m[2] >= "4")) {
-		return fmt.Errorf("dovecot %s.%s: панель пишет конфигурацию в синтаксисе 2.3, для 2.4 он изменился — обновление шаблонов ещё впереди", m[1], m[2])
+		return fmt.Errorf("dovecot %s.%s: the panel writes the configuration in 2.3 syntax, which changed in 2.4; updated templates are still to come", m[1], m[2])
 	}
 
-	jc.Progress(35, "системный пользователь vmail")
+	jc.Progress(35, "vmail system user")
 	if _, err := s.agent.EnsureGroup(ctx, &agent.EnsureGroupRequest{Name: vmailUser, System: true}); err != nil {
 		return err
 	}
@@ -118,24 +118,24 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 	}}); err != nil {
 		return err
 	}
-	jc.Logf("почта хранится в %s (%s, uid %d)", mailBase, vmailUser, vm.UID)
+	jc.Logf("mail is stored in %s (%s, uid %d)", mailBase, vmailUser, vm.UID)
 
 	// smtpd обращается к сокету opendkim, а тот открыт для группы opendkim.
 	if c.DKIM {
 		if _, err := s.agent.EnsureUnixUser(ctx, &agent.EnsureUnixUserRequest{Login: "postfix", System: true, Groups: []string{"opendkim"}}); err != nil {
-			jc.Logf("предупреждение: не удалось добавить postfix в группу opendkim: %v", err)
+			jc.Logf("warning: could not add postfix to the opendkim group: %v", err)
 		}
 	}
 	s.agent.Tool(ctx, &agent.ToolRequest{Name: "newaliases", TimeoutSeconds: 30}) //nolint:errcheck // /etc/aliases пересобирается на всякий случай
 
-	jc.Progress(55, "сертификат")
+	jc.Progress(55, "certificate")
 	c.Installed = true
 	if err := s.saveMailConfig(ctx, c); err != nil {
 		return err
 	}
 	s.orderMailCertificate(ctx, jc, c)
 
-	jc.Progress(70, "конфигурация postfix и dovecot")
+	jc.Progress(70, "postfix and dovecot configuration")
 	// Установка перезагружает сервисы даже когда файлы не изменились: пакеты
 	// только что поставлены и демоны стартовали с чужой конфигурацией.
 	if err := s.applyMailConfig(ctx, jc.Logf, true); err != nil {
@@ -154,16 +154,16 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 		}
 		jc.Logf("%s: %s (%s)", unit, st.Status.ActiveState, st.Status.SubState)
 		if st.Status.ActiveState != "active" {
-			return fmt.Errorf("%s после установки в состоянии %s", unit, st.Status.ActiveState)
+			return fmt.Errorf("%s is in the %s state after installation", unit, st.Status.ActiveState)
 		}
 	}
 
-	jc.Progress(90, "порты в firewall")
+	jc.Progress(90, "firewall ports")
 	if enabled, err := s.db.GetSetting(ctx, settingFirewall); err == nil && enabled == "yes" {
 		if _, err := s.applyFirewall(ctx); err != nil {
-			jc.Logf("предупреждение: firewall не перезагрузился: %v", err)
+			jc.Logf("warning: firewall reload failed: %v", err)
 		} else {
-			jc.Logf("firewall: открыты порты %s", mailPortList(c))
+			jc.Logf("firewall: opened ports %s", mailPortList(c))
 		}
 	}
 	tcp := []string{}
@@ -178,13 +178,13 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 			open = append(open, fmt.Sprintf("%d", mp.Port))
 		}
 	}
-	jc.Logf("слушают порты: %s", strings.Join(open, ", "))
+	jc.Logf("listening ports: %s", strings.Join(open, ", "))
 	// systemd отвечает «active» и когда мастер postfix не поднялся: у него
 	// юнит-обёртка. Верить можно только тому, что порт действительно открыт.
 	if missing := missingMailPorts(c, probes); len(missing) > 0 {
-		return fmt.Errorf("не поднялись порты %s — смотрите journalctl -u postfix -u dovecot", strings.Join(missing, ", "))
+		return fmt.Errorf("ports %s did not come up; see journalctl -u postfix -u dovecot", strings.Join(missing, ", "))
 	}
-	jc.Progress(100, "почтовый сервер готов")
+	jc.Progress(100, "mail server is ready")
 	return nil
 }
 
@@ -228,7 +228,7 @@ func firstLine(s string) string {
 
 func defaultBanner(s string) string {
 	if s == "" {
-		return "баннер не получен"
+		return "no banner received"
 	}
 	return s
 }
@@ -271,8 +271,8 @@ func mailPortsFor(c mailConfig) []int {
 // package cannot fail on a port another daemon already holds. The real
 // configuration is written a few steps later.
 func (s *Server) stubPostfix(ctx context.Context, c mailConfig) error {
-	main := fmt.Sprintf("# MonoPanel: временная конфигурация на время установки пакета.\ncompatibility_level = 3.6\nmyhostname = %s\ninet_interfaces = loopback-only\nmydestination = localhost\n", c.Hostname)
-	master := "# MonoPanel: без inet-сервисов, чтобы установка не заняла порты.\npickup unix n - n 60 1 pickup\ncleanup unix n - n - 0 cleanup\nqmgr unix n - n 300 1 qmgr\nrewrite unix - - n - - trivial-rewrite\nbounce unix - - n - 0 bounce\ndefer unix - - n - 0 bounce\ntrace unix - - n - 0 bounce\nverify unix - - n - 1 verify\nflush unix n - n 1000? 0 flush\nsmtp unix - - n - - smtp\nrelay unix - - n - - smtp\nshowq unix n - n - - showq\nerror unix - - n - - error\nretry unix - - n - - error\ndiscard unix - - n - - discard\nlocal unix - n n - - local\nvirtual unix - n n - - virtual\nlmtp unix - - n - - lmtp\nanvil unix - - n - 1 anvil\nscache unix - - n - 1 scache\npostlog unix-dgram n - n - 1 postlogd\n"
+	main := fmt.Sprintf("# MonoPanel: temporary configuration while the package is being installed.\ncompatibility_level = 3.6\nmyhostname = %s\ninet_interfaces = loopback-only\nmydestination = localhost\n", c.Hostname)
+	master := "# MonoPanel: no inet services, so that the installation takes no ports.\npickup unix n - n 60 1 pickup\ncleanup unix n - n - 0 cleanup\nqmgr unix n - n 300 1 qmgr\nrewrite unix - - n - - trivial-rewrite\nbounce unix - - n - 0 bounce\ndefer unix - - n - 0 bounce\ntrace unix - - n - 0 bounce\nverify unix - - n - 1 verify\nflush unix n - n 1000? 0 flush\nsmtp unix - - n - - smtp\nrelay unix - - n - - smtp\nshowq unix n - n - - showq\nerror unix - - n - - error\nretry unix - - n - - error\ndiscard unix - - n - - discard\nlocal unix - n n - - local\nvirtual unix - n n - - virtual\nlmtp unix - - n - - lmtp\nanvil unix - - n - 1 anvil\nscache unix - - n - 1 scache\npostlog unix-dgram n - n - 1 postlogd\n"
 	_, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: []agent.FileSpec{
 		{Path: postfixDir + "/main.cf", Content: main, Mode: 0o644},
 		{Path: postfixDir + "/master.cf", Content: master, Mode: 0o644},
@@ -285,7 +285,7 @@ func (s *Server) stubPostfix(ctx context.Context, c mailConfig) error {
 // self-signed pair.
 func (s *Server) orderMailCertificate(ctx context.Context, jc *jobs.Context, c mailConfig) {
 	if existing, err := s.db.GetCertificateByName(ctx, c.Hostname); err == nil && existing.Status == store.CertValid && existing.NotAfter != nil && time.Now().Before(*existing.NotAfter) {
-		jc.Logf("сертификат для %s уже выпущен, действует до %s", c.Hostname, existing.NotAfter.Format("2006-01-02"))
+		jc.Logf("certificate for %s is already issued, valid until %s", c.Hostname, existing.NotAfter.Format("2006-01-02"))
 		return
 	}
 	local := map[string]bool{}
@@ -300,7 +300,7 @@ func (s *Server) orderMailCertificate(ctx context.Context, jc *jobs.Context, c m
 		}
 	}
 	if err != nil || !points {
-		jc.Logf("сертификат: %s пока не указывает на этот сервер — заведите A-запись и выпустите сертификат (mp ssl issue %s)", c.Hostname, c.Hostname)
+		jc.Logf("certificate: %s does not point to this server yet; create an A record and issue a certificate (mp ssl issue %s)", c.Hostname, c.Hostname)
 		return
 	}
 	email, _ := s.db.GetSetting(ctx, settingACMEEmail)
@@ -309,14 +309,14 @@ func (s *Server) orderMailCertificate(ctx context.Context, jc *jobs.Context, c m
 		cert.ID = existing.ID
 	}
 	if err := s.db.UpsertCertificate(ctx, cert); err != nil {
-		jc.Logf("сертификат: %v", err)
+		jc.Logf("certificate: %v", err)
 		return
 	}
 	if _, err := s.jobs.Enqueue(ctx, "cert.issue", certIssuePayload{CertID: cert.ID}, jobs.WithLockKey("cert:"+cert.Name), jobs.WithRequestedBy(jc.RequestedBy)); err != nil {
-		jc.Logf("сертификат: %v", err)
+		jc.Logf("certificate: %v", err)
 		return
 	}
-	jc.Logf("сертификат для %s заказан; почтовые сервисы переключатся на него автоматически", c.Hostname)
+	jc.Logf("certificate ordered for %s; the mail services switch to it automatically", c.Hostname)
 }
 
 // jobMailApply re-renders the configuration and reloads the services even when

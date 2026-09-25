@@ -20,8 +20,11 @@
   let ask = $state<Ask | null>(null);
   let purge = $state(false);
   let presets = $state<any[]>([]);
-  // Имена пресетов приходят с сервера по-русски; два не латинских подменяем по id.
+  // Имена и описания пресетов приходят с сервера по-английски: известные
+  // подменяем по id словарём, незнакомые показываем как есть.
   const presetName = (p: any) => (p.id === '' ? t('sites.presetUniversal') : p.id === 'bitrix' ? t('sites.presetBitrix') : p.name);
+  const presetDescs: Record<string, MsgKey> = { '': 'sites.presetDescUniversal', wordpress: 'sites.presetDescWordpress', joomla: 'sites.presetDescJoomla', bitrix: 'sites.presetDescBitrix', opencart: 'sites.presetDescOpencart' };
+  const presetDesc = (p: any) => (p.id in presetDescs ? t(presetDescs[p.id]) : p.description);
   let form = $state({ domain: '', user: '', www: true, mode: 'fpm', php_version: '', ssl: 'auto', backend: '', preset: '' });
   const presetInfo = $derived(presets.find((p) => p.id === form.preset));
   const admin = $derived(auth.me?.role === 'admin');
@@ -96,7 +99,7 @@
     {/if}
     <div class="flex items-center gap-3 text-sm"><label><input type="checkbox" bind:checked={form.www} /> www</label><label><input type="checkbox" checked={form.ssl === 'auto'} onchange={(e) => (form.ssl = (e.target as HTMLInputElement).checked ? 'auto' : 'none')} /> SSL</label></div>
     <button class="btn btn-primary">{t('common.create')}</button>
-    {#if presetInfo?.description && form.mode !== 'proxy'}<p class="md:col-span-6 text-xs text-muted -mt-1">{presetInfo.name}: {presetInfo.description} {t('sites.presetHint')}</p>{/if}
+    {#if presetInfo?.description && form.mode !== 'proxy'}<p class="md:col-span-6 text-xs text-muted -mt-1">{presetName(presetInfo)}: {presetDesc(presetInfo)} {t('sites.presetHint')}</p>{/if}
   </form>
 {/if}
 {#if job}<div class="mb-4"><JobLog jobId={job} onfinish={() => load()} /></div>{/if}

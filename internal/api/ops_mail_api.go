@@ -51,7 +51,7 @@ type mailDomainPatchInput struct {
 }
 
 type mailboxesInput struct {
-	Domain string `query:"domain" doc:"Показать ящики одного домена"`
+	Domain string `query:"domain" doc:"Show the mailboxes of one domain"`
 }
 
 type mailboxesOutput struct {
@@ -74,7 +74,7 @@ type mailboxPatchInput struct {
 
 type mailboxDeleteInput struct {
 	Address string `path:"address" maxLength:"320"`
-	Purge   bool   `query:"purge" doc:"Удалить и письма на диске"`
+	Purge   bool   `query:"purge" doc:"Also delete the messages on disk"`
 }
 
 type aliasesOutput struct {
@@ -114,13 +114,13 @@ func (s *Server) ownerFor(ctx context.Context, login string) (*store.User, error
 	case p.UserID != 0:
 		owner, err = s.db.GetUserByID(ctx, p.UserID)
 	default:
-		return nil, huma.Error422UnprocessableEntity("укажите владельца (user)")
+		return nil, huma.Error422UnprocessableEntity("specify the owner (user)")
 	}
 	if err != nil {
-		return nil, huma.Error422UnprocessableEntity("аккаунт не найден")
+		return nil, huma.Error422UnprocessableEntity("account not found")
 	}
 	if owner.Role != store.RoleUser {
-		return nil, huma.Error422UnprocessableEntity("владельцем может быть только пользовательский аккаунт")
+		return nil, huma.Error422UnprocessableEntity("only a user account can be the owner")
 	}
 	return owner, nil
 }
@@ -162,7 +162,7 @@ func (s *Server) registerMail() {
 		c := s.loadMailConfig(ctx)
 		if in.Body.Hostname != "" {
 			if !strings.Contains(in.Body.Hostname, ".") {
-				return nil, huma.Error422UnprocessableEntity("имя почтового сервера должно быть полным, например mail.example.com")
+				return nil, huma.Error422UnprocessableEntity("mail server hostname must be fully qualified, e.g. mail.example.com")
 			}
 			c.Hostname = strings.ToLower(in.Body.Hostname)
 		}
@@ -181,7 +181,7 @@ func (s *Server) registerMail() {
 		if in.Body.WebmailPort != nil {
 			port := *in.Body.WebmailPort
 			if port != 0 && (port < 1024 || port == s.panelPort() || port == 80 || port == 443) {
-				return nil, huma.Error422UnprocessableEntity("для вебпочты возьмите свободный порт выше 1024, например 2096")
+				return nil, huma.Error422UnprocessableEntity("choose a free port above 1024 for the webmail, e.g. 2096")
 			}
 			c.WebmailPort = port
 		}
@@ -190,7 +190,7 @@ func (s *Server) registerMail() {
 			for _, r := range *in.Body.RBL {
 				if r = strings.TrimSpace(strings.ToLower(r)); r != "" {
 					if !mailDomainRe.MatchString(strings.TrimSuffix(r, ".")) {
-						return nil, huma.Error422UnprocessableEntity("чёрный список должен быть доменом, например zen.spamhaus.org")
+						return nil, huma.Error422UnprocessableEntity("a blocklist must be a domain, e.g. zen.spamhaus.org")
 					}
 					list = append(list, r)
 				}
@@ -233,11 +233,11 @@ func (s *Server) registerMail() {
 		p := principalFrom(ctx)
 		c := s.loadMailConfig(ctx)
 		if !c.Installed {
-			return nil, huma.Error422UnprocessableEntity("почтовый сервер не установлен")
+			return nil, huma.Error422UnprocessableEntity("mail server is not installed")
 		}
 		name := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(in.Body.Name), "."))
 		if !mailDomainRe.MatchString(name) {
-			return nil, huma.Error422UnprocessableEntity("домен должен быть вида example.com")
+			return nil, huma.Error422UnprocessableEntity("domain must look like example.com")
 		}
 		owner, err := s.ownerFor(ctx, in.Body.User)
 		if err != nil {
@@ -247,7 +247,7 @@ func (s *Server) registerMail() {
 		wantDKIM := c.DKIM && (in.Body.DKIM == nil || *in.Body.DKIM)
 		if wantDKIM {
 			if s.secrets == nil {
-				return nil, huma.Error422UnprocessableEntity("ключ шифрования недоступен, DKIM включить нельзя")
+				return nil, huma.Error422UnprocessableEntity("the encryption key is unavailable, so DKIM cannot be enabled")
 			}
 			priv, pub, err := newDKIMKey()
 			if err != nil {
@@ -261,7 +261,7 @@ func (s *Server) registerMail() {
 		}
 		if err := s.db.CreateMailDomain(ctx, d); err != nil {
 			if errors.Is(err, store.ErrExists) {
-				return nil, huma.Error409Conflict("домен уже добавлен")
+				return nil, huma.Error409Conflict("domain already added")
 			}
 			return nil, err
 		}
@@ -327,7 +327,7 @@ func (s *Server) registerMail() {
 			return nil, huma.Error404NotFound(err.Error())
 		}
 		if s.secrets == nil {
-			return nil, huma.Error422UnprocessableEntity("ключ шифрования недоступен")
+			return nil, huma.Error422UnprocessableEntity("the encryption key is unavailable")
 		}
 		priv, pub, err := newDKIMKey()
 		if err != nil {
@@ -392,7 +392,7 @@ func (s *Server) registerMail() {
 			return nil, huma.Error422UnprocessableEntity(err.Error())
 		}
 		if local == "@" {
-			return nil, huma.Error422UnprocessableEntity("@домен — это catch-all, он создаётся как алиас")
+			return nil, huma.Error422UnprocessableEntity("@domain is a catch-all; create it as an alias")
 		}
 		d, err := s.mailDomainFor(ctx, domain)
 		if err != nil {
@@ -414,7 +414,7 @@ func (s *Server) registerMail() {
 		b := &store.Mailbox{DomainID: d.ID, LocalPart: local, Address: local + "@" + domain, Name: in.Body.Name, PasswordHash: hash, QuotaMB: quota, Active: true}
 		if err := s.db.CreateMailbox(ctx, b); err != nil {
 			if errors.Is(err, store.ErrExists) {
-				return nil, huma.Error409Conflict("такой ящик уже есть")
+				return nil, huma.Error409Conflict("mailbox already exists")
 			}
 			return nil, err
 		}
@@ -425,8 +425,8 @@ func (s *Server) registerMail() {
 		c := s.loadMailConfig(ctx)
 		out := &mailboxOutput{Status: http.StatusCreated, Body: apitypes.MailboxResponse{
 			Mailbox: b,
-			IMAP:    fmt.Sprintf("%s:993 (SSL/TLS), логин %s", c.Hostname, b.Address),
-			SMTP:    fmt.Sprintf("%s:465 (SSL/TLS) или 587 (STARTTLS)", c.Hostname),
+			IMAP:    fmt.Sprintf("%s:993 (SSL/TLS), username %s", c.Hostname, b.Address),
+			SMTP:    fmt.Sprintf("%s:465 (SSL/TLS) or 587 (STARTTLS)", c.Hostname),
 		}}
 		if generated {
 			out.Body.Password = password
@@ -542,15 +542,15 @@ func (s *Server) registerMail() {
 				continue
 			}
 			if _, _, err := splitAddress(to); err != nil {
-				return nil, huma.Error422UnprocessableEntity("получатель " + to + ": " + err.Error())
+				return nil, huma.Error422UnprocessableEntity("recipient " + to + ": " + err.Error())
 			}
 			dests = append(dests, to)
 		}
 		if len(dests) == 0 {
-			return nil, huma.Error422UnprocessableEntity("нужен хотя бы один получатель")
+			return nil, huma.Error422UnprocessableEntity("at least one recipient is required")
 		}
 		if _, err := s.db.GetMailbox(ctx, source+"@"+domain); err == nil {
-			return nil, huma.Error409Conflict("такой ящик уже существует; алиас с тем же адресом перехватил бы его почту")
+			return nil, huma.Error409Conflict("this mailbox already exists; an alias with the same address would intercept its mail")
 		}
 		a := &store.MailAlias{DomainID: d.ID, Source: source, Destination: strings.Join(dests, ","), Active: true}
 		if existing, err := s.db.GetMailAlias(ctx, d.ID, source); err == nil {
@@ -587,7 +587,7 @@ func (s *Server) registerMail() {
 		}
 		a, err := s.db.GetMailAlias(ctx, d.ID, source)
 		if err != nil {
-			return nil, huma.Error404NotFound("алиас не найден")
+			return nil, huma.Error404NotFound("alias not found")
 		}
 		if err := s.db.DeleteMailAlias(ctx, a.ID); err != nil {
 			return nil, err
@@ -604,14 +604,14 @@ func (s *Server) registerMail() {
 	}, func(ctx context.Context, in *webmailInput) (*jobRefOutput, error) {
 		p := principalFrom(ctx)
 		if c := s.loadMailConfig(ctx); !c.Installed {
-			return nil, huma.Error422UnprocessableEntity("сначала установите почтовый сервер")
+			return nil, huma.Error422UnprocessableEntity("install the mail server first")
 		}
 		owner, err := s.ownerFor(ctx, in.Body.User)
 		if err != nil {
 			return nil, err
 		}
 		if in.Body.Port != 0 && (in.Body.Port < 1024 || in.Body.Port == s.panelPort() || in.Body.Port == 80 || in.Body.Port == 443) {
-			return nil, huma.Error422UnprocessableEntity("для вебпочты возьмите свободный порт выше 1024, например 2096")
+			return nil, huma.Error422UnprocessableEntity("choose a free port above 1024 for the webmail, e.g. 2096")
 		}
 		job, err := s.jobs.Enqueue(ctx, "mail.webmail", webmailPayload{Domain: strings.ToLower(in.Body.Domain), User: owner.Login, PHPVersion: in.Body.PHPVersion, Port: in.Body.Port}, jobs.WithLockKey("mail"), jobs.WithRequestedBy(p.Login))
 		if err != nil {
@@ -633,7 +633,7 @@ func (s *Server) mailboxFor(ctx context.Context, address string) (*store.Mailbox
 	}
 	b, err := s.db.GetMailbox(ctx, local+"@"+domain)
 	if errors.Is(err, store.ErrNotFound) {
-		return nil, errors.New("ящик не найден")
+		return nil, errors.New("mailbox not found")
 	}
 	return b, err
 }

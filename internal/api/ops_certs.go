@@ -324,9 +324,9 @@ func (s *Server) jobCertIssue(ctx context.Context, jc *jobs.Context) error {
 	s.reapplySitesForCert(context.WithoutCancel(ctx), jc.Logf, c)
 	if mc := s.loadMailConfig(ctx); mc.Installed && containsName(c.Names, mc.Hostname) {
 		if err := s.applyMailConfig(context.WithoutCancel(ctx), jc.Logf, true); err != nil {
-			jc.Logf("предупреждение: почтовые сервисы не подхватили сертификат: %v", err)
+			jc.Logf("warning: the mail services did not pick up the certificate: %v", err)
 		} else {
-			jc.Logf("postfix и dovecot переключены на этот сертификат")
+			jc.Logf("postfix and dovecot switched to this certificate")
 		}
 	}
 	if containsName(c.Names, s.cfg.Web.Hostname) {

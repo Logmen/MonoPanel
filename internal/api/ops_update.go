@@ -96,16 +96,16 @@ func (s *Server) saveUpdateConfig(ctx context.Context, c updateConfig) error {
 // updateClient builds a release client from the stored settings.
 func (s *Server) updateClient(c updateConfig) (*updater.Client, error) {
 	if c.repo() == "" {
-		return nil, huma.Error422UnprocessableEntity("укажите репозиторий с релизами: mp update settings --repo owner/name")
+		return nil, huma.Error422UnprocessableEntity("set a release repository: mp update settings --repo owner/name")
 	}
 	cl := &updater.Client{Repo: c.repo(), API: c.API}
 	if c.TokenEnc != "" {
 		if s.secrets == nil {
-			return nil, huma.Error500InternalServerError("ключ шифрования недоступен, токен репозитория прочитать нельзя")
+			return nil, huma.Error500InternalServerError("secret key unavailable; the repository token cannot be read")
 		}
 		tok, err := s.secrets.Decrypt(c.TokenEnc)
 		if err != nil {
-			return nil, huma.Error500InternalServerError("не удалось расшифровать токен репозитория")
+			return nil, huma.Error500InternalServerError("cannot decrypt the repository token")
 		}
 		cl.Token = tok
 	}
@@ -202,7 +202,7 @@ func (s *Server) registerUpdate() {
 		} else if r != "" {
 			r = strings.TrimSuffix(strings.TrimPrefix(r, "https://github.com/"), ".git")
 			if !updater.ValidRepo(r) {
-				return nil, huma.Error422UnprocessableEntity("репозиторий указывается как owner/name")
+				return nil, huma.Error422UnprocessableEntity("repository must be given as owner/name")
 			}
 			if r != c.repo() {
 				// A token belongs to the repository it was issued for and must
@@ -217,7 +217,7 @@ func (s *Server) registerUpdate() {
 		case a != "":
 			u, err := url.Parse(a)
 			if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
-				return nil, huma.Error422UnprocessableEntity("адрес API указывается как https://host/api/v3")
+				return nil, huma.Error422UnprocessableEntity("API URL must be given as https://host/api/v3")
 			}
 			c.API = strings.TrimSuffix(a, "/")
 		}
@@ -229,11 +229,11 @@ func (s *Server) registerUpdate() {
 			c.TokenEnc = ""
 		case in.Body.Token != "":
 			if s.secrets == nil {
-				return nil, huma.Error500InternalServerError("ключ шифрования недоступен, токен сохранить нельзя")
+				return nil, huma.Error500InternalServerError("secret key unavailable; the token cannot be saved")
 			}
 			enc, err := s.secrets.Encrypt(strings.TrimSpace(in.Body.Token))
 			if err != nil {
-				return nil, huma.Error500InternalServerError("не удалось зашифровать токен")
+				return nil, huma.Error500InternalServerError("cannot encrypt the token")
 			}
 			c.TokenEnc = enc
 		}
@@ -272,7 +272,7 @@ func (s *Server) registerUpdate() {
 		p := principalFrom(ctx)
 		c := s.loadUpdateConfig(ctx)
 		if c.repo() == "" {
-			return nil, huma.Error422UnprocessableEntity("укажите репозиторий с релизами")
+			return nil, huma.Error422UnprocessableEntity("set a release repository")
 		}
 		job, err := s.jobs.Enqueue(ctx, "panel.update", panelUpdatePayload{Version: in.Body.Version},
 			jobs.WithLockKey("panel:update"), jobs.WithRequestedBy(p.Login))
@@ -302,7 +302,7 @@ func (s *Server) jobPanelUpdate(ctx context.Context, jc *jobs.Context) error {
 		return err
 	}
 
-	jc.Progress(5, "поиск релиза")
+	jc.Progress(5, "looking for the release")
 	var rel *updater.Release
 	if p.Version != "" {
 		rel, err = cl.ByTag(ctx, p.Version)
@@ -317,44 +317,44 @@ func (s *Server) jobPanelUpdate(ctx context.Context, jc *jobs.Context) error {
 	// A restart that already happened means the job is a duplicate: the panel
 	// came back on the new version and the queue replayed the request.
 	if !updater.Newer(buildinfo.Version, rel.Version) && p.Version == "" {
-		jc.Logf("установлена версия %s, обновление не требуется", buildinfo.Version)
+		jc.Logf("version %s is installed; no update needed", buildinfo.Version)
 		return nil
 	}
-	jc.Logf("релиз %s от %s", rel.Tag, rel.PublishedAt.Local().Format("2006-01-02"))
+	jc.Logf("release %s, published %s", rel.Tag, rel.PublishedAt.Local().Format("2006-01-02"))
 
 	asset, err := updater.Select(rel, string(s.profile.Family()), runtime.GOARCH)
 	if err != nil {
 		return err
 	}
 
-	jc.Progress(20, "проверка подписи")
+	jc.Progress(20, "verifying the signature")
 	sums, sig, err := s.releaseSums(ctx, cl, rel)
 	if err != nil {
 		return err
 	}
 	want := updater.ParseSums(sums)[asset.Name]
 	if want == "" {
-		return fmt.Errorf("%s не указан в %s релиза", asset.Name, updater.SumsFile)
+		return fmt.Errorf("%s is not listed in the release's %s", asset.Name, updater.SumsFile)
 	}
 
-	jc.Progress(35, "загрузка "+asset.Name)
+	jc.Progress(35, "downloading "+asset.Name)
 	local := filepath.Join(s.cfg.DownloadsDir(), asset.Name)
 	prunePackages(s.cfg.DownloadsDir(), asset.Name)
 	sum, err := cl.SaveTo(ctx, asset, local)
 	if err != nil {
-		return fmt.Errorf("скачать %s: %w", asset.Name, err)
+		return fmt.Errorf("download %s: %w", asset.Name, err)
 	}
 	if !strings.EqualFold(sum, want) {
 		os.Remove(local)
-		return fmt.Errorf("контрольная сумма %s не совпала с релизом", asset.Name)
+		return fmt.Errorf("checksum of %s does not match the release", asset.Name)
 	}
 	if asset.Size > 0 {
-		jc.Logf("%s: %d КБ, sha256 %s…", asset.Name, asset.Size/1024, sum[:16])
+		jc.Logf("%s: %d KB, sha256 %s…", asset.Name, asset.Size/1024, sum[:16])
 	} else {
 		jc.Logf("%s: sha256 %s…", asset.Name, sum[:16])
 	}
 
-	jc.Progress(70, "установка")
+	jc.Progress(70, "installing")
 	res, err := s.agent.InstallPanel(ctx, &agent.InstallPanelRequest{
 		Package: local, SHA256: sum, Version: rel.Version, Sums: string(sums), Sig: string(sig),
 	})
@@ -362,10 +362,10 @@ func (s *Server) jobPanelUpdate(ctx context.Context, jc *jobs.Context) error {
 		return err
 	}
 	if !res.Signed {
-		jc.Logf("релиз принят без подписи: в config.yaml не задан update.public_key")
+		jc.Logf("release accepted without a signature: update.public_key is not set in config.yaml")
 	}
-	jc.Progress(100, "панель перезапускается")
-	jc.Logf("установка %s запущена в %s; панель перезапустится через несколько секунд", rel.Version, res.Unit)
+	jc.Progress(100, "the panel is restarting")
+	jc.Logf("install of %s started in %s; the panel will restart in a few seconds", rel.Version, res.Unit)
 	return nil
 }
 
@@ -393,7 +393,7 @@ func prunePackages(dir, keep string) {
 func (s *Server) releaseSums(ctx context.Context, cl *updater.Client, rel *updater.Release) (sums, sig []byte, err error) {
 	sa, ok := rel.Asset(updater.SumsFile)
 	if !ok {
-		return nil, nil, fmt.Errorf("в релизе %s нет %s", rel.Tag, updater.SumsFile)
+		return nil, nil, fmt.Errorf("release %s has no %s", rel.Tag, updater.SumsFile)
 	}
 	if sums, err = cl.Bytes(ctx, sa); err != nil {
 		return nil, nil, err
@@ -409,10 +409,10 @@ func (s *Server) releaseSums(ctx context.Context, cl *updater.Client, rel *updat
 		return sums, sig, nil
 	}
 	if len(sig) == 0 {
-		return nil, nil, fmt.Errorf("релиз %s не подписан, а на этом сервере задан ключ обновлений", rel.Tag)
+		return nil, nil, fmt.Errorf("release %s is not signed, but this server has an update key set", rel.Tag)
 	}
 	if err := updater.VerifySums(key, sums, sig); err != nil {
-		return nil, nil, fmt.Errorf("подпись релиза: %w", err)
+		return nil, nil, fmt.Errorf("release signature: %w", err)
 	}
 	return sums, sig, nil
 }

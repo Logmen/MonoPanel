@@ -448,7 +448,7 @@ func TestMigrationFromBitrixVM(t *testing.T) {
 	if b.Panel != "BitrixVM 9.0.8" || b.Family != "rhel" || len(b.Sites) != 2 || b.Sites[0].Domain != "main.example.com" || b.Sites[1].Domain != "shop.example.com" {
 		t.Fatalf("сайты: %s %s %+v", b.Panel, b.Family, b.Sites)
 	}
-	if !hasNote(b.Notes, "bx_ext_other.conf пропущен: root /var/www/other вне /home/bitrix") {
+	if !hasNote(b.Notes, "bx_ext_other.conf skipped: root /var/www/other is outside /home/bitrix") {
 		t.Errorf("пропущенный сайт не упомянут: %q", b.Notes)
 	}
 	if b.Sites[0].Preset != "bitrix" || b.Sites[0].PHPVersion != "8.4" {
@@ -460,7 +460,7 @@ func TestMigrationFromBitrixVM(t *testing.T) {
 	if len(b.Cron) != 3 || b.Cron[0].Command != "php -f "+target.s.cfg.WWWRoot+"/bitrix/data/www/main.example.com/bitrix/modules/main/tools/cron_events.php" || b.Cron[2].Command != "php "+target.s.cfg.WWWRoot+"/bitrix/data/www/main.example.com/export/export-csv.php" {
 		t.Errorf("cron не переписан: %+v", b.Cron)
 	}
-	for _, want := range []string{"из crontab root перенесено заданий: 1", "@daily /opt/webdir/bin/bx-backup", "perl /var/tmp/LLVPnNU» похоже на чужую закладку", "кеш Битрикса — CPHPCacheMemcacheCluster", "/home/bitrix/www/export/export-csv.php — перепишется"} {
+	for _, want := range []string{"cron jobs moved from root's crontab: 1", "@daily /opt/webdir/bin/bx-backup", `perl /var/tmp/LLVPnNU" looks like a planted backdoor`, "the Bitrix cache is CPHPCacheMemcacheCluster", "/home/bitrix/www/export/export-csv.php — it will be rewritten"} {
 		if !hasNote(b.Notes, want) {
 			t.Errorf("в разборе нет %q: %q", want, b.Notes)
 		}
@@ -541,7 +541,7 @@ func TestMigrationFromBitrixVM(t *testing.T) {
 		t.Errorf("скрипт с /home/bitrix не переписан: %q", got)
 	}
 	cron, _ := target.db.ListCronJobs(target.ctx, u.ID)
-	if len(cron) != 3 || !strings.Contains(cron[0].Command, "/bitrix/data/www/main.example.com/") || cron[1].Enabled || !cron[2].Enabled || cron[2].Comment != "из crontab root; экспорт" {
+	if len(cron) != 3 || !strings.Contains(cron[0].Command, "/bitrix/data/www/main.example.com/") || cron[1].Enabled || !cron[2].Enabled || cron[2].Comment != "from root's crontab; экспорт" {
 		t.Errorf("cron: %+v %+v %+v", cron[0], cron[1], cron[2])
 	}
 }
@@ -679,7 +679,7 @@ func TestMigrationFromFastpanel(t *testing.T) {
 	}
 	var manualNote bool
 	for _, n := range b.Notes {
-		if strings.Contains(n, "blog.example.com: конфиги nginx правились вручную") {
+		if strings.Contains(n, "blog.example.com: its nginx configs were edited by hand") {
 			manualNote = true
 		}
 	}
@@ -697,7 +697,7 @@ func TestMigrationFromFastpanel(t *testing.T) {
 	}
 	var mailNote bool
 	for _, n := range b.Notes {
-		if strings.Contains(n, "ящиков у аккаунта: 2") {
+		if strings.Contains(n, "account mailboxes: 2") {
 			mailNote = true
 		}
 	}

@@ -48,11 +48,11 @@ type cmsDef struct {
 }
 
 var cmsCatalog = []cmsDef{
-	{ID: "wordpress", Name: "WordPress", Preset: presetWordPress, Source: "wordpress.org (latest), wp-cli с wp-cli.org", AdminPath: "wp-admin/", Notes: "ЧПУ-ссылки включены пресетом; письмо администратору не отправляется."},
-	{ID: "joomla", Name: "Joomla", Preset: presetJoomla, Source: "github.com/joomla/joomla-cms, последний релиз", AdminPath: "administrator/", Notes: "Каталог installation/ удаляется после установки."},
-	{ID: "opencart", Name: "OpenCart", Preset: presetOpenCart, Source: "github.com/opencart/opencart, последний релиз", AdminPath: "admin/", Notes: "Каталог install/ удаляется после установки; storage/ закрыт пресетом."},
-	{ID: "bitrix", Name: "1С-Битрикс", Preset: presetBitrix, Source: "1c-bitrix.ru, пробная редакция: start, standard, small_business или business", AdminPath: "bitrix/admin/", Editions: []string{"start", "standard", "small_business", "business"},
-		Notes: "Пробная версия с регистрацией на 1c-bitrix.ru от имени администратора сайта. По умолчанию ставится «Чистая установка» из Маркетплейса (без демо-сайта); demo — демо-сайт из дистрибутива; можно указать id решения из Маркетплейса. Лицензионный ключ вводится потом в настройках Битрикса, редакция должна совпадать с ключом."},
+	{ID: "wordpress", Name: "WordPress", Preset: presetWordPress, Source: "wordpress.org (latest), wp-cli from wp-cli.org", AdminPath: "wp-admin/", Notes: "Pretty permalinks are switched on by the preset; no e-mail is sent to the administrator."},
+	{ID: "joomla", Name: "Joomla", Preset: presetJoomla, Source: "github.com/joomla/joomla-cms, latest release", AdminPath: "administrator/", Notes: "The installation/ directory is removed after the install."},
+	{ID: "opencart", Name: "OpenCart", Preset: presetOpenCart, Source: "github.com/opencart/opencart, latest release", AdminPath: "admin/", Notes: "The install/ directory is removed after the install; the preset closes storage/."},
+	{ID: "bitrix", Name: "1C-Bitrix", Preset: presetBitrix, Source: "1c-bitrix.ru, trial edition: start, standard, small_business or business", AdminPath: "bitrix/admin/", Editions: []string{"start", "standard", "small_business", "business"},
+		Notes: "A trial version, registered on 1c-bitrix.ru in the site administrator's name. By default the Marketplace clean install goes in (no demo site); demo is the demo site from the distribution; a Marketplace solution id can be given instead. The licence key is entered later in the Bitrix settings, and the edition must match the key."},
 }
 
 func cmsByID(id string) *cmsDef {

@@ -376,7 +376,7 @@ func (s *Server) registerFirewall() {
 			rules, _ := s.db.ListFirewallRules(ctx)
 			if action == "ban" {
 				if caller := requestInfo(ctx).IP; sourceHas(ip, caller) {
-					return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("нельзя забанить собственный адрес: %s включает %s, с которого вы сейчас работаете", ip, caller))
+					return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("you cannot ban your own address: %s includes %s, which you are connected from", ip, caller))
 				}
 				exists := false
 				for _, r := range rules {

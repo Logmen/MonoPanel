@@ -70,15 +70,15 @@ func (s *Server) openMigrateSource(ctx context.Context, req apitypes.MigrationSo
 	case "bitrixvm":
 		return s.openBitrixVM(ctx, req)
 	}
-	return nil, huma.Error422UnprocessableEntity("неизвестная панель-источник " + req.Panel + ": monopanel, fastpanel или bitrixvm")
+	return nil, huma.Error422UnprocessableEntity("unknown source panel " + req.Panel + ": monopanel, fastpanel or bitrixvm")
 }
 
 func newMigrateHTTP(req apitypes.MigrationSourceRequest) (*migrateHTTP, error) {
 	if strings.TrimSpace(req.Token) == "" {
-		return nil, huma.Error422UnprocessableEntity("нужен токен источника: mp migrate grant на старой панели")
+		return nil, huma.Error422UnprocessableEntity("a token from the source is required: mp migrate grant on the old panel")
 	}
 	if !strings.HasPrefix(req.Scope, "user:") {
-		return nil, huma.Error422UnprocessableEntity("область переноса: user:<логин>")
+		return nil, huma.Error422UnprocessableEntity("the scope must be user:<login>")
 	}
 	raw := strings.TrimSpace(req.Source)
 	if !strings.Contains(raw, "://") {
@@ -86,7 +86,7 @@ func newMigrateHTTP(req apitypes.MigrationSourceRequest) (*migrateHTTP, error) {
 	}
 	u, err := url.Parse(strings.TrimSuffix(raw, "/"))
 	if err != nil || u.Host == "" {
-		return nil, huma.Error422UnprocessableEntity("адрес источника должен быть вида https://panel.example.com:8443")
+		return nil, huma.Error422UnprocessableEntity("the source address must look like https://panel.example.com:8443")
 	}
 	tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: req.Insecure, MinVersion: tls.VersionTLS12}} //nolint:gosec // явный флаг: у переезжающей панели сертификата может ещё не быть
 	return &migrateHTTP{base: u.String() + "/api/v1", token: strings.TrimSpace(req.Token), http: &http.Client{Transport: tr}}, nil
@@ -104,16 +104,16 @@ func (m *migrateHTTP) get(ctx context.Context, path string, query url.Values) (*
 	req.Header.Set("Authorization", "Bearer "+m.token)
 	res, err := m.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("источник недоступен: %w", err)
+		return nil, fmt.Errorf("the source is unreachable: %w", err)
 	}
 	if res.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
 		res.Body.Close()
 		msg := strings.TrimSpace(string(body))
 		if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden {
-			return nil, fmt.Errorf("источник не принял токен (%s): выдайте новый — mp migrate grant", res.Status)
+			return nil, fmt.Errorf("the source rejected the token (%s): issue a new one with mp migrate grant", res.Status)
 		}
-		return nil, fmt.Errorf("источник ответил %s: %s", res.Status, msg)
+		return nil, fmt.Errorf("the source answered %s: %s", res.Status, msg)
 	}
 	return res, nil
 }
@@ -132,10 +132,10 @@ func (m *migrateHTTP) bundle(ctx context.Context, scope string, withSecrets bool
 	defer res.Body.Close()
 	var b apitypes.MigrationBundle
 	if err := json.NewDecoder(res.Body).Decode(&b); err != nil {
-		return nil, fmt.Errorf("ответ источника не разобрать: %w", err)
+		return nil, fmt.Errorf("cannot parse the source's answer: %w", err)
 	}
 	if b.User == nil {
-		return nil, errors.New("источник не отдал аккаунт")
+		return nil, errors.New("the source did not return the account")
 	}
 	if b.Panel == "" || (b.Panel[0] >= '0' && b.Panel[0] <= '9') {
 		b.Panel = strings.TrimSpace("MonoPanel " + b.Panel)
@@ -194,57 +194,57 @@ func (s *Server) migrationPlan(ctx context.Context, req apitypes.MigrationSource
 	// the user wrote by hand (nginx directives, cron commands) may still
 	// point at the old paths.
 	if b.Family != "" && b.Family != string(s.profile.Family()) {
-		warn("user", login, "источник на "+b.Family+", здесь "+string(s.profile.Family())+": конфигурация будет перегенерирована под этот сервер", "проверьте свои директивы nginx и команды cron — в них могут быть пути старой ОС")
+		warn("user", login, "the source is on "+b.Family+", this server on "+string(s.profile.Family())+": the configuration will be regenerated for this server", "check your own nginx directives and cron commands: they may contain paths of the old OS")
 	}
 	if _, err := s.db.GetUserByLogin(ctx, login); err == nil {
-		block("user", login, "аккаунт с таким логином уже есть", "примите под другим логином: --as <логин>")
+		block("user", login, "an account with this login already exists", "take it under another login: --as <login>")
 	}
 	for _, site := range b.Sites {
 		for _, name := range append([]string{site.Domain}, site.Aliases...) {
 			if existing, err := s.db.GetSiteByDomain(ctx, name); err == nil {
-				block("site", name, "сайт уже обслуживается панелью (владелец "+existing.Login+")", "удалите его здесь или исключите из переноса")
+				block("site", name, "the site is already served by this panel (owner "+existing.Login+")", "delete it here or exclude it from the migration")
 			}
 		}
 		if site.PHPVersion != "" {
 			if err := s.checkPHPInstalled(ctx, site.PHPVersion); err != nil {
-				block("php", site.PHPVersion, "ветка PHP "+site.PHPVersion+" не установлена, сайту "+site.Domain+" не на чем работать", "mp php install "+site.PHPVersion)
+				block("php", site.PHPVersion, "PHP "+site.PHPVersion+" is not installed, so site "+site.Domain+" has nothing to run on", "mp php install "+site.PHPVersion)
 			}
 		}
 	}
 	if len(b.Databases) > 0 {
 		if _, err := s.dbInstance(ctx); err != nil {
-			block("database", "", "приезжают базы, а сервер БД здесь не установлен", "mp stack install percona")
+			block("database", "", "databases are coming but no database server is installed here", "mp stack install percona")
 		}
 		if v := legacyPHP(b.Sites); v != "" {
-			warn("database", "", "PHP "+v+": аккаунты баз будут с mysql_native_password — caching_sha2_password этой ветке не по силам", "")
+			warn("database", "", "PHP "+v+": database accounts will use mysql_native_password, as this branch cannot handle caching_sha2_password", "")
 		}
 		for _, d := range b.Databases {
 			if _, err := s.db.GetDatabaseByName(ctx, d.Name); err == nil {
-				block("database", d.Name, "база с таким именем уже есть", "переименуйте или удалите её здесь")
+				block("database", d.Name, "a database with this name already exists", "rename or delete it here")
 			}
 		}
 	}
 	if len(b.MailDomains) > 0 {
 		c := s.loadMailConfig(ctx)
 		if !c.Installed {
-			block("mail", "", "приезжают почтовые домены, а почтовый сервер здесь не установлен", "mp mail install")
+			block("mail", "", "mail domains are coming but no mail server is installed here", "mp mail install")
 		}
 		for _, d := range b.MailDomains {
 			if _, err := s.db.GetMailDomain(ctx, d.Name); err == nil {
-				block("mail", d.Name, "почтовый домен уже обслуживается здесь", "удалите его здесь или исключите из переноса")
+				block("mail", d.Name, "the mail domain is already served here", "delete it here or exclude it from the migration")
 			}
 		}
 	}
 	for _, cert := range b.Certificates {
 		if !cert.Files && cert.Cert == "" {
-			warn("cert", cert.Name, "сертификат приедет без файлов: до выпуска нового сайт будет работать по HTTP", "после переключения DNS: mp ssl issue "+cert.Name)
+			warn("cert", cert.Name, "the certificate will arrive without its files: the site will work over HTTP until a new one is issued", "after the DNS switch: mp ssl issue "+cert.Name)
 		}
 	}
 	if len(b.Apps) > 0 {
-		warn("user", login, fmt.Sprintf("app-сервисов: %d — они приедут выключенными", len(b.Apps)), "проверьте окружение и порты, затем mp app start")
+		warn("user", login, fmt.Sprintf("app services: %d; they will arrive switched off", len(b.Apps)), "check their environment and ports, then mp app start")
 	}
 	if len(b.Valkey) > 0 && s.valkeyLayout(ctx) == nil {
-		warn("user", login, fmt.Sprintf("экземпляров Valkey: %d, а здесь Valkey не установлен — они не создадутся", len(b.Valkey)), "mp stack install valkey до переноса")
+		warn("user", login, fmt.Sprintf("Valkey instances: %d, but Valkey is not installed here, so they will not be created", len(b.Valkey)), "mp stack install valkey before the migration")
 	}
 
 	// Место: файлы и почта распакуются целиком, дампы ещё и развернутся.
@@ -258,9 +258,9 @@ func (s *Server) migrationPlan(ctx context.Context, req apitypes.MigrationSource
 				continue
 			}
 			if int64(d.FreeBytes) < need {
-				block("disk", d.Mount, fmt.Sprintf("нужно около %d МБ, свободно %d МБ", need>>20, d.FreeBytes>>20), "освободите место или перенесите по частям")
+				block("disk", d.Mount, fmt.Sprintf("about %d MB needed, %d MB free", need>>20, d.FreeBytes>>20), "free up space or migrate in parts")
 			} else if int64(d.FreeBytes) < need*2 {
-				warn("disk", d.Mount, fmt.Sprintf("после переноса останется меньше половины диска (нужно %d МБ, свободно %d МБ)", need>>20, d.FreeBytes>>20), "")
+				warn("disk", d.Mount, fmt.Sprintf("less than half of the free space will be left after the migration (%d MB needed, %d MB free)", need>>20, d.FreeBytes>>20), "")
 			}
 		}
 	}
@@ -284,7 +284,7 @@ func (s *Server) sealMigratePayload(req apitypes.MigrationSourceRequest, login s
 		return p, nil
 	}
 	if s.secrets == nil {
-		return p, huma.Error422UnprocessableEntity("хранилище секретов панели не открыто: пароль ssh сохранить некуда")
+		return p, huma.Error422UnprocessableEntity("the panel's secret store is not open: there is nowhere to keep the ssh password")
 	}
 	var err error
 	if req.Password != "" {
@@ -347,7 +347,7 @@ func (s *Server) registerMigrateImport() {
 		}
 		plan := s.migrationPlan(ctx, in.Body, b)
 		if !plan.OK {
-			return nil, huma.Error409Conflict("перенос не запущен: " + plan.Conflicts[0].Text)
+			return nil, huma.Error409Conflict("migration not started: " + plan.Conflicts[0].Text)
 		}
 		payload, err := s.sealMigratePayload(in.Body, plan.Login)
 		if err != nil {
@@ -379,38 +379,38 @@ func (s *Server) jobMigrateRun(ctx context.Context, jc *jobs.Context) error {
 		return err
 	}
 	defer src.close()
-	jc.Progress(2, "состояние источника")
+	jc.Progress(2, "source state")
 	b, err := src.bundle(ctx, p.Scope, true)
 	if err != nil {
 		return err
 	}
 	if b.Secrets == nil {
-		return errors.New("источник не отдал секреты: токен выдан только на просмотр")
+		return errors.New("the source returned no secrets: the token is view-only")
 	}
 	if p.Scope == "" {
 		p.Scope = b.Scope
 	}
-	jc.Logf("источник: %s (%s), аккаунт %s → %s", b.Hostname, b.Panel, b.User.Login, p.Login)
+	jc.Logf("source: %s (%s), account %s → %s", b.Hostname, b.Panel, b.User.Login, p.Login)
 	for _, n := range b.Notes {
 		jc.Logf("· %s", n)
 	}
 
-	jc.Progress(5, "аккаунт")
+	jc.Progress(5, "account")
 	u := &store.User{
 		Login: p.Login, Role: store.RoleUser, Email: b.User.Email, Shell: b.User.Shell,
 		QuotaMB: b.User.QuotaMB, PasswordHash: b.Secrets.PanelPassword, Status: store.UserPending,
 	}
 	if err := s.db.CreateUser(ctx, u); err != nil {
-		return fmt.Errorf("аккаунт %s: %w", p.Login, err)
+		return fmt.Errorf("account %s: %w", p.Login, err)
 	}
 	if err := s.provisionUser(ctx, userProvisionPayload{UserID: u.ID, Login: u.Login, Shell: u.Shell}, jc.Logf, func(int, string) {}); err != nil {
 		return err
 	}
 	if b.Secrets.UnixShadow != "" {
 		if err := s.agent.SetUnixPasswordHash(ctx, u.Login, b.Secrets.UnixShadow); err != nil {
-			jc.Logf("предупреждение: пароль SFTP не перенесён: %v", err)
+			jc.Logf("warning: the SFTP password was not moved: %v", err)
 		} else {
-			jc.Logf("пароли панели и SFTP перенесены хешами — пользователь входит теми же")
+			jc.Logf("panel and SFTP passwords moved as hashes: the user signs in with the same ones")
 		}
 	}
 	u, err = s.db.GetUserByLogin(ctx, p.Login)
@@ -418,12 +418,12 @@ func (s *Server) jobMigrateRun(ctx context.Context, jc *jobs.Context) error {
 		return err
 	}
 
-	jc.Progress(15, "файлы")
+	jc.Progress(15, "files")
 	if err := s.migrateFiles(ctx, jc, src, p, u, "home", "", ""); err != nil {
 		return err
 	}
 
-	jc.Progress(45, "базы данных")
+	jc.Progress(45, "databases")
 	legacy := legacyPHP(b.Sites) != ""
 	for _, d := range b.Databases {
 		if err := s.migrateDatabase(ctx, jc, src, p, u, d, b.Secrets.DBUsers, legacy); err != nil {
@@ -431,37 +431,37 @@ func (s *Server) jobMigrateRun(ctx context.Context, jc *jobs.Context) error {
 		}
 	}
 
-	jc.Progress(65, "сайты")
+	jc.Progress(65, "sites")
 	for _, site := range b.Sites {
 		if err := s.migrateSite(ctx, jc, u, site, b.SiteNginx[site.Domain]); err != nil {
 			return err
 		}
 	}
 
-	jc.Progress(80, "сертификаты")
+	jc.Progress(80, "certificates")
 	for _, cert := range b.Certificates {
 		if cert.Cert == "" || cert.Key == "" {
 			continue
 		}
 		if err := s.importCertificate(ctx, u, cert); err != nil {
-			jc.Logf("сертификат %s: %v", cert.Name, err)
+			jc.Logf("certificate %s: %v", cert.Name, err)
 			continue
 		}
-		jc.Logf("сертификат %s перенесён (до %s)", cert.Name, cert.NotAfter.Format("2006-01-02"))
+		jc.Logf("certificate %s moved (valid until %s)", cert.Name, cert.NotAfter.Format("2006-01-02"))
 	}
 	if err := src.settle(ctx, jc, u); err != nil {
-		jc.Logf("предупреждение: %v", err)
+		jc.Logf("warning: %v", err)
 	}
 	for _, site := range b.Sites {
 		job, err := s.jobs.Enqueue(ctx, "site.apply", sitePayload{SiteID: siteID(ctx, s, site.Domain)}, jobs.WithLockKey("site:"+site.Domain), jobs.WithRequestedBy(jc.RequestedBy))
 		if err != nil {
-			jc.Logf("сайт %s: %v", site.Domain, err)
+			jc.Logf("site %s: %v", site.Domain, err)
 			continue
 		}
-		jc.Logf("сайт %s: конфигурация применяется задачей #%d", site.Domain, job.ID)
+		jc.Logf("site %s: job #%d applies the configuration", site.Domain, job.ID)
 	}
 
-	jc.Progress(88, "cron и app-сервисы")
+	jc.Progress(88, "cron and app services")
 	for _, j := range b.Cron {
 		if err := s.db.CreateCronJob(ctx, &store.CronJob{UserID: u.ID, Schedule: j.Schedule, Command: j.Command, Comment: j.Comment, Enabled: j.Enabled}); err != nil {
 			jc.Logf("cron: %v", err)
@@ -471,7 +471,7 @@ func (s *Server) jobMigrateRun(ctx context.Context, jc *jobs.Context) error {
 		if err := s.applyCrontab(ctx, u); err != nil {
 			jc.Logf("crontab: %v", err)
 		} else {
-			jc.Logf("заданий cron перенесено: %d", len(b.Cron))
+			jc.Logf("cron jobs moved: %d", len(b.Cron))
 		}
 	}
 	for _, a := range b.Apps {
@@ -482,11 +482,11 @@ func (s *Server) jobMigrateRun(ctx context.Context, jc *jobs.Context) error {
 		}
 	}
 	if len(b.Apps) > 0 {
-		jc.Logf("app-сервисов перенесено: %d — они выключены, проверьте окружение и запустите", len(b.Apps))
+		jc.Logf("app services moved: %d, switched off; check their environment and start them", len(b.Apps))
 	}
 	if len(b.Valkey) > 0 {
 		if l := s.valkeyLayout(ctx); l == nil {
-			jc.Logf("экземпляры Valkey не созданы: здесь он не установлен (mp stack install valkey, затем mp valkey add)")
+			jc.Logf("Valkey instances not created: Valkey is not installed here (mp stack install valkey, then mp valkey add)")
 		} else {
 			for _, src := range b.Valkey {
 				v := &store.ValkeyInstance{UserID: u.ID, Login: u.Login, Purpose: src.Purpose, MemoryMB: src.MemoryMB}
@@ -498,20 +498,20 @@ func (s *Server) jobMigrateRun(ctx context.Context, jc *jobs.Context) error {
 					jc.Logf("valkey %s: %v", v.Name(), err)
 				}
 			}
-			jc.Logf("экземпляров Valkey создано: %d — кеш и сессии начинаются с нуля", len(b.Valkey))
+			jc.Logf("Valkey instances created: %d; the cache and sessions start from scratch", len(b.Valkey))
 		}
 	}
 
-	jc.Progress(92, "почта")
+	jc.Progress(92, "mail")
 	if err := s.migrateMail(ctx, jc, src, p, u, b); err != nil {
-		jc.Logf("почта: %v", err)
+		jc.Logf("mail: %v", err)
 	}
 
 	if err := s.db.SetUserStatus(ctx, u.ID, store.UserActive); err != nil {
 		return err
 	}
-	jc.Progress(100, fmt.Sprintf("аккаунт %s перенесён: сайтов %d, баз %d, ящиков %d", p.Login, len(b.Sites), len(b.Databases), len(b.Mailboxes)))
-	jc.Logf("DNS ещё смотрит на источник. Проверьте сайты по IP этого сервера и переключайте записи.")
+	jc.Progress(100, fmt.Sprintf("account %s moved: %d sites, %d databases, %d mailboxes", p.Login, len(b.Sites), len(b.Databases), len(b.Mailboxes)))
+	jc.Logf("DNS still points at the source. Check the sites at this server's IP, then switch the records.")
 	return nil
 }
 
@@ -552,7 +552,7 @@ func (s *Server) migrateFiles(ctx context.Context, jc *jobs.Context, src migrate
 	if err != nil {
 		return err
 	}
-	jc.Logf("%s: файлы распакованы в %s, владелец исправлен у %d объектов", part, dest, ch.Changed)
+	jc.Logf("%s: files unpacked into %s, ownership fixed on %d objects", part, dest, ch.Changed)
 	s.relabel(ctx, jc, dest, true)
 	return nil
 }
@@ -576,7 +576,7 @@ func (s *Server) migrateDatabase(ctx context.Context, jc *jobs.Context, src migr
 	for _, acc := range d.Users {
 		create := auths[acc.Name+"@"+acc.Host]
 		if create == "" {
-			jc.Logf("аккаунт %s@%s приедет без пароля: источник не отдал строку аутентификации", acc.Name, acc.Host)
+			jc.Logf("account %s@%s arrives without a password: the source gave no authentication string", acc.Name, acc.Host)
 			continue
 		}
 		// SHOW CREATE USER отдаёт готовый CREATE USER с хешем пароля; от
@@ -588,16 +588,16 @@ func (s *Server) migrateDatabase(ctx context.Context, jc *jobs.Context, src migr
 		if plugin == "mysql_native_password" {
 			if inst, err := s.dbInstance(ctx); err == nil {
 				if err := s.ensureNativePassword(ctx, inst); err != nil {
-					jc.Logf("mysql_native_password для %s@%s: %v", acc.Name, acc.Host, err)
+					jc.Logf("mysql_native_password for %s@%s: %v", acc.Name, acc.Host, err)
 				}
 			}
 		} else if legacy {
-			jc.Logf("предупреждение: аккаунт %s@%s приезжает хешем %s — PHP ниже 7.4 с ним не соединится; после переноса: ALTER USER '%s'@'%s' IDENTIFIED WITH mysql_native_password BY '<пароль из настроек сайта>'", acc.Name, acc.Host, plugin, acc.Name, acc.Host)
+			jc.Logf("warning: account %s@%s arrives with a %s hash, which PHP below 7.4 cannot connect with; after the migration: ALTER USER '%s'@'%s' IDENTIFIED WITH mysql_native_password BY '<the password from the site settings>'", acc.Name, acc.Host, plugin, acc.Name, acc.Host)
 		}
 		sql := strings.TrimSuffix(strings.TrimSpace(create), ";") + ";\n"
 		sql += fmt.Sprintf("GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'%s';\nFLUSH PRIVILEGES;\n", d.Name, acc.Name, acc.Host)
 		if _, err := s.mysqlExec(ctx, sql); err != nil {
-			return fmt.Errorf("аккаунт %s@%s: %w", acc.Name, acc.Host, err)
+			return fmt.Errorf("account %s@%s: %w", acc.Name, acc.Host, err)
 		}
 		s.db.CreateDBUser(ctx, &store.DBUser{UserID: u.ID, DatabaseID: &row.ID, Name: acc.Name, Host: acc.Host, AuthPlugin: plugin}) //nolint:errcheck // строка учётки — украшение списка баз
 	}
@@ -613,7 +613,7 @@ func (s *Server) migrateDatabase(ctx context.Context, jc *jobs.Context, src migr
 	if out.ExitCode != 0 {
 		return fmt.Errorf("mysql: %s", strings.TrimSpace(out.Output))
 	}
-	jc.Logf("база %s перенесена вместе с аккаунтами (пароли прежние)", d.Name)
+	jc.Logf("database %s moved together with its accounts (passwords unchanged)", d.Name)
 	return nil
 }
 
@@ -679,24 +679,24 @@ func (s *Server) migrateSite(ctx context.Context, jc *jobs.Context, u *store.Use
 	if site.SessionStore == store.SessionStoreValkey {
 		if s.valkeyLayout(ctx) == nil {
 			site.SessionStore = ""
-			jc.Logf("%s: PHP-сессии в файлах — здесь нет Valkey (mp stack install valkey, mp valkey add sessions, mp site set --sessions valkey)", site.Domain)
+			jc.Logf("%s: PHP sessions switch to files: there is no Valkey here (mp stack install valkey, mp valkey add sessions, mp site set --sessions valkey)", site.Domain)
 		} else if on, _ := s.redisEnabled(ctx, site.PHPVersion); !on {
 			site.SessionStore = ""
-			jc.Logf("%s: PHP-сессии в файлах — у PHP %s здесь выключено расширение redis (mp php ext enable %s redis, затем mp site set %s --sessions valkey)", site.Domain, site.PHPVersion, site.PHPVersion, site.Domain)
+			jc.Logf("%s: PHP sessions switch to files: PHP %s has the redis extension disabled here (mp php ext enable %s redis, then mp site set %s --sessions valkey)", site.Domain, site.PHPVersion, site.PHPVersion, site.Domain)
 		}
 	}
 	if site.Preset == presetBitrix && site.FPMMaxChildren <= 0 {
 		site.FPMMaxChildren = s.bitrixPoolSize(ctx)
 	}
 	if err := s.db.CreateSite(ctx, &site); err != nil {
-		return fmt.Errorf("сайт %s: %w", src.Domain, err)
+		return fmt.Errorf("site %s: %w", src.Domain, err)
 	}
 	if strings.TrimSpace(custom) != "" {
 		if err := s.writeSiteCustomNginx(ctx, &site, custom); err != nil {
-			jc.Logf("сайт %s: свои директивы nginx не перенесены: %v", site.Domain, err)
+			jc.Logf("site %s: custom nginx directives not moved: %v", site.Domain, err)
 		}
 	}
-	jc.Logf("сайт %s (PHP %s, режим %s)", site.Domain, site.PHPVersion, site.Mode)
+	jc.Logf("site %s (PHP %s, mode %s)", site.Domain, site.PHPVersion, site.Mode)
 	return nil
 }
 
@@ -707,7 +707,7 @@ func (s *Server) migrateMail(ctx context.Context, jc *jobs.Context, src migrateS
 		return nil
 	}
 	if c := s.loadMailConfig(ctx); !c.Installed {
-		return errors.New("почтовый сервер здесь не установлен, домены пропущены")
+		return errors.New("no mail server is installed here; the domains were skipped")
 	}
 	byID := map[int64]string{}
 	for _, d := range b.MailDomains {
@@ -720,11 +720,11 @@ func (s *Server) migrateMail(ctx context.Context, jc *jobs.Context, src migrateS
 			row.DKIMKeyEnc = enc
 		}
 		if err := s.db.CreateMailDomain(ctx, row); err != nil {
-			return fmt.Errorf("домен %s: %w", d.Name, err)
+			return fmt.Errorf("domain %s: %w", d.Name, err)
 		}
 		byID[d.ID] = d.Name
 		if err := s.migrateFiles(ctx, jc, src, p, u, "mail", d.Name, ""); err != nil {
-			jc.Logf("почта %s: письма не перенесены: %v", d.Name, err)
+			jc.Logf("mail %s: messages not moved: %v", d.Name, err)
 		}
 	}
 	for _, box := range b.Mailboxes {
@@ -738,13 +738,13 @@ func (s *Server) migrateMail(ctx context.Context, jc *jobs.Context, src migrateS
 		}
 		hash := b.Secrets.Mailboxes[box.Address]
 		if hash == "" {
-			jc.Logf("ящик %s приедет без пароля", box.Address)
+			jc.Logf("mailbox %s arrives without a password", box.Address)
 		}
 		if err := s.db.CreateMailbox(ctx, &store.Mailbox{
 			DomainID: row.ID, LocalPart: box.LocalPart, Address: box.Address, Name: box.Name,
 			PasswordHash: hash, QuotaMB: box.QuotaMB, Active: box.Active,
 		}); err != nil {
-			jc.Logf("ящик %s: %v", box.Address, err)
+			jc.Logf("mailbox %s: %v", box.Address, err)
 		}
 	}
 	for _, a := range b.MailAliases {
@@ -757,13 +757,13 @@ func (s *Server) migrateMail(ctx context.Context, jc *jobs.Context, src migrateS
 			continue
 		}
 		if err := s.db.CreateMailAlias(ctx, &store.MailAlias{DomainID: row.ID, Source: a.Source, Destination: a.Destination, Active: a.Active}); err != nil {
-			jc.Logf("алиас %s: %v", a.Address, err)
+			jc.Logf("alias %s: %v", a.Address, err)
 		}
 	}
 	if err := s.applyMail(ctx, jc.Logf); err != nil {
 		return err
 	}
-	jc.Logf("почта перенесена: доменов %d, ящиков %d, алиасов %d (пароли прежние)", len(b.MailDomains), len(b.Mailboxes), len(b.MailAliases))
+	jc.Logf("mail moved: %d domains, %d mailboxes, %d aliases (passwords unchanged)", len(b.MailDomains), len(b.Mailboxes), len(b.MailAliases))
 	return nil
 }
 
@@ -774,14 +774,14 @@ func (s *Server) importCertificate(ctx context.Context, u *store.User, mc apityp
 	certPEM := []byte(strings.TrimSpace(mc.Cert) + "\n")
 	keyPEM := []byte(strings.TrimSpace(mc.Key) + "\n")
 	if _, err := tls.X509KeyPair(certPEM, keyPEM); err != nil {
-		return fmt.Errorf("сертификат и ключ не сходятся: %w", err)
+		return fmt.Errorf("the certificate and key do not match: %w", err)
 	}
 	info, err := acme.ParseCertificatePEM(certPEM)
 	if err != nil {
 		return err
 	}
 	if time.Now().After(info.NotAfter) {
-		return fmt.Errorf("истёк %s", info.NotAfter.Format("2006-01-02"))
+		return fmt.Errorf("expired on %s", info.NotAfter.Format("2006-01-02"))
 	}
 	leaf, chain := splitChain(certPEM)
 	fullchain := append(append([]byte{}, leaf...), chain...)

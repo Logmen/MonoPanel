@@ -23,11 +23,11 @@ const (
 )
 
 var sitePresets = []apitypes.SitePreset{
-	{ID: "", Name: "Универсальный PHP", Description: "index.php front controller, статика через nginx; подходит для Laravel, Symfony и любого PHP-приложения."},
-	{ID: presetWordPress, Name: "WordPress", Description: "ЧПУ-ссылки, /wp-admin, xmlrpc.php закрыт, запрет PHP в wp-content/uploads, лимиты загрузки 128M."},
-	{ID: presetJoomla, Name: "Joomla", Description: "SEF-ссылки, /api для Joomla 4+, закрыты configuration.php, cache/logs/tmp, запрет PHP в images/media."},
-	{ID: presetBitrix, Name: "1С-Битрикс", Description: "urlrewrite.php, правила BitrixVM для bitrix/ и upload/, short_open_tag, max_input_vars 20000, лимиты 256M, memory 512M, opcache на 100000 файлов, без open_basedir."},
-	{ID: presetOpenCart, Name: "OpenCart", Description: "SEO URL через _route_, sitemap/googlebase, закрыты system/ и storage/, .tpl/.twig/.log не отдаются."},
+	{ID: "", Name: "Universal PHP", Description: "index.php front controller, static files served by nginx; suits Laravel, Symfony and any PHP application."},
+	{ID: presetWordPress, Name: "WordPress", Description: "Pretty permalinks, /wp-admin, xmlrpc.php closed, no PHP in wp-content/uploads, 128M upload limits."},
+	{ID: presetJoomla, Name: "Joomla", Description: "SEF URLs, /api for Joomla 4+, configuration.php and cache/logs/tmp closed, no PHP in images/media."},
+	{ID: presetBitrix, Name: "1C-Bitrix", Description: "urlrewrite.php, BitrixVM rules for bitrix/ and upload/, short_open_tag, max_input_vars 20000, 256M limits, 512M memory, opcache for 100000 files, no open_basedir."},
+	{ID: presetOpenCart, Name: "OpenCart", Description: "SEO URLs via _route_, sitemap/googlebase, system/ and storage/ closed, .tpl/.twig/.log not served."},
 }
 
 // presetIni is applied under the panel defaults and above nothing else: site

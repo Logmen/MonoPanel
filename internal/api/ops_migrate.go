@@ -36,8 +36,8 @@ type migrateScopeInput struct {
 type migrateFilesInput struct {
 	Scope  string `query:"scope" required:"true"`
 	Part   string `query:"part" enum:"home,mail" default:"home"`
-	Domain string `query:"domain,omitempty" doc:"Почтовый домен для part=mail"`
-	Since  string `query:"since,omitempty" doc:"RFC3339: только файлы новее (досинхронизация)"`
+	Domain string `query:"domain,omitempty" doc:"Mail domain for part=mail"`
+	Since  string `query:"since,omitempty" doc:"RFC3339: only files newer than this (resync)"`
 }
 
 type migrateDumpInput struct {
@@ -62,7 +62,7 @@ type migrateGrantOutput struct {
 func (s *Server) migrateLogin(ctx context.Context, scope string) (*store.User, error) {
 	kind, login, ok := strings.Cut(strings.TrimSpace(scope), ":")
 	if !ok || kind != "user" || login == "" {
-		return nil, huma.Error422UnprocessableEntity("пока переносится только область вида user:<логин>")
+		return nil, huma.Error422UnprocessableEntity("only a user:<login> scope can be migrated so far")
 	}
 	p := principalFrom(ctx)
 	if len(p.Scopes) > 0 {
@@ -73,14 +73,14 @@ func (s *Server) migrateLogin(ctx context.Context, scope string) (*store.User, e
 			}
 		}
 		if !allowed {
-			return nil, huma.Error403Forbidden("токен выдан для другой области")
+			return nil, huma.Error403Forbidden("the token was issued for another scope")
 		}
 	} else if p.Role != store.RoleAdmin {
-		return nil, huma.Error403Forbidden("нужна роль администратора")
+		return nil, huma.Error403Forbidden("administrator role required")
 	}
 	u, err := s.db.GetUserByLogin(ctx, login)
 	if errors.Is(err, store.ErrNotFound) {
-		return nil, huma.Error404NotFound("аккаунт " + login + " не найден")
+		return nil, huma.Error404NotFound("account " + login + " not found")
 	}
 	return u, err
 }
@@ -162,7 +162,7 @@ func (s *Server) buildMigrationBundle(ctx context.Context, u *store.User, withSe
 				cert, cerr := os.ReadFile(c.CertPath)
 				key, kerr := os.ReadFile(c.KeyPath)
 				if cerr != nil || kerr != nil {
-					b.Notes = append(b.Notes, "сертификат "+c.Name+" не читается, приедет без файлов")
+					b.Notes = append(b.Notes, "certificate "+c.Name+" cannot be read and will arrive without its files")
 				} else {
 					mc.Cert, mc.Key = string(cert), string(key)
 				}
@@ -180,12 +180,12 @@ func (s *Server) buildMigrationBundle(ctx context.Context, u *store.User, withSe
 		b.Sizes.MailBytes += s.duBytes(ctx, mailBase+"/"+d.Name)
 	}
 	if len(b.Apps) > 0 {
-		b.Notes = append(b.Notes, "app-сервисы приедут выключенными: их окружение и порты нужно проверить руками")
+		b.Notes = append(b.Notes, "app services will arrive switched off: check their environment and ports by hand")
 	}
 	if len(b.Valkey) > 0 {
-		b.Notes = append(b.Notes, "экземпляры Valkey приедут без данных: кеш и сессии начнутся с нуля")
+		b.Notes = append(b.Notes, "Valkey instances will arrive without data: the cache and sessions start from scratch")
 	}
-	b.Notes = append(b.Notes, "логи сайтов и каталог data/tmp не переносятся")
+	b.Notes = append(b.Notes, "site logs and the data/tmp directory are not moved")
 
 	if withSecrets {
 		sec := &apitypes.MigrationSecrets{
@@ -197,7 +197,7 @@ func (s *Server) buildMigrationBundle(ctx context.Context, u *store.User, withSe
 		if sh, err := s.agent.UnixShadow(ctx, u.Login); err == nil && sh.Hash != "" {
 			sec.UnixShadow = sh.Hash
 		} else if u.UnixUID != nil {
-			b.Notes = append(b.Notes, "пароль unix-аккаунта прочитать не удалось: SFTP-пароль придётся задать заново")
+			b.Notes = append(b.Notes, "could not read the unix account's password: the SFTP password will have to be set again")
 		}
 		for _, box := range b.Mailboxes {
 			full, err := s.db.GetMailbox(ctx, box.Address)
@@ -253,7 +253,7 @@ func (s *Server) registerMigrateSource() {
 				}
 			}
 			if len(admins) != 1 {
-				return nil, huma.Error422UnprocessableEntity("администраторов несколько: выдайте токен из панели, а не от root")
+				return nil, huma.Error422UnprocessableEntity("there is more than one administrator: issue the token from the panel, not as root")
 			}
 			owner = admins[0].ID
 		}
@@ -263,7 +263,7 @@ func (s *Server) registerMigrateSource() {
 		}
 		exp := time.Now().Add(time.Duration(hours) * time.Hour)
 		rec := &store.APIToken{
-			UserID: owner, Name: "переезд " + u.Login, Hash: auth.HashToken(plain),
+			UserID: owner, Name: "migration " + u.Login, Hash: auth.HashToken(plain),
 			Scopes: []string{migrateScopePrefix + "user:" + u.Login}, ExpiresAt: &exp,
 		}
 		if err := s.db.CreateAPIToken(ctx, rec); err != nil {
@@ -326,7 +326,7 @@ func (s *Server) registerMigrateSource() {
 		if in.Part == "mail" {
 			domain, derr := s.db.GetMailDomain(ctx, in.Domain)
 			if derr != nil || domain.UserID != u.ID {
-				return nil, huma.Error404NotFound("почтовый домен не принадлежит этому аккаунту")
+				return nil, huma.Error404NotFound("the mail domain does not belong to this account")
 			}
 			dir, excludes = mailBase+"/"+domain.Name, nil
 		}
@@ -337,7 +337,7 @@ func (s *Server) registerMigrateSource() {
 		if in.Since != "" {
 			t, perr := time.Parse(time.RFC3339, in.Since)
 			if perr != nil {
-				return nil, huma.Error422UnprocessableEntity("since: ожидается время в формате RFC3339")
+				return nil, huma.Error422UnprocessableEntity("since: expected a time in RFC3339 format")
 			}
 			args = append(args, "--newer-mtime="+t.UTC().Format("2006-01-02 15:04:05"))
 		}
@@ -361,7 +361,7 @@ func (s *Server) registerMigrateSource() {
 		}
 		db, err := s.db.GetDatabaseByName(ctx, in.DB)
 		if err != nil || db.UserID != u.ID {
-			return nil, huma.Error404NotFound("база не принадлежит этому аккаунту")
+			return nil, huma.Error404NotFound("the database does not belong to this account")
 		}
 		args := []string{"--protocol=socket", "--single-transaction", "--routines", "--triggers", "--events", "--databases", db.Name}
 		return &huma.StreamResponse{Body: func(hctx huma.Context) {

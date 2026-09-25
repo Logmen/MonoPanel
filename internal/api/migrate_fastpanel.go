@@ -79,7 +79,7 @@ func (s *Server) openFastpanel(ctx context.Context, req apitypes.MigrationSource
 	}
 	if !conn.exists(ctx, fastpanelDB) {
 		conn.close()
-		return nil, huma.Error422UnprocessableEntity("на " + req.Source + " не видно FASTPANEL: нет " + fastpanelDB)
+		return nil, huma.Error422UnprocessableEntity("FASTPANEL not found on " + req.Source + ": " + fastpanelDB + " is missing")
 	}
 	src := &fastpanelSource{foreignSource: foreignSource{s: s, conn: conn, req: req}}
 	if err := src.fetchDB(ctx); err != nil {
@@ -89,7 +89,7 @@ func (s *Server) openFastpanel(ctx context.Context, req apitypes.MigrationSource
 	if req.Scope == "" || scopeLogin(req.Scope) == "" {
 		logins, _ := src.accounts(ctx)
 		src.close()
-		return nil, huma.Error422UnprocessableEntity("укажите, чей аккаунт переносим: --scope user:<логин>; на источнике есть: " + strings.Join(logins, ", "))
+		return nil, huma.Error422UnprocessableEntity("name the account to move: --scope user:<login>; the source has: " + strings.Join(logins, ", "))
 	}
 	src.login = scopeLogin(req.Scope)
 	if req.As != "" {
@@ -117,7 +117,7 @@ os.unlink(p)`
 		// so copy it alongside where it exists.
 		raw, rerr := f.conn.readFile(ctx, fastpanelDB)
 		if rerr != nil {
-			return fmt.Errorf("база FASTPANEL не читается: %w", err)
+			return fmt.Errorf("the FASTPANEL database cannot be read: %w", err)
 		}
 		out = raw
 	}
@@ -140,7 +140,7 @@ os.unlink(p)`
 	if err := db.PingContext(ctx); err != nil {
 		db.Close()
 		os.Remove(f.dbFile)
-		return fmt.Errorf("база FASTPANEL: %w", err)
+		return fmt.Errorf("FASTPANEL database: %w", err)
 	}
 	f.db = db
 	return nil
@@ -208,7 +208,7 @@ func (f *fastpanelSource) inventory(ctx context.Context) error {
 	err := f.db.QueryRowContext(ctx, `SELECT id, COALESCE(home_dir,''), COALESCE(ssh_access,0), COALESCE(quota_value,0) FROM panel_account WHERE username=?`, login).Scan(&acc.id, &acc.home, &ssh, &quota)
 	if errors.Is(err, sql.ErrNoRows) {
 		logins, _ := f.accounts(ctx)
-		return fmt.Errorf("аккаунта %s в FASTPANEL нет; есть: %s", login, strings.Join(logins, ", "))
+		return fmt.Errorf("FASTPANEL has no account %s; it has: %s", login, strings.Join(logins, ", "))
 	}
 	if err != nil {
 		return err
@@ -341,13 +341,13 @@ func (f *fastpanelSource) bundle(ctx context.Context, _ string, withSecrets bool
 			row.ClientMaxBody = "256m"
 		}
 		if site.status != "" && site.status != "active" && site.status != "enabled" {
-			out.Notes = append(out.Notes, fmt.Sprintf("сайт %s в FASTPANEL со статусом %s", site.domain, site.status))
+			out.Notes = append(out.Notes, fmt.Sprintf("site %s has the status %s in FASTPANEL", site.domain, site.status))
 		}
 		if site.manual {
-			out.Notes = append(out.Notes, fmt.Sprintf("сайт %s: конфиги nginx правились вручную в FASTPANEL — сверьте их после переезда", site.domain))
+			out.Notes = append(out.Notes, fmt.Sprintf("site %s: its nginx configs were edited by hand in FASTPANEL; compare them after the move", site.domain))
 		}
 		if len(site.allowFrom) > 0 {
-			out.Notes = append(out.Notes, fmt.Sprintf("сайт %s: список allow из nginx перенесён как allow_from (%s)", site.domain, strings.Join(site.allowFrom, ", ")))
+			out.Notes = append(out.Notes, fmt.Sprintf("site %s: the nginx allow-list becomes allow_from (%s)", site.domain, strings.Join(site.allowFrom, ", ")))
 		}
 		out.Sites = append(out.Sites, row)
 		out.Sizes.FilesBytes += f.duBytes(ctx, site.siteDir)
@@ -368,11 +368,11 @@ func (f *fastpanelSource) bundle(ctx context.Context, _ string, withSecrets bool
 	out.Cron = f.crontab(ctx, acc.login)
 	out.Notes = append(out.Notes, cronNotes(out.Cron)...)
 	if n := f.mailboxCount(ctx, acc.id); n > 0 {
-		out.Notes = append(out.Notes, fmt.Sprintf("почтовых ящиков у аккаунта: %d — почта FASTPANEL не переносится, заведите ящики здесь заново", n))
+		out.Notes = append(out.Notes, fmt.Sprintf("account mailboxes: %d; FASTPANEL mail is not moved, create the mailboxes here again", n))
 	}
 	out.Notes = append(out.Notes,
-		"переносится data/www целиком; логи, tmp и php-bin остаются",
-		"пароль веб-панели у аккаунта не задан (FASTPANEL пускает по unix-паролю): mp user set "+f.login+" --generate")
+		"data/www moves whole; logs, tmp and php-bin stay behind",
+		"the account has no web-panel password (FASTPANEL signs people in with the unix password): mp user set "+f.login+" --generate")
 	if withSecrets {
 		out.Secrets = &apitypes.MigrationSecrets{UnixShadow: hash, DBUsers: plain, Mailboxes: map[string]string{}, DKIM: map[string]string{}}
 	}
@@ -477,7 +477,7 @@ func (f *fastpanelSource) mailboxCount(ctx context.Context, ownerID int64) int {
 // files streams data/www of the account: the layout matches ours.
 func (f *fastpanelSource) files(ctx context.Context, req migrateFilesRequest) (io.ReadCloser, error) {
 	if req.part != "home" {
-		return nil, fmt.Errorf("FASTPANEL: часть %s не переносится", req.part)
+		return nil, fmt.Errorf("FASTPANEL: the %s part is not moved", req.part)
 	}
 	if err := f.inventory(ctx); err != nil {
 		return nil, err

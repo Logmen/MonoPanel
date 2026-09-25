@@ -129,7 +129,9 @@ func migrateCmd() *cobra.Command {
 			rows := make([][]string, 0, len(b.Cron))
 			for _, j := range b.Cron {
 				mark := j.Comment
-				if !j.Enabled && !strings.HasPrefix(mark, "выключено") {
+				// The server marks the jobs it disabled itself: "disabled …",
+				// or "выключено …" on a server from before the English messages.
+				if !j.Enabled && !strings.HasPrefix(mark, "выключено") && !strings.HasPrefix(mark, "disabled") {
 					mark = strings.TrimSuffix("выключено; "+mark, "; ")
 				}
 				rows = append(rows, []string{j.Schedule, j.Command, mark})

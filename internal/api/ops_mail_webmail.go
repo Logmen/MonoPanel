@@ -53,17 +53,17 @@ func (s *Server) jobWebmailInstall(ctx context.Context, jc *jobs.Context) error 
 	}
 	c := s.loadMailConfig(ctx)
 	if !c.Installed {
-		return errors.New("почтовый сервер не установлен")
+		return errors.New("mail server is not installed")
 	}
 	if !mailDomainRe.MatchString(p.Domain) {
-		return fmt.Errorf("имя сайта вебпочты должно быть доменом: %q", p.Domain)
+		return fmt.Errorf("webmail site name must be a domain: %q", p.Domain)
 	}
 	owner, err := s.db.GetUserByLogin(ctx, p.User)
 	if err != nil {
 		return err
 	}
 	if owner.UnixUID == nil {
-		return errors.New("у владельца нет unix-аккаунта")
+		return errors.New("the owner has no unix account")
 	}
 	phpVersion := p.PHPVersion
 	if phpVersion == "" {
@@ -75,7 +75,7 @@ func (s *Server) jobWebmailInstall(ctx context.Context, jc *jobs.Context) error 
 		}
 	}
 	if phpVersion == "" {
-		return errors.New("не установлено ни одной ветки PHP (mp php install 8.4)")
+		return errors.New("no PHP branch installed (mp php install 8.4)")
 	}
 
 	site, err := s.db.GetSiteByDomain(ctx, p.Domain)
@@ -88,21 +88,21 @@ func (s *Server) jobWebmailInstall(ctx context.Context, jc *jobs.Context) error 
 		if err := s.db.CreateSite(ctx, site); err != nil {
 			return err
 		}
-		jc.Logf("сайт %s создан (PHP %s, docroot public_html)", site.Domain, phpVersion)
+		jc.Logf("site %s created (PHP %s, docroot public_html)", site.Domain, phpVersion)
 	} else if err != nil {
 		return err
 	} else {
-		jc.Logf("сайт %s уже существует, ставлю вебпочту в него", site.Domain)
+		jc.Logf("site %s already exists; installing the webmail into it", site.Domain)
 	}
 	l := s.layoutFor(site, owner)
 
-	jc.Progress(10, "загрузка Roundcube")
+	jc.Progress(10, "downloading Roundcube")
 	archive, err := s.fetchRoundcube(ctx, jc)
 	if err != nil {
 		return err
 	}
 
-	jc.Progress(35, "распаковка")
+	jc.Progress(35, "unpacking")
 	if _, err := s.agent.EnsureDirs(ctx, &agent.EnsureDirsRequest{Dirs: []agent.DirSpec{
 		{Path: l.siteRoot, Mode: 0o750, Owner: owner.Login, Group: s.cfg.WebGroup},
 	}}); err != nil {
@@ -128,10 +128,10 @@ func (s *Server) jobWebmailInstall(ctx context.Context, jc *jobs.Context) error 
 		return err
 	}
 	if _, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: []string{path.Join(l.siteRoot, "installer")}, Recursive: true}); err != nil {
-		jc.Logf("предупреждение: каталог installer остался на месте: %v", err)
+		jc.Logf("warning: the installer directory was not removed: %v", err)
 	}
 
-	jc.Progress(60, "база данных")
+	jc.Progress(60, "database")
 	dbName, dbPass, err := s.webmailDatabase(ctx, jc, owner)
 	if err != nil {
 		return err
@@ -141,11 +141,11 @@ func (s *Server) jobWebmailInstall(ctx context.Context, jc *jobs.Context) error 
 		return err
 	}
 	if _, err := s.mysqlExec(ctx, "USE `"+dbName+"`;\n"+initial); err != nil {
-		return fmt.Errorf("схема Roundcube: %w", err)
+		return fmt.Errorf("Roundcube schema: %w", err)
 	}
-	jc.Logf("схема Roundcube загружена в %s", dbName)
+	jc.Logf("Roundcube schema loaded into %s", dbName)
 
-	jc.Progress(80, "конфигурация")
+	jc.Progress(80, "configuration")
 	inst, err := s.dbInstance(ctx)
 	if err != nil {
 		return err
@@ -170,7 +170,7 @@ func (s *Server) jobWebmailInstall(ctx context.Context, jc *jobs.Context) error 
 		SieveHost:   fmt.Sprintf("tls://%s:4190", host),
 		VerifyPeer:  verified,
 		SupportURL:  "",
-		ProductName: "Почта " + webmailName(c, p),
+		ProductName: webmailName(c, p) + " Webmail",
 		DESKey:      desKey[:24],
 		Domain:      firstMailDomain(ctx, s),
 		TempDir:     path.Join(l.siteRoot, "temp"),
@@ -196,16 +196,16 @@ func (s *Server) jobWebmailInstall(ctx context.Context, jc *jobs.Context) error 
 	if err != nil {
 		return err
 	}
-	jc.Logf("сайт применяется задачей #%d; после неё вебпочта откроется на https://%s/", job.ID, p.Domain)
+	jc.Logf("the site is applied by job #%d; once it finishes, the webmail opens at https://%s/", job.ID, p.Domain)
 	if c.WebmailPort != 0 {
 		// Серверный блок на порту ссылается на сокет пула, который создаст
 		// задача сайта, — поэтому он пишется после неё.
 		if _, err := s.jobs.Enqueue(ctx, "mail.apply", struct{}{}, jobs.WithLockKey("mail"), jobs.WithRequestedBy(jc.RequestedBy)); err != nil {
 			return err
 		}
-		jc.Logf("и на https://%s:%d/ — там имя и сертификат почтового сервера, отдельная запись в DNS не нужна", c.Hostname, c.WebmailPort)
+		jc.Logf("and at https://%s:%d/, with the mail server's name and certificate: no separate DNS record is needed", c.Hostname, c.WebmailPort)
 	}
-	jc.Progress(100, "Roundcube "+roundcubeVersion+" установлен")
+	jc.Progress(100, "Roundcube "+roundcubeVersion+" installed")
 	return nil
 }
 
@@ -218,7 +218,7 @@ func (s *Server) fetchRoundcube(ctx context.Context, jc *jobs.Context) (string, 
 	}
 	file := filepath.Join(dir, fmt.Sprintf("roundcubemail-%s-complete.tar.gz", roundcubeVersion))
 	if sum, err := fileSHA256(file); err == nil && sum == roundcubeSHA256 {
-		jc.Logf("архив уже загружен: %s", file)
+		jc.Logf("archive already downloaded: %s", file)
 		return file, nil
 	}
 	body, err := fetchLarge(ctx, roundcubeURL())
@@ -227,12 +227,12 @@ func (s *Server) fetchRoundcube(ctx context.Context, jc *jobs.Context) (string, 
 	}
 	sum := sha256.Sum256(body)
 	if hex.EncodeToString(sum[:]) != roundcubeSHA256 {
-		return "", fmt.Errorf("контрольная сумма архива Roundcube не совпала: %x", sum)
+		return "", fmt.Errorf("Roundcube archive checksum mismatch: %x", sum)
 	}
 	if err := os.WriteFile(file, body, 0o640); err != nil {
 		return "", err
 	}
-	jc.Logf("Roundcube %s загружен (%d КБ), sha256 совпала", roundcubeVersion, len(body)/1024)
+	jc.Logf("Roundcube %s downloaded (%d KB), sha256 matches", roundcubeVersion, len(body)/1024)
 	return file, nil
 }
 
@@ -297,7 +297,7 @@ func roundcubeInitialSQL(archive string) (string, error) {
 			return buf.String(), nil
 		}
 	}
-	return "", errors.New("в архиве нет SQL/mysql.initial.sql")
+	return "", errors.New("the archive has no SQL/mysql.initial.sql")
 }
 
 // webmailDatabase creates (or reuses) the MySQL database Roundcube stores its
@@ -328,7 +328,7 @@ func (s *Server) webmailDatabase(ctx context.Context, jc *jobs.Context, owner *s
 	} else if !errors.Is(err, store.ErrExists) {
 		return "", "", err
 	}
-	jc.Logf("база %s готова", name)
+	jc.Logf("database %s is ready", name)
 	return name, password, nil
 }
 

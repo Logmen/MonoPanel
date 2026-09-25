@@ -45,7 +45,7 @@ func (f *foreignSource) close() { f.conn.close() }
 // note on the fingerprint: the plan shows it so the administrator can
 // compare it with what the old server prints.
 func (f *foreignSource) fingerprintNote() string {
-	return "отпечаток ключа ssh источника: " + f.conn.fingerprint
+	return "source ssh host key fingerprint: " + f.conn.fingerprint
 }
 
 // ------------------------------------------------------------- MySQL ----
@@ -60,7 +60,7 @@ func (f *foreignSource) findMySQL(ctx context.Context) error {
 			return nil
 		}
 	}
-	return errors.New("на источнике нет доступа к MySQL от root: нужен /root/.my.cnf с паролем root")
+	return errors.New("no MySQL access as root on the source: /root/.my.cnf with the root password is required")
 }
 
 // query runs SQL through the old server's client and returns rows of
@@ -94,7 +94,7 @@ func (f *foreignSource) databaseRow(ctx context.Context, name string) (*store.Da
 		return nil, err
 	}
 	if len(rows) == 0 {
-		return nil, fmt.Errorf("базы %s на источнике нет", name)
+		return nil, fmt.Errorf("no database %s on the source", name)
 	}
 	if len(rows[0]) == 2 {
 		d.Charset, d.Collation = rows[0][0], rows[0][1]
@@ -235,13 +235,13 @@ func (f *foreignSource) settle(ctx context.Context, jc *jobs.Context, u *store.U
 			continue
 		}
 		if _, err := f.s.fsop(ctx, u, []byte(text), "write", rel); err != nil {
-			jc.Logf("%s: пути не переписаны: %v", rel, err)
+			jc.Logf("%s: paths not rewritten: %v", rel, err)
 			continue
 		}
 		fixed = append(fixed, rel)
 	}
 	if len(fixed) > 0 {
-		jc.Logf("пути старого сервера переписаны в: %s", strings.Join(fixed, ", "))
+		jc.Logf("old server paths rewritten in: %s", strings.Join(fixed, ", "))
 	}
 	return nil
 }
@@ -252,7 +252,7 @@ func (f *foreignSource) settle(ctx context.Context, jc *jobs.Context, u *store.U
 func (f *foreignSource) unixAccount(ctx context.Context, login string) (home, shell, hash string, err error) {
 	out, _, err := f.conn.exec(ctx, "getent passwd "+shq(login))
 	if err != nil {
-		return "", "", "", fmt.Errorf("unix-пользователя %s на источнике нет", login)
+		return "", "", "", fmt.Errorf("no unix user %s on the source", login)
 	}
 	fields := strings.Split(strings.TrimSpace(out), ":")
 	if len(fields) >= 7 {
@@ -329,7 +329,7 @@ func (f *foreignSource) cronJob(e cronEntry) *store.CronJob {
 	return j
 }
 
-const cronSuspectMark = "выключено при переносе: похоже на чужую закладку"
+const cronSuspectMark = "disabled during migration: looks like a planted backdoor"
 
 var (
 	// A binary run straight from a world-writable directory.
@@ -349,7 +349,7 @@ func cronNotes(jobs []*store.CronJob) []string {
 	var out []string
 	for _, j := range jobs {
 		if !j.Enabled && strings.HasPrefix(j.Comment, cronSuspectMark) {
-			out = append(out, fmt.Sprintf("cron «%s %s» похоже на чужую закладку (запуск из /tmp, загрузка скрипта в shell): приедет выключенным — проверьте источник на взлом", j.Schedule, j.Command))
+			out = append(out, fmt.Sprintf("cron job \"%s %s\" looks like a planted backdoor (runs something from /tmp or pipes a downloaded script into a shell): it will arrive disabled; check the source for a break-in", j.Schedule, j.Command))
 		}
 	}
 	return out

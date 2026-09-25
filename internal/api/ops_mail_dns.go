@@ -81,7 +81,7 @@ func (s *Server) mailDNS(ctx context.Context, d *store.MailDomain) apitypes.Mail
 
 	// A-запись почтового хоста: без неё не выпустить сертификат и не принять почту.
 	hostRec := apitypes.MailDNSRecord{Name: c.Hostname, Type: "A", Value: strings.Join(out.IPv4, ", "), Status: "unknown", Required: true,
-		Note: "имя сервера должно указывать на этот адрес"}
+		Note: "the server name must point to this address"}
 	if addrs, err := mailLookup(ctx, c.Hostname, dns.TypeA); err == nil {
 		hostRec.Found = strings.Join(addrs, ", ")
 		hostRec.Status = "missing"
@@ -99,7 +99,7 @@ func (s *Server) mailDNS(ctx context.Context, d *store.MailDomain) apitypes.Mail
 	add(hostRec)
 
 	mx := apitypes.MailDNSRecord{Name: d.Name, Type: "MX", Value: "10 " + c.Hostname, Status: "unknown", Required: true,
-		Note: "куда доставлять почту домена"}
+		Note: "where the domain's mail is delivered"}
 	if answers, err := mailLookup(ctx, d.Name, dns.TypeMX); err == nil {
 		mx.Found = strings.Join(answers, "; ")
 		mx.Status = "missing"
@@ -116,7 +116,7 @@ func (s *Server) mailDNS(ctx context.Context, d *store.MailDomain) apitypes.Mail
 
 	spfValue := fmt.Sprintf("v=spf1 mx a:%s -all", c.Hostname)
 	spf := apitypes.MailDNSRecord{Name: d.Name, Type: "TXT", Value: spfValue, Status: "unknown", Required: true,
-		Note: "кому разрешено отправлять от имени домена"}
+		Note: "who may send mail on behalf of the domain"}
 	if answers, err := mailLookup(ctx, d.Name, dns.TypeTXT); err == nil {
 		spf.Status = "missing"
 		for _, a := range answers {
@@ -136,7 +136,7 @@ func (s *Server) mailDNS(ctx context.Context, d *store.MailDomain) apitypes.Mail
 		name := d.DKIMSelector + "._domainkey." + d.Name
 		value := "v=DKIM1; h=sha256; k=rsa; p=" + d.DKIMPublic
 		rec := apitypes.MailDNSRecord{Name: name, Type: "TXT", Value: value, Status: "unknown", Required: true,
-			Note: "подпись писем; значение длинное — многие панели DNS разбивают его сами"}
+			Note: "message signing; the value is long, but many DNS panels split it themselves"}
 		if answers, err := mailLookup(ctx, name, dns.TypeTXT); err == nil {
 			rec.Status = "missing"
 			for _, a := range answers {
@@ -156,7 +156,7 @@ func (s *Server) mailDNS(ctx context.Context, d *store.MailDomain) apitypes.Mail
 
 	dmarc := apitypes.MailDNSRecord{Name: "_dmarc." + d.Name, Type: "TXT",
 		Value:  fmt.Sprintf("v=DMARC1; p=quarantine; rua=mailto:postmaster@%s; adkim=r; aspf=r", d.Name),
-		Status: "unknown", Required: true, Note: "что делать с письмами, не прошедшими проверку"}
+		Status: "unknown", Required: true, Note: "what to do with messages that fail the checks"}
 	if answers, err := mailLookup(ctx, "_dmarc."+d.Name, dns.TypeTXT); err == nil {
 		dmarc.Status = "missing"
 		for _, a := range answers {
@@ -168,7 +168,7 @@ func (s *Server) mailDNS(ctx context.Context, d *store.MailDomain) apitypes.Mail
 	add(dmarc)
 
 	ptr := apitypes.MailDNSRecord{Name: strings.Join(out.IPv4, ", "), Type: "PTR", Value: c.Hostname, Status: "unknown",
-		Note: "обратную зону настраивает хостер; без PTR письма чаще попадают в спам"}
+		Note: "the reverse zone is set up by the hosting provider; without PTR, mail ends up in spam more often"}
 	if len(out.IPv4) > 0 {
 		if rev, err := dns.ReverseAddr(out.IPv4[0]); err == nil {
 			if answers, err := mailLookup(ctx, rev, dns.TypePTR); err == nil {

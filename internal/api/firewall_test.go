@@ -109,7 +109,7 @@ func TestFirewallGuardRefusesLockout(t *testing.T) {
 	if code, detail := deny("", "127.0.0.0/8"); code != 422 || !strings.Contains(detail, "127.0.0.1") {
 		t.Fatalf("deny covering the caller: %d %q", code, detail)
 	}
-	if code, detail := fwCall(f, http.MethodPost, "/firewall/ban", map[string]any{"ip": "127.0.0.1"}); code != 422 || !strings.Contains(detail, "собственный") {
+	if code, detail := fwCall(f, http.MethodPost, "/firewall/ban", map[string]any{"ip": "127.0.0.1"}); code != 422 || !strings.Contains(detail, "your own address") {
 		t.Fatalf("self-ban: %d %q", code, detail)
 	}
 	// 443 is open by default but not an access port: closing it is allowed.
@@ -132,7 +132,7 @@ func TestFirewallGuardRefusesLockout(t *testing.T) {
 			denyID = r.ID
 		}
 	}
-	if code, detail := fwCall(f, http.MethodDelete, "/firewall/rules/"+itoa(allowID), nil); code != 409 || !strings.Contains(detail, "сначала удалите deny #"+itoa(denyID)) {
+	if code, detail := fwCall(f, http.MethodDelete, "/firewall/rules/"+itoa(allowID), nil); code != 409 || !strings.Contains(detail, "first delete deny #"+itoa(denyID)) {
 		t.Fatalf("deleting the last exception: %d %q", code, detail)
 	}
 	if code, _ := fwCall(f, http.MethodDelete, "/firewall/rules/"+itoa(denyID), nil); code != 204 {

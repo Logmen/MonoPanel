@@ -97,7 +97,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	r.Use(middleware.RequestID, middleware.Recoverer, requestInfoMiddleware, securityHeaders(uiCSPFromEmbed()), s.accessLog)
 
 	hcfg := huma.DefaultConfig("MonoPanel API", buildinfo.Version)
-	hcfg.Info.Description = "Управление веб-сервером: пользователи, сайты, PHP, базы данных, TLS, бэкапы. Web UI, CLI и TUI используют этот же API."
+	hcfg.Info.Description = "Web server management: users, sites, PHP, databases, TLS, backups. The web UI, the CLI and the TUI use this same API."
 	hcfg.Servers = []*huma.Server{{URL: "/api/v1"}}
 	hcfg.Components.SecuritySchemes = map[string]*huma.SecurityScheme{
 		"bearer":  {Type: "http", Scheme: "bearer", Description: "API token: mp token create"},

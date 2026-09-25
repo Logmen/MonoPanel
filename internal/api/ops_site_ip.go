@@ -96,11 +96,11 @@ func (s *Server) offHostHint(off map[string][]string) string {
 	for _, ip := range ips {
 		parts = append(parts, fmt.Sprintf("%s (%s)", ip, strings.Join(off[ip], ", ")))
 	}
-	to := "<адрес>"
+	to := "<address>"
 	if local := s.hostIPs(); len(local) == 1 {
 		to = local[0]
 	}
-	return "адресов нет на этом сервере, nginx их не займёт: " + strings.Join(parts, "; ") + " — mp site move-ip " + to
+	return "addresses not on this server, nginx cannot bind them: " + strings.Join(parts, "; ") + " — mp site move-ip " + to
 }
 
 // checkHostIP refuses an address the host does not have: nginx would not
@@ -111,7 +111,7 @@ func (s *Server) checkHostIP(ip string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("адреса %s нет на этом сервере (есть: %s)", ip, strings.Join(s.hostIPs(), ", "))
+	return fmt.Errorf("address %s is not on this server (available: %s)", ip, strings.Join(s.hostIPs(), ", "))
 }
 
 type sitesMoveIPPayload struct {
@@ -152,7 +152,7 @@ func (s *Server) registerSiteIP() {
 		p := principalFrom(ctx)
 		b := in.Body
 		if net.ParseIP(b.To).To4() == nil || b.From != "" && net.ParseIP(b.From) == nil {
-			return nil, huma.Error422UnprocessableEntity("нужен IPv4-адрес")
+			return nil, huma.Error422UnprocessableEntity("an IPv4 address is required")
 		}
 		if err := s.checkHostIP(b.To); err != nil {
 			return nil, huma.Error422UnprocessableEntity(err.Error())
@@ -163,9 +163,9 @@ func (s *Server) registerSiteIP() {
 		}
 		if len(sites) == 0 {
 			if b.From == "" {
-				return nil, huma.Error422UnprocessableEntity("все сайты слушают адреса этого сервера")
+				return nil, huma.Error422UnprocessableEntity("every site already listens on an address of this server")
 			}
-			return nil, huma.Error422UnprocessableEntity("на " + b.From + " нет сайтов")
+			return nil, huma.Error422UnprocessableEntity("no sites on " + b.From)
 		}
 		job, err := s.jobs.Enqueue(ctx, "sites.move-ip", sitesMoveIPPayload(b), jobs.WithLockKey("sites:ip"), jobs.WithRequestedBy(p.Login))
 		if err != nil {
@@ -197,10 +197,10 @@ func (s *Server) jobSitesMoveIP(ctx context.Context, jc *jobs.Context) error {
 		return err
 	}
 	if len(sites) == 0 {
-		jc.Progress(100, "нечего переносить")
+		jc.Progress(100, "nothing to move")
 		return nil
 	}
-	jc.Progress(10, "конфигурация nginx")
+	jc.Progress(10, "nginx configuration")
 	var confs []string
 	for _, site := range sites {
 		user, err := s.db.GetUserByID(ctx, site.UserID)
@@ -223,7 +223,7 @@ func (s *Server) jobSitesMoveIP(ctx context.Context, jc *jobs.Context) error {
 		}
 	}
 	if gone := s.pruneDefaultServers(ctx); len(gone) > 0 {
-		jc.Logf("убраны default-серверы прежних адресов: %s", strings.Join(gone, ", "))
+		jc.Logf("removed the default servers of addresses no longer on this server: %s", strings.Join(gone, ", "))
 	}
 	files, err := s.nginxGlobalFiles()
 	if err != nil {
@@ -232,16 +232,16 @@ func (s *Server) jobSitesMoveIP(ctx context.Context, jc *jobs.Context) error {
 	web := s.profile.Web()
 	// nginx may be down since boot: reload-or-restart brings it up.
 	if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Validate: [][]string{web.NginxCheckArgv}, Reload: []string{web.NginxService}, Force: true, Origin: "stack:nginx"}); err != nil {
-		return fmt.Errorf("default-серверы: %w", err)
+		return fmt.Errorf("default servers: %w", err)
 	}
-	jc.Progress(50, "сайты")
+	jc.Progress(50, "sites")
 	for _, site := range sites {
 		id, err := s.enqueueSiteApply(ctx, site, jc.RequestedBy)
 		if err != nil {
 			return err
 		}
-		jc.Logf("%s: конфигурация применяется задачей #%d", site.Domain, id)
+		jc.Logf("%s: job #%d applies the configuration", site.Domain, id)
 	}
-	jc.Progress(100, fmt.Sprintf("сайтов перенесено на %s: %d", p.To, len(sites)))
+	jc.Progress(100, fmt.Sprintf("sites moved to %s: %d", p.To, len(sites)))
 	return nil
 }

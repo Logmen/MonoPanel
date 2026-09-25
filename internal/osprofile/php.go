@@ -59,11 +59,11 @@ func PHPVersions(p Profile) []PHPVersionInfo {
 		info := PHPVersionInfo{Version: v, Support: phpSupport[v], Available: true}
 		if p.Family() == FamilyRHEL && p.Release().MajorVersion() == "10" && versionLess(v, "7.4") {
 			info.Available = false
-			info.Note = "Remi для EL10 не собирает ветки старше 7.4"
+			info.Note = "Remi does not build branches older than 7.4 for EL10"
 		}
 		if p.Family() == FamilyUnknown {
 			info.Available = false
-			info.Note = "нет источника пакетов для этой ОС"
+			info.Note = "no PHP package source for this OS"
 		}
 		out = append(out, info)
 	}
