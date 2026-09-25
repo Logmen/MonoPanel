@@ -65,7 +65,7 @@ func (m model) fetchFirewall() tea.Msg {
 }
 
 func renderSites(b *strings.Builder, sites []*store.Site, loading bool) {
-	b.WriteString(styleTitle.Render("Сайты") + "\n")
+	b.WriteString(styleTitle.Render(T("Сайты", "Sites")) + "\n")
 	for _, s := range sites {
 		ssl := s.SSL
 		if s.CertificateID != nil {
@@ -74,9 +74,9 @@ func renderSites(b *strings.Builder, sites []*store.Site, loading bool) {
 		b.WriteString(fmt.Sprintf("  %-28s %-8s php %-4s %-7s %-6s %s\n", s.Domain, s.Login, s.PHPVersion, s.Mode, ssl, stateColor(s.Status, "active")))
 	}
 	if len(sites) == 0 && !loading {
-		b.WriteString(styleMuted.Render("  сайтов нет") + "\n")
+		b.WriteString(styleMuted.Render(T("  сайтов нет", "  no sites")) + "\n")
 	}
-	b.WriteString("\n" + styleMuted.Render("CLI: ") + styleKey.Render("mp site add <domain> --user <login> --www") + styleMuted.Render(" · esc назад") + "\n")
+	b.WriteString("\n" + styleMuted.Render("CLI: ") + styleKey.Render("mp site add <domain> --user <login> --www") + styleMuted.Render(T(" · esc назад", " · esc back")) + "\n")
 }
 
 func renderPHP(b *strings.Builder, v *apitypes.PHPVersions) {
@@ -89,19 +89,19 @@ func renderPHP(b *strings.Builder, v *apitypes.PHPVersions) {
 		installed[p.Version] = p
 	}
 	for _, a := range v.Available {
-		state := styleMuted.Render("не установлена")
+		state := styleMuted.Render(T("не установлена", "not installed"))
 		if p := installed[a.Version]; p != nil {
 			state = stateColor(p.Status, "installed") + " " + styleMuted.Render(p.PackageVersion)
 		} else if !a.Available {
-			state = styleMuted.Render("недоступна")
+			state = styleMuted.Render(T("недоступна", "unavailable"))
 		}
 		b.WriteString(fmt.Sprintf("  %-5s %-9s %s\n", a.Version, a.Support, state))
 	}
-	b.WriteString("\n" + styleMuted.Render("CLI: ") + styleKey.Render("mp php install 8.4") + styleMuted.Render(" · esc назад") + "\n")
+	b.WriteString("\n" + styleMuted.Render("CLI: ") + styleKey.Render("mp php install 8.4") + styleMuted.Render(T(" · esc назад", " · esc back")) + "\n")
 }
 
 func renderDBs(b *strings.Builder, dbs []*store.Database, loading bool) {
-	b.WriteString(styleTitle.Render("Базы данных") + "\n")
+	b.WriteString(styleTitle.Render(T("Базы данных", "Databases")) + "\n")
 	for _, d := range dbs {
 		users := make([]string, 0, len(d.Users))
 		for _, u := range d.Users {
@@ -110,24 +110,24 @@ func renderDBs(b *strings.Builder, dbs []*store.Database, loading bool) {
 		b.WriteString(fmt.Sprintf("  %-24s %-10s %-10s %s\n", d.Name, d.Login, humanMB(d.SizeBytes), strings.Join(users, ",")))
 	}
 	if len(dbs) == 0 && !loading {
-		b.WriteString(styleMuted.Render("  баз нет") + "\n")
+		b.WriteString(styleMuted.Render(T("  баз нет", "  no databases")) + "\n")
 	}
-	b.WriteString("\n" + styleMuted.Render("CLI: ") + styleKey.Render("mp db create <name> --user <login>") + styleMuted.Render(" · esc назад") + "\n")
+	b.WriteString("\n" + styleMuted.Render("CLI: ") + styleKey.Render("mp db create <name> --user <login>") + styleMuted.Render(T(" · esc назад", " · esc back")) + "\n")
 }
 
 func renderCerts(b *strings.Builder, certs []*store.Certificate, loading bool) {
-	b.WriteString(styleTitle.Render("Сертификаты") + "\n")
+	b.WriteString(styleTitle.Render(T("Сертификаты", "Certificates")) + "\n")
 	for _, c := range certs {
 		exp := "-"
 		if c.NotAfter != nil {
 			exp = c.NotAfter.Format("2006-01-02")
 		}
-		b.WriteString(fmt.Sprintf("  %-28s %-8s %-12s до %s %s\n", c.Name, stateColor(c.Status, "valid"), c.Issuer, exp, styleMuted.Render(firstLine(c.LastError, ""))))
+		b.WriteString(fmt.Sprintf(T("  %-28s %-8s %-12s до %s %s\n", "  %-28s %-8s %-12s until %s %s\n"), c.Name, stateColor(c.Status, "valid"), c.Issuer, exp, styleMuted.Render(firstLine(c.LastError, ""))))
 	}
 	if len(certs) == 0 && !loading {
-		b.WriteString(styleMuted.Render("  сертификатов нет") + "\n")
+		b.WriteString(styleMuted.Render(T("  сертификатов нет", "  no certificates")) + "\n")
 	}
-	b.WriteString("\n" + styleMuted.Render("CLI: ") + styleKey.Render("mp ssl issue <hostname>") + styleMuted.Render(" · esc назад") + "\n")
+	b.WriteString("\n" + styleMuted.Render("CLI: ") + styleKey.Render("mp ssl issue <hostname>") + styleMuted.Render(T(" · esc назад", " · esc back")) + "\n")
 }
 
 func renderFirewall(b *strings.Builder, fw *apitypes.FirewallStatus) {
@@ -135,11 +135,11 @@ func renderFirewall(b *strings.Builder, fw *apitypes.FirewallStatus) {
 	if fw == nil {
 		return
 	}
-	state := styleWarn.Render("выключен")
+	state := styleWarn.Render(T("выключен", "disabled"))
 	if fw.Enabled {
-		state = styleKey.Render("включён")
+		state = styleKey.Render(T("включён", "enabled"))
 	}
-	b.WriteString(fmt.Sprintf("  nftables: %s · панель %d · ssh %v\n", state, fw.PanelPort, fw.SSHPorts))
+	b.WriteString(fmt.Sprintf(T("  nftables: %s · панель %d · ssh %v\n", "  nftables: %s · panel %d · ssh %v\n"), state, fw.PanelPort, fw.SSHPorts))
 	for _, r := range fw.Rules {
 		b.WriteString(fmt.Sprintf("  #%-3d %-5s %-4s %-10s %-18s %s\n", r.ID, r.Kind, r.Proto, r.Port, r.Source, r.Comment))
 	}
@@ -148,9 +148,9 @@ func renderFirewall(b *strings.Builder, fw *apitypes.FirewallStatus) {
 			b.WriteString(fmt.Sprintf("  fail2ban %-14s banned %d (total %d)\n", j.Name, j.Banned, j.Total))
 		}
 	} else {
-		b.WriteString(styleMuted.Render("  fail2ban не установлен: mp stack install fail2ban") + "\n")
+		b.WriteString(styleMuted.Render(T("  fail2ban не установлен: mp stack install fail2ban", "  fail2ban is not installed: mp stack install fail2ban")) + "\n")
 	}
-	b.WriteString("\n" + styleMuted.Render("CLI: ") + styleKey.Render("mp firewall enable | allow --port N | ban <ip>") + styleMuted.Render(" · esc назад") + "\n")
+	b.WriteString("\n" + styleMuted.Render("CLI: ") + styleKey.Render("mp firewall enable | allow --port N | ban <ip>") + styleMuted.Render(T(" · esc назад", " · esc back")) + "\n")
 }
 
 func stateColor(state, good string) string {
@@ -166,10 +166,10 @@ func stateColor(state, good string) string {
 func humanMB(b int64) string {
 	switch {
 	case b >= 1<<30:
-		return fmt.Sprintf("%.1f ГБ", float64(b)/(1<<30))
+		return fmt.Sprintf(T("%.1f ГБ", "%.1f GB"), float64(b)/(1<<30))
 	case b >= 1<<20:
-		return fmt.Sprintf("%.1f МБ", float64(b)/(1<<20))
+		return fmt.Sprintf(T("%.1f МБ", "%.1f MB"), float64(b)/(1<<20))
 	default:
-		return fmt.Sprintf("%.0f КБ", float64(b)/1024)
+		return fmt.Sprintf(T("%.0f КБ", "%.0f KB"), float64(b)/1024)
 	}
 }

@@ -13,8 +13,13 @@ import (
 
 	"monopanel/internal/apitypes"
 	"monopanel/internal/client"
+	"monopanel/internal/i18n"
 	"monopanel/internal/store"
 )
+
+// T is the text in the language of the terminal (the CLI detects it before
+// the menu starts), so texts live in functions, not in package-level vars.
+func T(ru, en string) string { return i18n.T(ru, en) }
 
 type screen int
 
@@ -36,17 +41,19 @@ type menuItem struct {
 	open  screen
 }
 
-var menu = []menuItem{
-	{"Сайты", "", screenSites},
-	{"Пользователи", "", screenUsers},
-	{"PHP", "", screenPHP},
-	{"Базы данных", "", screenDBs},
-	{"SSL", "", screenCerts},
-	{"Firewall", "", screenFirewall},
-	{"Сервисы", "", screenServices},
-	{"Задачи", "", screenJobs},
-	{"Бэкапы", "mp backup", screenMenu},
-	{"Настройки", "mp config", screenMenu},
+func menu() []menuItem {
+	return []menuItem{
+		{T("Сайты", "Sites"), "", screenSites},
+		{T("Пользователи", "Users"), "", screenUsers},
+		{"PHP", "", screenPHP},
+		{T("Базы данных", "Databases"), "", screenDBs},
+		{"SSL", "", screenCerts},
+		{"Firewall", "", screenFirewall},
+		{T("Сервисы", "Services"), "", screenServices},
+		{T("Задачи", "Jobs"), "", screenJobs},
+		{T("Бэкапы", "Backups"), "mp backup", screenMenu},
+		{T("Настройки", "Settings"), "mp config", screenMenu},
+	}
 }
 
 var (
@@ -148,14 +155,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor--
 			}
 		case "down", "j":
-			if m.cursor < len(menu)-1 {
+			if m.cursor < len(menu())-1 {
 				m.cursor++
 			}
 		case "r":
 			m.loading = true
 			return m, m.fetchStatus
 		case "enter":
-			item := menu[m.cursor]
+			item := menu()[m.cursor]
 			switch item.open {
 			case screenUsers:
 				m.screen, m.loading = screenUsers, true
@@ -198,19 +205,19 @@ func (m model) View() tea.View {
 		h := m.status.Host
 		used := float64(h.MemTotalBytes-h.MemAvailableBytes) / 1073741824
 		total := float64(h.MemTotalBytes) / 1073741824
-		b.WriteString(fmt.Sprintf("%s · %s · load %.2f %.2f %.2f · RAM %.1f/%.1f ГБ", h.Hostname, h.Release.PrettyName, h.Load[0], h.Load[1], h.Load[2], used, total))
+		b.WriteString(fmt.Sprintf(T("%s · %s · load %.2f %.2f %.2f · RAM %.1f/%.1f ГБ", "%s · %s · load %.2f %.2f %.2f · RAM %.1f/%.1f GB"), h.Hostname, h.Release.PrettyName, h.Load[0], h.Load[1], h.Load[2], used, total))
 		if !m.status.Panel.AgentOK {
-			b.WriteString("  " + styleWarn.Render("агент недоступен"))
+			b.WriteString("  " + styleWarn.Render(T("агент недоступен", "agent unavailable")))
 		}
 		b.WriteString("\n")
 	}
 	if m.err != nil {
-		b.WriteString(styleWarn.Render("ошибка: "+m.err.Error()) + "\n")
+		b.WriteString(styleWarn.Render(T("ошибка: ", "error: ")+m.err.Error()) + "\n")
 	}
 	b.WriteString("\n")
 	switch m.screen {
 	case screenMenu:
-		for i, it := range menu {
+		for i, it := range menu() {
 			line := " " + it.title
 			if it.hint != "" {
 				line += styleMuted.Render("  " + it.hint)
@@ -221,11 +228,11 @@ func (m model) View() tea.View {
 				b.WriteString(" " + line + "\n")
 			}
 		}
-		b.WriteString("\n" + styleMuted.Render("↑/↓ выбор · enter открыть · r обновить · q выход") + "\n")
+		b.WriteString("\n" + styleMuted.Render(T("↑/↓ выбор · enter открыть · r обновить · q выход", "↑/↓ select · enter open · r refresh · q quit")) + "\n")
 	case screenUsers:
-		b.WriteString(styleTitle.Render("Пользователи") + "\n")
+		b.WriteString(styleTitle.Render(T("Пользователи", "Users")) + "\n")
 		if m.loading {
-			b.WriteString("загрузка...\n")
+			b.WriteString(T("загрузка...\n", "loading...\n"))
 		}
 		for _, u := range m.users {
 			uid := "-"
@@ -235,18 +242,18 @@ func (m model) View() tea.View {
 			b.WriteString(fmt.Sprintf("  %-16s %-6s %-9s uid=%-6s %s\n", u.Login, u.Role, u.Status, uid, u.Home))
 		}
 		if len(m.users) == 0 && !m.loading {
-			b.WriteString(styleMuted.Render("  нет пользователей") + "\n")
+			b.WriteString(styleMuted.Render(T("  нет пользователей", "  no users")) + "\n")
 		}
-		b.WriteString("\n" + styleMuted.Render("CLI: ") + styleKey.Render("mp user add <login> --generate") + styleMuted.Render(" · esc назад") + "\n")
+		b.WriteString("\n" + styleMuted.Render("CLI: ") + styleKey.Render("mp user add <login> --generate") + styleMuted.Render(T(" · esc назад", " · esc back")) + "\n")
 	case screenJobs:
-		b.WriteString(styleTitle.Render("Задачи") + "\n")
+		b.WriteString(styleTitle.Render(T("Задачи", "Jobs")) + "\n")
 		for _, j := range m.jobs {
 			b.WriteString(fmt.Sprintf("  #%-4d %-16s %-8s %3d%%  %s\n", j.ID, j.Type, j.Status, j.Progress, firstLine(j.Error, j.Message)))
 		}
 		if len(m.jobs) == 0 && !m.loading {
-			b.WriteString(styleMuted.Render("  задач ещё не было") + "\n")
+			b.WriteString(styleMuted.Render(T("  задач ещё не было", "  no jobs yet")) + "\n")
 		}
-		b.WriteString("\n" + styleMuted.Render("CLI: ") + styleKey.Render("mp job show <id>") + styleMuted.Render(" · esc назад") + "\n")
+		b.WriteString("\n" + styleMuted.Render("CLI: ") + styleKey.Render("mp job show <id>") + styleMuted.Render(T(" · esc назад", " · esc back")) + "\n")
 	case screenSites:
 		renderSites(&b, m.sites, m.loading)
 	case screenPHP:
@@ -258,7 +265,7 @@ func (m model) View() tea.View {
 	case screenFirewall:
 		renderFirewall(&b, m.fw)
 	case screenServices:
-		b.WriteString(styleTitle.Render("Сервисы") + "\n")
+		b.WriteString(styleTitle.Render(T("Сервисы", "Services")) + "\n")
 		if m.status != nil {
 			for _, s := range m.status.Services {
 				state := s.ActiveState
@@ -270,7 +277,7 @@ func (m model) View() tea.View {
 				b.WriteString(fmt.Sprintf("  %-28s %s (%s)\n", s.Unit, state, s.SubState))
 			}
 		}
-		b.WriteString("\n" + styleMuted.Render("CLI: ") + styleKey.Render("mp service restart <unit>") + styleMuted.Render(" · esc назад") + "\n")
+		b.WriteString("\n" + styleMuted.Render("CLI: ") + styleKey.Render("mp service restart <unit>") + styleMuted.Render(T(" · esc назад", " · esc back")) + "\n")
 	}
 	return tea.NewView(b.String())
 }

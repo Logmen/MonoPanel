@@ -22,10 +22,14 @@ import (
 	"monopanel/internal/auth"
 	"monopanel/internal/client"
 	"monopanel/internal/config"
+	"monopanel/internal/i18n"
 	"monopanel/internal/osprofile"
 	"monopanel/internal/store"
 	"monopanel/internal/systemd"
 )
+
+// T is the text in the language of the terminal, detected by the CLI.
+func T(ru, en string) string { return i18n.T(ru, en) }
 
 // Options controls setup.
 type Options struct {
@@ -100,7 +104,7 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	step("ОС: %s (%s)", profile.Release().PrettyName, profile.Family())
+	step(T("ОС: %s (%s)", "OS: %s (%s)"), profile.Release().PrettyName, profile.Family())
 
 	cfg, err := config.Load(opts.ConfigPath)
 	if err != nil {
@@ -116,7 +120,7 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 	}
 	res := &Result{ConfigPath: cfg.Path(), DBPath: cfg.DBPath()}
 
-	step("группы и служебный пользователь: %s, %s", cfg.ServiceGroup, cfg.WebGroup)
+	step(T("группы и служебный пользователь: %s, %s", "groups and the service user: %s, %s"), cfg.ServiceGroup, cfg.WebGroup)
 	for _, g := range []string{cfg.ServiceGroup, cfg.WebGroup} {
 		if _, err := agent.EnsureGroup(ctx, &agent.EnsureGroupRequest{Name: g, System: true}); err != nil {
 			return nil, err
@@ -126,7 +130,7 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 		return nil, err
 	}
 
-	step("каталоги")
+	step("%s", T("каталоги", "directories"))
 	dirs := []agent.DirSpec{
 		{Path: cfg.ConfigDir, Mode: 0o750, Owner: "root", Group: cfg.ServiceGroup},
 		{Path: cfg.TemplatesDir, Mode: 0o750, Owner: "root", Group: cfg.ServiceGroup},
@@ -147,17 +151,17 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 	}
 
 	if _, err := os.Stat(cfg.Path()); errors.Is(err, os.ErrNotExist) {
-		step("конфигурация: %s", cfg.Path())
+		step(T("конфигурация: %s", "configuration: %s"), cfg.Path())
 		if err := cfg.Save(cfg.Path()); err != nil {
 			return nil, err
 		}
 	} else {
-		step("конфигурация уже есть: %s", cfg.Path())
+		step(T("конфигурация уже есть: %s", "configuration already exists: %s"), cfg.Path())
 		if opts.Hostname != "" || opts.Listen != "" {
 			if err := cfg.Save(cfg.Path()); err != nil {
 				return nil, err
 			}
-			step("обновлено: hostname=%s listen=%s", cfg.Web.Hostname, cfg.Web.Listen)
+			step(T("обновлено: hostname=%s listen=%s", "updated: hostname=%s listen=%s"), cfg.Web.Hostname, cfg.Web.Listen)
 		}
 	}
 	if err := chownName(cfg.Path(), "root", cfg.ServiceGroup, 0o640); err != nil {
@@ -165,7 +169,7 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 	}
 
 	if _, err := os.Stat(cfg.SecretKeyFile); errors.Is(err, os.ErrNotExist) {
-		step("секретный ключ: %s", cfg.SecretKeyFile)
+		step(T("секретный ключ: %s", "secret key: %s"), cfg.SecretKeyFile)
 		key := make([]byte, 32)
 		if _, err := rand.Read(key); err != nil {
 			return nil, err
@@ -184,7 +188,7 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 		return nil, err
 	}
 	if created {
-		step("самоподписанный сертификат: %s", certPath)
+		step(T("самоподписанный сертификат: %s", "self-signed certificate: %s"), certPath)
 	}
 	for _, p := range []string{certPath, keyPath} {
 		if err := chownName(p, cfg.ServiceUser, cfg.ServiceGroup, 0); err != nil {
@@ -193,7 +197,7 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 	}
 	res.Fingerprint, _ = api.CertFingerprint(certPath)
 
-	step("база данных: %s", cfg.DBPath())
+	step(T("база данных: %s", "database: %s"), cfg.DBPath())
 	db, err := store.Open(ctx, cfg.DBPath())
 	if err != nil {
 		return nil, err
@@ -217,9 +221,9 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 				db.Close() //nolint:errcheck // cleanup
 				return nil, err
 			}
-			step("пароль администратора %s обновлён", login)
+			step(T("пароль администратора %s обновлён", "administrator %s: password updated"), login)
 		} else {
-			step("администратор %s уже существует", login)
+			step(T("администратор %s уже существует", "administrator %s already exists"), login)
 		}
 	case errors.Is(err, store.ErrNotFound):
 		if password == "" {
@@ -241,7 +245,7 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 		}
 		res.AdminCreated = true
 		res.AdminPassword = password
-		step("администратор %s создан", login)
+		step(T("администратор %s создан", "administrator %s created"), login)
 	default:
 		db.Close() //nolint:errcheck // cleanup
 		return nil, err
@@ -292,12 +296,12 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 		return nil, err
 	}
 	if opened, err := openFirewalld(cfg.Web.Listen); err != nil {
-		step("предупреждение: firewalld: %v", err)
+		step(T("предупреждение: firewalld: %v", "warning: firewalld: %v"), err)
 	} else if opened != "" {
-		step("firewalld: открыт порт %s", opened)
+		step(T("firewalld: открыт порт %s", "firewalld: port %s opened"), opened)
 	}
 	if opts.Start {
-		step("запуск сервисов")
+		step("%s", T("запуск сервисов", "starting the services"))
 		for _, u := range []string{"monopanel-agent.service", "monopanel-api.service"} {
 			if err := sd.Restart(ctx, u); err != nil {
 				return nil, err
@@ -316,7 +320,7 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 			time.Sleep(500 * time.Millisecond)
 		}
 		if !res.Healthy {
-			step("предупреждение: API не ответил за 20 с; смотрите journalctl -u monopanel-api")
+			step("%s", T("предупреждение: API не ответил за 20 с; смотрите journalctl -u monopanel-api", "warning: the API did not answer within 20 s; see journalctl -u monopanel-api"))
 		}
 	}
 

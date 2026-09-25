@@ -109,6 +109,7 @@ Conventions:
 - Commands backed by a job wait for it to finish by default and print its progress and log (`--no-wait` returns the job number at once).
 - Exit codes: 0 — ok, 1 — error, 2 — invalid arguments, 3 — the job failed, 4 — permission denied.
 - `--json` prints a single JSON object (or array), without progress or hints.
+- The CLI and the TUI speak the language of the terminal locale, the way the web UI follows the browser: a CIS language in `LC_ALL`, `LC_MESSAGES`, `LANG` or `LANGUAGE` gives Russian, anything else, including `C`/`POSIX`, English; `MP_LANG=ru` or `MP_LANG=en` sets it explicitly. The server's own messages are in English.
 - `mp completion <shell>` prints the completion script; it is not part of the package yet.
 
 ## 3. TUI menu

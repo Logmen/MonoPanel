@@ -12,10 +12,10 @@ import (
 )
 
 func filesCmd() *cobra.Command {
-	c := &cobra.Command{Use: "files", Short: "файлы клиентов (выполняются от имени клиента через helper)"}
+	c := &cobra.Command{Use: "files", Short: T("файлы клиентов (выполняются от имени клиента через helper)", "clients' files (operations run as the client through the helper)")}
 	var user string
-	c.PersistentFlags().StringVar(&user, "user", "", "владелец файлов (обязателен для администратора)")
-	ls := &cobra.Command{Use: "ls [path]", Short: "список каталога (пути относительно домашнего каталога)", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	c.PersistentFlags().StringVar(&user, "user", "", T("владелец файлов (обязателен для администратора)", "owner of the files (required for an administrator)"))
+	ls := &cobra.Command{Use: "ls [path]", Short: T("список каталога (пути относительно домашнего каталога)", "list a directory (paths are relative to the home directory)"), Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -66,19 +66,19 @@ func filesCmd() *cobra.Command {
 			return nil
 		}}
 	}
-	mkdir := op("mkdir <path>", "создать каталог", 1, func(a []string) apitypes.FileOpRequest { return apitypes.FileOpRequest{Op: "mkdir", Path: a[0]} })
-	rm := op("rm <path>", "удалить файл или каталог", 1, func(a []string) apitypes.FileOpRequest { return apitypes.FileOpRequest{Op: "rm", Path: a[0]} })
-	mv := op("mv <src> <dst>", "переместить/переименовать", 2, func(a []string) apitypes.FileOpRequest {
+	mkdir := op("mkdir <path>", T("создать каталог", "create a directory"), 1, func(a []string) apitypes.FileOpRequest { return apitypes.FileOpRequest{Op: "mkdir", Path: a[0]} })
+	rm := op("rm <path>", T("удалить файл или каталог", "delete a file or directory"), 1, func(a []string) apitypes.FileOpRequest { return apitypes.FileOpRequest{Op: "rm", Path: a[0]} })
+	mv := op("mv <src> <dst>", T("переместить/переименовать", "move or rename"), 2, func(a []string) apitypes.FileOpRequest {
 		return apitypes.FileOpRequest{Op: "mv", Path: a[0], Dest: a[1]}
 	})
-	chmod := op("chmod <mode> <path>", "права, например 644", 2, func(a []string) apitypes.FileOpRequest {
+	chmod := op("chmod <mode> <path>", T("права, например 644", "change permissions, for example 644"), 2, func(a []string) apitypes.FileOpRequest {
 		return apitypes.FileOpRequest{Op: "chmod", Mode: a[0], Path: a[1]}
 	})
-	extract := op("extract <archive> <dest>", "распаковать zip / tar.gz", 2, func(a []string) apitypes.FileOpRequest {
+	extract := op("extract <archive> <dest>", T("распаковать zip / tar.gz", "extract a zip / tar.gz"), 2, func(a []string) apitypes.FileOpRequest {
 		return apitypes.FileOpRequest{Op: "extract", Path: a[0], Dest: a[1]}
 	})
-	size := op("size <path>", "размер каталога в байтах", 1, func(a []string) apitypes.FileOpRequest { return apitypes.FileOpRequest{Op: "size", Path: a[0]} })
-	get := &cobra.Command{Use: "get <remote> [local]", Short: "скачать файл (local по умолчанию — имя файла, '-' = stdout)", Args: cobra.RangeArgs(1, 2), RunE: func(cmd *cobra.Command, args []string) error {
+	size := op("size <path>", T("размер каталога в байтах", "directory size in bytes"), 1, func(a []string) apitypes.FileOpRequest { return apitypes.FileOpRequest{Op: "size", Path: a[0]} })
+	get := &cobra.Command{Use: "get <remote> [local]", Short: T("скачать файл (local по умолчанию — имя файла, '-' = stdout)", "download a file (local defaults to the file name, '-' = stdout)"), Args: cobra.RangeArgs(1, 2), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -97,7 +97,7 @@ func filesCmd() *cobra.Command {
 		}
 		return os.WriteFile(local, data, 0o644)
 	}}
-	put := &cobra.Command{Use: "put <local> <remote>", Short: "загрузить файл", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
+	put := &cobra.Command{Use: "put <local> <remote>", Short: T("загрузить файл", "upload a file"), Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -110,7 +110,7 @@ func filesCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("загружено %s байт → %s\n", strconv.FormatInt(res.Value, 10), args[1])
+		fmt.Printf(T("загружено %s байт → %s\n", "uploaded %s bytes → %s\n"), strconv.FormatInt(res.Value, 10), args[1])
 		return nil
 	}}
 	c.AddCommand(ls, mkdir, rm, mv, chmod, extract, size, get, put)

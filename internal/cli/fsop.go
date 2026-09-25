@@ -23,7 +23,7 @@ import (
 // privileges were dropped to the client's uid: every operation runs with the
 // client's own permissions, so symlink tricks cannot escalate.
 func fsopCmd() *cobra.Command {
-	c := &cobra.Command{Use: "fsop", Hidden: true, Short: "файловые операции от имени клиента (вызывается агентом)"}
+	c := &cobra.Command{Use: "fsop", Hidden: true, Short: T("файловые операции от имени клиента (вызывается агентом)", "file operations as the client (called by the agent)")}
 	root := func() string {
 		if h := os.Getenv("HOME"); h != "" {
 			return filepath.Clean(h)
@@ -209,7 +209,7 @@ func fsopCmd() *cobra.Command {
 		f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 		if err != nil {
 			if os.IsExist(err) {
-				return fmt.Errorf("%s уже существует", filepath.Base(p))
+				return fmt.Errorf(T("%s уже существует", "%s already exists"), filepath.Base(p))
 			}
 			return err
 		}

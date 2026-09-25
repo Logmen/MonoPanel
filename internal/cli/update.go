@@ -23,15 +23,15 @@ import (
 )
 
 func updateCmd() *cobra.Command {
-	c := &cobra.Command{Use: "update", Short: "обновление панели из релизов репозитория", RunE: func(cmd *cobra.Command, _ []string) error {
+	c := &cobra.Command{Use: "update", Short: T("обновление панели из релизов репозитория", "panel updates from the repository's releases"), RunE: func(cmd *cobra.Command, _ []string) error {
 		return showUpdate(cmd, false)
 	}}
-	c.AddCommand(&cobra.Command{Use: "check", Short: "спросить репозиторий о новой версии", RunE: func(cmd *cobra.Command, _ []string) error {
+	c.AddCommand(&cobra.Command{Use: "check", Short: T("спросить репозиторий о новой версии", "ask the repository for a new version"), RunE: func(cmd *cobra.Command, _ []string) error {
 		return showUpdate(cmd, true)
 	}})
 
 	var version string
-	apply := &cobra.Command{Use: "apply", Short: "установить новую версию (панель перезапустится)", RunE: func(cmd *cobra.Command, _ []string) error {
+	apply := &cobra.Command{Use: "apply", Short: T("установить новую версию (панель перезапустится)", "install the new version (the panel restarts)"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -44,18 +44,18 @@ func updateCmd() *cobra.Command {
 			return err
 		}
 		if !g.json {
-			fmt.Fprintln(os.Stderr, "установка идёт в фоне; проверить: mp update")
+			fmt.Fprintln(os.Stderr, T("установка идёт в фоне; проверить: mp update", "installing in the background; to check: mp update"))
 		}
 		return nil
 	}}
-	apply.Flags().StringVar(&version, "version", "", "версия или тег (по умолчанию последняя в канале)")
+	apply.Flags().StringVar(&version, "version", "", T("версия или тег (по умолчанию последняя в канале)", "version or tag (default: the latest in the channel)"))
 	c.AddCommand(apply)
 
 	var req apitypes.UpdateSettingsRequest
 	var hours int
 	var auto bool
 	var tokenStdin bool
-	settings := &cobra.Command{Use: "settings", Short: "репозиторий, канал, токен и расписание проверок", RunE: func(cmd *cobra.Command, _ []string) error {
+	settings := &cobra.Command{Use: "settings", Short: T("репозиторий, канал, токен и расписание проверок", "repository, channel, token and check schedule"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -80,19 +80,19 @@ func updateCmd() *cobra.Command {
 		printUpdate(st)
 		return nil
 	}}
-	settings.Flags().StringVar(&req.Repo, "repo", "", "репозиторий с релизами (owner/name; \"-\" отключить обновления)")
-	settings.Flags().StringVar(&req.API, "api", "", "адрес API репозитория (по умолчанию api.github.com; \"-\" вернуть обратно)")
-	settings.Flags().StringVar(&req.Channel, "channel", "", "stable или beta")
-	settings.Flags().StringVar(&req.Token, "token", "", "токен доступа к репозиторию")
-	settings.Flags().BoolVar(&tokenStdin, "token-stdin", false, "прочитать токен из stdin, не оставляя его в истории команд")
-	settings.Flags().BoolVar(&req.ClearToken, "clear-token", false, "удалить сохранённый токен")
-	settings.Flags().IntVar(&hours, "check-hours", 24, "как часто проверять обновления (0 — не проверять)")
-	settings.Flags().BoolVar(&auto, "auto-apply", false, "устанавливать обновления автоматически")
+	settings.Flags().StringVar(&req.Repo, "repo", "", T("репозиторий с релизами (owner/name; \"-\" отключить обновления)", "repository with the releases (owner/name; \"-\" turns updates off)"))
+	settings.Flags().StringVar(&req.API, "api", "", T("адрес API репозитория (по умолчанию api.github.com; \"-\" вернуть обратно)", "the repository's API address (default api.github.com; \"-\" resets it)"))
+	settings.Flags().StringVar(&req.Channel, "channel", "", T("stable или beta", "stable or beta"))
+	settings.Flags().StringVar(&req.Token, "token", "", T("токен доступа к репозиторию", "repository access token"))
+	settings.Flags().BoolVar(&tokenStdin, "token-stdin", false, T("прочитать токен из stdin, не оставляя его в истории команд", "read the token from stdin, keeping it out of the shell history"))
+	settings.Flags().BoolVar(&req.ClearToken, "clear-token", false, T("удалить сохранённый токен", "delete the saved token"))
+	settings.Flags().IntVar(&hours, "check-hours", 24, T("как часто проверять обновления (0 — не проверять)", "how often to check for updates (0 — never)"))
+	settings.Flags().BoolVar(&auto, "auto-apply", false, T("устанавливать обновления автоматически", "install updates automatically"))
 	c.AddCommand(settings)
 
 	var key string
 	var restart, clear bool
-	trust := &cobra.Command{Use: "trust", Short: "ключ, которым подписаны релизы (пишется в config.yaml)", RunE: func(cmd *cobra.Command, _ []string) error {
+	trust := &cobra.Command{Use: "trust", Short: T("ключ, которым подписаны релизы (пишется в config.yaml)", "the key releases are signed with (written to config.yaml)"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cfg, err := loadConfig()
 		if err != nil {
 			return err
@@ -102,12 +102,12 @@ func updateCmd() *cobra.Command {
 			if err := cfg.Save(cfg.Path()); err != nil {
 				return err
 			}
-			fmt.Println("ключ удалён: релизы будут приниматься по контрольной сумме")
+			fmt.Println(T("ключ удалён: релизы будут приниматься по контрольной сумме", "key removed: releases will be accepted by their checksum"))
 			key = "-"
 		}
 		if key == "" {
 			if cfg.Update.PublicKey == "" {
-				fmt.Println("ключ обновлений не задан: релизы принимаются по контрольной сумме")
+				fmt.Println(T("ключ обновлений не задан: релизы принимаются по контрольной сумме", "no update key set: releases are accepted by their checksum"))
 				return nil
 			}
 			fmt.Println(cfg.Update.PublicKey)
@@ -121,12 +121,12 @@ func updateCmd() *cobra.Command {
 			if err := cfg.Save(cfg.Path()); err != nil {
 				return err
 			}
-			fmt.Println("ключ сохранён в", cfg.Path())
+			fmt.Println(T("ключ сохранён в", "key saved to"), cfg.Path())
 		}
 		// Both daemons read the key at startup: the API to check a release
 		// before downloading it, the agent to check it again before install.
 		if !restart {
-			fmt.Println("применится после перезапуска: systemctl restart monopanel-agent monopanel-api (или --restart)")
+			fmt.Println(T("применится после перезапуска: systemctl restart monopanel-agent monopanel-api (или --restart)", "takes effect after a restart: systemctl restart monopanel-agent monopanel-api (or --restart)"))
 			return nil
 		}
 		sd, err := systemd.Connect(cmd.Context())
@@ -139,12 +139,12 @@ func updateCmd() *cobra.Command {
 				return err
 			}
 		}
-		fmt.Println("панель перезапущена")
+		fmt.Println(T("панель перезапущена", "panel restarted"))
 		return nil
 	}}
-	trust.Flags().StringVar(&key, "key", "", "публичный ключ ed25519 в base64 (без флага — показать текущий)")
-	trust.Flags().BoolVar(&clear, "clear", false, "убрать ключ и принимать релизы без подписи")
-	trust.Flags().BoolVar(&restart, "restart", false, "перезапустить панель, чтобы ключ начал действовать")
+	trust.Flags().StringVar(&key, "key", "", T("публичный ключ ed25519 в base64 (без флага — показать текущий)", "ed25519 public key in base64 (omit it to see the current one)"))
+	trust.Flags().BoolVar(&clear, "clear", false, T("убрать ключ и принимать релизы без подписи", "remove the key and accept unsigned releases"))
+	trust.Flags().BoolVar(&restart, "restart", false, T("перезапустить панель, чтобы ключ начал действовать", "restart the panel so that the key takes effect"))
 	c.AddCommand(trust)
 	return c
 }
@@ -171,19 +171,19 @@ func showUpdate(cmd *cobra.Command, refresh bool) error {
 }
 
 func printUpdate(st *apitypes.UpdateStatus) {
-	fmt.Printf("Версия:      %s\n", st.Current)
+	fmt.Printf(T("Версия:      %s\n", "Version:    %s\n"), st.Current)
 	switch {
 	case st.Settings.Repo == "":
-		fmt.Println("Репозиторий: не настроен (mp update settings --repo owner/name --token-stdin)")
+		fmt.Println(T("Репозиторий: не настроен (mp update settings --repo owner/name --token-stdin)", "Repository: not configured (mp update settings --repo owner/name --token-stdin)"))
 	default:
 		where := st.Settings.Repo
 		if st.Settings.API != "" {
 			where += " @ " + st.Settings.API
 		}
 		if st.Settings.RepoBuiltIn {
-			where += ", из сборки"
+			where += T(", из сборки", ", built-in")
 		}
-		fmt.Printf("Репозиторий: %s (%s)\n", where, st.Settings.Channel)
+		fmt.Printf(T("Репозиторий: %s (%s)\n", "Repository: %s (%s)\n"), where, st.Settings.Channel)
 	}
 	if st.Latest != "" {
 		when := ""
@@ -191,32 +191,32 @@ func printUpdate(st *apitypes.UpdateStatus) {
 			when = ", " + st.PublishedAt.Local().Format("2006-01-02")
 		}
 		if st.Available {
-			fmt.Printf("Доступна:    %s%s — mp update apply\n", st.Latest, when)
+			fmt.Printf(T("Доступна:    %s%s — mp update apply\n", "Available:  %s%s — mp update apply\n"), st.Latest, when)
 		} else {
-			fmt.Printf("Последняя:   %s%s — установлена свежая версия\n", st.Latest, when)
+			fmt.Printf(T("Последняя:   %s%s — установлена свежая версия\n", "Latest:     %s%s — up to date\n"), st.Latest, when)
 		}
 	}
 	if st.CheckedAt != nil {
-		fmt.Printf("Проверено:   %s\n", st.CheckedAt.Local().Format("2006-01-02 15:04"))
+		fmt.Printf(T("Проверено:   %s\n", "Checked:    %s\n"), st.CheckedAt.Local().Format("2006-01-02 15:04"))
 	}
 	if st.LastError != "" {
-		fmt.Printf("Ошибка:      %s\n", st.LastError)
+		fmt.Printf(T("Ошибка:      %s\n", "Error:      %s\n"), st.LastError)
 	}
-	auto := "по запросу"
+	auto := T("по запросу", "installed on request")
 	if st.Settings.AutoApply {
-		auto = "автоматически"
+		auto = T("автоматически", "installed automatically")
 	}
-	every := fmt.Sprintf("каждые %d ч", st.Settings.CheckHours)
+	every := fmt.Sprintf(T("каждые %d ч", "checked every %d h"), st.Settings.CheckHours)
 	if st.Settings.CheckHours == 0 {
-		every = "проверка выключена"
+		every = T("проверка выключена", "checks off")
 	}
-	key := "без подписи"
+	key := T("без подписи", "no signature check")
 	if st.KeyPinned {
-		key = "подпись обязательна"
+		key = T("подпись обязательна", "signature required")
 	}
-	fmt.Printf("Обновления:  %s, %s, %s\n", every, auto, key)
+	fmt.Printf(T("Обновления:  %s, %s, %s\n", "Updates:    %s, %s, %s\n"), every, auto, key)
 	if a := st.LastAttempt; a != nil {
-		line := fmt.Sprintf("Последняя установка: %s → %s, %s", a.From, a.To, a.Status)
+		line := fmt.Sprintf(T("Последняя установка: %s → %s, %s", "Last install: %s → %s, %s"), a.From, a.To, a.Status)
 		if a.Error != "" {
 			line += ": " + a.Error
 		}
@@ -229,9 +229,9 @@ func printUpdate(st *apitypes.UpdateStatus) {
 // it is never meant to be run by hand.
 func updateRunCmd() *cobra.Command {
 	var pkg, sha, version, from string
-	c := &cobra.Command{Use: "update-run", Short: "установить подготовленный пакет обновления", Hidden: true, RunE: func(cmd *cobra.Command, _ []string) error {
+	c := &cobra.Command{Use: "update-run", Short: T("установить подготовленный пакет обновления", "install a staged update package"), Hidden: true, RunE: func(cmd *cobra.Command, _ []string) error {
 		if os.Geteuid() != 0 {
-			return &exitError{code: 4, msg: "update-run выполняется только от root"}
+			return &exitError{code: 4, msg: T("update-run выполняется только от root", "update-run must run as root")}
 		}
 		cfg, err := loadConfig()
 		if err != nil {
@@ -254,10 +254,10 @@ func updateRunCmd() *cobra.Command {
 		}
 		return inst.Run(cmd.Context())
 	}}
-	c.Flags().StringVar(&pkg, "package", "", "путь к .deb или .rpm")
-	c.Flags().StringVar(&sha, "sha256", "", "ожидаемая контрольная сумма пакета")
-	c.Flags().StringVar(&version, "version", "", "устанавливаемая версия")
-	c.Flags().StringVar(&from, "from", buildinfo.Version, "версия, которую заменяем")
+	c.Flags().StringVar(&pkg, "package", "", T("путь к .deb или .rpm", "path to the .deb or .rpm"))
+	c.Flags().StringVar(&sha, "sha256", "", T("ожидаемая контрольная сумма пакета", "expected checksum of the package"))
+	c.Flags().StringVar(&version, "version", "", T("устанавливаемая версия", "version being installed"))
+	c.Flags().StringVar(&from, "from", buildinfo.Version, T("версия, которую заменяем", "version being replaced"))
 	c.MarkFlagRequired("package")
 	c.MarkFlagRequired("sha256")
 	c.MarkFlagRequired("version")

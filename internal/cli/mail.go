@@ -11,9 +11,9 @@ import (
 )
 
 func mailCmd() *cobra.Command {
-	c := &cobra.Command{Use: "mail", Short: "почтовый сервер: домены, ящики, алиасы, DNS, вебпочта"}
+	c := &cobra.Command{Use: "mail", Short: T("почтовый сервер: домены, ящики, алиасы, DNS, вебпочта", "mail server: domains, mailboxes, aliases, DNS, webmail")}
 
-	status := &cobra.Command{Use: "status", Short: "состояние почтового сервера", RunE: func(cmd *cobra.Command, _ []string) error {
+	status := &cobra.Command{Use: "status", Short: T("состояние почтового сервера", "mail server status"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -26,17 +26,17 @@ func mailCmd() *cobra.Command {
 			return printJSON(st)
 		}
 		if !st.Installed {
-			fmt.Println("Почтовый сервер не установлен: mp mail install --hostname mail.example.com")
+			fmt.Println(T("Почтовый сервер не установлен: mp mail install --hostname mail.example.com", "The mail server is not installed: mp mail install --hostname mail.example.com"))
 			return nil
 		}
-		fmt.Printf("Сервер:   %s · postfix %s · dovecot %s\n", st.Hostname, st.Versions["postfix"], st.Versions["dovecot"])
+		fmt.Printf(T("Сервер:   %s · postfix %s · dovecot %s\n", "Server:   %s · postfix %s · dovecot %s\n"), st.Hostname, st.Versions["postfix"], st.Versions["dovecot"])
 		fmt.Printf("TLS:      %s%s\n", st.TLS, until(st))
-		fmt.Printf("Объекты:  доменов %d · ящиков %d · алиасов %d · лимит письма %d МБ\n", st.Domains, st.Mailboxes, st.Aliases, st.MaxSizeMB)
+		fmt.Printf(T("Объекты:  доменов %d · ящиков %d · алиасов %d · лимит письма %d МБ\n", "Objects:  domains %d · mailboxes %d · aliases %d · message size limit %d MB\n"), st.Domains, st.Mailboxes, st.Aliases, st.MaxSizeMB)
 		parts := make([]string, 0, len(st.Services))
 		for _, s := range st.Services {
 			parts = append(parts, strings.TrimSuffix(s.Unit, ".service")+"="+s.ActiveState)
 		}
-		fmt.Println("Сервисы: ", strings.Join(parts, " "))
+		fmt.Println(T("Сервисы: ", "Services:"), strings.Join(parts, " "))
 		open, closed, foreign := []string{}, []string{}, []string{}
 		for _, p := range st.Ports {
 			label := fmt.Sprintf("%d/%s", p.Port, p.Name)
@@ -49,17 +49,17 @@ func mailCmd() *cobra.Command {
 				foreign = append(foreign, label+" ("+p.Owner+")")
 			}
 		}
-		fmt.Println("Порты:    слушают", strings.Join(open, " "))
+		fmt.Println(T("Порты:    слушают", "Ports:    listening"), strings.Join(open, " "))
 		if len(closed) > 0 {
-			fmt.Println("          не отвечают", strings.Join(closed, " "))
+			fmt.Println(T("          не отвечают", "          not responding"), strings.Join(closed, " "))
 		}
 		for _, f := range foreign {
-			fmt.Println("          занят другим сервисом:", f)
+			fmt.Println(T("          занят другим сервисом:", "          taken by another service:"), f)
 		}
 		if st.Webmail != "" {
-			fmt.Printf("Вебпочта: %s (Roundcube %s)\n", st.WebmailURL, st.Versions["roundcube"])
+			fmt.Printf(T("Вебпочта: %s (Roundcube %s)\n", "Webmail:  %s (Roundcube %s)\n"), st.WebmailURL, st.Versions["roundcube"])
 			if st.WebmailPort > 0 {
-				fmt.Printf("          сайт %s, порт %d — на имени и сертификате почтового сервера\n", st.Webmail, st.WebmailPort)
+				fmt.Printf(T("          сайт %s, порт %d — на имени и сертификате почтового сервера\n", "          site %s, port %d — on the mail server's name and certificate\n"), st.Webmail, st.WebmailPort)
 			}
 		}
 		for _, w := range st.Warnings {
@@ -70,7 +70,7 @@ func mailCmd() *cobra.Command {
 
 	var install apitypes.MailInstallRequest
 	var noPOP3 bool
-	inst := &cobra.Command{Use: "install", Short: "установить postfix, dovecot и opendkim", RunE: func(cmd *cobra.Command, _ []string) error {
+	inst := &cobra.Command{Use: "install", Short: T("установить postfix, dovecot и opendkim", "install postfix, dovecot and opendkim"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -85,10 +85,10 @@ func mailCmd() *cobra.Command {
 		}
 		return followJob(cmd, cl, res.JobID)
 	}}
-	inst.Flags().StringVar(&install.Hostname, "hostname", "", "имя почтового сервера (MX и имя в сертификате); по умолчанию FQDN хоста")
-	inst.Flags().BoolVar(&noPOP3, "no-pop3", false, "не включать POP3")
+	inst.Flags().StringVar(&install.Hostname, "hostname", "", T("имя почтового сервера (MX и имя в сертификате); по умолчанию FQDN хоста", "mail server hostname (MX and the name in the certificate); defaults to the host's FQDN"))
+	inst.Flags().BoolVar(&noPOP3, "no-pop3", false, T("не включать POP3", "do not enable POP3"))
 
-	apply := &cobra.Command{Use: "apply", Short: "перегенерировать конфигурацию postfix и dovecot", RunE: func(cmd *cobra.Command, _ []string) error {
+	apply := &cobra.Command{Use: "apply", Short: T("перегенерировать конфигурацию postfix и dovecot", "regenerate the postfix and dovecot configuration"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -103,7 +103,7 @@ func mailCmd() *cobra.Command {
 	var set apitypes.MailSettingsRequest
 	var pop3, dkim, port25 string
 	var rbl []string
-	settings := &cobra.Command{Use: "settings", Short: "изменить настройки сервера", RunE: func(cmd *cobra.Command, _ []string) error {
+	settings := &cobra.Command{Use: "settings", Short: T("изменить настройки сервера", "change the server settings"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -115,7 +115,7 @@ func mailCmd() *cobra.Command {
 			}
 			v, err := strconv.ParseBool(raw)
 			if err != nil {
-				return &exitError{code: 2, msg: "--" + flag + ": нужно true или false"}
+				return &exitError{code: 2, msg: "--" + flag + T(": нужно true или false", ": must be true or false")}
 			}
 			*dst = &v
 		}
@@ -129,17 +129,17 @@ func mailCmd() *cobra.Command {
 		if g.json {
 			return printJSON(st)
 		}
-		fmt.Printf("настройки сохранены: %s, POP3 %v, DKIM %v, порт 25 %v\n", st.Hostname, st.POP3, st.DKIM, st.Port25)
+		fmt.Printf(T("настройки сохранены: %s, POP3 %v, DKIM %v, порт 25 %v\n", "settings saved: %s, POP3 %v, DKIM %v, port 25 %v\n"), st.Hostname, st.POP3, st.DKIM, st.Port25)
 		return nil
 	}}
-	settings.Flags().StringVar(&set.Hostname, "hostname", "", "имя почтового сервера")
-	settings.Flags().IntVar(&set.MaxSizeMB, "max-size", 0, "максимальный размер письма, МБ")
-	settings.Flags().StringVar(&pop3, "pop3", "", "true|false — предлагать POP3")
-	settings.Flags().StringVar(&dkim, "dkim", "", "true|false — подписывать письма")
-	settings.Flags().StringVar(&port25, "port25", "", "true|false — принимать почту на 25 порту")
-	settings.Flags().StringSliceVar(&rbl, "rbl", nil, "чёрные списки для входящих (пустое значение очищает)")
+	settings.Flags().StringVar(&set.Hostname, "hostname", "", T("имя почтового сервера", "mail server hostname"))
+	settings.Flags().IntVar(&set.MaxSizeMB, "max-size", 0, T("максимальный размер письма, МБ", "maximum message size, MB"))
+	settings.Flags().StringVar(&pop3, "pop3", "", T("true|false — предлагать POP3", "true|false — offer POP3"))
+	settings.Flags().StringVar(&dkim, "dkim", "", T("true|false — подписывать письма", "true|false — sign messages"))
+	settings.Flags().StringVar(&port25, "port25", "", T("true|false — принимать почту на 25 порту", "true|false — accept mail on port 25"))
+	settings.Flags().StringSliceVar(&rbl, "rbl", nil, T("чёрные списки для входящих (пустое значение очищает)", "blocklists for incoming mail (an empty value clears them)"))
 	var webmailPort int
-	settings.Flags().IntVar(&webmailPort, "webmail-port", 0, "порт для вебпочты на имени почтового сервера (0 — выключить)")
+	settings.Flags().IntVar(&webmailPort, "webmail-port", 0, T("порт для вебпочты на имени почтового сервера (0 — выключить)", "webmail port on the mail server's hostname (0 turns it off)"))
 	settingsRunE := settings.RunE
 	settings.RunE = func(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("webmail-port") {
@@ -156,13 +156,13 @@ func until(st *apitypes.MailStatus) string {
 	if st.CertUntil == nil {
 		return ""
 	}
-	return " до " + st.CertUntil.Format("2006-01-02")
+	return T(" до ", " until ") + st.CertUntil.Format("2006-01-02")
 }
 
 func mailDomainCmd() *cobra.Command {
-	c := &cobra.Command{Use: "domain", Short: "почтовые домены"}
+	c := &cobra.Command{Use: "domain", Short: T("почтовые домены", "mail domains")}
 
-	list := &cobra.Command{Use: "list", Short: "список доменов", RunE: func(cmd *cobra.Command, _ []string) error {
+	list := &cobra.Command{Use: "list", Short: T("список доменов", "list domains"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -176,22 +176,22 @@ func mailDomainCmd() *cobra.Command {
 		}
 		rows := make([][]string, 0, len(domains))
 		for _, d := range domains {
-			state := "активен"
+			state := T("активен", "active")
 			if !d.Active {
-				state = "выключен"
+				state = T("выключен", "disabled")
 			}
 			if d.Lenient {
-				state += ", приёмник"
+				state += T(", приёмник", ", lenient")
 			}
 			rows = append(rows, []string{d.Name, d.Login, state, strconv.Itoa(d.Mailboxes), strconv.Itoa(d.Aliases), d.DKIMSelector})
 		}
-		table([]string{"ДОМЕН", "ВЛАДЕЛЕЦ", "СОСТОЯНИЕ", "ЯЩИКОВ", "АЛИАСОВ", "DKIM"}, rows)
+		table([]string{T("ДОМЕН", "DOMAIN"), T("ВЛАДЕЛЕЦ", "OWNER"), T("СОСТОЯНИЕ", "STATE"), T("ЯЩИКОВ", "MAILBOXES"), T("АЛИАСОВ", "ALIASES"), "DKIM"}, rows)
 		return nil
 	}}
 
 	var req apitypes.MailDomainRequest
 	var noDKIM bool
-	add := &cobra.Command{Use: "add <domain>", Short: "добавить домен и выпустить ключ DKIM", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	add := &cobra.Command{Use: "add <domain>", Short: T("добавить домен и выпустить ключ DKIM", "add a domain and issue a DKIM key"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -208,16 +208,16 @@ func mailDomainCmd() *cobra.Command {
 		if g.json {
 			return printJSON(d)
 		}
-		fmt.Printf("домен %s добавлен\n", d.Name)
-		fmt.Println("что прописать в DNS: mp mail domain dns", d.Name)
+		fmt.Printf(T("домен %s добавлен\n", "domain %s added\n"), d.Name)
+		fmt.Println(T("что прописать в DNS: mp mail domain dns", "what to publish in DNS: mp mail domain dns"), d.Name)
 		return nil
 	}}
-	add.Flags().StringVar(&req.User, "user", "", "владелец (обязателен для администратора)")
-	add.Flags().BoolVar(&noDKIM, "no-dkim", false, "не выпускать ключ DKIM")
-	add.Flags().BoolVar(&req.Lenient, "lenient", false, "домен-приёмник: принимать письма и от криво настроенных отправителей")
+	add.Flags().StringVar(&req.User, "user", "", T("владелец (обязателен для администратора)", "owner (required for an administrator)"))
+	add.Flags().BoolVar(&noDKIM, "no-dkim", false, T("не выпускать ключ DKIM", "do not issue a DKIM key"))
+	add.Flags().BoolVar(&req.Lenient, "lenient", false, T("домен-приёмник: принимать письма и от криво настроенных отправителей", "lenient domain: accept mail even from badly configured senders"))
 
 	var lenient, activeFlag string
-	set := &cobra.Command{Use: "set <domain>", Short: "включить домен, выключить или сделать приёмником", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	set := &cobra.Command{Use: "set <domain>", Short: T("включить домен, выключить или сделать приёмником", "enable or disable a domain, or make it lenient"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -229,7 +229,7 @@ func mailDomainCmd() *cobra.Command {
 			}
 			v, err := strconv.ParseBool(raw)
 			if err != nil {
-				return &exitError{code: 2, msg: "--" + name + ": нужно true или false"}
+				return &exitError{code: 2, msg: "--" + name + T(": нужно true или false", ": must be true or false")}
 			}
 			if name == "lenient" {
 				patch.Lenient = &v
@@ -244,13 +244,13 @@ func mailDomainCmd() *cobra.Command {
 		if g.json {
 			return printJSON(d)
 		}
-		fmt.Printf("домен %s: активен %v, приём без строгих проверок %v\n", d.Name, d.Active, d.Lenient)
+		fmt.Printf(T("домен %s: активен %v, приём без строгих проверок %v\n", "domain %s: active %v, lenient %v\n"), d.Name, d.Active, d.Lenient)
 		return nil
 	}}
-	set.Flags().StringVar(&lenient, "lenient", "", "true|false — принимать письма без проверок HELO и домена отправителя")
+	set.Flags().StringVar(&lenient, "lenient", "", T("true|false — принимать письма без проверок HELO и домена отправителя", "true|false — accept mail without the HELO and sender domain checks"))
 	set.Flags().StringVar(&activeFlag, "active", "", "true|false")
 
-	rm := &cobra.Command{Use: "rm <domain>", Short: "удалить домен вместе с ящиками и письмами", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	rm := &cobra.Command{Use: "rm <domain>", Short: T("удалить домен вместе с ящиками и письмами", "delete a domain along with its mailboxes and messages"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -258,11 +258,11 @@ func mailDomainCmd() *cobra.Command {
 		if err := cl.DeleteMailDomain(cmd.Context(), args[0]); err != nil {
 			return err
 		}
-		fmt.Printf("домен %s удалён\n", args[0])
+		fmt.Printf(T("домен %s удалён\n", "domain %s deleted\n"), args[0])
 		return nil
 	}}
 
-	dkim := &cobra.Command{Use: "dkim <domain>", Short: "выпустить новый ключ DKIM", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	dkim := &cobra.Command{Use: "dkim <domain>", Short: T("выпустить новый ключ DKIM", "issue a new DKIM key"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -274,11 +274,11 @@ func mailDomainCmd() *cobra.Command {
 		if g.json {
 			return printJSON(d)
 		}
-		fmt.Printf("новый селектор %s; обновите TXT-запись %s._domainkey.%s\n", d.DKIMSelector, d.DKIMSelector, d.Name)
+		fmt.Printf(T("новый селектор %s; обновите TXT-запись %s._domainkey.%s\n", "new selector %s; update the TXT record %s._domainkey.%s\n"), d.DKIMSelector, d.DKIMSelector, d.Name)
 		return nil
 	}}
 
-	dnsCmd := &cobra.Command{Use: "dns <domain>", Short: "какие записи нужны в DNS и что опубликовано сейчас", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	dnsCmd := &cobra.Command{Use: "dns <domain>", Short: T("какие записи нужны в DNS и что опубликовано сейчас", "which DNS records are needed and what is published now"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -292,17 +292,17 @@ func mailDomainCmd() *cobra.Command {
 		}
 		rows := make([][]string, 0, len(res.Records))
 		for _, r := range res.Records {
-			mark := map[string]string{"ok": "✓", "missing": "нет", "mismatch": "≠", "unknown": "?"}[r.Status]
+			mark := map[string]string{"ok": "✓", "missing": T("нет", "missing"), "mismatch": "≠", "unknown": "?"}[r.Status]
 			rows = append(rows, []string{mark, r.Type, r.Name, r.Value})
 		}
-		table([]string{"", "ТИП", "ИМЯ", "ЗНАЧЕНИЕ"}, rows)
+		table([]string{"", T("ТИП", "TYPE"), T("ИМЯ", "NAME"), T("ЗНАЧЕНИЕ", "VALUE")}, rows)
 		for _, r := range res.Records {
 			if r.Status != "ok" && r.Found != "" {
-				fmt.Printf("\n%s %s: сейчас %q\n", r.Type, r.Name, r.Found)
+				fmt.Printf(T("\n%s %s: сейчас %q\n", "\n%s %s: currently %q\n"), r.Type, r.Name, r.Found)
 			}
 		}
 		if res.OK {
-			fmt.Println("\nвсе обязательные записи на месте")
+			fmt.Println(T("\nвсе обязательные записи на месте", "\nall required records are in place"))
 		}
 		return nil
 	}}
@@ -312,11 +312,11 @@ func mailDomainCmd() *cobra.Command {
 }
 
 func mailboxCmd() *cobra.Command {
-	c := &cobra.Command{Use: "box", Short: "почтовые ящики"}
+	c := &cobra.Command{Use: "box", Short: T("почтовые ящики", "mailboxes")}
 	var domain string
-	c.PersistentFlags().StringVar(&domain, "domain", "", "показывать только этот домен")
+	c.PersistentFlags().StringVar(&domain, "domain", "", T("показывать только этот домен", "show only this domain"))
 
-	list := &cobra.Command{Use: "list", Short: "список ящиков", RunE: func(cmd *cobra.Command, _ []string) error {
+	list := &cobra.Command{Use: "list", Short: T("список ящиков", "list mailboxes"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -330,22 +330,22 @@ func mailboxCmd() *cobra.Command {
 		}
 		rows := make([][]string, 0, len(boxes))
 		for _, b := range boxes {
-			quota := "без лимита"
+			quota := T("без лимита", "unlimited")
 			if b.QuotaMB > 0 {
-				quota = strconv.Itoa(b.QuotaMB) + " МБ"
+				quota = strconv.Itoa(b.QuotaMB) + T(" МБ", " MB")
 			}
-			state := "активен"
+			state := T("активен", "active")
 			if !b.Active {
-				state = "выключен"
+				state = T("выключен", "disabled")
 			}
 			rows = append(rows, []string{b.Address, b.Name, quota, state})
 		}
-		table([]string{"АДРЕС", "ИМЯ", "КВОТА", "СОСТОЯНИЕ"}, rows)
+		table([]string{T("АДРЕС", "ADDRESS"), T("ИМЯ", "NAME"), T("КВОТА", "QUOTA"), T("СОСТОЯНИЕ", "STATE")}, rows)
 		return nil
 	}}
 
 	var req apitypes.MailboxRequest
-	add := &cobra.Command{Use: "add <user@example.com>", Short: "создать ящик", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	add := &cobra.Command{Use: "add <user@example.com>", Short: T("создать ящик", "create a mailbox"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -358,22 +358,22 @@ func mailboxCmd() *cobra.Command {
 		if g.json {
 			return printJSON(res)
 		}
-		fmt.Printf("ящик %s создан\n", res.Mailbox.Address)
+		fmt.Printf(T("ящик %s создан\n", "mailbox %s created\n"), res.Mailbox.Address)
 		if res.Password != "" {
-			fmt.Printf("пароль: %s (показывается один раз)\n", res.Password)
+			fmt.Printf(T("пароль: %s (показывается один раз)\n", "password: %s (shown only once)\n"), res.Password)
 		}
 		fmt.Println("IMAP: ", res.IMAP)
 		fmt.Println("SMTP: ", res.SMTP)
 		return nil
 	}}
-	add.Flags().StringVar(&req.Password, "password", "", "пароль (пустой — сгенерируется)")
-	add.Flags().StringVar(&req.Name, "name", "", "имя владельца ящика")
-	add.Flags().IntVar(&req.QuotaMB, "quota", 0, "квота в МБ (0 — без ограничения)")
+	add.Flags().StringVar(&req.Password, "password", "", T("пароль (пустой — сгенерируется)", "password (generated if empty)"))
+	add.Flags().StringVar(&req.Name, "name", "", T("имя владельца ящика", "name of the mailbox owner"))
+	add.Flags().IntVar(&req.QuotaMB, "quota", 0, T("квота в МБ (0 — без ограничения)", "quota in MB (0 — unlimited)"))
 
 	var patch apitypes.MailboxUpdateRequest
 	var active, name string
 	var quota int
-	set := &cobra.Command{Use: "set <user@example.com>", Short: "изменить пароль, квоту или состояние", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	set := &cobra.Command{Use: "set <user@example.com>", Short: T("изменить пароль, квоту или состояние", "change the password, quota or state"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -387,7 +387,7 @@ func mailboxCmd() *cobra.Command {
 		if active != "" {
 			v, err := strconv.ParseBool(active)
 			if err != nil {
-				return &exitError{code: 2, msg: "--active: нужно true или false"}
+				return &exitError{code: 2, msg: T("--active: нужно true или false", "--active: must be true or false")}
 			}
 			patch.Active = &v
 		}
@@ -399,19 +399,19 @@ func mailboxCmd() *cobra.Command {
 			return printJSON(res)
 		}
 		if res.Password != "" {
-			fmt.Printf("новый пароль %s: %s\n", args[0], res.Password)
+			fmt.Printf(T("новый пароль %s: %s\n", "new password for %s: %s\n"), args[0], res.Password)
 		} else {
-			fmt.Printf("ящик %s изменён\n", args[0])
+			fmt.Printf(T("ящик %s изменён\n", "mailbox %s updated\n"), args[0])
 		}
 		return nil
 	}}
-	set.Flags().StringVar(&patch.Password, "password", "", "новый пароль (без других флагов пароль генерируется)")
-	set.Flags().StringVar(&name, "name", "", "имя владельца ящика")
-	set.Flags().IntVar(&quota, "quota", 0, "квота в МБ")
+	set.Flags().StringVar(&patch.Password, "password", "", T("новый пароль (без других флагов пароль генерируется)", "new password (with no other flags, one is generated)"))
+	set.Flags().StringVar(&name, "name", "", T("имя владельца ящика", "name of the mailbox owner"))
+	set.Flags().IntVar(&quota, "quota", 0, T("квота в МБ", "quota in MB"))
 	set.Flags().StringVar(&active, "active", "", "true|false")
 
 	var purge bool
-	rm := &cobra.Command{Use: "rm <user@example.com>", Short: "удалить ящик", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	rm := &cobra.Command{Use: "rm <user@example.com>", Short: T("удалить ящик", "delete a mailbox"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -419,21 +419,21 @@ func mailboxCmd() *cobra.Command {
 		if err := cl.DeleteMailbox(cmd.Context(), args[0], purge); err != nil {
 			return err
 		}
-		fmt.Printf("ящик %s удалён\n", args[0])
+		fmt.Printf(T("ящик %s удалён\n", "mailbox %s deleted\n"), args[0])
 		return nil
 	}}
-	rm.Flags().BoolVar(&purge, "purge", false, "удалить и письма с диска")
+	rm.Flags().BoolVar(&purge, "purge", false, T("удалить и письма с диска", "also delete the messages from disk"))
 
 	c.AddCommand(list, add, set, rm)
 	return c
 }
 
 func mailAliasCmd() *cobra.Command {
-	c := &cobra.Command{Use: "alias", Short: "почтовые алиасы и catch-all"}
+	c := &cobra.Command{Use: "alias", Short: T("почтовые алиасы и catch-all", "mail aliases and catch-all")}
 	var domain string
-	c.PersistentFlags().StringVar(&domain, "domain", "", "показывать только этот домен")
+	c.PersistentFlags().StringVar(&domain, "domain", "", T("показывать только этот домен", "show only this domain"))
 
-	list := &cobra.Command{Use: "list", Short: "список алиасов", RunE: func(cmd *cobra.Command, _ []string) error {
+	list := &cobra.Command{Use: "list", Short: T("список алиасов", "list aliases"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -449,11 +449,11 @@ func mailAliasCmd() *cobra.Command {
 		for _, a := range aliases {
 			rows = append(rows, []string{a.Address, strings.Join(a.Destinations(), ", ")})
 		}
-		table([]string{"АДРЕС", "КУДА"}, rows)
+		table([]string{T("АДРЕС", "ADDRESS"), T("КУДА", "DESTINATIONS")}, rows)
 		return nil
 	}}
 
-	add := &cobra.Command{Use: "add <info@example.com> <dest> [dest...]", Short: "создать алиас (@example.com — catch-all)", Args: cobra.MinimumNArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
+	add := &cobra.Command{Use: "add <info@example.com> <dest> [dest...]", Short: T("создать алиас (@example.com — catch-all)", "create an alias (@example.com — catch-all)"), Args: cobra.MinimumNArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -469,7 +469,7 @@ func mailAliasCmd() *cobra.Command {
 		return nil
 	}}
 
-	rm := &cobra.Command{Use: "rm <info@example.com>", Short: "удалить алиас", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	rm := &cobra.Command{Use: "rm <info@example.com>", Short: T("удалить алиас", "delete an alias"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -477,7 +477,7 @@ func mailAliasCmd() *cobra.Command {
 		if err := cl.DeleteMailAlias(cmd.Context(), args[0]); err != nil {
 			return err
 		}
-		fmt.Printf("алиас %s удалён\n", args[0])
+		fmt.Printf(T("алиас %s удалён\n", "alias %s deleted\n"), args[0])
 		return nil
 	}}
 
@@ -487,7 +487,7 @@ func mailAliasCmd() *cobra.Command {
 
 func webmailCmd() *cobra.Command {
 	var req apitypes.WebmailRequest
-	c := &cobra.Command{Use: "webmail <domain>", Short: "поставить Roundcube отдельным сайтом панели", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	c := &cobra.Command{Use: "webmail <domain>", Short: T("поставить Roundcube отдельным сайтом панели", "install Roundcube as a separate panel site"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -499,8 +499,8 @@ func webmailCmd() *cobra.Command {
 		}
 		return followJob(cmd, cl, res.JobID)
 	}}
-	c.Flags().StringVar(&req.User, "user", "", "владелец сайта (обязателен для администратора)")
-	c.Flags().StringVar(&req.PHPVersion, "php", "", "версия PHP (по умолчанию самая новая установленная)")
-	c.Flags().IntVar(&req.Port, "port", 0, "открыть вебпочту ещё и на этом порту почтового хоста (например 2096) — без своей записи в DNS")
+	c.Flags().StringVar(&req.User, "user", "", T("владелец сайта (обязателен для администратора)", "site owner (required for an administrator)"))
+	c.Flags().StringVar(&req.PHPVersion, "php", "", T("версия PHP (по умолчанию самая новая установленная)", "PHP version (defaults to the newest installed)"))
+	c.Flags().IntVar(&req.Port, "port", 0, T("открыть вебпочту ещё и на этом порту почтового хоста (например 2096) — без своей записи в DNS", "also serve webmail on this port of the mail host (e.g. 2096) — no DNS record of its own"))
 	return c
 }

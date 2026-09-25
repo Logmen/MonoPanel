@@ -11,11 +11,11 @@ import (
 )
 
 func backupCmd() *cobra.Command {
-	c := &cobra.Command{Use: "backup", Short: "бэкапы через restic (local, SFTP, S3, B2, REST)"}
-	target := &cobra.Command{Use: "target", Short: "репозитории"}
+	c := &cobra.Command{Use: "backup", Short: T("бэкапы через restic (local, SFTP, S3, B2, REST)", "backups with restic (local, SFTP, S3, B2, REST)")}
+	target := &cobra.Command{Use: "target", Short: T("репозитории", "repositories")}
 	var req apitypes.BackupTargetRequest
 	var env []string
-	add := &cobra.Command{Use: "add <name>", Short: "зарегистрировать репозиторий (инициализируется при первом запуске)", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	add := &cobra.Command{Use: "add <name>", Short: T("зарегистрировать репозиторий (инициализируется при первом запуске)", "register a repository (initialised on the first run)"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -25,7 +25,7 @@ func backupCmd() *cobra.Command {
 		for _, e := range env {
 			k, v, ok := strings.Cut(e, "=")
 			if !ok {
-				return &exitError{code: 2, msg: "--env ожидает KEY=VALUE"}
+				return &exitError{code: 2, msg: T("--env ожидает KEY=VALUE", "--env expects KEY=VALUE")}
 			}
 			req.Env[k] = v
 		}
@@ -36,22 +36,22 @@ func backupCmd() *cobra.Command {
 		if g.json {
 			return printJSON(res)
 		}
-		fmt.Printf("цель %s (%s) → %s; хранить daily %d / weekly %d / monthly %d\n", res.Target.Name, res.Target.Type, res.Target.Repository, res.Target.KeepDaily, res.Target.KeepWeekly, res.Target.KeepMonthly)
+		fmt.Printf(T("цель %s (%s) → %s; хранить daily %d / weekly %d / monthly %d\n", "target %s (%s) → %s; keep daily %d / weekly %d / monthly %d\n"), res.Target.Name, res.Target.Type, res.Target.Repository, res.Target.KeepDaily, res.Target.KeepWeekly, res.Target.KeepMonthly)
 		if res.Password != "" {
-			fmt.Println("пароль репозитория (сохраните, без него бэкапы не восстановить):", res.Password)
+			fmt.Println(T("пароль репозитория (сохраните, без него бэкапы не восстановить):", "repository password (save it: the backups cannot be restored without it):"), res.Password)
 		}
 		return nil
 	}}
 	add.Flags().StringVar(&req.Type, "type", "local", "local, sftp, s3, b2, rest")
-	add.Flags().StringVar(&req.Repository, "repo", "", "путь или URL репозитория restic")
-	add.Flags().StringVar(&req.Password, "password", "", "пароль репозитория (иначе генерируется)")
-	add.Flags().StringSliceVar(&env, "env", nil, "переменные для облака, например AWS_ACCESS_KEY_ID=…")
-	add.Flags().IntVar(&req.KeepDaily, "keep-daily", 7, "хранить дневных снимков")
-	add.Flags().IntVar(&req.KeepWeekly, "keep-weekly", 4, "хранить недельных снимков")
-	add.Flags().IntVar(&req.KeepMonthly, "keep-monthly", 3, "хранить месячных снимков")
-	add.Flags().StringVar(&req.Schedule, "schedule", "", "daily — ежедневный бэкап всего сервера")
+	add.Flags().StringVar(&req.Repository, "repo", "", T("путь или URL репозитория restic", "path or URL of the restic repository"))
+	add.Flags().StringVar(&req.Password, "password", "", T("пароль репозитория (иначе генерируется)", "repository password (generated if omitted)"))
+	add.Flags().StringSliceVar(&env, "env", nil, T("переменные для облака, например AWS_ACCESS_KEY_ID=…", "variables for cloud storage, for example AWS_ACCESS_KEY_ID=…"))
+	add.Flags().IntVar(&req.KeepDaily, "keep-daily", 7, T("хранить дневных снимков", "daily snapshots to keep"))
+	add.Flags().IntVar(&req.KeepWeekly, "keep-weekly", 4, T("хранить недельных снимков", "weekly snapshots to keep"))
+	add.Flags().IntVar(&req.KeepMonthly, "keep-monthly", 3, T("хранить месячных снимков", "monthly snapshots to keep"))
+	add.Flags().StringVar(&req.Schedule, "schedule", "", T("daily — ежедневный бэкап всего сервера", "daily — a backup of the whole server every day"))
 	add.MarkFlagRequired("repo")
-	list := &cobra.Command{Use: "list", Short: "список репозиториев", RunE: func(cmd *cobra.Command, _ []string) error {
+	list := &cobra.Command{Use: "list", Short: T("список репозиториев", "list repositories"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -74,7 +74,7 @@ func backupCmd() *cobra.Command {
 		table([]string{"ID", "NAME", "TYPE", "REPOSITORY", "KEEP D/W/M", "SCHEDULE", "LAST RUN"}, rows)
 		return nil
 	}}
-	rm := &cobra.Command{Use: "rm <name>", Short: "забыть репозиторий (данные не удаляются)", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	rm := &cobra.Command{Use: "rm <name>", Short: T("забыть репозиторий (данные не удаляются)", "forget a repository (its data is not deleted)"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -84,7 +84,7 @@ func backupCmd() *cobra.Command {
 	target.AddCommand(add, list, rm)
 
 	var tref, scope string
-	run := &cobra.Command{Use: "run", Short: "выполнить бэкап сейчас", RunE: func(cmd *cobra.Command, _ []string) error {
+	run := &cobra.Command{Use: "run", Short: T("выполнить бэкап сейчас", "run a backup now"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -95,11 +95,11 @@ func backupCmd() *cobra.Command {
 		}
 		return followJob(cmd, cl, ref.JobID)
 	}}
-	run.Flags().StringVar(&tref, "target", "", "имя репозитория")
+	run.Flags().StringVar(&tref, "target", "", T("имя репозитория", "repository name"))
 	run.Flags().StringVar(&scope, "scope", "server", "server | user:<login> | site:<domain> | db:<name>")
 	run.MarkFlagRequired("target")
 	var listTarget string
-	runs := &cobra.Command{Use: "list", Short: "выполненные бэкапы", RunE: func(cmd *cobra.Command, _ []string) error {
+	runs := &cobra.Command{Use: "list", Short: T("выполненные бэкапы", "list the backups that have run"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -122,9 +122,9 @@ func backupCmd() *cobra.Command {
 		table([]string{"ID", "TARGET", "SCOPE", "STATUS", "SNAPSHOT", "SIZE", "FILES", "STARTED", "ERROR"}, rows)
 		return nil
 	}}
-	runs.Flags().StringVar(&listTarget, "target", "", "фильтр по репозиторию")
+	runs.Flags().StringVar(&listTarget, "target", "", T("фильтр по репозиторию", "filter by repository"))
 	var snapTarget string
-	snaps := &cobra.Command{Use: "snapshots", Short: "снимки в репозитории", RunE: func(cmd *cobra.Command, _ []string) error {
+	snaps := &cobra.Command{Use: "snapshots", Short: T("снимки в репозитории", "list the snapshots in a repository"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -143,10 +143,10 @@ func backupCmd() *cobra.Command {
 		table([]string{"ID", "TIME", "TAGS", "PATHS"}, rows)
 		return nil
 	}}
-	snaps.Flags().StringVar(&snapTarget, "target", "", "имя репозитория")
+	snaps.Flags().StringVar(&snapTarget, "target", "", T("имя репозитория", "repository name"))
 	snaps.MarkFlagRequired("target")
 	var rreq apitypes.RestoreRequest
-	restore := &cobra.Command{Use: "restore <snapshot>", Short: "восстановить снимок (по умолчанию в /var/lib/monopanel/restore/<snapshot>)", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	restore := &cobra.Command{Use: "restore <snapshot>", Short: T("восстановить снимок (по умолчанию в /var/lib/monopanel/restore/<snapshot>)", "restore a snapshot (into /var/lib/monopanel/restore/<snapshot> by default)"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -158,9 +158,9 @@ func backupCmd() *cobra.Command {
 		}
 		return followJob(cmd, cl, ref.JobID)
 	}}
-	restore.Flags().StringVar(&rreq.Target, "target", "", "имя репозитория")
-	restore.Flags().StringSliceVar(&rreq.Include, "include", nil, "восстановить только эти пути")
-	restore.Flags().BoolVar(&rreq.InPlace, "in-place", false, "восстановить поверх текущих файлов (нужен --include)")
+	restore.Flags().StringVar(&rreq.Target, "target", "", T("имя репозитория", "repository name"))
+	restore.Flags().StringSliceVar(&rreq.Include, "include", nil, T("восстановить только эти пути", "restore only these paths"))
+	restore.Flags().BoolVar(&rreq.InPlace, "in-place", false, T("восстановить поверх текущих файлов (нужен --include)", "restore over the current files (needs --include)"))
 	restore.MarkFlagRequired("target")
 	c.AddCommand(target, run, runs, snaps, restore)
 	return c

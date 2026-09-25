@@ -41,7 +41,7 @@ func newLogger(cfg config.Config) *slog.Logger {
 }
 
 func versionCmd() *cobra.Command {
-	return &cobra.Command{Use: "version", Short: "версия панели", Run: func(cmd *cobra.Command, _ []string) {
+	return &cobra.Command{Use: "version", Short: T("версия панели", "panel version"), Run: func(cmd *cobra.Command, _ []string) {
 		if g.json {
 			printJSON(map[string]string{"version": buildinfo.Version, "commit": buildinfo.Commit, "date": buildinfo.Date}) //nolint:errcheck // best effort; the caller reports the real failure
 			return
@@ -51,7 +51,7 @@ func versionCmd() *cobra.Command {
 }
 
 func apiCmd() *cobra.Command {
-	return &cobra.Command{Use: "api", Short: "запустить API-сервер (monopanel-api.service)", Hidden: true, RunE: func(cmd *cobra.Command, _ []string) error {
+	return &cobra.Command{Use: "api", Short: T("запустить API-сервер (monopanel-api.service)", "run the API server (monopanel-api.service)"), Hidden: true, RunE: func(cmd *cobra.Command, _ []string) error {
 		cfg, err := loadConfig()
 		if err != nil {
 			return err
@@ -82,7 +82,7 @@ func apiCmd() *cobra.Command {
 }
 
 func agentCmd() *cobra.Command {
-	return &cobra.Command{Use: "agent", Short: "запустить привилегированный агент (monopanel-agent.service)", Hidden: true, RunE: func(cmd *cobra.Command, _ []string) error {
+	return &cobra.Command{Use: "agent", Short: T("запустить привилегированный агент (monopanel-agent.service)", "run the privileged agent (monopanel-agent.service)"), Hidden: true, RunE: func(cmd *cobra.Command, _ []string) error {
 		cfg, err := loadConfig()
 		if err != nil {
 			return err
@@ -105,8 +105,8 @@ func helperCmd() *cobra.Command {
 	var uid, gid int
 	var groups string
 	c := &cobra.Command{
-		Use:    "helper --uid N --gid N [--groups a,b] -- команда [аргументы]",
-		Short:  "выполнить команду от имени клиента, необратимо сбросив привилегии",
+		Use:    T("helper --uid N --gid N [--groups a,b] -- команда [аргументы]", "helper --uid N --gid N [--groups a,b] -- command [args]"),
+		Short:  T("выполнить команду от имени клиента, необратимо сбросив привилегии", "run a command as a client, dropping privileges irreversibly"),
 		Hidden: true,
 		Args:   cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -147,8 +147,8 @@ func helperCmd() *cobra.Command {
 			return syscall.Exec(path, args, env)
 		},
 	}
-	c.Flags().IntVar(&uid, "uid", 0, "uid клиента")
-	c.Flags().IntVar(&gid, "gid", 0, "gid клиента")
-	c.Flags().StringVar(&groups, "groups", "", "дополнительные группы через запятую")
+	c.Flags().IntVar(&uid, "uid", 0, T("uid клиента", "client's uid"))
+	c.Flags().IntVar(&gid, "gid", 0, T("gid клиента", "client's gid"))
+	c.Flags().StringVar(&groups, "groups", "", T("дополнительные группы через запятую", "comma-separated supplementary groups"))
 	return c
 }

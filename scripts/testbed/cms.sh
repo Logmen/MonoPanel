@@ -10,6 +10,9 @@
 # files is reinstalled with --force. The admin credentials the panel returns
 # are printed on the CREDS lines.
 set -u
+# The admin credentials are read off the Russian lines of mp cms install
+# ("Пароль:", "Админка:"), whatever locale the ssh session brought along.
+export MP_LANG=ru
 vm=$1; shift
 zone=${TB_DNS_LABEL:-tb}.${TB_ZONE:?TB_ZONE is required}
 user=cms

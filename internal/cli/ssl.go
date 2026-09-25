@@ -35,7 +35,7 @@ func resolveCert(ctx context.Context, cl *client.Client, ref string) (*store.Cer
 			}
 		}
 	}
-	return nil, &exitError{code: 2, msg: "сертификат не найден: " + ref}
+	return nil, &exitError{code: 2, msg: T("сертификат не найден: ", "certificate not found: ") + ref}
 }
 
 func daysLeft(t *time.Time) string {
@@ -43,14 +43,14 @@ func daysLeft(t *time.Time) string {
 		return "-"
 	}
 	d := int(time.Until(*t).Hours() / 24)
-	return fmt.Sprintf("%s (%dд)", t.Local().Format("2006-01-02"), d)
+	return fmt.Sprintf(T("%s (%dд)", "%s (%dd)"), t.Local().Format("2006-01-02"), d)
 }
 
 func sslCmd() *cobra.Command {
-	c := &cobra.Command{Use: "ssl", Short: "TLS-сертификаты (Let's Encrypt / ACME)"}
+	c := &cobra.Command{Use: "ssl", Short: T("TLS-сертификаты (Let's Encrypt / ACME)", "TLS certificates (Let's Encrypt / ACME)")}
 	var req apitypes.IssueCertificateRequest
 	var rsa, noRenew bool
-	issue := &cobra.Command{Use: "issue <hostname> [hostname...]", Short: "выпустить сертификат через ACME (HTTP-01 по webroot nginx)", Args: cobra.MinimumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	issue := &cobra.Command{Use: "issue <hostname> [hostname...]", Short: T("выпустить сертификат через ACME (HTTP-01 по webroot nginx)", "issue a certificate via ACME (HTTP-01 through the nginx webroot)"), Args: cobra.MinimumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -68,20 +68,20 @@ func sslCmd() *cobra.Command {
 			return err
 		}
 		if !g.json {
-			fmt.Printf("сертификат #%d %s: %s\n", res.Certificate.ID, res.Certificate.Name, strings.Join(res.Certificate.Names, ", "))
+			fmt.Printf(T("сертификат #%d %s: %s\n", "certificate #%d %s: %s\n"), res.Certificate.ID, res.Certificate.Name, strings.Join(res.Certificate.Names, ", "))
 		} else if g.noWait {
 			return printJSON(res)
 		}
 		return followJob(cmd, cl, res.JobID)
 	}}
-	issue.Flags().StringVar(&req.Email, "email", "", "e-mail аккаунта ACME (запоминается)")
-	issue.Flags().BoolVar(&req.Staging, "staging", false, "staging-директория Let's Encrypt (тестовый, недоверенный сертификат)")
-	issue.Flags().StringVar(&req.Directory, "directory", "", "свой ACME directory URL")
-	issue.Flags().BoolVar(&rsa, "rsa", false, "ключ RSA-2048 вместо ECDSA P-256")
-	issue.Flags().BoolVar(&noRenew, "no-auto-renew", false, "не продлевать автоматически")
-	issue.Flags().StringVar(&req.DNS, "dns", "", "DNS-провайдер для DNS-01 (нужен для wildcard *.example.com)")
+	issue.Flags().StringVar(&req.Email, "email", "", T("e-mail аккаунта ACME (запоминается)", "ACME account e-mail (remembered)"))
+	issue.Flags().BoolVar(&req.Staging, "staging", false, T("staging-директория Let's Encrypt (тестовый, недоверенный сертификат)", "Let's Encrypt staging directory (untrusted test certificate)"))
+	issue.Flags().StringVar(&req.Directory, "directory", "", T("свой ACME directory URL", "custom ACME directory URL"))
+	issue.Flags().BoolVar(&rsa, "rsa", false, T("ключ RSA-2048 вместо ECDSA P-256", "RSA-2048 key instead of ECDSA P-256"))
+	issue.Flags().BoolVar(&noRenew, "no-auto-renew", false, T("не продлевать автоматически", "do not renew automatically"))
+	issue.Flags().StringVar(&req.DNS, "dns", "", T("DNS-провайдер для DNS-01 (нужен для wildcard *.example.com)", "DNS provider for DNS-01 (needed for a wildcard *.example.com)"))
 
-	list := &cobra.Command{Use: "list", Short: "список сертификатов", RunE: func(cmd *cobra.Command, _ []string) error {
+	list := &cobra.Command{Use: "list", Short: T("список сертификатов", "list certificates"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -95,16 +95,16 @@ func sslCmd() *cobra.Command {
 		}
 		rows := make([][]string, 0, len(list))
 		for _, c := range list {
-			renew := "нет"
+			renew := T("нет", "no")
 			if c.AutoRenew {
-				renew = "да"
+				renew = T("да", "yes")
 			}
 			rows = append(rows, []string{strconv.FormatInt(c.ID, 10), c.Name, strings.Join(c.Names, ","), c.Status, c.Issuer, daysLeft(c.NotAfter), renew, firstLine(c.LastError, "")})
 		}
 		table([]string{"ID", "NAME", "NAMES", "STATUS", "ISSUER", "EXPIRES", "AUTO", "ERROR"}, rows)
 		return nil
 	}}
-	show := &cobra.Command{Use: "show <id|hostname>", Short: "показать сертификат", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	show := &cobra.Command{Use: "show <id|hostname>", Short: T("показать сертификат", "show a certificate"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -116,7 +116,7 @@ func sslCmd() *cobra.Command {
 		return printJSON(c)
 	}}
 	var all bool
-	renew := &cobra.Command{Use: "renew <id|hostname>", Short: "продлить (перевыпустить) сертификат сейчас", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	renew := &cobra.Command{Use: "renew <id|hostname>", Short: T("продлить (перевыпустить) сертификат сейчас", "renew (reissue) a certificate now"), Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -129,7 +129,7 @@ func sslCmd() *cobra.Command {
 			}
 		} else {
 			if len(args) != 1 {
-				return &exitError{code: 2, msg: "укажите id/hostname или --all"}
+				return &exitError{code: 2, msg: T("укажите id/hostname или --all", "specify an id/hostname or --all")}
 			}
 			c, err := resolveCert(cmd.Context(), cl, args[0])
 			if err != nil {
@@ -151,8 +151,8 @@ func sslCmd() *cobra.Command {
 		}
 		return nil
 	}}
-	renew.Flags().BoolVar(&all, "all", false, "все ACME-сертификаты")
-	rm := &cobra.Command{Use: "rm <id|hostname>", Short: "удалить сертификат и его файлы", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	renew.Flags().BoolVar(&all, "all", false, T("все ACME-сертификаты", "all ACME certificates"))
+	rm := &cobra.Command{Use: "rm <id|hostname>", Short: T("удалить сертификат и его файлы", "delete a certificate and its files"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -168,8 +168,8 @@ func sslCmd() *cobra.Command {
 }
 
 func webCmd() *cobra.Command {
-	c := &cobra.Command{Use: "web", Short: "HTTPS-порт панели"}
-	tlsCmd := &cobra.Command{Use: "tls", Short: "какой сертификат отдаёт панель", RunE: func(cmd *cobra.Command, _ []string) error {
+	c := &cobra.Command{Use: "web", Short: T("HTTPS-порт панели", "the panel's HTTPS port")}
+	tlsCmd := &cobra.Command{Use: "tls", Short: T("какой сертификат отдаёт панель", "which certificate the panel serves"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -181,11 +181,12 @@ func webCmd() *cobra.Command {
 		if g.json {
 			return printJSON(info)
 		}
-		src := "самоподписанный"
+		src := T("самоподписанный", "self-signed")
 		if info.Source == "acme" {
 			src = "ACME (Let's Encrypt)"
 		}
-		fmt.Printf("hostname:   %s\nисточник:   %s\nsubject:    %s\nnames:      %s\nissuer:     %s\nдействует:  %s — %s\nsha256:     %s\n",
+		fmt.Printf(T("hostname:   %s\nисточник:   %s\nsubject:    %s\nnames:      %s\nissuer:     %s\nдействует:  %s — %s\nsha256:     %s\n",
+			"hostname:   %s\nsource:     %s\nsubject:    %s\nnames:      %s\nissuer:     %s\nvalid:      %s — %s\nsha256:     %s\n"),
 			info.Hostname, src, info.Certificate.Subject, strings.Join(info.Certificate.Names, ", "), info.Certificate.Issuer,
 			info.Certificate.NotBefore.Local().Format("2006-01-02"), info.Certificate.NotAfter.Local().Format("2006-01-02"), info.Certificate.Fingerprint)
 		return nil
@@ -196,7 +197,7 @@ func webCmd() *cobra.Command {
 
 func configSetCmd() *cobra.Command {
 	var restart bool
-	c := &cobra.Command{Use: "set <key> <value>", Short: "изменить параметр config.yaml (root)", Long: "Ключи: web.hostname, web.listen, log.level, log.format, jobs.workers", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
+	c := &cobra.Command{Use: "set <key> <value>", Short: T("изменить параметр config.yaml (root)", "change a config.yaml setting (root)"), Long: T("Ключи: web.hostname, web.listen, log.level, log.format, jobs.workers", "Keys: web.hostname, web.listen, log.level, log.format, jobs.workers"), Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := loadConfig()
 		if err != nil {
 			return err
@@ -214,11 +215,11 @@ func configSetCmd() *cobra.Command {
 		case "jobs.workers":
 			n, err := strconv.Atoi(val)
 			if err != nil || n < 1 {
-				return &exitError{code: 2, msg: "jobs.workers должен быть положительным числом"}
+				return &exitError{code: 2, msg: T("jobs.workers должен быть положительным числом", "jobs.workers must be a positive number")}
 			}
 			cfg.Jobs.Workers = n
 		default:
-			return &exitError{code: 2, msg: "неизвестный ключ: " + key}
+			return &exitError{code: 2, msg: T("неизвестный ключ: ", "unknown key: ") + key}
 		}
 		if err := cfg.Save(cfg.Path()); err != nil {
 			return err
@@ -233,22 +234,22 @@ func configSetCmd() *cobra.Command {
 			if err := sd.Restart(cmd.Context(), "monopanel-api.service"); err != nil {
 				return err
 			}
-			fmt.Println("monopanel-api перезапущен")
+			fmt.Println(T("monopanel-api перезапущен", "monopanel-api restarted"))
 		} else {
-			fmt.Println("применится после перезапуска: systemctl restart monopanel-api (или --restart)")
+			fmt.Println(T("применится после перезапуска: systemctl restart monopanel-api (или --restart)", "takes effect after a restart: systemctl restart monopanel-api (or --restart)"))
 		}
 		return nil
 	}}
-	c.Flags().BoolVar(&restart, "restart", false, "перезапустить monopanel-api после изменения")
+	c.Flags().BoolVar(&restart, "restart", false, T("перезапустить monopanel-api после изменения", "restart monopanel-api after the change"))
 	_ = config.DefaultPath
 	return c
 }
 
 func dnsProviderCmd() *cobra.Command {
-	c := &cobra.Command{Use: "dns-provider", Short: "DNS-провайдеры для DNS-01 (wildcard-сертификаты)"}
+	c := &cobra.Command{Use: "dns-provider", Short: T("DNS-провайдеры для DNS-01 (wildcard-сертификаты)", "DNS providers for DNS-01 (wildcard certificates)")}
 	var req apitypes.DNSProviderRequest
 	var creds []string
-	add := &cobra.Command{Use: "add <name>", Short: "добавить провайдера (учётные данные шифруются)", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	add := &cobra.Command{Use: "add <name>", Short: T("добавить провайдера (учётные данные шифруются)", "add a provider (credentials are stored encrypted)"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -258,7 +259,7 @@ func dnsProviderCmd() *cobra.Command {
 		for _, c := range creds {
 			k, v, ok := strings.Cut(c, "=")
 			if !ok {
-				return &exitError{code: 2, msg: "--cred ожидает KEY=VALUE"}
+				return &exitError{code: 2, msg: T("--cred ожидает KEY=VALUE", "--cred expects KEY=VALUE")}
 			}
 			req.Credentials[k] = v
 		}
@@ -269,12 +270,13 @@ func dnsProviderCmd() *cobra.Command {
 		if g.json {
 			return printJSON(p)
 		}
-		fmt.Printf("провайдер %s (%s) добавлен; выпуск: mp ssl issue '*.example.com' example.com --dns %s\n", p.Name, p.Type, p.Name)
+		fmt.Printf(T("провайдер %s (%s) добавлен; выпуск: mp ssl issue '*.example.com' example.com --dns %s\n",
+			"provider %s (%s) added; to issue a certificate: mp ssl issue '*.example.com' example.com --dns %s\n"), p.Name, p.Type, p.Name)
 		return nil
 	}}
 	add.Flags().StringVar(&req.Type, "type", "cloudflare", "cloudflare, hetzner, digitalocean, gandiv5, desec, namecheap, rfc2136")
-	add.Flags().StringSliceVar(&creds, "cred", nil, "KEY=VALUE, например CLOUDFLARE_DNS_API_TOKEN=…")
-	list := &cobra.Command{Use: "list", Short: "список", RunE: func(cmd *cobra.Command, _ []string) error {
+	add.Flags().StringSliceVar(&creds, "cred", nil, T("KEY=VALUE, например CLOUDFLARE_DNS_API_TOKEN=…", "KEY=VALUE, e.g. CLOUDFLARE_DNS_API_TOKEN=…"))
+	list := &cobra.Command{Use: "list", Short: T("список", "list the providers"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -293,7 +295,7 @@ func dnsProviderCmd() *cobra.Command {
 		table([]string{"NAME", "TYPE", "CREATED"}, rows)
 		return nil
 	}}
-	types := &cobra.Command{Use: "types", Short: "поддерживаемые типы и их ключи", RunE: func(cmd *cobra.Command, _ []string) error {
+	types := &cobra.Command{Use: "types", Short: T("поддерживаемые типы и их ключи", "supported types and their keys"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -310,7 +312,7 @@ func dnsProviderCmd() *cobra.Command {
 		}
 		return nil
 	}}
-	rm := &cobra.Command{Use: "rm <name>", Short: "удалить", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	rm := &cobra.Command{Use: "rm <name>", Short: T("удалить", "delete a provider"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err

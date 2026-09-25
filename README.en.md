@@ -20,8 +20,9 @@ all speak the same REST API — anything you can do with a mouse you can script.
 > **Languages.** The web UI speaks English and Russian: it follows the browser
 > language and can be switched in Settings. The documentation comes in both: English
 > in [docs/en/](docs/en/), Russian in [docs/](docs/). API, job and diagnostic
-> messages are in English; the CLI and the SSH menu are in Russian for now. The code
-> and the security policy are in English.
+> messages are in English; the CLI and the SSH menu follow the terminal locale by the
+> same rule (`MP_LANG=ru` or `MP_LANG=en` overrides it). The code and the security
+> policy are in English.
 
 Status: **0.8.10**, in daily use on a production server hosting several sites and
 mail. Development moves quickly and breaking changes are possible before 1.0.
@@ -128,7 +129,7 @@ and the terminal menu.
 | SFTP / SSH | `mp user add`, `mp user set --shell\|--sftp-only --password` | SFTP-only means a chroot into `/var/www/<login>` via `sshd_config.d/monopanel.conf`, with one password for the panel and SFTP; `mp user rm <login> [--purge]` removes sites, databases, cron, app services, certificates and the unix account together |
 | Metrics and logs | `mp metrics`, `mp site logs`, `mp logs <unit>`, `mp doctor` | a sampler every 10 s stored as one point per minute for 30 days, site and journald log tails through the agent; site logs rotate weekly or at 100 MB under their own account, eight copies compressed from the second one; doctor checks services, configs, disk, certificates, DNS, jobs and file drift |
 | Security | `mp user totp-reset`, `mp webhook add` | TOTP 2FA (QR in the web UI), Bearer tokens, webhooks signed with HMAC-SHA256 on job events |
-| Languages | — | the web UI in English and Russian: picked from the browser language (CIS languages → Russian, everything else → English), switchable in Settings and on the sign-in screen, remembered per browser; API, job and diagnostic messages are in English, the CLI and the TUI are Russian-only for now; the placeholder page of a new site and the page of a suspended one follow the visitor's browser language by the same rule |
+| Languages | — | the web UI in English and Russian: picked from the browser language (CIS languages → Russian, everything else → English), switchable in Settings and on the sign-in screen, remembered per browser; API, job and diagnostic messages are in English; the CLI and the TUI follow the terminal locale by the same rule (`MP_LANG=ru\|en` overrides it); the placeholder page of a new site and the page of a suspended one follow the visitor's browser language by the same rule |
 
 ### Not there yet
 

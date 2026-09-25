@@ -21,26 +21,26 @@ import (
 func humanBytes(b uint64) string {
 	const unit = 1024.0
 	f := float64(b)
-	for _, s := range []string{"Б", "КБ", "МБ", "ГБ", "ТБ"} {
+	for _, s := range []string{T("Б", "B"), T("КБ", "KB"), T("МБ", "MB"), T("ГБ", "GB"), T("ТБ", "TB")} {
 		if f < unit {
 			return fmt.Sprintf("%.1f %s", f, s)
 		}
 		f /= unit
 	}
-	return fmt.Sprintf("%.1f ПБ", f)
+	return fmt.Sprintf(T("%.1f ПБ", "%.1f PB"), f)
 }
 
 func humanDuration(sec float64) string {
 	d := time.Duration(sec) * time.Second
 	days := int(d.Hours()) / 24
 	if days > 0 {
-		return fmt.Sprintf("%dд %dч", days, int(d.Hours())%24)
+		return fmt.Sprintf(T("%dд %dч", "%dd %dh"), days, int(d.Hours())%24)
 	}
-	return fmt.Sprintf("%dч %dм", int(d.Hours()), int(d.Minutes())%60)
+	return fmt.Sprintf(T("%dч %dм", "%dh %dm"), int(d.Hours()), int(d.Minutes())%60)
 }
 
 func statusCmd() *cobra.Command {
-	return &cobra.Command{Use: "status", Short: "сводка: панель, хост, сервисы, задачи", RunE: func(cmd *cobra.Command, _ []string) error {
+	return &cobra.Command{Use: "status", Short: T("сводка: панель, хост, сервисы, задачи", "summary: panel, host, services, jobs"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -52,17 +52,17 @@ func statusCmd() *cobra.Command {
 		if g.json {
 			return printJSON(st)
 		}
-		fmt.Printf("MonoPanel %s, работает %s, схема БД v%d\n", st.Panel.Version, humanDuration(st.Panel.UptimeSeconds), st.Panel.SchemaVersion)
+		fmt.Printf(T("MonoPanel %s, работает %s, схема БД v%d\n", "MonoPanel %s, up %s, database schema v%d\n"), st.Panel.Version, humanDuration(st.Panel.UptimeSeconds), st.Panel.SchemaVersion)
 		if st.Panel.AgentOK {
-			fmt.Printf("Агент:     работает (%s)\n", st.Panel.AgentVersion)
+			fmt.Printf(T("Агент:     работает (%s)\n", "Agent:     running (%s)\n"), st.Panel.AgentVersion)
 		} else {
-			fmt.Printf("Агент:     НЕДОСТУПЕН: %s\n", st.Panel.AgentError)
+			fmt.Printf(T("Агент:     НЕДОСТУПЕН: %s\n", "Agent:     UNREACHABLE: %s\n"), st.Panel.AgentError)
 		}
 		if h := st.Host; h != nil {
-			fmt.Printf("Хост:      %s · %s · ядро %s · %d CPU · uptime %s\n", h.Hostname, h.Release.PrettyName, h.Kernel, h.CPUs, humanDuration(h.UptimeSeconds))
-			fmt.Printf("Нагрузка:  %.2f %.2f %.2f · память %s из %s\n", h.Load[0], h.Load[1], h.Load[2], humanBytes(h.MemTotalBytes-h.MemAvailableBytes), humanBytes(h.MemTotalBytes))
+			fmt.Printf(T("Хост:      %s · %s · ядро %s · %d CPU · uptime %s\n", "Host:      %s · %s · kernel %s · %d CPU · uptime %s\n"), h.Hostname, h.Release.PrettyName, h.Kernel, h.CPUs, humanDuration(h.UptimeSeconds))
+			fmt.Printf(T("Нагрузка:  %.2f %.2f %.2f · память %s из %s\n", "Load:      %.2f %.2f %.2f · memory %s of %s\n"), h.Load[0], h.Load[1], h.Load[2], humanBytes(h.MemTotalBytes-h.MemAvailableBytes), humanBytes(h.MemTotalBytes))
 			for _, d := range h.Disks {
-				fmt.Printf("Диск %-5s свободно %s из %s\n", d.Mount, humanBytes(d.FreeBytes), humanBytes(d.TotalBytes))
+				fmt.Printf(T("Диск %-5s свободно %s из %s\n", "Disk %-5s %s free of %s\n"), d.Mount, humanBytes(d.FreeBytes), humanBytes(d.TotalBytes))
 			}
 		}
 		if len(st.Services) > 0 {
@@ -70,9 +70,9 @@ func statusCmd() *cobra.Command {
 			for _, s := range st.Services {
 				parts = append(parts, strings.TrimSuffix(s.Unit, ".service")+"="+s.ActiveState)
 			}
-			fmt.Println("Сервисы:  ", strings.Join(parts, " "))
+			fmt.Println(T("Сервисы:  ", "Services: "), strings.Join(parts, " "))
 		}
-		fmt.Printf("Аккаунты:  admin=%d user=%d · задачи: queued=%d running=%d done=%d failed=%d\n",
+		fmt.Printf(T("Аккаунты:  admin=%d user=%d · задачи: queued=%d running=%d done=%d failed=%d\n", "Accounts:  admin=%d user=%d · jobs: queued=%d running=%d done=%d failed=%d\n"),
 			st.Panel.Users["admin"], st.Panel.Users["user"], st.Panel.Jobs["queued"], st.Panel.Jobs["running"], st.Panel.Jobs["done"], st.Panel.Jobs["failed"])
 		return nil
 	}}
@@ -83,11 +83,11 @@ func followJob(cmd *cobra.Command, cl *client.Client, id int64) error {
 		if g.json {
 			return printJSON(map[string]int64{"job_id": id})
 		}
-		fmt.Printf("задача #%d поставлена в очередь\n", id)
+		fmt.Printf(T("задача #%d поставлена в очередь\n", "job #%d queued\n"), id)
 		return nil
 	}
 	if !g.json {
-		fmt.Fprintf(os.Stderr, "задача #%d\n", id)
+		fmt.Fprintf(os.Stderr, T("задача #%d\n", "job #%d\n"), id)
 	}
 	job, err := cl.WaitJob(cmd.Context(), id, func(e jobs.Event) {
 		if g.json {
@@ -107,17 +107,17 @@ func followJob(cmd *cobra.Command, cl *client.Client, id int64) error {
 		return printJSON(job)
 	}
 	if job.Status == store.JobFailed {
-		return &exitError{code: 3, msg: fmt.Sprintf("задача #%d завершилась с ошибкой: %s", id, job.Error)}
+		return &exitError{code: 3, msg: fmt.Sprintf(T("задача #%d завершилась с ошибкой: %s", "job #%d failed: %s"), id, job.Error)}
 	}
-	fmt.Fprintf(os.Stderr, "задача #%d: %s\n", id, job.Status)
+	fmt.Fprintf(os.Stderr, T("задача #%d: %s\n", "job #%d: %s\n"), id, job.Status)
 	return nil
 }
 
 func userCmd() *cobra.Command {
-	c := &cobra.Command{Use: "user", Short: "аккаунты панели и unix-пользователи"}
+	c := &cobra.Command{Use: "user", Short: T("аккаунты панели и unix-пользователи", "panel accounts and unix users")}
 	var req apitypes.CreateUserRequest
 	var passwordStdin, generate bool
-	add := &cobra.Command{Use: "add <login>", Short: "создать пользователя (unix-пользователь и каталоги создаются задачей)", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	add := &cobra.Command{Use: "add <login>", Short: T("создать пользователя (unix-пользователь и каталоги создаются задачей)", "create a user (the unix user and the directories are created by a job)"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -153,19 +153,19 @@ func userCmd() *cobra.Command {
 			}
 			return nil
 		}
-		fmt.Printf("пользователь %s создан (id %d)\n", res.User.Login, res.User.ID)
+		fmt.Printf(T("пользователь %s создан (id %d)\n", "user %s created (id %d)\n"), res.User.Login, res.User.ID)
 		if shown != "" {
-			fmt.Printf("пароль: %s\n", shown)
+			fmt.Printf(T("пароль: %s\n", "password: %s\n"), shown)
 		}
 		return followJob(cmd, cl, res.JobID)
 	}}
-	add.Flags().StringVar(&req.Password, "password", "", "пароль для входа в панель")
-	add.Flags().BoolVar(&passwordStdin, "password-stdin", false, "прочитать пароль из stdin")
-	add.Flags().BoolVar(&generate, "generate", false, "сгенерировать пароль и показать его")
+	add.Flags().StringVar(&req.Password, "password", "", T("пароль для входа в панель", "password for signing in to the panel"))
+	add.Flags().BoolVar(&passwordStdin, "password-stdin", false, T("прочитать пароль из stdin", "read the password from stdin"))
+	add.Flags().BoolVar(&generate, "generate", false, T("сгенерировать пароль и показать его", "generate a password and show it"))
 	add.Flags().StringVar(&req.Email, "email", "", "e-mail")
-	add.Flags().StringVar(&req.Role, "role", "user", "роль: user или admin")
-	add.Flags().BoolVar(&req.Shell, "shell", false, "разрешить SSH-shell (иначе только SFTP)")
-	list := &cobra.Command{Use: "list", Short: "список пользователей", RunE: func(cmd *cobra.Command, _ []string) error {
+	add.Flags().StringVar(&req.Role, "role", "user", T("роль: user или admin", "role: user or admin"))
+	add.Flags().BoolVar(&req.Shell, "shell", false, T("разрешить SSH-shell (иначе только SFTP)", "allow an SSH shell (otherwise SFTP only)"))
+	list := &cobra.Command{Use: "list", Short: T("список пользователей", "list users"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -188,7 +188,7 @@ func userCmd() *cobra.Command {
 		table([]string{"LOGIN", "ROLE", "STATUS", "UID", "HOME", "EMAIL"}, rows)
 		return nil
 	}}
-	show := &cobra.Command{Use: "show <login>", Short: "показать пользователя", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	show := &cobra.Command{Use: "show <login>", Short: T("показать пользователя", "show a user"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -199,7 +199,7 @@ func userCmd() *cobra.Command {
 		}
 		return printJSON(u)
 	}}
-	totpReset := &cobra.Command{Use: "totp-reset <login>", Short: "сбросить 2FA пользователя (восстановление доступа)", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	totpReset := &cobra.Command{Use: "totp-reset <login>", Short: T("сбросить 2FA пользователя (восстановление доступа)", "reset a user's 2FA (to restore access)"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -208,7 +208,7 @@ func userCmd() *cobra.Command {
 	}}
 	var upd apitypes.UserUpdateRequest
 	var shell, sftpOnly, genPw bool
-	set := &cobra.Command{Use: "set <login>", Short: "изменить e-mail, пароль (панель + SFTP/SSH), режим shell/SFTP-only, статус", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	set := &cobra.Command{Use: "set <login>", Short: T("изменить e-mail, пароль (панель + SFTP/SSH), режим shell/SFTP-only, статус", "change the e-mail, password (panel + SFTP/SSH), shell/SFTP-only mode or status"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -231,7 +231,7 @@ func userCmd() *cobra.Command {
 			return err
 		}
 		if shown != "" && !g.json {
-			fmt.Println("пароль:", shown)
+			fmt.Println(T("пароль:", "password:"), shown)
 		}
 		if res.JobID != 0 {
 			return followJob(cmd, cl, res.JobID)
@@ -239,24 +239,24 @@ func userCmd() *cobra.Command {
 		if g.json {
 			return printJSON(res)
 		}
-		fmt.Println("обновлено")
+		fmt.Println(T("обновлено", "updated"))
 		return nil
 	}}
 	set.Flags().StringVar(&upd.Email, "email", "", "e-mail")
-	set.Flags().StringVar(&upd.Password, "password", "", "новый пароль")
-	set.Flags().BoolVar(&genPw, "generate", false, "сгенерировать пароль")
-	set.Flags().BoolVar(&shell, "shell", false, "разрешить SSH shell")
-	set.Flags().BoolVar(&sftpOnly, "sftp-only", false, "только SFTP в chroot домашнего каталога")
-	set.Flags().StringVar(&upd.Status, "status", "", "active или suspended")
+	set.Flags().StringVar(&upd.Password, "password", "", T("новый пароль", "new password"))
+	set.Flags().BoolVar(&genPw, "generate", false, T("сгенерировать пароль", "generate a password"))
+	set.Flags().BoolVar(&shell, "shell", false, T("разрешить SSH shell", "allow an SSH shell"))
+	set.Flags().BoolVar(&sftpOnly, "sftp-only", false, T("только SFTP в chroot домашнего каталога", "SFTP only, chrooted to the home directory"))
+	set.Flags().StringVar(&upd.Status, "status", "", T("active или suspended", "active or suspended"))
 	c.AddCommand(add, list, show, set, totpReset, userRmCmd())
 	return c
 }
 
 func jobCmd() *cobra.Command {
-	c := &cobra.Command{Use: "job", Short: "асинхронные задачи"}
+	c := &cobra.Command{Use: "job", Short: T("асинхронные задачи", "asynchronous jobs")}
 	var limit int
 	var status string
-	list := &cobra.Command{Use: "list", Short: "последние задачи", RunE: func(cmd *cobra.Command, _ []string) error {
+	list := &cobra.Command{Use: "list", Short: T("последние задачи", "recent jobs"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -275,16 +275,16 @@ func jobCmd() *cobra.Command {
 		table([]string{"ID", "TYPE", "STATUS", "PROGRESS", "BY", "CREATED", "MESSAGE"}, rows)
 		return nil
 	}}
-	list.Flags().IntVar(&limit, "limit", 30, "сколько задач показать")
-	list.Flags().StringVar(&status, "status", "", "фильтр: queued running done failed")
-	show := &cobra.Command{Use: "show <id>", Short: "задача с журналом", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	list.Flags().IntVar(&limit, "limit", 30, T("сколько задач показать", "how many jobs to show"))
+	list.Flags().StringVar(&status, "status", "", T("фильтр: queued running done failed", "filter: queued running done failed"))
+	show := &cobra.Command{Use: "show <id>", Short: T("задача с журналом", "a job with its log"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
 		}
 		id, err := strconv.ParseInt(args[0], 10, 64)
 		if err != nil {
-			return &exitError{code: 2, msg: "id задачи должен быть числом"}
+			return &exitError{code: 2, msg: T("id задачи должен быть числом", "job id must be a number")}
 		}
 		j, err := cl.GetJob(cmd.Context(), id)
 		if err != nil {
@@ -295,19 +295,19 @@ func jobCmd() *cobra.Command {
 		}
 		fmt.Printf("#%d %s — %s (%d%%) %s\n", j.ID, j.Type, j.Status, j.Progress, j.Message)
 		if j.Error != "" {
-			fmt.Println("ошибка:", j.Error)
+			fmt.Println(T("ошибка:", "error:"), j.Error)
 		}
 		fmt.Print(j.Log)
 		return nil
 	}}
-	wait := &cobra.Command{Use: "wait <id>", Short: "дождаться завершения и показать журнал", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	wait := &cobra.Command{Use: "wait <id>", Short: T("дождаться завершения и показать журнал", "wait for the job to finish and show its log"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
 		}
 		id, err := strconv.ParseInt(args[0], 10, 64)
 		if err != nil {
-			return &exitError{code: 2, msg: "id задачи должен быть числом"}
+			return &exitError{code: 2, msg: T("id задачи должен быть числом", "job id must be a number")}
 		}
 		g.noWait = false
 		return followJob(cmd, cl, id)
@@ -331,10 +331,10 @@ func firstLine(a, b string) string {
 }
 
 func tokenCmd() *cobra.Command {
-	c := &cobra.Command{Use: "token", Short: "API-токены для скриптов и биллинга"}
+	c := &cobra.Command{Use: "token", Short: T("API-токены для скриптов и биллинга", "API tokens for scripts and billing")}
 	var req apitypes.CreateTokenRequest
 	var scopes string
-	create := &cobra.Command{Use: "create", Short: "создать токен (показывается один раз)", RunE: func(cmd *cobra.Command, _ []string) error {
+	create := &cobra.Command{Use: "create", Short: T("создать токен (показывается один раз)", "create a token (shown only once)"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -352,12 +352,12 @@ func tokenCmd() *cobra.Command {
 		fmt.Println(res.Token)
 		return nil
 	}}
-	create.Flags().StringVar(&req.Name, "name", "cli", "название токена")
-	create.Flags().StringVar(&req.User, "user", "", "аккаунт, от имени которого выпустить токен (для администратора; по сокету от root — единственный администратор)")
-	create.Flags().StringVar(&scopes, "scopes", "", "scope через запятую; migrate:user:<логин> ограничивает токен переездом, остальные — пометки")
-	create.Flags().IntVar(&req.ExpiresInDays, "expires", 0, "срок в днях (0 = бессрочно)")
+	create.Flags().StringVar(&req.Name, "name", "cli", T("название токена", "token name"))
+	create.Flags().StringVar(&req.User, "user", "", T("аккаунт, от имени которого выпустить токен (для администратора; по сокету от root — единственный администратор)", "account to issue the token for (administrators only; as root over the socket, defaults to the only administrator)"))
+	create.Flags().StringVar(&scopes, "scopes", "", T("scope через запятую; migrate:user:<логин> ограничивает токен переездом, остальные — пометки", "comma-separated scopes; migrate:user:<login> limits the token to a migration, any other is just a label"))
+	create.Flags().IntVar(&req.ExpiresInDays, "expires", 0, T("срок в днях (0 = бессрочно)", "lifetime in days (0 = never expires)"))
 	var listUser string
-	list := &cobra.Command{Use: "list", Short: "токены аккаунта (по умолчанию свои)", RunE: func(cmd *cobra.Command, _ []string) error {
+	list := &cobra.Command{Use: "list", Short: T("токены аккаунта (по умолчанию свои)", "an account's tokens (your own by default)"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -383,15 +383,15 @@ func tokenCmd() *cobra.Command {
 		table([]string{"ID", "NAME", "SCOPES", "EXPIRES", "LAST USED"}, rows)
 		return nil
 	}}
-	list.Flags().StringVar(&listUser, "user", "", "аккаунт (для администратора)")
-	revoke := &cobra.Command{Use: "revoke <id>", Short: "отозвать токен (администратор — любой)", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	list.Flags().StringVar(&listUser, "user", "", T("аккаунт (для администратора)", "account (administrators only)"))
+	revoke := &cobra.Command{Use: "revoke <id>", Short: T("отозвать токен (администратор — любой)", "revoke a token (an administrator can revoke any)"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
 		}
 		id, err := strconv.ParseInt(args[0], 10, 64)
 		if err != nil {
-			return &exitError{code: 2, msg: "id токена должен быть числом"}
+			return &exitError{code: 2, msg: T("id токена должен быть числом", "token id must be a number")}
 		}
 		return cl.DeleteToken(cmd.Context(), id)
 	}}
@@ -400,8 +400,8 @@ func tokenCmd() *cobra.Command {
 }
 
 func serviceCmd() *cobra.Command {
-	c := &cobra.Command{Use: "service", Short: "управляемые systemd-сервисы"}
-	status := &cobra.Command{Use: "status [unit]", Short: "состояние сервисов", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	c := &cobra.Command{Use: "service", Short: T("управляемые systemd-сервисы", "managed systemd services")}
+	status := &cobra.Command{Use: "status [unit]", Short: T("состояние сервисов", "service status"), Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -434,7 +434,7 @@ func serviceCmd() *cobra.Command {
 	c.AddCommand(status)
 	for _, action := range []string{"start", "stop", "reload", "restart", "enable", "disable"} {
 		action := action
-		c.AddCommand(&cobra.Command{Use: action + " <unit>", Short: action + " сервиса", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		c.AddCommand(&cobra.Command{Use: action + " <unit>", Short: action + T(" сервиса", " a service"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 			cl, err := newClient()
 			if err != nil {
 				return err
@@ -454,8 +454,8 @@ func serviceCmd() *cobra.Command {
 }
 
 func stackCmd() *cobra.Command {
-	c := &cobra.Command{Use: "stack", Short: "компоненты веб-стека и расширения (nginx, apache, php, mysql, fail2ban, memcached, jpegoptim, git, composer, sphinx, valkey)"}
-	list := &cobra.Command{Use: "list", Short: "установленные компоненты", RunE: func(cmd *cobra.Command, _ []string) error {
+	c := &cobra.Command{Use: "stack", Short: T("компоненты веб-стека и расширения (nginx, apache, php, mysql, fail2ban, memcached, jpegoptim, git, composer, sphinx, valkey)", "web stack components and extensions (nginx, apache, php, mysql, fail2ban, memcached, jpegoptim, git, composer, sphinx, valkey)")}
+	list := &cobra.Command{Use: "list", Short: T("установленные компоненты", "installed components"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -469,9 +469,9 @@ func stackCmd() *cobra.Command {
 		}
 		rows := make([][]string, 0, len(comps))
 		for _, comp := range comps {
-			state, ver := "не установлен", "-"
+			state, ver := T("не установлен", "not installed"), "-"
 			if comp.Installed {
-				state, ver = "установлен", comp.Version
+				state, ver = T("установлен", "installed"), comp.Version
 				if comp.Service != nil {
 					state += " · " + comp.Service.ActiveState
 				}
@@ -481,7 +481,7 @@ func stackCmd() *cobra.Command {
 		table([]string{"COMPONENT", "VERSION", "STATE"}, rows)
 		return nil
 	}}
-	install := &cobra.Command{Use: "install <component>", Short: "установить компонент: nginx, apache, percona, mysql, fail2ban, memcached, jpegoptim, git, composer, sphinx, valkey (PHP: mp php install)", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	install := &cobra.Command{Use: "install <component>", Short: T("установить компонент: nginx, apache, percona, mysql, fail2ban, memcached, jpegoptim, git, composer, sphinx, valkey (PHP: mp php install)", "install a component: nginx, apache, percona, mysql, fail2ban, memcached, jpegoptim, git, composer, sphinx, valkey (PHP: mp php install)"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -492,7 +492,7 @@ func stackCmd() *cobra.Command {
 		}
 		return followJob(cmd, cl, ref.JobID)
 	}}
-	remove := &cobra.Command{Use: "remove <component>", Short: "удалить расширение: memcached, jpegoptim, git, composer, sphinx, valkey", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	remove := &cobra.Command{Use: "remove <component>", Short: T("удалить расширение: memcached, jpegoptim, git, composer, sphinx, valkey", "remove an extension: memcached, jpegoptim, git, composer, sphinx, valkey"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -504,7 +504,7 @@ func stackCmd() *cobra.Command {
 		return followJob(cmd, cl, ref.JobID)
 	}}
 	var mem apitypes.MemcachedUpdate
-	memcached := &cobra.Command{Use: "memcached", Short: "настройки memcached: без флагов показать, с флагами изменить и применить", RunE: func(cmd *cobra.Command, _ []string) error {
+	memcached := &cobra.Command{Use: "memcached", Short: T("настройки memcached: без флагов показать, с флагами изменить и применить", "memcached settings: show them without flags, change and apply them with flags"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -531,22 +531,22 @@ func stackCmd() *cobra.Command {
 		if g.json {
 			return printJSON(st)
 		}
-		state := "не установлен"
+		state := T("не установлен", "not installed")
 		if st.Installed {
-			state = "установлен, 127.0.0.1:11211"
+			state = T("установлен, 127.0.0.1:11211", "installed, 127.0.0.1:11211")
 		}
-		fmt.Printf("memcached: %s\nпамять:    %d MB\nсоединений: %d\n", state, st.MemoryMB, st.MaxConnections)
+		fmt.Printf(T("memcached: %s\nпамять:    %d MB\nсоединений: %d\n", "memcached:   %s\nmemory:      %d MB\nconnections: %d\n"), state, st.MemoryMB, st.MaxConnections)
 		return nil
 	}}
-	memcached.Flags().IntVar(&mem.MemoryMB, "memory-mb", 128, "размер кеша в МБ")
-	memcached.Flags().IntVar(&mem.MaxConnections, "max-conn", 1024, "одновременных соединений")
+	memcached.Flags().IntVar(&mem.MemoryMB, "memory-mb", 128, T("размер кеша в МБ", "cache size in MB"))
+	memcached.Flags().IntVar(&mem.MaxConnections, "max-conn", 1024, T("одновременных соединений", "concurrent connections"))
 	c.AddCommand(list, install, remove, memcached, stackRealIPCmd())
 	return c
 }
 
 func configCmd() *cobra.Command {
-	c := &cobra.Command{Use: "config", Short: "конфигурация и шаблоны"}
-	show := &cobra.Command{Use: "show", Short: "эффективная конфигурация", RunE: func(cmd *cobra.Command, _ []string) error {
+	c := &cobra.Command{Use: "config", Short: T("конфигурация и шаблоны", "configuration and templates")}
+	show := &cobra.Command{Use: "show", Short: T("эффективная конфигурация", "effective configuration"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cfg, err := loadConfig()
 		if err != nil {
 			return err
@@ -554,7 +554,7 @@ func configCmd() *cobra.Command {
 		if g.json {
 			return printJSON(cfg)
 		}
-		fmt.Println("# файл:", cfg.Path())
+		fmt.Println(T("# файл:", "# file:"), cfg.Path())
 		tmp := os.TempDir() + "/mp-config-show.yaml"
 		if err := cfg.Save(tmp); err != nil {
 			return err
@@ -564,7 +564,7 @@ func configCmd() *cobra.Command {
 		fmt.Print(string(b))
 		return nil
 	}}
-	templates := &cobra.Command{Use: "templates", Short: "список встроенных шаблонов", RunE: func(cmd *cobra.Command, _ []string) error {
+	templates := &cobra.Command{Use: "templates", Short: T("список встроенных шаблонов", "list the built-in templates"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cfg, err := loadConfig()
 		if err != nil {
 			return err
@@ -581,7 +581,7 @@ func configCmd() *cobra.Command {
 			_, overridden, _ := r.Source(name)
 			mark := ""
 			if overridden {
-				mark = "  (переопределён в " + cfg.TemplatesDir + ")"
+				mark = fmt.Sprintf(T("  (переопределён в %s)", "  (overridden in %s)"), cfg.TemplatesDir)
 			}
 			fmt.Println(name + mark)
 		}

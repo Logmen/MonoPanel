@@ -10,10 +10,10 @@ import (
 )
 
 func webhookCmd() *cobra.Command {
-	c := &cobra.Command{Use: "webhook", Short: "webhooks для биллинга и мониторинга (HMAC-SHA256)"}
+	c := &cobra.Command{Use: "webhook", Short: T("webhooks для биллинга и мониторинга (HMAC-SHA256)", "webhooks for billing and monitoring (HMAC-SHA256)")}
 	var req apitypes.WebhookRequest
 	var events string
-	add := &cobra.Command{Use: "add", Short: "добавить подписчика", RunE: func(cmd *cobra.Command, _ []string) error {
+	add := &cobra.Command{Use: "add", Short: T("добавить подписчика", "add a subscriber"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -28,14 +28,14 @@ func webhookCmd() *cobra.Command {
 		if g.json {
 			return printJSON(h)
 		}
-		fmt.Printf("webhook %s → %s, события: %s\nсекрет для проверки подписи: %s\n", h.ID, h.URL, strings.Join(h.Events, ","), h.Secret)
+		fmt.Printf(T("webhook %s → %s, события: %s\nсекрет для проверки подписи: %s\n", "webhook %s → %s, events: %s\nsigning secret: %s\n"), h.ID, h.URL, strings.Join(h.Events, ","), h.Secret)
 		return nil
 	}}
-	add.Flags().StringVar(&req.URL, "url", "", "адрес приёмника")
-	add.Flags().StringVar(&req.Secret, "secret", "", "секрет HMAC (иначе генерируется)")
-	add.Flags().StringVar(&events, "events", "*", "список через запятую: job.failed, site.apply.done, cert.issue.*, backup.run.*, *")
+	add.Flags().StringVar(&req.URL, "url", "", T("адрес приёмника", "receiver URL"))
+	add.Flags().StringVar(&req.Secret, "secret", "", T("секрет HMAC (иначе генерируется)", "HMAC secret (generated if omitted)"))
+	add.Flags().StringVar(&events, "events", "*", T("список через запятую: job.failed, site.apply.done, cert.issue.*, backup.run.*, *", "comma-separated list: job.failed, site.apply.done, cert.issue.*, backup.run.*, *"))
 	add.MarkFlagRequired("url")
-	list := &cobra.Command{Use: "list", Short: "список", RunE: func(cmd *cobra.Command, _ []string) error {
+	list := &cobra.Command{Use: "list", Short: T("список", "list webhooks"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -54,14 +54,14 @@ func webhookCmd() *cobra.Command {
 		table([]string{"ID", "URL", "EVENTS", "CREATED"}, rows)
 		return nil
 	}}
-	rm := &cobra.Command{Use: "rm <id>", Short: "удалить", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	rm := &cobra.Command{Use: "rm <id>", Short: T("удалить", "delete a webhook"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
 		}
 		return cl.WebhookDelete(cmd.Context(), args[0])
 	}}
-	test := &cobra.Command{Use: "test <id>", Short: "отправить тестовое событие", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	test := &cobra.Command{Use: "test <id>", Short: T("отправить тестовое событие", "send a test event"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -69,7 +69,7 @@ func webhookCmd() *cobra.Command {
 		if err := cl.WebhookTest(cmd.Context(), args[0]); err != nil {
 			return err
 		}
-		fmt.Println("доставлено")
+		fmt.Println(T("доставлено", "delivered"))
 		return nil
 	}}
 	c.AddCommand(add, list, rm, test)

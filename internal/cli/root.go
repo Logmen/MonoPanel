@@ -20,6 +20,7 @@ import (
 	"monopanel/internal/buildinfo"
 	"monopanel/internal/client"
 	"monopanel/internal/config"
+	"monopanel/internal/i18n"
 	"monopanel/internal/tui"
 )
 
@@ -41,8 +42,14 @@ type exitError struct {
 
 func (e *exitError) Error() string { return e.msg }
 
+// T is the text in the language of the terminal: T("Сайты", "Sites"). The
+// language is known once Main has started, so texts live in functions, not in
+// package-level vars.
+func T(ru, en string) string { return i18n.T(ru, en) }
+
 // Main runs the CLI and returns the process exit code.
 func Main(args []string) int {
+	i18n.Detect(os.Getenv)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	root := newRoot()
@@ -73,11 +80,14 @@ func Main(args []string) int {
 func newRoot() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "mp",
-		Short: "MonoPanel — панель управления веб-сервером",
-		Long: `MonoPanel — панель управления веб-сервером (nginx + php-fpm, nginx + Apache, PHP 5.6–8.5, MySQL/Percona 8.4).
+		Short: T("MonoPanel — панель управления веб-сервером", "MonoPanel — a web hosting control panel"),
+		Long: T(`MonoPanel — панель управления веб-сервером (nginx + php-fpm, nginx + Apache, PHP 5.6–8.5, MySQL/Percona 8.4).
 
 Без аргументов в терминале открывается TUI-меню. Все команды работают через REST API панели:
-локально — через /run/monopanel/api.sock (root = администратор), удалённо — через --server и --token.`,
+локально — через /run/monopanel/api.sock (root = администратор), удалённо — через --server и --token.`, `MonoPanel — a web hosting control panel (nginx + php-fpm, nginx + Apache, PHP 5.6–8.5, MySQL/Percona 8.4).
+
+Without arguments in a terminal it opens the TUI menu. Every command goes through the panel's REST API:
+locally over /run/monopanel/api.sock (root = administrator), remotely with --server and --token.`),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -94,12 +104,12 @@ func newRoot() *cobra.Command {
 	root.Version = buildinfo.String()
 	root.SetVersionTemplate("monopanel {{.Version}}\n")
 	pf := root.PersistentFlags()
-	pf.StringVar(&g.config, "config", "", "путь к config.yaml (по умолчанию /etc/monopanel/config.yaml или $MONOPANEL_CONFIG)")
-	pf.StringVar(&g.server, "server", os.Getenv("MP_SERVER"), "адрес панели для удалённого доступа, например https://host:8443 ($MP_SERVER)")
-	pf.StringVar(&g.token, "token", os.Getenv("MP_TOKEN"), "API-токен для --server ($MP_TOKEN)")
-	pf.BoolVar(&g.insecure, "insecure", false, "не проверять TLS-сертификат панели")
-	pf.BoolVar(&g.json, "json", false, "машинный вывод JSON")
-	pf.BoolVar(&g.noWait, "no-wait", false, "не ждать завершения задач")
+	pf.StringVar(&g.config, "config", "", T("путь к config.yaml (по умолчанию /etc/monopanel/config.yaml или $MONOPANEL_CONFIG)", "path to config.yaml (default /etc/monopanel/config.yaml or $MONOPANEL_CONFIG)"))
+	pf.StringVar(&g.server, "server", os.Getenv("MP_SERVER"), T("адрес панели для удалённого доступа, например https://host:8443 ($MP_SERVER)", "panel address for remote access, e.g. https://host:8443 ($MP_SERVER)"))
+	pf.StringVar(&g.token, "token", os.Getenv("MP_TOKEN"), T("API-токен для --server ($MP_TOKEN)", "API token for --server ($MP_TOKEN)"))
+	pf.BoolVar(&g.insecure, "insecure", false, T("не проверять TLS-сертификат панели", "do not verify the panel's TLS certificate"))
+	pf.BoolVar(&g.json, "json", false, T("машинный вывод JSON", "machine-readable JSON output"))
+	pf.BoolVar(&g.noWait, "no-wait", false, T("не ждать завершения задач", "do not wait for jobs to finish"))
 	root.AddCommand(versionCmd(), apiCmd(), agentCmd(), helperCmd(), fsopCmd(), setupCmd(), statusCmd(), userCmd(), jobCmd(), tokenCmd(), serviceCmd(), stackCmd(), configCmd(), sslCmd(), webCmd(), phpCmd(), siteCmd(), cmsCmd(), dbCmd(), cronCmd(), firewallCmd(), doctorCmd(), selinuxCmd(), logsCmd(), metricsCmd(), backupCmd(), webhookCmd(), filesCmd(), dnsProviderCmd(), appCmd(), valkeyCmd(), updateCmd(), updateRunCmd(), mailCmd(), migrateCmd())
 	return root
 }
