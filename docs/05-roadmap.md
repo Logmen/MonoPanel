@@ -1,34 +1,37 @@
 # 05. Дорожная карта, матрица тестирования, CI
 
+Это журнал проекта по этапам и датам: что сделано, что проверено и что осталось. Отметка [x] — сделано и проверено, [ ] — ещё нет. Актуальное состояние возможностей одним списком — в [README](../README.md), раздел «Что умеет».
+
 ## Этап 0 — каркас (выполнен 2026-09-05, проверен на Ubuntu 24.04)
 
 - [x] Репозиторий, сборка Go (`make build`), `nfpm.yaml`, units, sysusers/tmpfiles, `install.sh`, `mp setup`.
 - [x] OS Profile для Debian/Ubuntu и EL9/EL10 (+ generic для dev-машин); агент с `ApplyConfigSet`, `EnsureGroup`, `EnsureUnixUser`, `EnsureDirs`, `Service`, `Pkg`; peer-cred на обоих сокетах.
-- [x] SQLite-схема и миграции; auth (argon2id, сессии, Bearer-токены, CSRF-проверка); job-runner с локами; SSE.
+- [x] SQLite-схема и миграции; auth (argon2id, сессии, Bearer-токены, CSRF-проверка); очередь задач с блокировками; SSE.
 - [x] Установка nginx с nginx.org (`mp stack install nginx`), шаблоны nginx/Apache/php-fpm с golden-тестами, CLI и TUI.
-- [x] ACME (lego, HTTP-01 по webroot): `mp ssl issue/list/renew/rm`, таблица `certificates`, автопродление, hot-swap сертификата панели (`mp web tls`). Проверено выпуском боевого сертификата Let's Encrypt на тестовом хосте.
-- [ ] Сборка SvelteKit-приложения (нужен Node; пока заглушка `web/build/index.html`).
-- [ ] Репозиторий deb/rpm и подпись пакетов.
-- [ ] Установка PHP (Sury/Remi) и Percona/MySQL 8.4 с `auth_socket` — переносится в начало этапа 1.
-- [x] VM-матрица: тестовая площадка на Proxmox с девятью машинами по всей матрице ОС, `make testbed-matrix` (2026-09-09, см. [docs/08-testbed.md](08-testbed.md)). В CI пока не подключена — нужен self-hosted раннер с доступом к хосту.
+- [x] ACME (lego, HTTP-01 по webroot): `mp ssl issue/list/renew/rm`, таблица `certificates`, автопродление, подмена сертификата панели на лету (`mp web tls`). Проверено выпуском боевого сертификата Let's Encrypt на тестовом хосте.
+- [x] Сборка SvelteKit-приложения: Web UI собирается в `web/build` и вшивается в бинарник (сделано на этапе 1).
+- [x] Подпись релизов ключом ed25519 (см. «Обновление панели из релизов»); собственный apt/yum-репозиторий — [ ] пока нет, пакеты выкладываются релизами.
+- [x] Установка PHP (Sury/Remi) и Percona/MySQL 8.4 с `auth_socket` — сделано на этапе 1.
+- [x] VM-матрица: тестовая площадка на Proxmox с машиной на каждую ОС матрицы, `make testbed-matrix` (2026-09-09, Oracle Linux добавлен 2026-09-10; см. [docs/08-testbed.md](08-testbed.md)). В CI пока не подключена — нужен self-hosted раннер с доступом к хосту.
 
 ## Этап 1 — MVP (выполнен 2026-09-05, проверен на Ubuntu 24.04)
 
 - [x] PHP 5.6–8.5 через Sury/Remi (`mp php`), несколько версий параллельно.
-- [x] Сайты в режимах A (nginx → php-fpm), B (nginx → Apache → php-fpm) и proxy; per-site php_value; ACL; страница-заглушка; авто-сертификат.
+- [x] Сайты в режимах A (nginx → php-fpm), B (nginx → Apache → php-fpm) и proxy; php_value на сайт; ACL; страница-заглушка; авто-сертификат.
 - [x] Apache 2.4 как компонент (Debian/Ubuntu). EL — не проверено.
-- [x] БД: Percona/MySQL 8.4 с `auth_socket`, базы и пользователи, legacy-аутентификация для PHP < 7.4. phpMyAdmin — не сделан.
-- [x] Cron, firewall (nftables) + fail2ban, бэкапы restic, метрики, логи, `mp doctor`, DNS-01, TUI-паритет, Web UI (SvelteKit), ru.
-- [ ] Полная тест-матрица в CI на 9 ОС (нужен self-hosted раннер с VM).
+- [x] БД: Percona/MySQL 8.4 с `auth_socket`, базы и пользователи, старая аутентификация для PHP < 7.4. phpMyAdmin — не сделан.
+- [x] Cron, firewall (nftables) + fail2ban, бэкапы restic, метрики, логи, `mp doctor`, DNS-01, TUI наравне с CLI, Web UI (SvelteKit), русский язык.
+- [ ] Полная тест-матрица в CI на одиннадцати ОС (нужен self-hosted раннер с VM).
 
 ## Этап 2 — v1.0 (частично, 2026-09-05)
 
 - [x] Файловый менеджер через helper (`mp files`, API `/files`), SFTP-chroot, unix-пароли.
 - [x] Webhooks (HMAC), TOTP 2FA, API-токены, история конфигов (`confhistory`), переопределение шаблонов, `mp doctor`.
-- [ ] Собственные сборки PHP, терминал в браузере, квоты, self-update, WHMCS-модуль, WebAuthn, SELinux confined-домен.
+- [x] Самообновление панели из релизов (см. ниже).
+- [ ] Собственные сборки PHP, терминал в браузере, дисковые квоты, модуль WHMCS, WebAuthn, свой домен SELinux для панели.
 
 ### Автоматическое тестирование (2026-09-06)
-- [x] Фейковый агент `internal/agent/agenttest`: unix-сокет, типизированные ответы, запись всех вызовов — покрывает job-и панели (сайты, пользователи, пресеты) без root и systemd.
+- [x] Фейковый агент `internal/agent/agenttest`: unix-сокет, типизированные ответы, запись всех вызовов — покрывает задачи панели (сайты, пользователи, пресеты) без root и systemd.
 - [x] Тесты пайплайна сайта: рендер nginx/пула, пресеты CMS и их PHP-значения, приоритет `php_ini` над пресетом, allow-list, отказы валидации, suspend, удаление, свои nginx-директивы с откатом, каскадное удаление пользователя. Покрытие `internal/api` 9.5% → 21.2%, общее 23.3%.
 - [x] Таймауты готовности вынесены в `Server.SetReadinessWaits`: тесты не ждут nginx и сокет php-fpm (набор идёт ~2 с).
 - [x] `make check` (fmt + vet + lint + test), `make test-race`, `make cover`, `make web-check`, `make help`.
@@ -159,7 +162,8 @@
 - [x] Режим `proxy` для Node/Python/Docker-приложений.
 - [x] Почта: postfix + dovecot + opendkim + Roundcube (Debian/Ubuntu).
 - [x] Перенос аккаунтов между панелями (MonoPanel → MonoPanel).
-- [ ] Изолированные пулы с cgroup-лимитами, FTP, DNS (PowerDNS), WAF, reseller-роль, aarch64-сборка (кросс-компиляция готова: `make build-arm64`), multi-server.
+- [x] Сборка под arm64: пакеты .deb и .rpm для arm64 выходят с каждым релизом (на площадке не проверяются — её машины amd64).
+- [ ] Изолированные пулы с cgroup-лимитами, FTP, DNS (PowerDNS), WAF, роль реселлера, несколько серверов из одной панели.
 
 ## Матрица ОС
 
@@ -177,11 +181,11 @@
 
 ## Риски и как закрыты
 
-| Риск | Митигация |
+| Риск | Чем закрыт |
 |---|---|
 | Sury/Remi исчезнут или сломают совместимость | Этап 2: собственные сборки и репозиторий; OS Profile позволяет держать оба источника одновременно |
-| MySQL 9.x удалит `mysql_native_password` | Остаёмся на 8.4 LTS до 2032; для legacy PHP — только 8.4; переход на 9.x — ручная процедура |
-| Новый релиз ОС без пакетов вендоров | Поддержка объявляется только после прохождения матрицы; еженедельная проверка |
+| MySQL 9.x удалит `mysql_native_password` | Остаёмся на 8.4 LTS до 2032; для старых PHP — только 8.4; переход на 9.x — ручная процедура |
+| Новый релиз ОС без пакетов от разработчиков компонентов | Поддержка объявляется только после прохождения матрицы; еженедельная проверка планируется |
 | Ручные правки конфигов администратором | Include-каталоги, `confhistory`, `mp doctor` показывает дрейф, `mp site apply` перегенерирует сайт |
-| Компрометация Web-слоя | api без привилегий; агент с allow-list; helper с setuid; секреты зашифрованы |
-| Рост числа сайтов (сотни) | `pm=ondemand`, один master на версию, SQLite с WAL держит десятки тысяч сущностей; метрики — ролапы |
+| Взлом веб-слоя | api без привилегий; агент с allow-list; helper с setuid; секреты зашифрованы |
+| Рост числа сайтов (сотни) | `pm=ondemand`, один мастер на версию, SQLite с WAL держит десятки тысяч сущностей; метрики хранятся агрегатами |

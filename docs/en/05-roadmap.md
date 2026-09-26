@@ -1,5 +1,7 @@
 # 05. Roadmap, test matrix, CI
 
+This is the project log by stage and date: what is done, what is verified and what remains. [x] means done and verified, [ ] means not yet. The current feature set in one list is in the [README](../../README.en.md), section "What it does".
+
 ## Stage 0 — foundation (done 2026-09-05, verified on Ubuntu 24.04)
 
 - [x] Repository, Go build (`make build`), `nfpm.yaml`, units, sysusers/tmpfiles, `install.sh`, `mp setup`.
@@ -7,10 +9,10 @@
 - [x] SQLite schema and migrations; auth (argon2id, sessions, Bearer tokens, CSRF check); job runner with locks; SSE.
 - [x] Installing nginx from nginx.org (`mp stack install nginx`), nginx/Apache/php-fpm templates with golden tests, CLI and TUI.
 - [x] ACME (lego, HTTP-01 via webroot): `mp ssl issue/list/renew/rm`, the `certificates` table, automatic renewal, hot swap of the panel's certificate (`mp web tls`). Verified by issuing a production Let's Encrypt certificate on the test host.
-- [ ] Building the SvelteKit app (needs Node; for now a placeholder `web/build/index.html`).
-- [ ] A deb/rpm repository and package signing.
-- [ ] Installing PHP (Sury/Remi) and Percona/MySQL 8.4 with `auth_socket` — moved to the start of stage 1.
-- [x] VM matrix: a Proxmox testbed with nine machines covering the whole OS matrix, `make testbed-matrix` (2026-09-09, see [docs/08-testbed.md](08-testbed.md)). Not wired into CI yet — that needs a self-hosted runner with access to the host.
+- [x] Building the SvelteKit app: the web UI is built into `web/build` and embedded in the binary (done in stage 1).
+- [x] Release signing with an ed25519 key (see "Panel updates from releases"); an own apt/yum repository — [ ] not yet, packages ship as releases.
+- [x] Installing PHP (Sury/Remi) and Percona/MySQL 8.4 with `auth_socket` — done in stage 1.
+- [x] VM matrix: a Proxmox testbed with a machine for every OS of the matrix, `make testbed-matrix` (2026-09-09, Oracle Linux added 2026-09-10; see [docs/08-testbed.md](08-testbed.md)). Not wired into CI yet — that needs a self-hosted runner with access to the host.
 
 ## Stage 1 — MVP (done 2026-09-05, verified on Ubuntu 24.04)
 
@@ -19,13 +21,14 @@
 - [x] Apache 2.4 as a component (Debian/Ubuntu). EL — not verified.
 - [x] Databases: Percona/MySQL 8.4 with `auth_socket`, databases and users, legacy authentication for PHP < 7.4. phpMyAdmin — not done.
 - [x] Cron, firewall (nftables) + fail2ban, restic backups, metrics, logs, `mp doctor`, DNS-01, TUI parity, web UI (SvelteKit), ru.
-- [ ] The full test matrix in CI on 9 OSes (needs a self-hosted runner with VMs).
+- [ ] The full test matrix in CI on eleven OSes (needs a self-hosted runner with VMs).
 
 ## Stage 2 — v1.0 (partial, 2026-09-05)
 
 - [x] File manager through the helper (`mp files`, API `/files`), SFTP chroot, unix passwords.
 - [x] Webhooks (HMAC), TOTP 2FA, API tokens, config history (`confhistory`), template overrides, `mp doctor`.
-- [ ] Own PHP builds, a terminal in the browser, quotas, self-update, a WHMCS module, WebAuthn, a confined SELinux domain.
+- [x] Self-update of the panel from releases (see below).
+- [ ] Own PHP builds, a terminal in the browser, disk quotas, a WHMCS module, WebAuthn, a confined SELinux domain for the panel.
 
 ### Automated testing (2026-09-06)
 - [x] Fake agent `internal/agent/agenttest`: a unix socket, typed responses, a record of every call — covers the panel's jobs (sites, users, presets) without root or systemd.
@@ -159,7 +162,8 @@
 - [x] `proxy` mode for Node/Python/Docker applications.
 - [x] Mail: postfix + dovecot + opendkim + Roundcube (Debian/Ubuntu).
 - [x] Migrating accounts between panels (MonoPanel → MonoPanel).
-- [ ] Isolated pools with cgroup limits, FTP, DNS (PowerDNS), WAF, a reseller role, an aarch64 build (cross-compilation is ready: `make build-arm64`), multi-server.
+- [x] arm64 build: .deb and .rpm packages for arm64 ship with every release (not verified on the testbed — its machines are amd64).
+- [ ] Isolated pools with cgroup limits, FTP, DNS (PowerDNS), WAF, a reseller role, several servers from one panel.
 
 ## OS matrix
 
@@ -181,7 +185,7 @@ A periodic job (weekly) is planned: package availability in the vendor repositor
 |---|---|
 | Sury/Remi disappear or break compatibility | Stage 2: own builds and repository; OS Profile allows keeping both sources at once |
 | MySQL 9.x removes `mysql_native_password` | We stay on 8.4 LTS until 2032; for legacy PHP — 8.4 only; upgrading to 9.x is a manual procedure |
-| A new OS release without vendor packages | Support is announced only after the matrix passes; a weekly check |
+| A new OS release without packages from the component developers | Support is announced only after the matrix passes; a weekly check is planned |
 | Manual config edits by the administrator | Include directories, `confhistory`, `mp doctor` shows drift, `mp site apply` regenerates the site |
 | Compromise of the web layer | api without privileges; agent with an allow-list; helper with setuid; secrets are encrypted |
-| Growth in the number of sites (hundreds) | `pm=ondemand`, one master per version, SQLite with WAL holds tens of thousands of entities; metrics are rollups |
+| Growth in the number of sites (hundreds) | `pm=ondemand`, one master per version, SQLite with WAL holds tens of thousands of entities; metrics are stored as aggregates |

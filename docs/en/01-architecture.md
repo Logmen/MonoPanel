@@ -1,6 +1,6 @@
 # 01. MonoPanel architecture
 
-As of September 2026 (MonoPanel 0.8.10). Component versions are given as of that date; before a release, a run of the OS matrix on the [testbed](08-testbed.md) checks that they are still current.
+As of September 2026 (MonoPanel 0.8.12). Component versions are given as of that date; before a release, a run of the OS matrix on the [testbed](08-testbed.md) checks that they are still current.
 
 > This is a design document: it describes decisions and the reasoning behind them, including the parts the implementation has not reached yet. What actually works is in the [README](../../README.en.md) and in the [x] marks in [05-roadmap.md](05-roadmap.md). Below, such parts are marked "planned".
 
@@ -16,13 +16,13 @@ As of September 2026 (MonoPanel 0.8.10). Component versions are given as of that
 - Interfaces: web UI, CLI (scriptable, `--json`), TUI menu (interactive, over SSH), REST API (OpenAPI 3.1).
 - TLS (ACME), backups, cron, firewall, brute-force protection, metrics, logs, file manager.
 
-**Out of scope for v1** (see the roadmap): a DNS server, multi-server, containerised applications, a WAF, a reseller role. Mail (postfix + dovecot + opendkim + Roundcube) arrived after v1 and is described separately — [06-mail.md](06-mail.md).
+**Out of scope for 1.0** (see the [roadmap](05-roadmap.md)): a DNS server, managing several servers, containerised applications, a WAF, a reseller role. Mail (postfix + dovecot + opendkim + Roundcube) was not in the original plan; it came later and is described separately — [06-mail.md](06-mail.md).
 
 ## 2. Architecture decisions (ADR, in brief)
 
 | # | Decision | Why |
 |---|---|---|
-| A1 | The panel core is one static binary written in **Go** | No runtime dependencies on the host (2 OS families × 9 releases), one artefact for daemon + CLI + TUI, simple packaging into .deb/.rpm, fast CLI start-up, built-in HTTP server and TLS |
+| A1 | The panel core is one static binary written in **Go** | No runtime dependencies on the host (two OS families, eleven releases), one artefact for daemon + CLI + TUI, simple packaging into .deb/.rpm, fast CLI start-up, built-in HTTP server and TLS |
 | A2 | **Privilege separation**: `monopaneld api` (user `monopanel`) ↔ `monopaneld agent` (root) over a unix socket | The code that parses untrusted input and serves the web UI does not run as root. The agent accepts only typed commands, with an allow-list of paths and operations |
 | A3 | **One API for all clients**: the web UI, CLI, TUI and external integrations call the same REST API | No divergence in logic; anything you can do in the web UI you can do in the CLI, and vice versa |
 | A4 | **Declared state → render → validate → apply atomically → reload, with rollback** | The panel is the source of truth; manual edits live in include directories; a broken config never reaches a reload |
@@ -143,7 +143,7 @@ Tools: Node 24 LTS, pnpm, Vite (latest stable), TypeScript strict, ESLint + Pret
 
 - REST + JSON, OpenAPI 3.1, errors in RFC 9457 format (`application/problem+json`).
 - SSE for streaming (job events, logs, metrics): passes through any proxy, with none of the WebSocket timeout problems.
-- WebSocket only for the interactive terminal.
+- WebSocket only for the interactive terminal (planned).
 - The internal api↔agent RPC is the same HTTP/JSON over a unix socket (reusing the huma types), with a mandatory peer-cred check.
 
 ## 5. Data model (SQLite)
@@ -213,11 +213,11 @@ Principles:
 
 ## 7. Security
 
-- Panel: TLS 1.2/1.3, HSTS, CSP without inline scripts, a CSRF token on mutations, sign-in rate limiting + a fail2ban jail on the panel log, argon2id, TOTP/WebAuthn, an audit of all mutations, API tokens with a scope and an expiry, optional binding of the panel to a separate IP/VPN.
+- Panel: TLS 1.2/1.3, HSTS, CSP without inline scripts, a CSRF token on mutations, sign-in rate limiting + a fail2ban jail on the panel log, argon2id, TOTP (WebAuthn is planned), an audit of all mutations, API tokens with a scope and an expiry, optional binding of the panel to a separate IP/VPN.
 - Processes: api — `User=monopanel`, `ProtectSystem=strict`, `ProtectHome=yes`, `NoNewPrivileges=yes`, `CapabilityBoundingSet=` (empty), `ReadWritePaths=/var/lib/monopanel /run/monopanel`; agent — root, but `ProtectHome=read-only` except `/var/www` via `ReadWritePaths`, an allow-list of operations and paths, every exec is an `argv` array without a shell.
 - Clients: a separate unix user and group, home directory `0710`, web server access through ACLs for the `monopanel-web` group; FPM pools run as the client; `open_basedir`, separate `tmp`/`session`; `disable_functions` by default; symlink protection (`disable_symlinks if_not_owner` in nginx, `SymLinksIfOwnerMatch` in Apache); optionally cgroup limits through isolated pools (see [03-web-stack.md](03-web-stack.md) §6).
 - SSH/SFTP: a client gets a shell only when the flag is set; SFTP-only through `Match Group monopanel-sftp` + `ChrootDirectory`.
-- Panel updates and our own packages come only from a signed (GPG) repository; stack components only from the vendors' official repositories.
+- Panel updates come only as releases signed with ed25519 (§9); stack components only from their developers' official repositories.
 - SELinux on EL stays enforcing (see [02-platform-matrix.md](02-platform-matrix.md) §6).
 - Secrets in the database are encrypted and the key is kept outside it; logs contain no passwords/tokens (a `slog` redactor).
 

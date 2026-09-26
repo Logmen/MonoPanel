@@ -1,6 +1,6 @@
 # 06. Mail server
 
-Implemented 2026-09-07, verified on Ubuntu 24.04 (postfix 3.8.6, dovecot 2.3.21, opendkim 2.11, Roundcube 1.7.4).
+Working since 2026-09-07. Verified on Ubuntu 24.04 (postfix 3.8.6, dovecot 2.3.21, opendkim 2.11, Roundcube 1.7.4) and on Ubuntu 26.04 (postfix 3.10.6, dovecot 2.4.2).
 
 The panel runs a complete mail server for the domains it serves: receiving and sending (SMTP), mailbox access (IMAP/POP3), message signing (DKIM) and webmail (Roundcube). As everywhere in MonoPanel, the source of truth is the panel database: the postfix and dovecot configuration is regenerated whole on every change, and there is no need to edit it by hand.
 
@@ -22,7 +22,7 @@ Mail users are **not** unix accounts: all mailboxes belong to the system user `v
 | `/etc/postfix/main.cf`, `master.cf` | Generated whole by the panel |
 | `/etc/postfix/monopanel/domains`\|`mailboxes`\|`aliases`\|`senders` | Maps (`hash:`), built with `postmap` after being written |
 | `/etc/postfix/monopanel/submission_header_checks` | Strips `Received` and `X-Originating-IP` from messages sent through 587/465 |
-| `/etc/dovecot/dovecot.conf` | Generated whole; the distribution's `conf.d` is deliberately not included |
+| `/etc/dovecot/dovecot.conf` | Generated whole; the distribution's `conf.d` is deliberately not included. The template is chosen by the installed dovecot version: 2.3 (Debian 12, Ubuntu 22.04/24.04) or 2.4 (Debian 13, Ubuntu 26.04) |
 | `/etc/dovecot/monopanel/users` | passwd file: address, `{BLF-CRYPT}` hash, `userdb_quota_rule` |
 | `/etc/opendkim.conf`, `/etc/opendkim/KeyTable`, `SigningTable`, `TrustedHosts` | Signing tables |
 | `/etc/opendkim/keys/<domain>/<selector>.private` | Private key (0600, opendkim); a copy is kept encrypted in the panel database |
@@ -73,6 +73,7 @@ mp mail install --hostname mail.example.com   # postfix + dovecot + opendkim, ce
 mp mail status                                # services, ports, TLS, warnings
 mp mail settings --pop3 false --max-size 25 --rbl zen.spamhaus.org
 mp mail domain add example.com --user alex    # + a DKIM key
+mp mail domain add shop.example.com --user alex --send-only   # a provider receives the mail; only DKIM and sending here
 mp mail domain dns example.com                # what to publish in DNS and what is already published
 mp mail domain dkim example.com               # a new key
 mp mail box add ivan@example.com --quota 2048 # the password is generated and shown once
@@ -85,7 +86,11 @@ mp mail apply                                  # regenerate the configuration
 
 A disabled mailbox (`--active false`) disappears both from the postfix map and from the dovecot passwords: mail to it is not accepted, logging in is impossible, the messages on disk stay.
 
-## 8. Lenient domain
+## 8. Send-only domain
+
+Sometimes another server receives the domain's mail — the MX is at a mail provider — while this server hosts only a site that needs to send mail from the domain with a DKIM signature. Such a domain is added with the `--send-only` flag (in the web UI — the "send only" checkbox when adding a domain and a toggle in the list): the panel creates a DKIM key and allows sending, but the domain does not enter postfix's receiving maps. So a message from the site to an address of the same domain goes to the real MX instead of a local mailbox that does not exist. Such a domain has no mailboxes or aliases; the DNS hint does not require an MX pointing at this server and suggests adding the server to the provider's SPF rather than replacing the record.
+
+## 9. Lenient domain
 
 The panel will not deliver to a regular domain a message from a sender with a non-existent domain or a broken HELO — and rightly so. But there are domains for which incoming mail is not correspondence but material for analysis: a diagnostic sink has to see exactly the message the others rejected, otherwise it cannot explain to the sender what is broken on their side.
 
@@ -93,16 +98,15 @@ For such domains there is the "lenient" flag (`mp mail domain add … --lenient`
 
 This is how the mail server and mail-tester coexist on the panel's dev host: postfix listens on port 25, the tester's domain is declared lenient with a catch-all into a separate service mailbox, and the tester itself fetches the messages from that mailbox over IMAP (`[imap] enabled = yes`) and takes the sender IP, HELO and TLS from the `Received` header that postfix added. The tester no longer needs its own SMTP daemon, and the panel no longer has to give up the port.
 
-## 9. Webmail
+## 10. Webmail
 
 `mp mail webmail <domain>` creates a regular panel site, downloads the official Roundcube archive (the version and sha256 are built into the panel), unpacks it as root (the code does not belong to the site owner and cannot be rewritten over the web), creates a MySQL database, loads the schema and writes `config/config.inc.php`: IMAP and SMTP go to the mail host over TLS, the plugins `archive`, `zipdownload`, `managesieve`, `newmail_notifier`, and the `installer` directory is removed. From then on it is a regular site: its own certificate, its own php-fpm pool, its own PHP version.
 
 **A port instead of a domain.** `--port 2096` (or `mp mail settings --webmail-port 2096`) publishes the same installation on a port of the mail host: `https://<mail host>:2096/`. The panel writes a separate nginx server block to `http.d/monopanel-webmail.conf` with the mail server's name and certificate, opens the port in the firewall and also listens on loopback, so that checks from the host itself work. No separate DNS record and no separate certificate for webmail are needed then — handy when mail is set up on a server that already has a name. `--port 0` removes the publication.
 
-## 10. Limitations
+## 11. Limitations
 
-- **Debian/Ubuntu.** On EL the packages exist, but the configuration has not been verified — the installation refuses right away instead of breaking halfway.
-- **dovecot 2.3.** In 2.4 (Debian 13) the configuration syntax changed; the panel sees this from the package version and refuses to write a configuration that has not been verified. A template for 2.4 is the next step.
+- **Debian and Ubuntu only.** On EL the packages exist, but the configuration has not been verified — the installation refuses right away instead of breaking halfway.
 - **Anti-spam** — only postfix's own tools: HELO/sender checks, connection limits and optional RBLs. There is no full content filter (rspamd) yet; incoming messages go through DKIM verification, but nothing is rejected based on its result.
 - **Quotas** are counted by dovecot (`maildir:User quota`); going over is reported to the sender as `552 5.2.2 Mailbox is full`.
 - There is no mailbox password change from webmail: passwords are changed in the panel.

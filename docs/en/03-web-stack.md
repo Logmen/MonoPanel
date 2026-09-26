@@ -19,7 +19,7 @@ client ──HTTPS──▶ nginx ──static files directly (by extension, can
 
 Switching the mode is a single field, `sites.mode`; the FPM pool, socket, user and php.ini do not change. Apache listens only on loopback (`127.0.0.1:8080`; on multi-IP servers loopback too — nginx passes `Host`). The client's real IP in Apache comes from `mod_remoteip` (`RemoteIPHeader X-Real-IP`, `RemoteIPInternalProxy 127.0.0.1`).
 
-A limitation of mode B: `php_value` / `php_flag` directives in `.htaccess` work only with `mod_php`, which is not shipped. The replacement is the PHP settings in the panel (`php_admin_value` in the pool) and `.user.ini` in the docroot (supported by FPM through `user_ini.filename`). This is documented in the UI when the mode is chosen; the panel detects the usual `php_*` directives in `.htaccess` and offers to move them.
+A limitation of mode B: `php_value` / `php_flag` directives in `.htaccess` work only with `mod_php`, which is not shipped. The replacement is the PHP settings in the panel (`php_admin_value` in the pool) and `.user.ini` in the docroot (supported by FPM through `user_ini.filename`). A hint about this when the mode is chosen, and detection of `php_*` directives in `.htaccess` with an offer to move them into the panel, are planned.
 
 ## 2. File layout on the server
 
@@ -183,25 +183,25 @@ The site's PHP branch needs the redis extension. The socket, with mode 600, belo
 
 ## 6. Isolation and limits
 
-| Level | Mechanism | Default |
+| Level | Mechanism | Status |
 |---|---|---|
-| Files | a unix user per client, 0710, ACLs for the web group, `open_basedir`, separate tmp/session | on |
-| PHP processes | an FPM pool running as the user, `disable_functions`, `pm.max_children` | on |
-| Symlink | `disable_symlinks if_not_owner` (nginx), `SymLinksIfOwnerMatch` (Apache) | on |
-| Disk | filesystem quotas per uid (`quota` / `xfs_quota`); without quotas — accounting by `du` in the metrics | optional |
-| CPU/RAM per site | an isolated pool: a separate master `monopanel-php-fpm@<X.Y>-<domain>.service` in `Slice=monopanel-<user>.slice` with `MemoryMax`, `CPUQuota`, `TasksMax`, `PrivateTmp`, `ProtectSystem=strict`, `ReadWritePaths=/var/www/<user>` | optional (v1.1) |
-| SSH | shell only by a flag; SFTP-only chroot (`Match Group monopanel-sftp`) | SFTP |
-| Network | outgoing PHP connections are not restricted (APIs, payments); a "block outgoing SMTP" option through an nft rule per uid (`meta skuid`) | optional |
+| Files | a unix user per client, 0710, ACLs for the web group, `open_basedir`, separate tmp/session | in place, on |
+| PHP processes | an FPM pool running as the user, `disable_functions`, `pm.max_children` | in place, on |
+| Symlink | `disable_symlinks if_not_owner` (nginx), `SymLinksIfOwnerMatch` (Apache) | in place, on |
+| Disk | filesystem quotas per uid (`quota` / `xfs_quota`); without quotas — accounting by `du` in the metrics | planned |
+| CPU/RAM per site | an isolated pool: a separate master `monopanel-php-fpm@<X.Y>-<domain>.service` in `Slice=monopanel-<user>.slice` with `MemoryMax`, `CPUQuota`, `TasksMax`, `PrivateTmp`, `ProtectSystem=strict`, `ReadWritePaths=/var/www/<user>` | planned |
+| SSH | shell only by a flag; SFTP-only chroot (`Match Group monopanel-sftp`) | in place, SFTP only by default |
+| Network | outgoing PHP connections are not restricted (APIs, payments); blocking outgoing SMTP through an nft rule per uid (`meta skuid`) | planned |
 
 ## 7. TLS / ACME
 
 - Client: `lego` as a library inside `monopaneld api`: account, keys, challenges, renewal.
 - HTTP-01: a shared webroot `/var/lib/monopanel/acme/webroot`, included through the `acme.conf` snippet in every `:80` server{} and in the default-server of each IP → issuance works both before the site is created and with a redirect to HTTPS.
-- DNS-01: lego providers (Cloudflare, Route53, Hetzner, Yandex Cloud, DigitalOcean, RFC2136 and others) → wildcard `*.example.com`; credentials are stored encrypted, per user.
-- Keys: ECDSA P-256 by default, RSA-2048 by a flag; optionally a dual certificate (EC + RSA).
-- Storage: `/var/lib/monopanel/certs/<domain>/{fullchain.pem,privkey.pem,chain.pem}` 0600 root (the nginx/Apache master processes run as root). Importing your own certificates (PEM/PFX) — through the UI/CLI/API; a certificate can be shared by several sites (SAN).
-- Renewal: a scheduler once a day, 30 days before expiry; on failure — a notification and retries with backoff; on success — `ApplyConfigSet` with only a reload of nginx (and Apache if needed).
-- Optionally the native `ngx_http_acme_module` (nginx 1.29+) instead of lego for HTTP-01; behind a flag until it stabilises.
+- DNS-01: lego providers — Cloudflare, Hetzner, DigitalOcean, Gandi, deSEC, Namecheap and RFC2136 (`mp dns-provider types`) — for wildcard `*.example.com`; credentials are stored encrypted, per user.
+- Keys: ECDSA P-256 by default, RSA-2048 by a flag; a dual certificate (EC + RSA) is planned.
+- Storage: `/var/lib/monopanel/certs/<domain>/{fullchain.pem,privkey.pem,chain.pem}` 0600 root (the nginx/Apache master processes run as root). Importing your own certificates (PEM) — through the UI/CLI/API; a certificate can be shared by several sites (SAN).
+- Renewal: a scheduler once a day, 30 days before expiry; on failure — retries with a growing interval, the error is visible in `mp doctor` and goes out as the `cert.issue.failed` webhook event; on success — `ApplyConfigSet` with only a reload of nginx (and Apache if needed).
+- The native `ngx_http_acme_module` (nginx 1.29+) instead of lego for HTTP-01 is a possible future option.
 - Panel host: a certificate for `web.hostname` through the same mechanism (`mp ssl issue <hostname>`); the panel picks it up on the fly through `tls.Config.GetCertificate`, and until it has one — a self-signed certificate with its fingerprint in the `mp setup` output. Current state: `mp web tls` / `GET /web/tls`.
 - Implemented (stage 0): `internal/acme` (accounts in `<data>/acme/accounts/<directory>/<email>/`, certificates in `<data>/certs/<name>/`), the `cert.issue` job with a public DNS check and a webroot probe through nginx, the renewal scheduler in the API process.
 - The ACME directory is configurable (Let's Encrypt, ZeroSSL, Buypass, an internal Step-CA).
@@ -210,20 +210,20 @@ The site's PHP branch needs the redis extension. The socket, with mode 600, belo
 ## 8. Logs and rotation
 
 - Rotation — `/etc/logrotate.d/monopanel-sites`, a block per account with `su <login> <login>`: weekly, or sooner if a log has grown past 100 MB; eight copies, compressed from the second one on; after rotation nginx gets USR1 and Apache a graceful restart, both through their pid files. In detail — [section 2](#2-file-layout-on-the-server).
-- Access logs are analysed for metrics incrementally (the file position is remembered), in the `main` format with `$request_time`, `$upstream_response_time`, `$host`, `$server_protocol`.
-- In the UI: tail view and follow (SSE) for access/error/php-error/php-slow, filtering by response code and path.
+- The `main` format records `$request_time`, `$upstream_response_time`, `$host` and `$server_protocol`. Parsing access logs for per-site metrics (incrementally, remembering the file position) is planned.
+- In the UI — the tail of access/error/php-error/php-slow (the site's "Logs" tab, `mp site logs`); live follow and filtering by response code and path are planned.
 
 ## 9. Additional web features (site flags, templates)
 
-- Redirects: http→https, www↔non-www, arbitrary 301/302 by path, an include for complex rules.
-- Site aliases/subdomains (shared docroot) and separate sites on subdomains.
-- A custom docroot inside `data/www/<domain>/` (for example `/public` for Laravel/Symfony).
-- Basic auth per path; blocking by IP/CIDR/country (geoip2 as a dynamic module, optional); `limit_req` per site.
-- Browser caching of static files, `gzip` (+ `brotli` as a dynamic module of our own build, optional).
+- Redirects: http→https, www↔non-www; arbitrary 301/302 by path — through custom directives in `<domain>.d/` or `mp site nginx`.
+- Site aliases (shared docroot) and separate sites on subdomains.
+- A custom docroot inside `data/www/<domain>/` (for example `/public` for Laravel and Symfony).
+- Access only from listed addresses (`--allow`). Basic auth per path, blocking by country (geoip2 as a dynamic module) and `limit_req` per site are planned.
+- Browser caching of static files, `gzip`; `brotli` as a dynamic module of our own build is planned.
 - A "site suspended" placeholder for `status=suspended`: the config is replaced with a minimal one serving a 503 page, and the FPM pool is removed from the master's config.
-- `proxy` mode (site → an arbitrary backend: Node/Python/Docker) — roadmap.
+- `proxy` mode — the site is served by your own application (Node, Python, Docker): `--mode proxy --backend http://127.0.0.1:3000`; a background application can run under systemd as an app service (`mp app`).
 
-## CMS installation
+## 10. CMS installation
 
 `mp cms install <domain> <cms>` (and the "CMS" tab on the site page) installs WordPress, Joomla, OpenCart or 1C-Bitrix into an existing site the way the vendor documents it, only without the clicking:
 

@@ -16,9 +16,9 @@ The unit of migration is the **account**: a user and everything that belongs to 
 
 Not moved: the server itself (OS, kernel, network), edits to `/etc` made outside the panel, metrics and the job log, sessions and API tokens (they are issued anew), backup targets with their repository passwords.
 
-## 2. The migration bundle
+## 2. The migration bundle (design)
 
-One self-describing archive. It is also the artefact for "bring up a new server from nothing".
+One self-describing archive. It is also the artefact for "bring up a new server from nothing". Today the data travels directly between panels (see §5); the bundle file is not implemented yet.
 
 ```
 manifest.json          format, source panel version, scope, time, sha256 of every file
@@ -42,20 +42,20 @@ The exception is whatever is encrypted with the source panel's key: DKIM private
 
 ## 3. How the bundle reaches the new server
 
-**As a file.** `mp migrate export --scope user:alex --out alex.mp` → copy → `mp migrate import alex.mp`. It always works, including when the source server no longer comes up and only backups are left.
+**Panel → panel, on request** (works). On the source, the administrator allows the move and gets a one-off token with a scope and a lifetime (`mp migrate grant user:alex`). On the target panel — the plan and the run: address, token, what to take. From there **the target pulls the data itself**: it has more resources to spare, it knows its own state and it can resume an interrupted transfer. The source meanwhile only serves the stream and records in the audit log who took what.
 
-**Panel → panel, on request.** On the source, the administrator allows the move and gets a one-off token with a scope and a lifetime (`mp migrate grant --scope user:alex --ttl 2h`). On the target panel — "Import from another panel": address, token, what to take. From there **the target pulls the bundle itself**: it has more resources to spare, it knows its own state and it can resume an interrupted transfer. The source meanwhile only serves the stream and records in the audit log who took what.
+**As a file** (planned). `mp migrate export --scope user:alex --out alex.mp` → copy → `mp migrate import alex.mp`. It will always work, including when the source server no longer comes up and only backups are left.
 
-**Through a restic repository.** Export puts `state/` next to a snapshot of an existing backup target, and import reads it from there. Almost free — all the machinery is already there — and it also covers "restore a whole server on new hardware".
+**Through a restic repository** (planned). Export puts `state/` next to a snapshot of an existing backup target, and import reads it from there. Almost free — all the machinery is already there — and it also covers "restore a whole server on new hardware".
 
 ## 4. Steps of a move
 
-A move breaks not at the copy but at the DNS switch: while the record points at the old server, the new one can neither be checked in a browser nor get a certificate over HTTP-01. That is why an import is not one action but four.
+A move breaks not at the copy but at the DNS switch: while the record points at the old server, the new one can neither be checked in a browser nor get a certificate over HTTP-01. That is why an import is designed not as one action but as four; the first two work today (see §5), the resync and the finish are planned.
 
-1. **Dry run.** The target answers with a report before it creates anything: what will arrive and how big it is, what conflicts (the login is taken, the domain is already served, a database with that name exists), what is missing (the PHP branch is not installed, there is no MySQL, too little disk space), what does not move at all.
-2. **Copy.** A job creates the account, puts the files in place, sets up the databases and applies the state. The site comes up at once, but DNS has not been switched to it yet — the panel shows a ready-made `curl --resolve` command and a line for `hosts` so you can see it for yourself.
-3. **Resync.** `mp migrate resync` goes over only what has changed: files by time and size, fresh dumps. It is run right before the DNS switch and takes minutes instead of hours — the site on the old server keeps working all the while.
-4. **Switch-over.** The person changes DNS, then runs `mp migrate finish`: the panel waits until the name resolves to it, orders ACME certificates (until then the certificate that came along is in use, so HTTPS does not drop for a second) and, on an explicit command, suspends the sites on the source.
+1. **Plan** (`mp migrate plan`). The target answers with a report before it creates anything: what will arrive and how big it is, what conflicts (the login is taken, the domain is already served, a database with that name exists), what is missing (the PHP branch is not installed, there is no MySQL, too little disk space), what does not move at all.
+2. **Copy** (`mp migrate run`). A job creates the account, puts the files in place, sets up the databases and applies the state. The site comes up at once, but DNS has not been switched to it yet — the panel shows a ready-made `curl --resolve` command and a line for `hosts` so you can see it for yourself.
+3. **Resync** (planned). `mp migrate resync` goes over only what has changed: files by time and size, fresh dumps. It is run right before the DNS switch and takes minutes instead of hours — the site on the old server keeps working all the while.
+4. **Switch-over** (planned). The person changes DNS, then runs `mp migrate finish`: the panel waits until the name resolves to it, orders ACME certificates (until then the certificate that came along is in use, so HTTPS does not drop for a second) and, on an explicit command, suspends the sites on the source. Until this step exists, DNS is switched by hand, and a site without a certificate gets one with `mp ssl issue <domain>`.
 
 Nothing on the source is deleted automatically. The only thing an import does to the other server is read it.
 
