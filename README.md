@@ -94,33 +94,171 @@ mp                              # TUI-меню
 ## Что умеет
 
 Всё перечисленное проходит через один REST API и доступно в Web UI, CLI и TUI.
+Под каждым заголовком — команды `mp` этой области.
 
-| Область | Команды | Как устроено |
-|---|---|---|
-| PHP 5.6–8.5 | `mp php list\|install\|remove`, `mp php ext list\|enable\|disable`, `mp php ini [set\|unset]` | Sury / PPA ondrej / Remi, несколько веток параллельно, свой php-fpm на каждую, `99-monopanel.ini`; параметры php.ini складываются из слоёв панель → глобально (`mp php ini set`, страница PHP) → пресет → сайт (`mp site set --ini`), так что любой параметр меняется для одного сайта или для всех сразу; расширения ветки можно выключать и включать (Debian/Ubuntu — `phpenmod`/`phpdismod`, EL — правка `extension=` в ini ветки Remi; затем перезапуск php-fpm) — действует на все сайты ветки, потому что мастер php-fpm один на версию; расширения, которые репозиторий предлагает, но они не установлены (memcache, redis, imagick …), показываются в том же списке, и включение ставит пакет |
-| Сайты | `mp site add\|set\|apply\|fix\|suspend\|rm\|logs`, `mp selinux` | режимы `fpm`, `apache` (loopback 8080, mod_proxy_fcgi), `proxy` (nginx → backend); пул на сайт, ACL для `monopanel-web`, страница-заглушка, авто-сертификат, suspend = 503-заглушка; IP-allow-list на сайт (`--allow`), HSTS при принудительном HTTPS, свои директивы в `sites/<domain>.d/*.conf`; `mp site nginx <domain> --set файл` — свои директивы с проверкой `nginx -t` и откатом; `mp site php <domain>` — действующие PHP-параметры; пресеты CMS `--preset wordpress\|joomla\|bitrix\|opencart` (`mp site presets`): свои nginx-локации (ЧПУ, /api Joomla, urlrewrite Bitrix, `_route_` OpenCart, закрытые служебные каталоги, запрет PHP в uploads) и PHP-значения по умолчанию; Bitrix — по правилам BitrixVM, с opcache на 100000 файлов и без open_basedir |
-| Консоль | POST `/system/console` | страница «Консоль» в Web UI: команды `mp` от имени вошедшего администратора с потоковым выводом, одноразовый токен на команду; на дашборде у находок doctor кнопки «починить сайт» и «вернуть enforcing» |
-| CMS | `mp cms list\|install <домен> <cms>` | установка WordPress, Joomla, OpenCart и 1С-Битрикс (пробная редакция Старт/Стандарт/Малый бизнес/Бизнес, чистая установка из Маркетплейса или демо-сайт) в сайт: дистрибутив с сайта производителя, распаковка в docroot от имени клиента, своя база, штатный установщик CMS (wp-cli, CLI-установщики Joomla и OpenCart, веб-мастер Битрикса, который панель проходит сама), сайт получает пресет; доступы администратора показываются один раз; вкладка CMS на странице сайта |
-| App-сервисы | `mp app add\|set\|start\|stop\|restart\|logs\|rm` | systemd-юнит `monopanel-app-<login>-<name>` от имени пользователя (gunicorn, node, боты): команда, workdir и env-file внутри домашнего каталога, автозапуск, журнал через journalctl |
-| Valkey на аккаунт | `mp stack install valkey`, `mp valkey add\|list\|restart\|rm cache\|sessions --user <login> [--memory МБ]`, `mp site set <домен> --sessions valkey\|files` | два отдельных экземпляра на аккаунт: кеш (allkeys-lru, без записи на диск) и PHP-сессии (volatile-lru, снимок раз в минуту, сессии переживают перезапуск); каждый — systemd-юнит `monopanel-valkey-<login>-<cache\|sessions>` от имени пользователя с лимитом памяти и только unix-сокетом `/run/monopanel-valkey/<login>-<cache\|sessions>/valkey.sock` с правами 600, так что ни другие аккаунты, ни веб-сервер к нему не подключатся, а TCP-порта нет вовсе; Valkey из дистрибутива (где его нет — Ubuntu 22.04, Debian 12 без backports — Redis с тем же протоколом), общий экземпляр из пакета выключается; на EL экземпляры работают в домене SELinux `redis_t`; сессии сайта переводятся одной настройкой (нужно расширение redis у ветки PHP сайта), и пока сайт держит в экземпляре сессии, ни экземпляр, ни расширение не удалить; в Web UI — кнопка valkey на странице «Пользователи» и поле «PHP-сессии» в настройках сайта; сессии в Valkey — с блокировкой phpredis (`redis.session.locking_enabled`, как у файлов), ключи `redis.session.*` настраиваются в PHP-параметрах |
-| Apache 2.4 | `mp stack install apache` | Debian/Ubuntu: mpm_event + proxy_fcgi, `conf-available/monopanel.conf` |
-| Расширения | `mp stack install\|remove memcached\|jpegoptim\|git\|composer\|sphinx`, `mp stack memcached --memory-mb --max-conn` | страница «Расширения» в Web UI: memcached (только 127.0.0.1, память и соединения настраиваются, перезапуск при смене), jpegoptim, git, composer (с getcomposer.org с проверкой контрольной суммы, запускается на новейшей ветке PHP панели, повторная установка обновляет), sphinx для 1С-Битрикс (Sphinx 2.2 из дистрибутива на Debian/Ubuntu, сборка Sphinx 3 с sphinxsearch.com на EL; индекс `bitrix` по эталону из настроек Битрикса, устаревший индекс на диске пересоздаётся, SphinxQL на 127.0.0.1:9306) |
-| СУБД | `mp stack install percona\|mysql`, `mp db create\|list\|passwd\|rm`, `mp db config [set\|unset]` | Percona Server / MySQL 8.4 LTS, параметры сервера меняются в панели (значение встаёт на место панельного в `zz-monopanel.cnf`, перед перезапуском — `mysqld --validate-config`, при неудаче прежние параметры возвращаются сами), root по `auth_socket` (на EL панель сама переводит его с временного пароля пакета), тюнинг по RAM, `mysql_native_password` только при PHP < 7.4, базы `<login>_<name>`, сгенерированные пароли проходят `validate_password` |
-| TLS | `mp ssl panel issue\|import\|self-signed`, `mp site tls <domain>`, `mp ssl issue\|list\|renew\|rm`, `mp dns-provider add` | lego: HTTP-01 по webroot nginx, DNS-01 (Cloudflare, Hetzner, DigitalOcean, Gandi, deSEC, Namecheap, RFC2136) для wildcard, автопродление за 30 дней; сертификат самой панели и сертификаты сайтов ведутся раздельно — панель заказывает только для своего имени и подхватывает его на лету, сайт заказывает для домена с алиасами и сам переключается на HTTPS; занятый сертификат не удалить; `mp ssl import --cert --key` для готовых |
-| Перенос между панелями | `mp migrate grant\|plan\|run` | аккаунт целиком переезжает на другой сервер с MonoPanel: источник выдаёт токен с областью на один аккаунт и только читает, приёмник разбирает конфликты (`plan` ничего не меняет) и забирает — файлы и дамп идут потоком насквозь, пароли панели, SFTP, MySQL и почты переезжают хешами, поэтому пользователи смены сервера не замечают ([docs/07-migration.md](docs/07-migration.md)) |
-| Переезд с BitrixVM и FASTPANEL | `mp migrate plan\|run --from bitrixvm\|fastpanel` | те же разбор и перенос с чужого сервера по ssh (пароль или ключ, источник только читается): BitrixVM — сайты из `/etc/nginx/bx`, реквизиты базы из `.settings.php`, симлинки link-сайтов и пути в `dbconn.php`/cron переписываются под новый дом; FASTPANEL — аккаунт, сайты, бэкенды PHP, базы с хешами, allow-списки, сертификаты и cron из её базы и файлов; пресет CMS определяется по файлам сайта |
-| Обновление панели | `mp update`, `mp update apply` | релизы этого репозитория: панель находит новую версию, скачивает пакет для своей ОС, проверяет подпись ed25519 и ставит его отдельным systemd-юнитом с откатом на прежний бинарник, если новая версия не отвечает |
-| API-токены | `mp token create\|list\|revoke` | токен принадлежит аккаунту; администратор выпускает его и для другого аккаунта (`--user`), root по локальному сокету — для единственного администратора без флагов |
-| Cron | `mp cron add\|list\|enable\|disable\|rm` | crontab пользователя целиком из БД, PATH с `~/data/bin` (php нужной версии) |
-| Real IP | `mp stack real-ip --cloudflare [--from CIDR]` | доверенные прокси для nginx `real_ip` (сети Cloudflare встроены): allow-list и логи видят адрес клиента, а не прокси |
-| Firewall | `mp firewall enable\|allow\|deny\|ban\|unban`, `mp stack install fail2ban` | nftables `inet monopanel`, policy drop, SSH/80/443/панель всегда открыты, unit `monopanel-firewall`; allow с источником проверяются раньше deny, так что `deny --port 8443` + `allow --port 8443 --source <VPN>` ограничивает панель адресами VPN, а deny, который запер бы вас самих (SSH/панель без allow с источником или ваш текущий адрес), панель отклоняет; fail2ban с jail'ами sshd, nginx и панели |
-| Почта | `mp mail install\|status\|settings\|domain\|box\|alias\|webmail` | postfix + dovecot + opendkim: домены (в том числе «только отправка» — почту домена принимает провайдер, здесь подпись DKIM и отправка писем сайтов), ящики (пароли и квоты в панели, Maildir у `vmail`), алиасы и catch-all, IMAP/POP3/submission с TLS панели, подпись DKIM, sieve-фильтры; `mp mail domain dns` показывает нужные MX/SPF/DKIM/DMARC/PTR и проверяет их по публичным резолверам; вебпочта Roundcube ставится отдельным сайтом или на порту почтового хоста (`--port 2096` — без своей записи в DNS и своего сертификата); домен можно объявить приёмником (`--lenient`) — он примет письма и от криво настроенных отправителей ([docs/06-mail.md](docs/06-mail.md)) |
-| Бэкапы | `mp backup target add\|run\|list\|snapshots\|restore` | restic (local/SFTP/S3/B2/REST), дампы MySQL, копия panel.db, retention, ежедневное расписание, восстановление в `<data>/restore/<snapshot>` или in-place |
-| Файлы | `mp files ls\|put\|get\|mkdir\|rm\|mv\|chmod\|extract\|size` | `monopanel fsop` через helper с необратимым сбросом привилегий, пути относительно домашнего каталога; в Web UI — файловый менеджер с редактором: обзор каталога, загрузка перетаскиванием, права, распаковка архивов и правка файлов в редакторе VS Code (Monaco: подсветка php/html/css/js/sql/yaml/ini, поиск и замена, мультикурсор, свёртка, F1 — палитра команд), вкладка «Файлы» в карточке сайта открывается сразу в его docroot |
-| SFTP / SSH | `mp user add`, `mp user set --shell\|--sftp-only --password` | SFTP-only = chroot в `/var/www/<login>` через `sshd_config.d/monopanel.conf`, пароль общий для панели и SFTP; `mp user rm <login> [--purge]` — удаление вместе с сайтами, базами, cron, app-сервисами и сертификатами |
-| Метрики и логи | `mp metrics`, `mp site logs`, `mp logs <unit>`, `mp doctor` | сэмплер раз в 10 с → точки по минутам (30 дней), хвост логов сайтов и journald через агент; логи сайтов ротируются раз в неделю или по 100 МБ от имени их аккаунта, восемь копий, сжатых со второй; doctor проверяет сервисы, конфиги, диск, сертификаты, DNS, задачи и дрейф файлов |
-| Безопасность | `mp user totp-reset`, `mp webhook add` | TOTP 2FA (QR в Web UI), Bearer-токены, webhooks с HMAC-SHA256 на события задач |
-| Языки | — | Web UI на русском и английском: язык берётся из браузера (языки стран СНГ → русский, остальные → английский), переключается в «Настройках» и на экране входа, выбор запоминается в браузере; сообщения API, задач и диагностики — на английском; CLI и TUI говорят на языке локали терминала по тому же правилу (`MP_LANG=ru\|en` задаёт его явно); заглушка нового сайта и страница приостановленного показываются на языке браузера посетителя по тому же правилу |
+### Сайты
+
+`mp site add|set|apply|fix|suspend|rm|logs`, `mp site nginx|php|tls`, `mp selinux`
+
+- Три режима: `fpm` (nginx → php-fpm), `apache` (nginx → Apache на loopback 8080 через mod_proxy_fcgi) и `proxy` (nginx → свой backend).
+- У каждого сайта свой пул php-fpm, ACL для группы `monopanel-web`, страница-заглушка и автоматический сертификат; приостановленный сайт отдаёт страницу 503.
+- Доступ только с перечисленных адресов (`--allow`), HSTS при принудительном HTTPS, свои директивы nginx в `sites/<domain>.d/*.conf`. `mp site nginx <domain> --set файл` записывает их с проверкой `nginx -t` и откатом; `mp site php <domain>` показывает действующие PHP-параметры и откуда каждый взялся.
+- Пресеты CMS `--preset wordpress|joomla|bitrix|opencart` (`mp site presets`): свои location в nginx (ЧПУ, `/api` Joomla, `urlrewrite.php` Битрикса, `_route_` OpenCart, закрытые служебные каталоги, запрет PHP в uploads) и PHP-параметры по умолчанию. Битрикс настраивается по правилам BitrixVM: opcache на 100 000 файлов, без open_basedir.
+
+### PHP 5.6–8.5
+
+`mp php list|install|remove`, `mp php ext list|enable|disable`, `mp php ini [set|unset]`
+
+- Ветки из Sury, PPA ondrej или Remi, сколько угодно параллельно; у каждой свой php-fpm и `99-monopanel.ini`.
+- Параметры php.ini складываются из слоёв: панель → глобально (`mp php ini set`, страница PHP) → пресет → сайт (`mp site set --ini`). Любой параметр меняется для одного сайта или для всех сразу.
+- Расширения ветки включаются и выключаются (Debian/Ubuntu — `phpenmod`/`phpdismod`, EL — правка `extension=` в ini ветки Remi, затем перезапуск php-fpm). Действует на все сайты ветки: мастер php-fpm один на версию.
+- Расширения, которые есть в репозитории, но не установлены (memcache, redis, imagick …), показываются в том же списке; включение ставит пакет.
+
+### CMS
+
+`mp cms list|install <домен> <cms>`
+
+- Ставит WordPress, Joomla, OpenCart и 1С-Битрикс в существующий сайт: дистрибутив берётся с сайта производителя, распаковывается в docroot от имени клиента, создаётся своя база, сайт получает пресет.
+- Установщик — штатный: wp-cli, CLI-установщики Joomla и OpenCart, веб-мастер Битрикса, который панель проходит сама. Для Битрикса — пробная редакция Старт, Стандарт, Малый бизнес или Бизнес, чистая установка из Маркетплейса или демо-сайт.
+- Доступы администратора показываются один раз. В Web UI — вкладка «CMS» на странице сайта.
+
+### Базы данных
+
+`mp stack install percona|mysql`, `mp db create|list|passwd|rm`, `mp db config [set|unset]`
+
+- Percona Server или MySQL 8.4 LTS; root через `auth_socket` (на EL панель сама переводит его с временного пароля пакета), настройки под объём памяти.
+- Параметры сервера меняются в панели: значение встаёт на место панельного в `zz-monopanel.cnf`, перед перезапуском — `mysqld --validate-config`, при неудачном запуске прежние параметры возвращаются сами.
+- Базы называются `<login>_<name>`, сгенерированные пароли проходят `validate_password`; `mysql_native_password` включается только при PHP < 7.4.
+
+### Valkey на аккаунт
+
+`mp stack install valkey`, `mp valkey add|list|restart|rm cache|sessions --user <login> [--memory МБ]`, `mp site set <домен> --sessions valkey|files`
+
+- У аккаунта два отдельных экземпляра: кеш (allkeys-lru, без записи на диск) и PHP-сессии (volatile-lru, снимок раз в минуту — сессии переживают перезапуск).
+- Каждый — systemd-юнит `monopanel-valkey-<login>-<cache|sessions>` от имени пользователя с лимитом памяти. Слушает только unix-сокет `/run/monopanel-valkey/<login>-<cache|sessions>/valkey.sock` с правами 600: ни другие аккаунты, ни веб-сервер к нему не подключатся, TCP-порта нет вовсе. На EL экземпляры работают в домене SELinux `redis_t`.
+- Valkey берётся из дистрибутива (где его нет — Ubuntu 22.04, Debian 12 без backports — Redis с тем же протоколом); общий экземпляр из пакета выключается.
+- Сессии сайта переводятся в Valkey одной настройкой (нужно расширение redis у ветки PHP сайта); пока сайт держит там сессии, ни экземпляр, ни расширение не удалить. Сессии блокируются phpredis (`redis.session.locking_enabled`, как у файлов), ключи `redis.session.*` настраиваются в PHP-параметрах.
+- В Web UI — кнопка valkey на странице «Пользователи» и поле «PHP-сессии» в настройках сайта.
+
+### TLS
+
+`mp ssl issue|list|renew|rm`, `mp site tls <домен>`, `mp ssl panel issue|import|self-signed`, `mp dns-provider add`
+
+- lego: HTTP-01 через webroot nginx, DNS-01 (Cloudflare, Hetzner, DigitalOcean, Gandi, deSEC, Namecheap, RFC2136) для wildcard, автопродление за 30 дней.
+- Сертификат самой панели и сертификаты сайтов ведутся раздельно: панель заказывает только для своего имени и подхватывает его на лету, сайт заказывает для домена с алиасами и сам переключается на HTTPS. Занятый сертификат не удалить.
+- Готовые сертификаты — `mp ssl import --cert --key`.
+
+### Почта
+
+`mp mail install|status|settings|domain|box|alias|webmail`
+
+- postfix + dovecot + opendkim: домены, ящики (пароли и квоты в панели, Maildir у `vmail`), алиасы и catch-all, IMAP/POP3/submission с сертификатом панели, подпись DKIM, sieve-фильтры.
+- Домен «только отправка»: почту домена принимает провайдер, здесь — подпись DKIM и отправка писем сайтов. Домен-приёмник (`--lenient`) примет письма и от криво настроенных отправителей.
+- `mp mail domain dns` показывает нужные MX, SPF, DKIM, DMARC и PTR и проверяет их по публичным резолверам.
+- Вебпочта Roundcube ставится отдельным сайтом или на порту почтового хоста (`--port 2096` — без своей записи в DNS и своего сертификата).
+- Подробнее — [docs/06-mail.md](docs/06-mail.md).
+
+### Бэкапы
+
+`mp backup target add|run|list|snapshots|restore`
+
+- restic в local, SFTP, S3, B2 или REST: файлы, дампы MySQL и копия panel.db.
+- Хранение по дням, неделям и месяцам, ежедневное расписание; восстановление в `<data>/restore/<snapshot>` или на место.
+
+### Файлы
+
+`mp files ls|put|get|mkdir|rm|mv|chmod|extract|size`
+
+- Файловые операции выполняет `monopanel fsop` через helper с необратимым сбросом привилегий; пути — относительно домашнего каталога.
+- В Web UI — файловый менеджер с редактором: обзор каталога, загрузка перетаскиванием, права, распаковка архивов. Файлы правятся в редакторе VS Code (Monaco): подсветка php, html, css, js, sql, yaml и ini, поиск и замена, мультикурсор, свёртка, палитра команд по F1.
+- Вкладка «Файлы» в карточке сайта открывается сразу в его docroot.
+
+### Пользователи, SFTP и SSH
+
+`mp user add|set|list|show|totp-reset|rm`, флаги `--shell|--sftp-only --password`
+
+- Аккаунт панели — это unix-пользователь. SFTP-only — chroot в `/var/www/<login>` через `sshd_config.d/monopanel.conf`; пароль общий для панели и SFTP; shell выдаётся флагом.
+- `mp user rm <login> [--purge]` удаляет аккаунт вместе с сайтами, базами, cron, app-сервисами и сертификатами.
+
+### Cron
+
+`mp cron add|list|enable|disable|rm`
+
+- Crontab пользователя целиком собирается из базы панели; в PATH есть `~/data/bin` с php нужной версии.
+
+### App-сервисы
+
+`mp app add|set|start|stop|restart|logs|rm`
+
+- systemd-юнит `monopanel-app-<login>-<name>` от имени пользователя для gunicorn, node, ботов: команда, рабочий каталог и env-file внутри домашнего каталога, автозапуск, журнал через journalctl.
+
+### Apache и расширения
+
+`mp stack install apache`, `mp stack install|remove memcached|jpegoptim|git|composer|sphinx`, `mp stack memcached --memory-mb --max-conn`
+
+- Apache 2.4 на Debian/Ubuntu: mpm_event + proxy_fcgi, `conf-available/monopanel.conf`.
+- Страница «Расширения» в Web UI: memcached (только 127.0.0.1, память и число соединений настраиваются, перезапуск при смене), jpegoptim, git, composer (с getcomposer.org с проверкой контрольной суммы, работает на новейшей ветке PHP панели, повторная установка обновляет).
+- Sphinx для 1С-Битрикс: Sphinx 2.2 из дистрибутива на Debian/Ubuntu, сборка Sphinx 3 с sphinxsearch.com на EL; индекс `bitrix` по эталону из настроек Битрикса, устаревший индекс на диске пересоздаётся, SphinxQL на 127.0.0.1:9306.
+
+### Firewall и Real IP
+
+`mp firewall enable|allow|deny|ban|unban`, `mp stack install fail2ban`, `mp stack real-ip --cloudflare [--from CIDR]`
+
+- nftables `inet monopanel` с policy drop; SSH, 80, 443 и порт панели открыты всегда; юнит `monopanel-firewall`.
+- Allow с источником проверяются раньше deny: `deny --port 8443` + `allow --port 8443 --source <VPN>` ограничивает панель адресами VPN. Deny, который запер бы вас самих (SSH или панель без allow с источником, ваш текущий адрес), панель отклоняет.
+- fail2ban с jail'ами sshd, nginx и панели.
+- Доверенные прокси для nginx `real_ip` (сети Cloudflare встроены): allow-list и логи видят адрес клиента, а не прокси.
+
+### Метрики, логи и диагностика
+
+`mp metrics`, `mp site logs`, `mp logs <unit>`, `mp doctor`
+
+- Сэмплер раз в 10 с, точки по минутам за 30 дней; хвост логов сайтов и journald через агент.
+- Логи сайтов ротируются раз в неделю или по 100 МБ от имени их аккаунта: восемь копий, сжатие со второй.
+- `mp doctor` проверяет сервисы, конфиги, диск, сертификаты, DNS, задачи и дрейф сгенерированных файлов.
+
+### Консоль в Web UI
+
+`POST /system/console`
+
+- Страница «Консоль»: команды `mp` от имени вошедшего администратора с потоковым выводом, одноразовый токен на команду.
+- На дашборде у находок doctor есть кнопки «починить сайт» и «вернуть enforcing».
+
+### Перенос между панелями
+
+`mp migrate grant|plan|run`
+
+- Аккаунт целиком переезжает на другой сервер с MonoPanel. Источник выдаёт токен с областью на один аккаунт и только читает; приёмник разбирает конфликты (`plan` ничего не меняет) и забирает аккаунт.
+- Файлы и дамп идут потоком насквозь; пароли панели, SFTP, MySQL и почты переезжают хешами, поэтому пользователи смены сервера не замечают.
+- Подробнее — [docs/07-migration.md](docs/07-migration.md).
+
+### Переезд с BitrixVM и FASTPANEL
+
+`mp migrate plan|run --from bitrixvm|fastpanel`
+
+- Тот же разбор и перенос, но с чужого сервера по ssh (пароль или ключ); источник только читается.
+- BitrixVM: сайты из `/etc/nginx/bx`, реквизиты базы из `.settings.php`; симлинки link-сайтов и пути в `dbconn.php` и cron переписываются под новый дом.
+- FASTPANEL: аккаунт, сайты, бэкенды PHP, базы с хешами паролей, allow-списки, сертификаты и cron из её базы и файлов.
+- Пресет CMS определяется по файлам сайта.
+
+### Обновления
+
+`mp update`, `mp update apply`
+
+- Панель находит новую версию в релизах этого репозитория, скачивает пакет для своей ОС, проверяет подпись ed25519 и ставит его отдельным systemd-юнитом. Если новая версия не отвечает, возвращается прежний бинарник.
+
+### Токены, 2FA и webhooks
+
+`mp token create|list|revoke`, `mp user totp-reset`, `mp webhook add`
+
+- Токен принадлежит аккаунту; администратор выпускает его и для другого аккаунта (`--user`), root по локальному сокету — для единственного администратора без флагов.
+- TOTP 2FA с QR-кодом в Web UI, Bearer-токены, webhooks с подписью HMAC-SHA256 на события задач.
+
+### Языки
+
+- Web UI на русском и английском: язык берётся из браузера (языки стран СНГ → русский, остальные → английский), переключается в «Настройках» и на экране входа, выбор запоминается в браузере.
+- CLI и TUI говорят на языке локали терминала по тому же правилу; `MP_LANG=ru|en` задаёт его явно. Сообщения API, задач и диагностики — на английском.
+- Заглушка нового сайта и страница приостановленного показываются на языке браузера посетителя.
 
 ### Чего пока нет
 

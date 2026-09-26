@@ -103,34 +103,171 @@ Remotely: `mp --server https://host:8443 --token <token> status`
 ## What it does
 
 Everything below goes through one REST API and is available in the web UI, the CLI
-and the terminal menu.
+and the terminal menu. Under each heading are that area's `mp` commands.
 
-| Area | Commands | How it works |
-|---|---|---|
-| PHP 5.6–8.5 | `mp php list\|install\|remove`, `mp php ext list\|enable\|disable`, `mp php ini [set\|unset]` | Sury / ondrej PPA / Remi; several branches side by side, one php-fpm master per branch, `99-monopanel.ini`; php.ini values stack in layers panel → global (`mp php ini set`, the PHP page) → preset → site (`mp site set --ini`), so any parameter can be changed for one site or for all of them; a branch's extensions can be switched off and on (`phpenmod`/`phpdismod` plus a php-fpm restart) — it applies to every site on that branch, because there is one master per version |
-| Sites | `mp site add\|set\|apply\|fix\|suspend\|rm\|logs`, `mp selinux` | modes `fpm`, `apache` (loopback 8080 via mod_proxy_fcgi) and `proxy` (nginx → backend); one pool per site, ACLs for the `monopanel-web` group, placeholder page, automatic certificate, suspend serves a 503 page; per-site IP allow-list (`--allow`), HSTS when HTTPS is forced, custom directives in `sites/<domain>.d/*.conf`; `mp site nginx <domain> --set file` validates with `nginx -t` and rolls back; `mp site php <domain>` shows the effective PHP settings; CMS presets `--preset wordpress\|joomla\|bitrix\|opencart` (`mp site presets`) add routing and hardening (pretty URLs, Joomla `/api/`, Bitrix `urlrewrite.php`, OpenCart `_route_`, denied service directories, no PHP execution in uploads) plus sane PHP defaults |
-| Console | POST `/system/console` | the "Console" page in the web UI: `mp` commands with the signed-in administrator's rights and streamed output, a one-off token per command; the dashboard's doctor findings carry "fix site" and "back to enforcing" buttons |
-| CMS | `mp cms list\|install <domain> <cms>` | installs WordPress, Joomla, OpenCart and 1C-Bitrix (trial Start/Standard/Small business/Business edition, the marketplace's clean install or the demo site) into a site: the vendor's distribution, unpacked into the docroot as the client, its own database, the CMS's own installer (wp-cli, the Joomla and OpenCart CLI installers, the Bitrix web wizard driven by the panel), the matching preset; the administrator credentials are shown once; a CMS tab on the site page |
-| App services | `mp app add\|set\|start\|stop\|restart\|logs\|rm` | a systemd unit `monopanel-app-<login>-<name>` running as the account (gunicorn, node, bots): command, working directory and env-file confined to the home directory, autostart, logs via journalctl |
-| Valkey per account | `mp stack install valkey`, `mp valkey add\|list\|restart\|rm cache\|sessions --user <login> [--memory MB]`, `mp site set <domain> --sessions valkey\|files` | two separate instances per account: a cache (allkeys-lru, nothing on disk) and PHP sessions (volatile-lru, a snapshot every minute, sessions survive a restart); each is a systemd unit `monopanel-valkey-<login>-<cache\|sessions>` running as the account with a memory limit and only a unix socket `/run/monopanel-valkey/<login>-<cache\|sessions>/valkey.sock` with mode 600, so neither other accounts nor the web server can connect, and there is no TCP port at all; Valkey comes from the distribution (where it has none — Ubuntu 22.04, Debian 12 without backports — Redis with the same protocol), and the package's shared instance is switched off; on EL the instances run in the SELinux domain `redis_t`; a site moves its sessions with one setting (the redis extension of its PHP version is needed), and while a site keeps sessions in an instance, neither the instance nor the extension can be removed; in the web UI — the valkey button on the Users page and the PHP sessions field in the site settings; sessions in Valkey are locked by phpredis (`redis.session.locking_enabled`, as files are), and the `redis.session.*` keys are tunable among the PHP settings |
-| Extensions | `mp stack install\|remove memcached\|jpegoptim\|git\|composer\|sphinx`, `mp stack memcached --memory-mb --max-conn` | the "Extensions" page in the web UI: memcached (127.0.0.1 only, memory and connections adjustable, restarted on change), jpegoptim, git, composer (from getcomposer.org with the published checksum, running on the newest PHP branch the panel installed; installing again updates it), sphinx for 1C-Bitrix (the distribution's Sphinx 2.2 on Debian/Ubuntu, the sphinxsearch.com build of Sphinx 3 on EL; the `bitrix` index as Bitrix's own settings page documents it, a stale index on disk is recreated, SphinxQL on 127.0.0.1:9306) |
-| Apache 2.4 | `mp stack install apache` | Debian/Ubuntu: mpm_event + proxy_fcgi, `conf-available/monopanel.conf` |
-| Databases | `mp stack install percona\|mysql`, `mp db create\|list\|passwd\|rm`, `mp db config [set\|unset]` | Percona Server / MySQL 8.4 LTS, server settings changed in the panel (a value takes the panel's place in `zz-monopanel.cnf`, `mysqld --validate-config` runs before the restart, and the previous settings come back by themselves on failure), root over `auth_socket` (on EL the panel moves it off the package's temporary password itself), tuning from available RAM, `mysql_native_password` only for PHP < 7.4, databases named `<login>_<name>`, generated passwords satisfy `validate_password` |
-| TLS | `mp ssl panel issue\|import\|self-signed`, `mp site tls <domain>`, `mp ssl issue\|list\|renew\|rm`, `mp dns-provider add` | lego: HTTP-01 through the nginx webroot, DNS-01 (Cloudflare, Hetzner, DigitalOcean, Gandi, deSEC, Namecheap, RFC2136) for wildcards, renewal 30 days ahead; the panel's own certificate and the sites' certificates are kept apart — the panel orders for its hostname only and picks it up live, a site orders for its domain and aliases and switches itself to HTTPS, a certificate in use cannot be deleted; `mp ssl import --cert --key` for certificates issued elsewhere |
-| Migration between panels | `mp migrate grant\|plan\|run` | a whole account moves to another MonoPanel server: the source issues a token scoped to one account and only ever reads, the target reports conflicts first (`plan` changes nothing) and then takes it — files and dumps stream straight through, and panel, SFTP, MySQL and mailbox passwords travel as hashes, so users never notice the move ([docs/en/07-migration.md](docs/en/07-migration.md)) |
-| Moving in from BitrixVM and FASTPANEL | `mp migrate plan\|run --from bitrixvm\|fastpanel` | the same dry run and move from a foreign server over ssh (password or key, the source is only read): BitrixVM — sites from `/etc/nginx/bx`, database credentials from `.settings.php`, link-site symlinks and the paths in `dbconn.php`/cron rewritten for the new home; FASTPANEL — the account, sites, PHP backends, databases with their hashes, allow-lists, certificates and cron from its database and files; the CMS preset is detected from the site's files |
-| Self-update | `mp update`, `mp update apply` | from this repository's releases: the panel finds a new version, downloads the package for its OS, verifies an ed25519 signature and installs it from a separate systemd unit, restoring the previous binary if the new one does not answer |
-| API tokens | `mp token create\|list\|revoke` | a token belongs to an account; an administrator can mint one for another account (`--user`), and root on the local socket gets one for the single administrator with no flags |
-| Cron | `mp cron add\|list\|enable\|disable\|rm` | the account's crontab is rendered whole from the database, with `~/data/bin` on PATH (the site's PHP version) |
-| Real IP | `mp stack real-ip --cloudflare [--from CIDR]` | trusted proxies for nginx `real_ip` (Cloudflare ranges built in), so allow-lists and logs see the visitor rather than the proxy |
-| Firewall | `mp firewall enable\|allow\|deny\|ban\|unban`, `mp stack install fail2ban` | nftables table `inet monopanel`, drop policy, SSH/80/443/panel always open, unit `monopanel-firewall`; allows with a source are checked before denies, so `deny --port 8443` + `allow --port 8443 --source <VPN>` limits the panel to the VPN, and a deny that would lock you out (SSH/panel with no per-source allow, or your own current address) is refused; fail2ban jails for sshd, nginx and the panel itself |
-| Mail | `mp mail install\|status\|settings\|domain\|box\|alias\|webmail` | postfix + dovecot + opendkim: domains (send-only ones too — the provider receives the domain's mail, this server signs with DKIM and sends the sites' mail), mailboxes (passwords and quotas in the panel, Maildir owned by `vmail`), aliases and catch-all, IMAP/POP3/submission on the panel's certificate, DKIM signing, sieve filters; `mp mail domain dns` prints the required MX/SPF/DKIM/DMARC/PTR records and checks them against public resolvers; Roundcube webmail installs as a regular panel site or on a port of the mail host (`--port 2096` — no DNS record and no second certificate); a domain can be marked lenient (`--lenient`) so it also accepts mail from badly configured senders ([docs/en/06-mail.md](docs/en/06-mail.md)) |
-| Backups | `mp backup target add\|run\|list\|snapshots\|restore` | restic (local/SFTP/S3/B2/REST), MySQL dumps, a copy of panel.db, retention, a daily schedule, restore into `<data>/restore/<snapshot>` or in place |
-| Files | `mp files ls\|put\|get\|mkdir\|rm\|mv\|chmod\|extract\|size` | `monopanel fsop` behind a helper that drops privileges irreversibly; paths are relative to the account's home. The web UI has a file manager with an editor: browsing, drag-and-drop upload, permissions, archive extraction and editing in the VS Code editor (Monaco: highlighting for php/html/css/js/sql/yaml/ini, find and replace, multiple cursors, folding, F1 for the command palette); a site's Files tab opens at its docroot |
-| SFTP / SSH | `mp user add`, `mp user set --shell\|--sftp-only --password` | SFTP-only means a chroot into `/var/www/<login>` via `sshd_config.d/monopanel.conf`, with one password for the panel and SFTP; `mp user rm <login> [--purge]` removes sites, databases, cron, app services, certificates and the unix account together |
-| Metrics and logs | `mp metrics`, `mp site logs`, `mp logs <unit>`, `mp doctor` | a sampler every 10 s stored as one point per minute for 30 days, site and journald log tails through the agent; site logs rotate weekly or at 100 MB under their own account, eight copies compressed from the second one; doctor checks services, configs, disk, certificates, DNS, jobs and file drift |
-| Security | `mp user totp-reset`, `mp webhook add` | TOTP 2FA (QR in the web UI), Bearer tokens, webhooks signed with HMAC-SHA256 on job events |
-| Languages | — | the web UI in English and Russian: picked from the browser language (CIS languages → Russian, everything else → English), switchable in Settings and on the sign-in screen, remembered per browser; API, job and diagnostic messages are in English; the CLI and the TUI follow the terminal locale by the same rule (`MP_LANG=ru\|en` overrides it); the placeholder page of a new site and the page of a suspended one follow the visitor's browser language by the same rule |
+### Sites
+
+`mp site add|set|apply|fix|suspend|rm|logs`, `mp site nginx|php|tls`, `mp selinux`
+
+- Three modes: `fpm` (nginx → php-fpm), `apache` (nginx → Apache on loopback 8080 via mod_proxy_fcgi) and `proxy` (nginx → your own backend).
+- Every site gets its own php-fpm pool, ACLs for the `monopanel-web` group, a placeholder page and an automatic certificate; a suspended site serves a 503 page.
+- Access only from listed addresses (`--allow`), HSTS when HTTPS is forced, custom nginx directives in `sites/<domain>.d/*.conf`. `mp site nginx <domain> --set file` writes them with an `nginx -t` check and a rollback; `mp site php <domain>` shows the effective PHP settings and where each one comes from.
+- CMS presets `--preset wordpress|joomla|bitrix|opencart` (`mp site presets`): their own nginx locations (pretty URLs, Joomla `/api/`, Bitrix `urlrewrite.php`, OpenCart `_route_`, denied service directories, no PHP execution in uploads) and PHP defaults. Bitrix follows the BitrixVM rules: opcache for 100,000 files, no open_basedir.
+
+### PHP 5.6–8.5
+
+`mp php list|install|remove`, `mp php ext list|enable|disable`, `mp php ini [set|unset]`
+
+- Branches from Sury, the ondrej PPA or Remi, as many side by side as you like; each has its own php-fpm and `99-monopanel.ini`.
+- php.ini values stack in layers: panel → global (`mp php ini set`, the PHP page) → preset → site (`mp site set --ini`). Any parameter can be changed for one site or for all of them.
+- A branch's extensions can be switched off and on (Debian/Ubuntu — `phpenmod`/`phpdismod`, EL — editing `extension=` in the Remi branch's ini, then a php-fpm restart). It applies to every site on the branch: there is one php-fpm master per version.
+- Extensions the repository offers but that are not installed (memcache, redis, imagick …) appear in the same list; enabling one installs the package.
+
+### CMS
+
+`mp cms list|install <domain> <cms>`
+
+- Installs WordPress, Joomla, OpenCart and 1C-Bitrix into an existing site: the distribution comes from the vendor's site, is unpacked into the docroot as the client, gets its own database, and the site gets the matching preset.
+- The installer is the CMS's own: wp-cli, the Joomla and OpenCart CLI installers, the Bitrix web wizard, which the panel walks through itself. For Bitrix — the trial Start, Standard, Small business or Business edition, the marketplace's clean install or the demo site.
+- The administrator credentials are shown once. In the web UI — the CMS tab on the site page.
+
+### Databases
+
+`mp stack install percona|mysql`, `mp db create|list|passwd|rm`, `mp db config [set|unset]`
+
+- Percona Server or MySQL 8.4 LTS; root over `auth_socket` (on EL the panel moves it off the package's temporary password itself), settings sized to the available RAM.
+- Server settings are changed in the panel: a value takes the panel's place in `zz-monopanel.cnf`, `mysqld --validate-config` runs before the restart, and if the server fails to start the previous settings come back by themselves.
+- Databases are named `<login>_<name>`, generated passwords satisfy `validate_password`; `mysql_native_password` is enabled only for PHP < 7.4.
+
+### Valkey per account
+
+`mp stack install valkey`, `mp valkey add|list|restart|rm cache|sessions --user <login> [--memory MB]`, `mp site set <domain> --sessions valkey|files`
+
+- Two separate instances per account: a cache (allkeys-lru, nothing on disk) and PHP sessions (volatile-lru, a snapshot every minute — sessions survive a restart).
+- Each is a systemd unit `monopanel-valkey-<login>-<cache|sessions>` running as the account with a memory limit. It listens only on the unix socket `/run/monopanel-valkey/<login>-<cache|sessions>/valkey.sock` with mode 600: neither other accounts nor the web server can connect, and there is no TCP port at all. On EL the instances run in the SELinux domain `redis_t`.
+- Valkey comes from the distribution (where it has none — Ubuntu 22.04, Debian 12 without backports — Redis with the same protocol); the package's shared instance is switched off.
+- A site moves its sessions to Valkey with one setting (the redis extension of its PHP branch is needed); while a site keeps sessions in an instance, neither the instance nor the extension can be removed. Sessions are locked by phpredis (`redis.session.locking_enabled`, as files are), and the `redis.session.*` keys are tunable among the PHP settings.
+- In the web UI — the valkey button on the Users page and the PHP sessions field in the site settings.
+
+### TLS
+
+`mp ssl issue|list|renew|rm`, `mp site tls <domain>`, `mp ssl panel issue|import|self-signed`, `mp dns-provider add`
+
+- lego: HTTP-01 through the nginx webroot, DNS-01 (Cloudflare, Hetzner, DigitalOcean, Gandi, deSEC, Namecheap, RFC2136) for wildcards, renewal 30 days ahead.
+- The panel's own certificate and the sites' certificates are kept apart: the panel orders for its hostname only and picks it up live, a site orders for its domain and aliases and switches itself to HTTPS. A certificate in use cannot be deleted.
+- Certificates issued elsewhere — `mp ssl import --cert --key`.
+
+### Mail
+
+`mp mail install|status|settings|domain|box|alias|webmail`
+
+- postfix + dovecot + opendkim: domains, mailboxes (passwords and quotas in the panel, Maildir owned by `vmail`), aliases and catch-all, IMAP/POP3/submission on the panel's certificate, DKIM signing, sieve filters.
+- Send-only domains: the provider receives the domain's mail, this server signs with DKIM and sends the sites' mail. A lenient domain (`--lenient`) also accepts mail from badly configured senders.
+- `mp mail domain dns` prints the required MX, SPF, DKIM, DMARC and PTR records and checks them against public resolvers.
+- Roundcube webmail installs as a regular panel site or on a port of the mail host (`--port 2096` — no DNS record and no second certificate).
+- More in [docs/en/06-mail.md](docs/en/06-mail.md).
+
+### Backups
+
+`mp backup target add|run|list|snapshots|restore`
+
+- restic in local, SFTP, S3, B2 or REST: files, MySQL dumps and a copy of panel.db.
+- Retention by days, weeks and months, a daily schedule; restore into `<data>/restore/<snapshot>` or in place.
+
+### Files
+
+`mp files ls|put|get|mkdir|rm|mv|chmod|extract|size`
+
+- File operations run through `monopanel fsop` behind a helper that drops privileges irreversibly; paths are relative to the account's home.
+- The web UI has a file manager with an editor: browsing, drag-and-drop upload, permissions, archive extraction. Files are edited in the VS Code editor (Monaco): highlighting for php, html, css, js, sql, yaml and ini, find and replace, multiple cursors, folding, F1 for the command palette.
+- A site's Files tab opens at its docroot.
+
+### Users, SFTP and SSH
+
+`mp user add|set|list|show|totp-reset|rm`, flags `--shell|--sftp-only --password`
+
+- A panel account is a unix user. SFTP-only means a chroot into `/var/www/<login>` via `sshd_config.d/monopanel.conf`; one password for the panel and SFTP; a shell is given by a flag.
+- `mp user rm <login> [--purge]` removes the account together with its sites, databases, cron, app services and certificates.
+
+### Cron
+
+`mp cron add|list|enable|disable|rm`
+
+- The account's crontab is rendered whole from the panel database, with `~/data/bin` on PATH (the php of the right version).
+
+### App services
+
+`mp app add|set|start|stop|restart|logs|rm`
+
+- A systemd unit `monopanel-app-<login>-<name>` running as the account, for gunicorn, node, bots: command, working directory and env-file confined to the home directory, autostart, logs via journalctl.
+
+### Apache and extensions
+
+`mp stack install apache`, `mp stack install|remove memcached|jpegoptim|git|composer|sphinx`, `mp stack memcached --memory-mb --max-conn`
+
+- Apache 2.4 on Debian/Ubuntu: mpm_event + proxy_fcgi, `conf-available/monopanel.conf`.
+- The "Extensions" page in the web UI: memcached (127.0.0.1 only, memory and connections adjustable, restarted on change), jpegoptim, git, composer (from getcomposer.org with the published checksum, running on the newest PHP branch the panel installed; installing again updates it).
+- Sphinx for 1C-Bitrix: the distribution's Sphinx 2.2 on Debian/Ubuntu, the sphinxsearch.com build of Sphinx 3 on EL; the `bitrix` index as Bitrix's own settings page documents it, a stale index on disk is recreated, SphinxQL on 127.0.0.1:9306.
+
+### Firewall and real IP
+
+`mp firewall enable|allow|deny|ban|unban`, `mp stack install fail2ban`, `mp stack real-ip --cloudflare [--from CIDR]`
+
+- The nftables table `inet monopanel` with a drop policy; SSH, 80, 443 and the panel port are always open; the `monopanel-firewall` unit.
+- Allows with a source are checked before denies: `deny --port 8443` + `allow --port 8443 --source <VPN>` limits the panel to the VPN. A deny that would lock you out (SSH or the panel with no per-source allow, or your own current address) is refused.
+- fail2ban jails for sshd, nginx and the panel itself.
+- Trusted proxies for nginx `real_ip` (Cloudflare ranges built in), so allow-lists and logs see the visitor rather than the proxy.
+
+### Metrics, logs and diagnostics
+
+`mp metrics`, `mp site logs`, `mp logs <unit>`, `mp doctor`
+
+- A sampler every 10 s, stored as one point per minute for 30 days; site and journald log tails through the agent.
+- Site logs rotate weekly or at 100 MB under their own account: eight copies, compressed from the second one.
+- `mp doctor` checks services, configs, disk, certificates, DNS, jobs and drift of the generated files.
+
+### Console in the web UI
+
+`POST /system/console`
+
+- The "Console" page: `mp` commands with the signed-in administrator's rights and streamed output, a one-off token per command.
+- The dashboard's doctor findings carry "fix site" and "back to enforcing" buttons.
+
+### Migration between panels
+
+`mp migrate grant|plan|run`
+
+- A whole account moves to another MonoPanel server. The source issues a token scoped to one account and only ever reads; the target reports conflicts first (`plan` changes nothing) and then takes the account.
+- Files and dumps stream straight through; panel, SFTP, MySQL and mailbox passwords travel as hashes, so users never notice the move.
+- More in [docs/en/07-migration.md](docs/en/07-migration.md).
+
+### Moving in from BitrixVM and FASTPANEL
+
+`mp migrate plan|run --from bitrixvm|fastpanel`
+
+- The same dry run and move, but from a foreign server over ssh (password or key); the source is only read.
+- BitrixVM: sites from `/etc/nginx/bx`, database credentials from `.settings.php`; link-site symlinks and the paths in `dbconn.php` and cron are rewritten for the new home.
+- FASTPANEL: the account, sites, PHP backends, databases with their password hashes, allow-lists, certificates and cron from its database and files.
+- The CMS preset is detected from the site's files.
+
+### Updates
+
+`mp update`, `mp update apply`
+
+- The panel finds a new version in this repository's releases, downloads the package for its OS, verifies the ed25519 signature and installs it from a separate systemd unit. If the new version does not answer, the previous binary comes back.
+
+### Tokens, 2FA and webhooks
+
+`mp token create|list|revoke`, `mp user totp-reset`, `mp webhook add`
+
+- A token belongs to an account; an administrator can mint one for another account (`--user`), and root on the local socket gets one for the single administrator with no flags.
+- TOTP 2FA with a QR code in the web UI, Bearer tokens, webhooks signed with HMAC-SHA256 on job events.
+
+### Languages
+
+- The web UI in English and Russian: picked from the browser language (CIS languages → Russian, everything else → English), switchable in Settings and on the sign-in screen, remembered per browser.
+- The CLI and the TUI follow the terminal locale by the same rule; `MP_LANG=ru|en` sets it explicitly. API, job and diagnostic messages are in English.
+- The placeholder page of a new site and the page of a suspended one follow the visitor's browser language.
 
 ### Not there yet
 
