@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>MonoPanel — панель управления веб-сервером</title>
-<meta name="description" content="Сайты, PHP, базы, TLS, почта, бэкапы, firewall и переезд между серверами — одним статическим бинарником для Debian, Ubuntu и RHEL-семейства.">
+<title>MonoPanel — панель управления веб-сервером и хостингом для Linux</title>
+<meta name="description" content="Открытая панель управления веб-сервером для Debian, Ubuntu и RHEL: сайты, PHP 5.6–8.5, MySQL, TLS, почта, бэкапы, firewall и переезд с FASTPANEL и BitrixVM — одним статическим бинарником.">
 <link rel="canonical" href="https://monopanel.app/">
 <link rel="alternate" hreflang="ru" href="https://monopanel.app/">
 <link rel="alternate" hreflang="en" href="https://monopanel.app/en/">
@@ -67,8 +67,7 @@
         <span class="tag tag-muted">Apache-2.0</span>
         <span class="tag tag-muted">Go · один бинарник</span>
       </div>
-      <h1 class="page-title hero-title rise" style="--i:1">Mono<span class="hl">Panel</span></h1>
-      <p class="hero-sub rise" style="--i:2">Панель управления веб-сервером</p>
+      <h1 class="page-title hero-title rise" style="--i:1">Mono<span class="hl">Panel</span> <span class="hero-sub rise" style="--i:2">Панель управления веб-сервером</span></h1>
       <p class="lead rise" style="--i:3">Сайты, PHP, базы, TLS, почта, бэкапы, firewall и переезд между серверами — одним
         статическим бинарником, без рантайма и внешних зависимостей. Панель слушает свой порт и не зависит
         от системного nginx: если конфигурация сайта сломается, панель останется доступной и починит её.</p>
@@ -146,55 +145,55 @@
     </div>
     <div class="grid grid-3">
       <article class="card feat">
-        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-globe"/></svg></span><h3>Сайты</h3></div>
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-globe"/></svg></span><h3><a href="/docs/web-stack/">Сайты</a></h3></div>
         <p>nginx → php-fpm, nginx → Apache или прокси на свой backend. Установка и пресеты WordPress, Joomla,
           OpenCart и 1С-Битрикс.</p>
         <span class="tag tag-muted">mp site add</span>
       </article>
       <article class="card feat">
-        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-code"/></svg></span><h3>PHP 5.6–8.5</h3></div>
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-code"/></svg></span><h3><a href="/docs/platforms/#3-php">PHP 5.6–8.5</a></h3></div>
         <p>Несколько веток параллельно, свой php-fpm на каждую и пул на сайт. Любой параметр php.ini — для одного
           сайта или для всех сразу.</p>
         <span class="tag tag-muted">mp php install 8.4</span>
       </article>
       <article class="card feat">
-        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-db"/></svg></span><h3>Базы данных</h3></div>
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-db"/></svg></span><h3><a href="/docs/platforms/#4-субд">Базы данных</a></h3></div>
         <p>Percona Server или MySQL 8.4 LTS: root по auth_socket, настройка под объём памяти, сгенерированные
           пароли. У каждого аккаунта — свой Valkey для кеша и PHP-сессий.</p>
         <span class="tag tag-muted">mp db create</span>
       </article>
       <article class="card feat">
-        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-shield"/></svg></span><h3>TLS</h3></div>
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-shield"/></svg></span><h3><a href="/docs/web-stack/#7-tls--acme">TLS</a></h3></div>
         <p>Let’s Encrypt по HTTP-01 и DNS-01 для wildcard — Cloudflare, Hetzner, DigitalOcean и другие.
           Автопродление за 30 дней.</p>
         <span class="tag tag-muted">mp ssl issue</span>
       </article>
       <article class="card feat">
-        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-mail"/></svg></span><h3>Почта</h3></div>
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-mail"/></svg></span><h3><a href="/docs/mail/">Почта</a></h3></div>
         <p>postfix, dovecot и opendkim: ящики с квотами, алиасы, DKIM и Roundcube. Панель покажет нужные DNS-записи
           и проверит их. Пока только на Debian и Ubuntu.</p>
         <span class="tag tag-muted">mp mail install</span>
       </article>
       <article class="card feat">
-        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-fire"/></svg></span><h3>Firewall</h3></div>
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-fire"/></svg></span><h3><a href="/docs/platforms/#7-firewall-и-защита-от-перебора">Firewall</a></h3></div>
         <p>nftables с policy drop и fail2ban с jail’ами sshd, nginx и панели. Правило, которое заперло бы вас самих,
           панель не примет.</p>
         <span class="tag tag-muted">mp firewall enable</span>
       </article>
       <article class="card feat">
-        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-archive"/></svg></span><h3>Бэкапы</h3></div>
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-archive"/></svg></span><h3><a href="/docs/features/#бэкапы">Бэкапы</a></h3></div>
         <p>restic в local, SFTP, S3, B2 или REST: файлы, дампы MySQL и база панели по расписанию, восстановление
           рядом или на место.</p>
         <span class="tag tag-muted">mp backup run</span>
       </article>
       <article class="card feat">
-        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-refresh"/></svg></span><h3>Переезд</h3></div>
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-refresh"/></svg></span><h3><a href="/docs/migration/">Переезд</a></h3></div>
         <p>Аккаунт целиком — с другой MonoPanel, BitrixVM или FASTPANEL: сайты, базы, cron и сертификаты. Источник
           только читается.</p>
         <span class="tag tag-muted">mp migrate run</span>
       </article>
       <article class="card feat">
-        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-terminal"/></svg></span><h3>Web UI, CLI, TUI и API</h3></div>
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-terminal"/></svg></span><h3><a href="/docs/cli-api/">Web UI, CLI, TUI и API</a></h3></div>
         <p>Один REST API на всё: что можно сделать мышкой, можно сделать скриптом. TOTP 2FA, API-токены
           и webhooks.</p>
         <span class="tag tag-muted">mp</span>

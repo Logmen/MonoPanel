@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>MonoPanel — a web server control panel</title>
-<meta name="description" content="Sites, PHP, databases, TLS, mail, backups, firewall and moving between servers — in one static binary for Debian, Ubuntu and the RHEL family.">
+<title>MonoPanel — web hosting control panel for Linux servers</title>
+<meta name="description" content="An open-source control panel for Debian, Ubuntu and RHEL servers: sites, PHP 5.6–8.5, MySQL, TLS, mail, backups, firewall and migration from FASTPANEL and BitrixVM — in one static binary.">
 <link rel="canonical" href="https://monopanel.app/en/">
 <link rel="alternate" hreflang="ru" href="https://monopanel.app/">
 <link rel="alternate" hreflang="en" href="https://monopanel.app/en/">
@@ -67,8 +67,7 @@
         <span class="tag tag-muted">Apache-2.0</span>
         <span class="tag tag-muted">Go · one binary</span>
       </div>
-      <h1 class="page-title hero-title rise" style="--i:1">Mono<span class="hl">Panel</span></h1>
-      <p class="hero-sub rise" style="--i:2">A web server control panel</p>
+      <h1 class="page-title hero-title rise" style="--i:1">Mono<span class="hl">Panel</span> <span class="hero-sub rise" style="--i:2">A web hosting control panel</span></h1>
       <p class="lead rise" style="--i:3">Sites, PHP, databases, TLS, mail, backups, firewall and moving between servers — in one
         static binary, with no runtime and no external dependencies. The panel listens on its own port and does not depend
         on the system nginx: if a site’s configuration breaks, the panel stays reachable and can fix it.</p>
@@ -146,55 +145,55 @@
     </div>
     <div class="grid grid-3">
       <article class="card feat">
-        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-globe"/></svg></span><h3>Sites</h3></div>
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-globe"/></svg></span><h3><a href="/en/docs/web-stack/">Sites</a></h3></div>
         <p>nginx → php-fpm, nginx → Apache or a proxy to your own backend. Installers and presets for WordPress,
           Joomla, OpenCart and 1C-Bitrix.</p>
         <span class="tag tag-muted">mp site add</span>
       </article>
       <article class="card feat">
-        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-code"/></svg></span><h3>PHP 5.6–8.5</h3></div>
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-code"/></svg></span><h3><a href="/en/docs/platforms/#3-php">PHP 5.6–8.5</a></h3></div>
         <p>Several branches side by side, a php-fpm for each and a pool per site. Any php.ini setting — for one
           site or for all of them at once.</p>
         <span class="tag tag-muted">mp php install 8.4</span>
       </article>
       <article class="card feat">
-        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-db"/></svg></span><h3>Databases</h3></div>
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-db"/></svg></span><h3><a href="/en/docs/platforms/#4-database-servers">Databases</a></h3></div>
         <p>Percona Server or MySQL 8.4 LTS: root over auth_socket, tuning to the amount of memory, generated
           passwords. Every account gets its own Valkey for cache and PHP sessions.</p>
         <span class="tag tag-muted">mp db create</span>
       </article>
       <article class="card feat">
-        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-shield"/></svg></span><h3>TLS</h3></div>
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-shield"/></svg></span><h3><a href="/en/docs/web-stack/#7-tls--acme">TLS</a></h3></div>
         <p>Let’s Encrypt over HTTP-01, and DNS-01 for wildcards — Cloudflare, Hetzner, DigitalOcean and more.
           Renewal 30 days before expiry.</p>
         <span class="tag tag-muted">mp ssl issue</span>
       </article>
       <article class="card feat">
-        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-mail"/></svg></span><h3>Mail</h3></div>
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-mail"/></svg></span><h3><a href="/en/docs/mail/">Mail</a></h3></div>
         <p>postfix, dovecot and opendkim: mailboxes with quotas, aliases, DKIM and Roundcube. The panel shows the
           DNS records you need and checks them. Debian and Ubuntu only for now.</p>
         <span class="tag tag-muted">mp mail install</span>
       </article>
       <article class="card feat">
-        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-fire"/></svg></span><h3>Firewall</h3></div>
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-fire"/></svg></span><h3><a href="/en/docs/platforms/#7-firewall-and-brute-force-protection">Firewall</a></h3></div>
         <p>nftables with a drop policy and fail2ban with jails for sshd, nginx and the panel. A rule that would
           lock you out is refused.</p>
         <span class="tag tag-muted">mp firewall enable</span>
       </article>
       <article class="card feat">
-        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-archive"/></svg></span><h3>Backups</h3></div>
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-archive"/></svg></span><h3><a href="/en/docs/features/#backups">Backups</a></h3></div>
         <p>restic to local, SFTP, S3, B2 or REST: files, MySQL dumps and the panel database on a schedule,
           restored alongside or in place.</p>
         <span class="tag tag-muted">mp backup run</span>
       </article>
       <article class="card feat">
-        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-refresh"/></svg></span><h3>Moving in</h3></div>
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-refresh"/></svg></span><h3><a href="/en/docs/migration/">Moving in</a></h3></div>
         <p>A whole account — from another MonoPanel, BitrixVM or FASTPANEL: sites, databases, cron and
           certificates. The source is only read.</p>
         <span class="tag tag-muted">mp migrate run</span>
       </article>
       <article class="card feat">
-        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-terminal"/></svg></span><h3>Web UI, CLI, TUI and API</h3></div>
+        <div class="feat-h"><span class="feat-ic"><svg class="ic"><use href="/assets/icons.svg#i-terminal"/></svg></span><h3><a href="/en/docs/cli-api/">Web UI, CLI, TUI and API</a></h3></div>
         <p>One REST API for everything: anything you can do with a mouse you can script. TOTP 2FA, API tokens
           and webhooks.</p>
         <span class="tag tag-muted">mp</span>

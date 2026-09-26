@@ -12,6 +12,6 @@
     "not_found_handling": "404-page",
     // Воркер решает только за страницы: русская или английская версия (src/worker.js).
     // Стили, шрифты, картинки и install.sh отдаются как статика, мимо него.
-    "run_worker_first": ["/", "/docs/*", "/en", "/en/*", "!/docs/img/*", "!/en/docs/img/*"]
+    "run_worker_first": ["/", "/index.html", "/docs", "/docs/*", "/en", "/en/*", "!/docs/img/*", "!/en/docs/img/*"]
   }
 }

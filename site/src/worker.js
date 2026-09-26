@@ -61,10 +61,26 @@ function redirect(location, extra = {}) {
   });
 }
 
+// Адрес страницы — со слешем на конце, а /index.html — это /. Слой ассетов делает те же
+// переадресации, но временные (307), и поисковики запоминают оба адреса.
+export function canonical(pathname) {
+  if (pathname.endsWith('/index.html')) return pathname.slice(0, -'index.html'.length);
+  if (!pathname.endsWith('/') && !/\.[a-z0-9]+$/i.test(pathname)) return pathname + '/';
+  return pathname;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const page = !/\.[a-z0-9]+$/i.test(url.pathname);
+    if (request.method === 'GET' || request.method === 'HEAD') {
+      const canon = canonical(url.pathname);
+      if (canon !== url.pathname) {
+        // Только на существующую страницу: несуществующей и так ответит 404.
+        const probe = await env.ASSETS.fetch(new Request(new URL(canon, url), { method: 'HEAD' }));
+        if (probe.ok) return new Response(null, { status: 301, headers: { Location: canon + url.search, 'Cache-Control': 'public, max-age=86400' } });
+      }
+    }
     if (page && (request.method === 'GET' || request.method === 'HEAD')) {
       const chosen = url.searchParams.get('lang');
       if (chosen === 'ru' || chosen === 'en') {

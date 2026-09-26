@@ -2,6 +2,7 @@
 // docs/ репозитория в оформлении панели, иконки берутся из Icon.svelte панели. Два языка:
 // русская документация (README.md, docs/*.md) — по адресам /docs/…, английская
 // (README.en.md, docs/en/*.md) — /en/docs/…; кому какую показывать, решает src/worker.js.
+import { execFileSync } from 'node:child_process';
 // Cloudflare запускает сборку сам (npm run build) перед wrangler deploy.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -25,19 +26,31 @@ const LANGS = {
     groups: [['start', 'Начало'], ['guide', 'Руководство'], ['inside', 'Устройство'], ['more', 'Ещё']],
     // Разделы README по заголовку второго уровня; null — раздел, который на сайте заменяют меню и подвал.
     sections: {
-      'Установка': ['install', 'Установка', 'Скрипт установки, пакеты .deb и .rpm, требования к серверу.'],
-      'Быстрый старт': ['quickstart', 'Быстрый старт', 'От mp setup до сайта с базой, почты, бэкапов и переезда — командами CLI.'],
-      'Что умеет': ['features', 'Возможности', 'Все области панели: команды, как они устроены и чего пока нет.'],
-      'Обновление панели': ['update', 'Обновление', 'Релиз тегом, подпись ed25519, обновление с откатом на прежний бинарник.'],
-      'Переезд': ['migrate', 'Переезд', 'Аккаунт целиком — с другой MonoPanel, BitrixVM или FASTPANEL.'],
-      'Как устроено': ['how', 'Как устроено', 'Один бинарник в четырёх ролях и конвейер применения конфигов.'],
-      'Стек': ['stack', 'Стек', 'Из чего собрана панель: Go, SQLite, SvelteKit, lego, nfpm.'],
-      'Разработка': ['development', 'Разработка', 'Сборка, тесты, e2e, CI и структура репозитория.'],
+      'Установка': ['install', 'Установка', 'Установка одной командой или из пакетов .deb и .rpm: что нужно серверу и откуда панель берёт обновления.'],
+      'Быстрый старт': ['quickstart', 'Быстрый старт', 'От mp setup до сайта с базой, почты, бэкапов и переезда с другого сервера — по шагам, командами mp.'],
+      'Что умеет': ['features', 'Возможности', 'Что умеет панель по областям: сайты, PHP, базы, TLS, почта, бэкапы, файлы, firewall, переезд, обновления — с командами mp.'],
+      'Обновление панели': ['update', 'Обновление', 'Как обновляется панель: релизы с подписью ed25519, установка отдельным юнитом и откат на прежний бинарник, если новая версия не отвечает.'],
+      'Переезд': ['migrate', 'Переезд', 'Переезд аккаунта целиком с другой MonoPanel, BitrixVM или FASTPANEL: команды, что приедет и что сделать после переноса.'],
+      'Как устроено': ['how', 'Как устроено', 'Как устроена панель: один бинарник в четырёх ролях, состояние в SQLite и конвейер применения конфигов с проверкой и откатом.'],
+      'Стек': ['stack', 'Стек', 'Из чего собрана панель: Go, chi и huma, SQLite, Svelte и SvelteKit, Bubble Tea, lego и nfpm.'],
+      'Разработка': ['development', 'Разработка', 'Разработка панели: сборка, тесты с фейковым агентом, e2e на живой панели, CI и структура репозитория.'],
       'Документация': null,
       'Безопасность': null,
       'Лицензия': null
     },
     nav: { architecture: 'Архитектура', platforms: 'Платформы', 'web-stack': 'Веб-стек', 'cli-api': 'CLI, TUI и API', roadmap: 'Дорожная карта', mail: 'Почта', migration: 'Перенос между панелями', testbed: 'Тестовая площадка', 'web-ui': 'Web UI' },
+    // Описания страниц docs/ для поисковиков и карточек обзора — предложениями, а не списком слов.
+    docDesc: {
+      '01-architecture.md': 'Как устроена MonoPanel: один бинарник в ролях api, agent и helper, состояние в SQLite, конвейер применения конфигов с проверкой и откатом, безопасность и обновления.',
+      '02-platform-matrix.md': 'Поддерживаемые ОС и источники пакетов: nginx.org, Sury и Remi для PHP 5.6–8.5, MySQL и Percona 8.4, SELinux в enforcing, firewall, Valkey на аккаунт.',
+      '03-web-stack.md': 'Веб-стек панели: режимы nginx + php-fpm и nginx + Apache, файлы и права, шаблоны конфигов, пул php-fpm на сайт, TLS через lego, логи и установка CMS.',
+      '04-cli-tui-api.md': 'Команды mp, меню в терминале и REST API с OpenAPI 3.1: как они связаны, какие есть эндпоинты и как подключить биллинг.',
+      '05-roadmap.md': 'Журнал разработки MonoPanel по этапам и датам: что сделано и проверено, что осталось, матрица ОС и риски.',
+      '06-mail.md': 'Почтовый сервер MonoPanel: postfix, dovecot и opendkim, путь письма, порты и TLS, нужные DNS-записи, домены «только отправка» и вебпочта Roundcube.',
+      '07-migration.md': 'Переезд аккаунта на MonoPanel: с другой MonoPanel по токену, с BitrixVM и FASTPANEL по ssh — что переносится, как идут файлы и пароли, порядок с DNS.',
+      '08-testbed.md': 'Тестовая площадка на Proxmox: по машине на каждую из одиннадцати ОС, прогон установки, e2e, CMS и переездов перед релизом и что она нашла.',
+      '09-web-ui.md': 'Веб-интерфейс MonoPanel по страницам со скриншотами: дашборд, сайты, PHP, базы, почта, файлы, задачи, firewall, бэкапы, пользователи и настройки.'
+    },
     // Абзацы вступления README, которые не нужны на обзоре: значки, язык, состояние.
     introSkip: /^\[!\[|^\[English\]|^Состояние:/,
     t: {
@@ -59,19 +72,30 @@ const LANGS = {
     og: 'en_US',
     groups: [['start', 'Getting started'], ['guide', 'Guides'], ['inside', 'Internals'], ['more', 'More']],
     sections: {
-      'Install': ['install', 'Install', 'The install script, .deb and .rpm packages, server requirements.'],
-      'Quick start': ['quickstart', 'Quick start', 'From mp setup to a site with a database, mail, backups and a move — with CLI commands.'],
-      'What it does': ['features', 'Features', 'Every area of the panel: the commands, how they work and what is not there yet.'],
-      'Releases and updates': ['update', 'Updates', 'A release per tag, ed25519 signatures, updates that roll back to the previous binary.'],
-      'Moving in': ['migrate', 'Moving in', 'A whole account from another MonoPanel, BitrixVM or FASTPANEL.'],
-      'How it works': ['how', 'How it works', 'One binary in four roles and the pipeline that applies configuration.'],
-      'Stack': ['stack', 'Stack', 'What the panel is built from: Go, SQLite, SvelteKit, lego, nfpm.'],
-      'Development': ['development', 'Development', 'Building, tests, e2e, CI and the repository layout.'],
+      'Install': ['install', 'Install', 'Install with one command or from .deb and .rpm packages: what the server needs and where the panel takes updates from.'],
+      'Quick start': ['quickstart', 'Quick start', 'From mp setup to a site with a database, mail, backups and a move from another server — step by step, with mp commands.'],
+      'What it does': ['features', 'Features', 'What the panel does, area by area: sites, PHP, databases, TLS, mail, backups, files, firewall, migration, updates — with the mp commands.'],
+      'Releases and updates': ['update', 'Updates', 'How the panel updates itself: ed25519-signed releases, installation from a separate unit and a rollback to the previous binary if the new one does not answer.'],
+      'Moving in': ['migrate', 'Moving in', 'Moving a whole account in from another MonoPanel, BitrixVM or FASTPANEL: the commands, what arrives and what to do after the move.'],
+      'How it works': ['how', 'How it works', 'How the panel is built: one binary in four roles, state in SQLite and a config pipeline with validation and rollback.'],
+      'Stack': ['stack', 'Stack', 'What the panel is built from: Go, chi and huma, SQLite, Svelte and SvelteKit, Bubble Tea, lego and nfpm.'],
+      'Development': ['development', 'Development', 'Developing the panel: builds, tests with a fake agent, e2e against a live panel, CI and the repository layout.'],
       'Documentation': null,
       'Security': null,
       'License': null
     },
     nav: { architecture: 'Architecture', platforms: 'Platforms', 'web-stack': 'Web stack', 'cli-api': 'CLI, TUI and API', roadmap: 'Roadmap', mail: 'Mail', migration: 'Panel-to-panel migration', testbed: 'Testbed', 'web-ui': 'Web UI' },
+    docDesc: {
+      '01-architecture.md': 'How MonoPanel is built: one binary in the api, agent and helper roles, state in SQLite, a config pipeline with validation and rollback, security and updates.',
+      '02-platform-matrix.md': 'Supported operating systems and package sources: nginx.org, Sury and Remi for PHP 5.6–8.5, MySQL and Percona 8.4, SELinux enforcing, firewall, Valkey per account.',
+      '03-web-stack.md': 'The web stack: nginx + php-fpm and nginx + Apache modes, files and permissions, config templates, a php-fpm pool per site, TLS via lego, logs and CMS installation.',
+      '04-cli-tui-api.md': 'The mp commands, the terminal menu and the REST API with OpenAPI 3.1: how they fit together, which endpoints exist and how to wire up billing.',
+      '05-roadmap.md': 'The MonoPanel development log by stage and date: what is done and verified, what remains, the OS matrix and the risks.',
+      '06-mail.md': 'The MonoPanel mail server: postfix, dovecot and opendkim, the path of a message, ports and TLS, the DNS records you need, send-only domains and Roundcube webmail.',
+      '07-migration.md': 'Moving an account to MonoPanel: from another MonoPanel by token, from BitrixVM and FASTPANEL over ssh — what moves, how files and passwords travel, the DNS order.',
+      '08-testbed.md': 'The Proxmox testbed: a machine for each of the eleven OSes, install, e2e, CMS and migration runs before a release, and what it found.',
+      '09-web-ui.md': 'The MonoPanel web UI page by page with screenshots: dashboard, sites, PHP, databases, mail, files, jobs, firewall, backups, users and settings.'
+    },
     introSkip: /^\[!\[|^English ·|^Status:/,
     t: {
       menu: [['#features', 'Features'], ['#how', 'How it works'], ['#os', 'Where it runs']],
@@ -107,6 +131,25 @@ const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
 const icon = (name, cls = 'ic') => `<svg class="${cls}" aria-hidden="true"><use href="/assets/icons.svg#i-${name}"/></svg>`;
 const plain = (tokens = []) => tokens.map((t) => (t.tokens ? plain(t.tokens) : (t.text ?? ''))).join('');
 const warnings = [];
+
+// ── Даты правок для карты сайта ─────────────────────────────────────────────
+// Workers Builds клонирует репозиторий без истории; она дотягивается без содержимого
+// файлов (несколько мегабайт), иначе у всех страниц стояла бы дата последней выкладки.
+const git = (...args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+let history = false;
+try {
+  if (git('rev-parse', '--is-shallow-repository') === 'true') git('fetch', '--quiet', '--filter=blob:none', '--unshallow');
+  history = git('rev-list', '--count', 'HEAD') !== '1';
+} catch {
+  history = false;
+}
+if (!history) warnings.push('git: истории нет, карта сайта без lastmod');
+const modified = new Map();
+function lastmod(file) {
+  if (!history) return '';
+  if (!modified.has(file)) modified.set(file, git('log', '-1', '--format=%cI', '--', file));
+  return modified.get(file);
+}
 
 // Якоря как у GitHub: ссылки вида 07-migration.md#6-чужие-панели… из markdown
 // должны вести в то же место и на сайте.
@@ -171,7 +214,7 @@ function collect(lang) {
     const head = tokens[h1];
     const title = head ? head.plain.replace(/^\d+\.\s*/, '') : f;
     const slug = DOC_SLUGS[f] ?? urlSlug(f.replace(/^\d+-|\.md$/g, ''));
-    pages.push({ slug, nav: L.nav[slug] ?? title, desc: docDesc[f] ?? '', title, head, source, shift: 0, tokens: tokens.filter((_, i) => i !== h1) });
+    pages.push({ slug, nav: L.nav[slug] ?? title, desc: L.docDesc?.[f] ?? docDesc[f] ?? '', title, head, source, shift: 0, tokens: tokens.filter((_, i) => i !== h1) });
   }
 
   const groupIndex = (p) => L.groups.findIndex(([g]) => g === p.group);
@@ -354,7 +397,10 @@ function alternates(lang, url) {
 <link rel="alternate" hreflang="x-default" href="${ORIGIN}${en}">`;
 }
 
-function layout(site, { title, desc, main, active, toc = '' }) {
+// Структурированные данные для поисковиков; «<» экранируется, чтобы текст не закрыл <script>.
+const jsonLd = (data) => `<script type="application/ld+json">${JSON.stringify(data).replace(/</g, '\\u003c')}</script>`;
+
+function layout(site, { title, desc, main, active, toc = '', ld = null }) {
   const { lang, L } = site;
   const t = L.t;
   const home = `${L.prefix}/`;
@@ -376,7 +422,7 @@ ${alternates(lang, active)}
 <meta property="og:title" content="${esc(title)}">
 <meta property="og:description" content="${esc(desc)}">
 <meta property="og:image" content="${ORIGIN}${localImage(`${L.prefix}/docs/img/dashboard.dark.webp`)}">
-<meta name="theme-color" content="#eef3f8" media="(prefers-color-scheme: light)">
+${ld ? jsonLd(ld) + '\n' : ''}<meta name="theme-color" content="#eef3f8" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#05070c" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml">
@@ -483,6 +529,16 @@ function write(rel, content) {
   fs.writeFileSync(file, content);
 }
 
+// Хлебные крошки для поисковиков: сайт → документация → страница.
+function crumbsLd(site, ...tail) {
+  const items = [['MonoPanel', `${site.L.prefix}/`], [site.L.t.docs, `${site.L.prefix}/docs/`], ...tail];
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: items.map(([name, url], i) => ({ '@type': 'ListItem', position: i + 1, name, item: `${ORIGIN}${url}` }))
+  };
+}
+
 function buildDocs(site) {
   const { L } = site;
   const t = L.t;
@@ -497,7 +553,7 @@ function buildDocs(site) {
     ${pager(site, page)}
     <a class="edit" href="${REPO}/blob/main/${page.source}${page.source === L.readme ? '#' + page.head.id : ''}">${icon('pencil')}${t.source}</a>
   </main>`;
-    write(`${L.prefix.slice(1)}/docs/${page.slug}/index.html`.replace(/^\//, ''), layout(site, { title: `${page.title} — ${t.suffix}`, desc: page.desc || page.title, main, active: page.url, toc: tocHtml(site, page) }));
+    write(`${L.prefix.slice(1)}/docs/${page.slug}/index.html`.replace(/^\//, ''), layout(site, { title: `${page.title} — ${t.suffix}`, desc: page.desc || page.title, main, active: page.url, toc: tocHtml(site, page), ld: crumbsLd(site, [page.nav, page.url]) }));
   }
 
   // Обзор: вступление README и карточки разделов.
@@ -520,6 +576,7 @@ function buildDocs(site) {
       title: t.docsTitle,
       desc: t.docsDesc,
       active: docs,
+      ld: crumbsLd(site),
       main: `<main class="doc doc-home" id="doc">
     ${mobileNav(site, docs, t.overview)}
     <h1 class="page-title">${t.docs}</h1>
@@ -540,13 +597,63 @@ if (fs.existsSync(path.join(ROOT, 'docs/en/img'))) fs.cpSync(path.join(ROOT, 'do
 const sites = Object.keys(LANGS).map(collect);
 for (const site of sites) buildDocs(site);
 
+// Структурированные данные главной: название сайта и карточка программы. Главная лежит в
+// public/ готовой, поэтому блок вписывается в её копию в dist/.
+const APP = {
+  ru: {
+    kind: 'Панель управления веб-хостингом',
+    os: 'Linux: Debian 12/13, Ubuntu 22.04/24.04/26.04, AlmaLinux, Rocky Linux и Oracle Linux 9/10',
+    features: ['Сайты: nginx + php-fpm, nginx + Apache или прокси на своё приложение', 'PHP 5.6–8.5 параллельно, пул php-fpm на сайт', 'MySQL и Percona Server 8.4', "Let's Encrypt по HTTP-01 и DNS-01", 'Почта: postfix, dovecot, DKIM, Roundcube', 'Бэкапы restic: local, SFTP, S3, B2, REST', 'Firewall nftables и fail2ban', 'Переезд с другой MonoPanel, FASTPANEL и BitrixVM', 'Web UI, CLI, TUI и REST API']
+  },
+  en: {
+    kind: 'Web hosting control panel',
+    os: 'Linux: Debian 12/13, Ubuntu 22.04/24.04/26.04, AlmaLinux, Rocky Linux and Oracle Linux 9/10',
+    features: ['Sites: nginx + php-fpm, nginx + Apache or a proxy to your own application', 'PHP 5.6–8.5 side by side, a php-fpm pool per site', 'MySQL and Percona Server 8.4', "Let's Encrypt over HTTP-01 and DNS-01", 'Mail: postfix, dovecot, DKIM, Roundcube', 'restic backups: local, SFTP, S3, B2, REST', 'nftables firewall and fail2ban', 'Migration from another MonoPanel, FASTPANEL and BitrixVM', 'Web UI, CLI, TUI and REST API']
+  }
+};
+const version = /^Status: \*\*([0-9.]+)\*\*/m.exec(read('README.en.md'))?.[1];
+for (const { lang, L } of sites) {
+  const file = path.join(OUT, L.prefix.slice(1), 'index.html');
+  const html = fs.readFileSync(file, 'utf8');
+  const desc = (/<meta name="description" content="([^"]*)"/.exec(html)?.[1] ?? '').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+  const app = {
+    '@type': 'SoftwareApplication',
+    name: 'MonoPanel',
+    url: `${ORIGIN}${L.prefix}/`,
+    description: desc,
+    applicationCategory: 'DeveloperApplication',
+    applicationSubCategory: APP[lang].kind,
+    operatingSystem: APP[lang].os,
+    ...(version ? { softwareVersion: version } : {}),
+    license: 'https://www.apache.org/licenses/LICENSE-2.0',
+    isAccessibleForFree: true,
+    offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+    downloadUrl: `${REPO}/releases`,
+    installUrl: `${ORIGIN}${L.prefix}/docs/install/`,
+    screenshot: `${ORIGIN}/docs/img/dashboard.webp`,
+    image: `${ORIGIN}/docs/img/dashboard.dark.webp`,
+    sameAs: [REPO],
+    inLanguage: ['ru', 'en'],
+    featureList: APP[lang].features
+  };
+  const site = { '@type': 'WebSite', name: 'MonoPanel', url: `${ORIGIN}/`, inLanguage: ['ru', 'en'] };
+  fs.writeFileSync(file, html.replace('</head>', `${jsonLd({ '@context': 'https://schema.org', '@graph': [site, app] })}\n</head>`));
+}
+
 // Карта сайта для поисковиков: главная, обзор документации и все её страницы на обоих
-// языках, у каждой — ссылки на версии.
+// языках, у каждой — ссылки на версии и дата последней правки исходника.
+const modOf = new Map();
+for (const s of sites) {
+  modOf.set(`${s.L.prefix}/`, lastmod(`site/public${s.L.prefix}/index.html`));
+  modOf.set(`${s.L.prefix}/docs/`, lastmod(s.L.readme));
+  for (const p of s.pages) modOf.set(p.url, lastmod(p.source));
+}
+const urlTag = (u) => `<url><loc>${ORIGIN}${u}</loc>${modOf.get(u) ? `<lastmod>${modOf.get(u)}</lastmod>` : ''}`;
 const ruUrls = ['/', '/docs/', ...sites[0].pages.map((p) => p.url)];
 const entries = ruUrls.flatMap((ru) => {
   const en = counterpart(ru, 'ru');
   const alt = `\n    <xhtml:link rel="alternate" hreflang="ru" href="${ORIGIN}${ru}"/>\n    <xhtml:link rel="alternate" hreflang="en" href="${ORIGIN}${en}"/>\n    <xhtml:link rel="alternate" hreflang="x-default" href="${ORIGIN}${en}"/>\n  `;
-  return [`  <url><loc>${ORIGIN}${ru}</loc>${alt}</url>`, `  <url><loc>${ORIGIN}${en}</loc>${alt}</url>`];
+  return [`  ${urlTag(ru)}${alt}</url>`, `  ${urlTag(en)}${alt}</url>`];
 });
 write('sitemap.xml', `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">\n${entries.join('\n')}\n</urlset>\n`);
 
