@@ -10,7 +10,7 @@ const OUT = path.join(DIR, 'dist');
 
 fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(path.join(OUT, 'assets'), { recursive: true });
-for (const f of ['assets/fonts.css', 'assets/site.css', 'favicon.svg']) fs.copyFileSync(path.join(SITE, f), path.join(OUT, f));
+for (const f of ['assets/fonts.css', 'assets/site.css', 'favicon.svg', 'favicon.ico']) fs.copyFileSync(path.join(SITE, f), path.join(OUT, f));
 fs.cpSync(path.join(SITE, 'fonts'), path.join(OUT, 'fonts'), { recursive: true });
 fs.cpSync(path.join(DIR, 'pages'), OUT, { recursive: true });
 console.log('dist: ru.html, en.html and the monopanel.app styles');
