@@ -7,7 +7,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -38,8 +40,17 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// Anyone local may connect; the peer uid decides what they can do.
-	_ = os.Chmod(sock, 0o666)
+	// Only root and the CLI group — the service user and accounts with shell
+	// access — may connect; the peer uid still decides what they can do. Open
+	// to everyone, the socket would let a hacked site drive its own account.
+	if g, err := user.LookupGroup(s.cfg.CLIGroup); err != nil {
+		s.log.Warn("api socket: CLI group is missing, only root can use mp locally", "group", s.cfg.CLIGroup, "err", err)
+	} else if gid, err := strconv.Atoi(g.Gid); err == nil {
+		if err := os.Chown(sock, -1, gid); err != nil {
+			s.log.Warn("api socket: cannot hand it to the CLI group (is the service user a member?), only root can use mp locally", "group", s.cfg.CLIGroup, "err", err)
+		}
+	}
+	_ = os.Chmod(sock, 0o660)
 	unixSrv := &http.Server{Handler: s.Handler(), ConnContext: peercred.ConnContext, ReadHeaderTimeout: 10 * time.Second}
 
 	// The agent may still be starting; a few tries cover the unit ordering.
@@ -52,6 +63,7 @@ func (s *Server) Run(ctx context.Context) error {
 				s.refreshSiteLogrotate(ctx)
 				s.refreshSELinuxModule(ctx)
 				s.refreshSFTPHomes(ctx)
+				s.refreshCLIGroup(ctx)
 				return
 			}
 			select {

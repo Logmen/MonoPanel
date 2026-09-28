@@ -28,7 +28,10 @@ type Config struct {
 	ServiceUser   string `yaml:"service_user"`
 	ServiceGroup  string `yaml:"service_group"`
 	WebGroup      string `yaml:"web_group"`
-	WWWRoot       string `yaml:"www_root"`
+	// CLIGroup owns the local API socket: root and its members (the service
+	// user and accounts with shell access) may talk to the panel with mp.
+	CLIGroup string `yaml:"cli_group"`
+	WWWRoot  string `yaml:"www_root"`
 
 	Web    Web    `yaml:"web"`
 	Agent  Agent  `yaml:"agent"`
@@ -145,6 +148,7 @@ func Default() Config {
 		ServiceUser:   "monopanel",
 		ServiceGroup:  "monopanel",
 		WebGroup:      "monopanel-web",
+		CLIGroup:      "monopanel-cli",
 		WWWRoot:       "/var/www",
 		Web:           Web{Listen: ":8443"},
 		Agent:         Agent{},
@@ -195,6 +199,7 @@ func (c *Config) applyDefaults() {
 	def(&c.ServiceUser, d.ServiceUser)
 	def(&c.ServiceGroup, d.ServiceGroup)
 	def(&c.WebGroup, d.WebGroup)
+	def(&c.CLIGroup, d.CLIGroup)
 	def(&c.WWWRoot, d.WWWRoot)
 	def(&c.Web.Listen, d.Web.Listen)
 	def(&c.Log.Level, d.Log.Level)

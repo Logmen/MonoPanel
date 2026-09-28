@@ -6,7 +6,7 @@ One API. The web UI, CLI, TUI and external integrations (billing, scripts) call 
 
 ## 2. CLI — `monopanel` (alias `mp`)
 
-Connection: locally — `/run/monopanel/api.sock` (authorisation by the process uid: root is the administrator, a client's uid is that client's account, so a client with SSH access manages their own hosting with the same `mp`); remotely — `--server https://host:8443 --token …` or the `MP_SERVER` / `MP_TOKEN` variables, and `--insecure` for a self-signed certificate.
+Connection: locally — `/run/monopanel/api.sock` (authorisation by the process uid: root is the administrator, a client's uid is that client's account, so a client with SSH access manages their own hosting with the same `mp`; the socket is open only to root and the `monopanel-cli` group, which the panel fills with shell accounts, and requests coming out of php-fpm, Apache and nginx processes are refused); remotely — `--server https://host:8443 --token …` or the `MP_SERVER` / `MP_TOKEN` variables, and `--insecure` for a self-signed certificate.
 
 Global flags: `--json` (machine-readable output), `--no-wait` (do not wait for the job), `--server`, `--token`, `--insecure`, `--config` (path to `config.yaml`), `--version`.
 

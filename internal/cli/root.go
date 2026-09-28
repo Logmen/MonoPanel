@@ -63,6 +63,10 @@ func Main(args []string) int {
 			return ee.code
 		}
 		fmt.Fprintln(os.Stderr, "error:", err)
+		if errors.Is(err, fs.ErrPermission) {
+			fmt.Fprintln(os.Stderr, T("сокет панели открыт root и аккаунтам с shell-доступом (группа monopanel-cli); остальным — --server и --token", "the panel socket is open to root and to accounts with shell access (group monopanel-cli); everyone else uses --server and --token"))
+			return 4
+		}
 		var ae *client.APIError
 		if errors.As(err, &ae) {
 			switch {

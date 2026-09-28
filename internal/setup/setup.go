@@ -120,13 +120,14 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 	}
 	res := &Result{ConfigPath: cfg.Path(), DBPath: cfg.DBPath()}
 
-	step(T("группы и служебный пользователь: %s, %s", "groups and the service user: %s, %s"), cfg.ServiceGroup, cfg.WebGroup)
-	for _, g := range []string{cfg.ServiceGroup, cfg.WebGroup} {
+	step(T("группы и служебный пользователь: %s, %s, %s", "groups and the service user: %s, %s, %s"), cfg.ServiceGroup, cfg.WebGroup, cfg.CLIGroup)
+	for _, g := range []string{cfg.ServiceGroup, cfg.WebGroup, cfg.CLIGroup} {
 		if _, err := agent.EnsureGroup(ctx, &agent.EnsureGroupRequest{Name: g, System: true}); err != nil {
 			return nil, err
 		}
 	}
-	if _, err := agent.EnsureUnixUser(ctx, profile, &agent.EnsureUnixUserRequest{Login: cfg.ServiceUser, System: true, PrimaryGroup: cfg.ServiceGroup, Home: cfg.DataDir, Comment: "MonoPanel service"}); err != nil {
+	// The service user hands the API socket to the CLI group, so it has to be a member.
+	if _, err := agent.EnsureUnixUser(ctx, profile, &agent.EnsureUnixUserRequest{Login: cfg.ServiceUser, System: true, PrimaryGroup: cfg.ServiceGroup, Home: cfg.DataDir, Groups: []string{cfg.CLIGroup}, Comment: "MonoPanel service"}); err != nil {
 		return nil, err
 	}
 

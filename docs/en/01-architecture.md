@@ -71,7 +71,7 @@ As of September 2026 (MonoPanel 0.8.12). Component versions are given as of that
 - Serves the web UI (a static SvelteKit build embedded via `embed.FS`).
 - REST API `/api/v1`: OpenAPI 3.1 is generated from Go types (`huma`), SSE for job progress. A WebSocket web terminal is planned; for now the web UI has the "Console" page: `mp` commands with output streamed over HTTP.
 - Authentication: sessions (cookie `Secure; HttpOnly; SameSite=Strict`), Bearer tokens, TOTP; WebAuthn (passkeys) is planned. RBAC: `admin`, `user`. A token's scope restricts only migration tokens (`migrate:user:<login>`); any other scope is just a label.
-- Unix socket `/run/monopanel/api.sock` for the CLI: uid 0 → admin without a password; the uid of a panel user → that user's rights (a client on SSH manages their own sites with `mp`).
+- Unix socket `/run/monopanel/api.sock` for the CLI (0660, group `monopanel-cli`): uid 0 → admin without a password; the uid of an account with shell access → that account's rights (a client on SSH manages their own sites with `mp`). Accounts without a shell are not in the group, and a request coming out of a php-fpm, Apache or nginx worker — through `exec()` too — is refused by walking the ancestry in `/proc`: a hacked site must not drive its owner's account.
 - Job runner: a job queue in SQLite, N workers; each job is an idempotent sequence of steps with a log and progress; one job per entity at a time (a lock on `site_id`/`user_id`).
 - Configuration rendering (`text/template`) from built-in templates, which can be overridden in `/etc/monopanel/templates/`.
 - A scheduler for internal tasks: certificate renewal, scheduled backups, metrics collection, update checks.

@@ -103,6 +103,14 @@ func (s *Server) authenticateWith(rctx context.Context, authorization string, se
 			return &principal{Principal: apitypes.Principal{Login: "root", Role: store.RoleAdmin, Via: "peercred"}}
 		}
 		if u, err := s.db.GetUserByUnixUID(rctx, int(cred.UID)); err == nil && u.Status == store.UserActive {
+			// The socket is limited to the CLI group, but a shell account's
+			// PHP runs with that account's groups too: a request that comes
+			// out of a web worker is the site, not its owner.
+			if fromWebWorker(int(cred.PID)) {
+				s.log.Warn("local API request from a web worker refused", "login", u.Login, "pid", cred.PID)
+				s.db.Audit(rctx, store.AuditEntry{Actor: u.Login, Action: "auth.peer", Result: "denied", Details: map[string]any{"reason": "web worker", "pid": cred.PID}})
+				return nil
+			}
 			return &principal{Principal: apitypes.Principal{UserID: u.ID, Login: u.Login, Role: u.Role, Via: "peercred"}}
 		}
 		return nil

@@ -186,7 +186,7 @@ and the terminal menu. Under each heading are that area's `mp` commands.
 
 `mp user add|set|list|show|totp-reset|rm`, flags `--shell|--sftp-only --password`
 
-- A panel account is a unix user. SFTP-only means a chroot into `/var/www/<login>` via `sshd_config.d/monopanel.conf`; one password for the panel and SFTP; a shell is given by a flag.
+- A panel account is a unix user. SFTP-only means a chroot into `/var/www/<login>` via `sshd_config.d/monopanel.conf`; one password for the panel and SFTP; a shell is given by a flag, and with it access to `mp` over the local socket (group `monopanel-cli`); requests to the socket from php-fpm, Apache and nginx processes are refused.
 - `mp user rm <login> [--purge]` removes the account together with its sites, databases, cron, app services and certificates.
 
 ### Cron

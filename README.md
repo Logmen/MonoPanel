@@ -177,7 +177,7 @@ mp                              # TUI-меню
 
 `mp user add|set|list|show|totp-reset|rm`, флаги `--shell|--sftp-only --password`
 
-- Аккаунт панели — это unix-пользователь. SFTP-only — chroot в `/var/www/<login>` через `sshd_config.d/monopanel.conf`; пароль общий для панели и SFTP; shell выдаётся флагом.
+- Аккаунт панели — это unix-пользователь. SFTP-only — chroot в `/var/www/<login>` через `sshd_config.d/monopanel.conf`; пароль общий для панели и SFTP; shell выдаётся флагом и вместе с ним — доступ к `mp` через локальный сокет (группа `monopanel-cli`); запросы к сокету из процессов php-fpm, Apache и nginx отклоняются.
 - `mp user rm <login> [--purge]` удаляет аккаунт вместе с сайтами, базами, cron, app-сервисами и сертификатами.
 
 ### Cron
