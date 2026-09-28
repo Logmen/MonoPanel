@@ -96,6 +96,7 @@ mp service status [unit] | start | stop | reload | restart | enable | disable <u
 mp logs <unit> [-n 100]              # журнал юнита через агент
 mp metrics [--range 1h|6h|24h|7d|30d]
 mp job list [--status …] [--limit …] | show <id> | wait <id>
+mp audit [-n 50] [--actor <login>] [--action auth.|token.|site.]   # журнал действий: входы, токены, изменения
 mp config show | templates
 mp config set <ключ> <значение> [--restart]   # web.hostname, web.listen, log.level, log.format, jobs.workers
 mp token create [--name …] [--scopes …] [--expires <дней>] [--user <login>]
@@ -165,7 +166,7 @@ GET             /services                         GET/POST /services/{unit}
 GET             /jobs | /jobs/{id} | /jobs/{id}/events
 GET/POST        /tokens                           DELETE /tokens/{id}
 GET/POST        /webhooks                         DELETE /webhooks/{id}               POST /webhooks/{id}/test
-GET             /system/status | doctor | metrics | logs/{unit}    GET/PUT /system/selinux
+GET             /system/status | doctor | metrics | logs/{unit} | audit    GET/PUT /system/selinux
 GET/PUT         /system/update                    POST /system/update/check | apply
 POST            /system/console                   (команды mp с потоковым выводом, только администратор)
 GET             /health

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -249,6 +250,45 @@ func userCmd() *cobra.Command {
 	set.Flags().BoolVar(&sftpOnly, "sftp-only", false, T("только SFTP в chroot домашнего каталога", "SFTP only, chrooted to the home directory"))
 	set.Flags().StringVar(&upd.Status, "status", "", T("active или suspended", "active or suspended"))
 	c.AddCommand(add, list, show, set, totpReset, userRmCmd())
+	return c
+}
+
+// auditCmd prints the audit log: sign-ins with their addresses, tokens, every
+// change — the administrator sees all of it, an account only its own lines.
+func auditCmd() *cobra.Command {
+	var limit int
+	var actor, action string
+	c := &cobra.Command{Use: "audit", Short: T("журнал действий: входы, токены, изменения", "audit log: sign-ins, tokens, changes"), RunE: func(cmd *cobra.Command, _ []string) error {
+		cl, err := newClient()
+		if err != nil {
+			return err
+		}
+		list, err := cl.ListAudit(cmd.Context(), limit, actor, action)
+		if err != nil {
+			return err
+		}
+		if g.json {
+			return printJSON(list)
+		}
+		rows := make([][]string, 0, len(list))
+		for _, e := range list {
+			details := ""
+			if len(e.Details) > 0 {
+				parts := make([]string, 0, len(e.Details))
+				for k, v := range e.Details {
+					parts = append(parts, fmt.Sprintf("%s=%v", k, v))
+				}
+				sort.Strings(parts)
+				details = strings.Join(parts, " ")
+			}
+			rows = append(rows, []string{e.Time.Local().Format("2006-01-02 15:04:05"), e.Actor, e.Action, e.Target, e.IP, e.Result, details})
+		}
+		table([]string{"TIME", "WHO", "ACTION", "TARGET", "IP", "RESULT", "DETAILS"}, rows)
+		return nil
+	}}
+	c.Flags().IntVarP(&limit, "limit", "n", 50, T("сколько записей показать", "how many entries to show"))
+	c.Flags().StringVar(&actor, "actor", "", T("только записи этого аккаунта", "only this account's entries"))
+	c.Flags().StringVar(&action, "action", "", T("префикс действия: auth. — входы, token. — токены, site. — сайты", "action prefix: auth. — sign-ins, token. — tokens, site. — sites"))
 	return c
 }
 

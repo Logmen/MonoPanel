@@ -71,6 +71,7 @@ func (s *Server) registerAuth() {
 			return nil, err
 		}
 		s.db.Audit(ctx, store.AuditEntry{Actor: u.Login, Action: "auth.login", IP: info.IP})
+		s.log.Info("login", "login", u.Login, "ip", info.IP)
 		out := &loginOutput{SetCookie: sessionCookie(id, sess.ExpiresAt, info.TLS)}
 		out.Body.Principal = apitypes.Principal{UserID: u.ID, Login: u.Login, Role: u.Role, Via: "session"}
 		out.Body.User = u

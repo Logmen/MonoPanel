@@ -1,0 +1,13 @@
+# The panel's audit log (sign-ins, tokens, changes) as JSON lines. The API
+# opens the file for every entry, so no signal is needed after rotation.
+/var/log/monopanel/audit.log {
+	su monopanel monopanel
+	weekly
+	maxsize 50M
+	rotate 12
+	compress
+	delaycompress
+	missingok
+	notifempty
+	create 0640 monopanel monopanel
+}

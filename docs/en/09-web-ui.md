@@ -102,6 +102,14 @@ Everything that changes the server goes through the job queue: installing packag
 applying sites, issuing certificates, backups. A click opens the job's log — live while
 the job runs; a failed job stays in the list with its error text.
 
+## Audit log
+
+Who signed in to the panel and from where (failed attempts too), who created tokens,
+who changed what, whose requests to the local socket were refused. An administrator
+sees everything, an account only its own entries; the filters are sign-ins, tokens and
+refusals. The same is `mp audit`, and for incident reviews with files there is
+`/var/log/monopanel/audit.log` in JSON lines.
+
 ## Firewall
 
 ![Firewall: nftables rules and fail2ban](img/firewall.webp)

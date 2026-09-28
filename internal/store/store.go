@@ -29,7 +29,10 @@ var (
 )
 
 // DB wraps the SQLite handle.
-type DB struct{ sql *sql.DB }
+type DB struct {
+	sql       *sql.DB
+	auditSink func(AuditEntry)
+}
 
 // Open opens (creating if needed) the database and applies migrations.
 func Open(ctx context.Context, path string) (*DB, error) {

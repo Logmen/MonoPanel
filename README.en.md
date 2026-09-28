@@ -225,6 +225,7 @@ and the terminal menu. Under each heading are that area's `mp` commands.
 - A sampler every 10 s, stored as one point per minute for 30 days; site and journald log tails through the agent.
 - Site logs rotate weekly or at 100 MB under their own account: eight copies, compressed from the second one.
 - `mp doctor` checks services, configs, disk, certificates, DNS, jobs and drift of the generated files.
+- The audit log — who signed in and from where, who created tokens, who changed what: `mp audit`, the "Audit log" page, `GET /system/audit`; the same feed goes to `/var/log/monopanel/audit.log` as rotated JSON lines, and sign-ins and refusals to journald as well.
 
 ### Console in the web UI
 

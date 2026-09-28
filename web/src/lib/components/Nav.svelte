@@ -10,10 +10,10 @@
   const items: [string, MsgKey, string][] = [
     ['/', 'shell.nav.dashboard', 'home'], ['/sites', 'shell.nav.sites', 'globe'], ['/users', 'shell.nav.users', 'users'], ['/php', 'shell.nav.php', 'code'],
     ['/stack', 'shell.nav.stack', 'box'], ['/databases', 'shell.nav.databases', 'db'],
-    ['/mail', 'shell.nav.mail', 'mail'], ['/files', 'shell.nav.files', 'file'], ['/ssl', 'shell.nav.ssl', 'shield'], ['/jobs', 'shell.nav.jobs', 'tasks'], ['/firewall', 'shell.nav.firewall', 'fire'], ['/backups', 'shell.nav.backups', 'archive'], ['/console', 'shell.nav.console', 'terminal'], ['/settings', 'shell.nav.settings', 'settings']
+    ['/mail', 'shell.nav.mail', 'mail'], ['/files', 'shell.nav.files', 'file'], ['/ssl', 'shell.nav.ssl', 'shield'], ['/jobs', 'shell.nav.jobs', 'tasks'], ['/audit', 'shell.nav.audit', 'clock'], ['/firewall', 'shell.nav.firewall', 'fire'], ['/backups', 'shell.nav.backups', 'archive'], ['/console', 'shell.nav.console', 'terminal'], ['/settings', 'shell.nav.settings', 'settings']
   ];
   const admin = $derived(auth.me?.role === 'admin');
-  const visible = $derived(items.filter(([href]) => admin || ['/', '/sites', '/databases', '/mail', '/files', '/jobs', '/settings'].includes(href)));
+  const visible = $derived(items.filter(([href]) => admin || ['/', '/sites', '/databases', '/mail', '/files', '/jobs', '/audit', '/settings'].includes(href)));
   const active = (href: string) => page.url.pathname === href || (href !== '/' && page.url.pathname.startsWith(href));
   const modes: [ThemeMode, string, MsgKey][] = [['system', 'monitor', 'shell.theme.system'], ['light', 'sun', 'shell.theme.light'], ['dark', 'moon', 'shell.theme.dark']];
 </script>

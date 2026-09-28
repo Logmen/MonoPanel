@@ -36,6 +36,10 @@ type AuditEntry struct {
 	Details map[string]any `json:"details,omitempty"`
 }
 
+// SetAuditSink adds a second destination for every audit entry — the API
+// mirrors the log to a file for people who read logs on disk.
+func (d *DB) SetAuditSink(sink func(AuditEntry)) { d.auditSink = sink }
+
 // Audit appends an entry.
 func (d *DB) Audit(ctx context.Context, e AuditEntry) error {
 	if e.Result == "" {
@@ -46,17 +50,32 @@ func (d *DB) Audit(ctx context.Context, e AuditEntry) error {
 		b, _ := json.Marshal(e.Details)
 		details = string(b)
 	}
-	_, err := d.sql.ExecContext(ctx, `INSERT INTO audit_log(ts, actor, action, target, ip, result, details) VALUES(?,?,?,?,?,?,?)`,
-		now(), e.Actor, e.Action, e.Target, e.IP, e.Result, details)
+	ts := now()
+	res, err := d.sql.ExecContext(ctx, `INSERT INTO audit_log(ts, actor, action, target, ip, result, details) VALUES(?,?,?,?,?,?,?)`,
+		ts, e.Actor, e.Action, e.Target, e.IP, e.Result, details)
+	if err == nil && d.auditSink != nil {
+		e.ID, _ = res.LastInsertId()
+		e.Time = parseTime(ts)
+		d.auditSink(e)
+	}
 	return err
 }
 
+// AuditFilter narrows ListAudit: an empty field matches everything, Action
+// matches a prefix ("auth." is every sign-in event).
+type AuditFilter struct {
+	Limit  int
+	Actor  string
+	Action string
+}
+
 // ListAudit returns the newest entries.
-func (d *DB) ListAudit(ctx context.Context, limit int) ([]AuditEntry, error) {
-	if limit <= 0 {
-		limit = 100
+func (d *DB) ListAudit(ctx context.Context, f AuditFilter) ([]AuditEntry, error) {
+	if f.Limit <= 0 {
+		f.Limit = 100
 	}
-	rows, err := d.sql.QueryContext(ctx, `SELECT id, ts, actor, action, target, ip, result, details FROM audit_log ORDER BY id DESC LIMIT ?`, limit)
+	rows, err := d.sql.QueryContext(ctx, `SELECT id, ts, actor, action, target, ip, result, details FROM audit_log
+		WHERE (? = '' OR actor = ?) AND (? = '' OR action LIKE ? || '%') ORDER BY id DESC LIMIT ?`, f.Actor, f.Actor, f.Action, f.Action, f.Limit)
 	if err != nil {
 		return nil, err
 	}

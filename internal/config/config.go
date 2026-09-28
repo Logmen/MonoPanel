@@ -80,6 +80,9 @@ type Jobs struct {
 type Log struct {
 	Level  string `yaml:"level"`
 	Format string `yaml:"format"`
+	// AuditFile mirrors the audit log (sign-ins, tokens, changes) as JSON
+	// lines; the database stays the primary copy. "none" switches it off.
+	AuditFile string `yaml:"audit_file,omitempty"`
 }
 
 // DefaultAllowedWritePrefixes lists where the agent may write files on behalf
@@ -154,7 +157,7 @@ func Default() Config {
 		Agent:         Agent{},
 		Jobs:          Jobs{Workers: 2},
 		Update:        Update{AgentUnit: "monopanel-agent.service", APIUnit: "monopanel-api.service"},
-		Log:           Log{Level: "info", Format: "text"},
+		Log:           Log{Level: "info", Format: "text", AuditFile: "/var/log/monopanel/audit.log"},
 	}
 }
 
@@ -204,6 +207,10 @@ func (c *Config) applyDefaults() {
 	def(&c.Web.Listen, d.Web.Listen)
 	def(&c.Log.Level, d.Log.Level)
 	def(&c.Log.Format, d.Log.Format)
+	def(&c.Log.AuditFile, d.Log.AuditFile)
+	if c.Log.AuditFile == "none" {
+		c.Log.AuditFile = ""
+	}
 	def(&c.Update.AgentUnit, d.Update.AgentUnit)
 	def(&c.Update.APIUnit, d.Update.APIUnit)
 	if c.Jobs.Workers <= 0 {

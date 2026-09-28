@@ -30,6 +30,9 @@ contents:
     dst: /usr/lib/sysusers.d/monopanel.conf
   - src: ./packaging/tmpfiles.d/monopanel.conf
     dst: /usr/lib/tmpfiles.d/monopanel.conf
+  - src: ./packaging/logrotate/monopanel
+    dst: /etc/logrotate.d/monopanel
+    type: config
 scripts:
   postinstall: ./packaging/scripts/postinstall.sh
   preremove: ./packaging/scripts/preremove.sh

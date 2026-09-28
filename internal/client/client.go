@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"monopanel/internal/apitypes"
@@ -158,6 +159,19 @@ func (c *Client) ListJobs(ctx context.Context, limit int, status string) ([]*sto
 		q += "&status=" + status
 	}
 	return out, c.do(ctx, http.MethodGet, q, nil, &out)
+}
+
+// ListAudit returns the newest audit entries the caller may see.
+func (c *Client) ListAudit(ctx context.Context, limit int, actor, action string) ([]store.AuditEntry, error) {
+	var out []store.AuditEntry
+	q := url.Values{"limit": {strconv.Itoa(limit)}}
+	if actor != "" {
+		q.Set("actor", actor)
+	}
+	if action != "" {
+		q.Set("action", action)
+	}
+	return out, c.do(ctx, http.MethodGet, "/system/audit?"+q.Encode(), nil, &out)
 }
 
 // GetJob returns a job with its log.

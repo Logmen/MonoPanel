@@ -101,6 +101,9 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 		log = slog.Default()
 	}
 	s := &Server{cfg: cfg, db: db, agent: ag, jobs: runner, profile: profile, render: render.New(cfg.TemplatesDir), log: log, started: time.Now(), limiter: newLoginLimiter(8, time.Minute)}
+	if cfg.Log.AuditFile != "" {
+		db.SetAuditSink(s.auditFile(cfg.Log.AuditFile))
+	}
 	s.poolSocketWait, s.nginxWait = 10*time.Second, 15*time.Second
 	s.probe = probePort
 	s.reach = reachPort
@@ -138,6 +141,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 		s.registerAuth()
 		s.registerUsers()
 		s.registerJobs()
+		s.registerAudit()
 		s.registerTokens()
 		s.registerServices()
 		s.registerStack()

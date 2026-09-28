@@ -165,9 +165,15 @@ func TestSessionsTokensSettings(t *testing.T) {
 		t.Fatalf("setting %q", v)
 	}
 	db.Audit(ctx, AuditEntry{Actor: "alex", Action: "user.create", Target: "bob", Details: map[string]any{"role": "user"}})
-	entries, _ := db.ListAudit(ctx, 10)
+	entries, _ := db.ListAudit(ctx, AuditFilter{Limit: 10})
 	if len(entries) != 1 || entries[0].Details["role"] != "user" {
 		t.Fatalf("audit %+v", entries)
+	}
+	if byActor, _ := db.ListAudit(ctx, AuditFilter{Actor: "nobody"}); len(byActor) != 0 {
+		t.Fatalf("actor filter: %+v", byActor)
+	}
+	if byAction, _ := db.ListAudit(ctx, AuditFilter{Action: "user."}); len(byAction) != 1 {
+		t.Fatalf("action prefix filter: %+v", byAction)
 	}
 	if err := db.DeleteUser(ctx, u.ID); err != nil {
 		t.Fatal(err)
