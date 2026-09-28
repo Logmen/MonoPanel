@@ -545,6 +545,24 @@ type UserUpdateRequest struct {
 	Status   string `json:"status,omitempty" enum:"active,suspended"`
 }
 
+// ShareRequest gives an account a folder of another account's site over
+// SFTP: a bind mount into the guest's home plus ACLs on the folder.
+type ShareRequest struct {
+	Site  string `json:"site" doc:"Domain of the site whose folder is shared"`
+	Path  string `json:"path" minLength:"1" maxLength:"200" doc:"Folder inside the site's docroot, e.g. kaspy or upload/exchange; created if missing"`
+	Name  string `json:"name,omitempty" pattern:"^[a-z0-9][a-z0-9_-]{0,31}$" doc:"Folder name in the guest's home (default: the last path segment)"`
+	NoPHP bool   `json:"no_php,omitempty" doc:"Never execute PHP from this folder on the site (recommended for file exchange)"`
+}
+
+// ShareStatus is a share with whether its mount is active.
+type ShareStatus struct {
+	Share   *store.Share `json:"share"`
+	Mounted bool         `json:"mounted"`
+	Where   string       `json:"where,omitempty" doc:"Path of the folder as the guest sees it"`
+	Target  string       `json:"target,omitempty" doc:"The site folder behind it"`
+	JobID   int64        `json:"job_id,omitempty" doc:"Site re-apply job when no_php changed the nginx config"`
+}
+
 // AppRequest creates an app service: a systemd unit that runs a long-lived
 // program (gunicorn, a Node server, a bot) under the user's unix account.
 type AppRequest struct {

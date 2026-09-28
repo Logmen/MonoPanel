@@ -43,6 +43,8 @@ server {
 
     include monopanel/snippets/deny-dotfiles.conf;
     include monopanel/sites/example.com.d/*.conf;
+    # Shared folder: files land here from another account, PHP in it never runs
+    location ~ ^/upload/exchange/.*\.(?:php|phtml|phar)$ { return 403; }
 
     # --- preset: WordPress ---
     location = /favicon.ico { log_not_found off; access_log off; }

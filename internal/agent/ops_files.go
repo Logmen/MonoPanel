@@ -140,19 +140,31 @@ func (s *Server) ensureSymlink(_ context.Context, req *EnsureSymlinkRequest) (*s
 	return &struct{}{}, nil
 }
 
-var aclEntryRe = regexp.MustCompile(`^(d:)?[ugmo]:[a-z0-9_-]*:[rwxX-]{1,4}$`)
+var (
+	aclEntryRe  = regexp.MustCompile(`^(d:)?[ugmo]:[a-z0-9_-]*:[rwxX-]{1,4}$`)
+	aclRemoveRe = regexp.MustCompile(`^(d:)?[ug]:[a-z0-9_-]+$`)
+)
 
 func (s *Server) setACL(ctx context.Context, req *SetACLRequest) (*struct{}, error) {
 	p, err := s.safeHomePath(req.Path)
 	if err != nil {
 		return nil, &Error{Status: http.StatusForbidden, Message: err.Error()}
 	}
-	if len(req.Entries) == 0 {
+	if len(req.Entries) == 0 && len(req.Remove) == 0 {
 		return nil, &Error{Status: http.StatusBadRequest, Message: "no ACL entries"}
 	}
 	argv := []string{"setfacl"}
 	if req.Recursive {
 		argv = append(argv, "-R")
+	}
+	for _, e := range req.Remove {
+		if !aclRemoveRe.MatchString(e) {
+			return nil, &Error{Status: http.StatusBadRequest, Message: "invalid ACL entry to remove: " + e}
+		}
+		argv = append(argv, "-x", e)
+		if req.Default && !strings.HasPrefix(e, "d:") {
+			argv = append(argv, "-x", "d:"+e)
+		}
 	}
 	for _, e := range req.Entries {
 		if !aclEntryRe.MatchString(e) {
@@ -278,9 +290,23 @@ func (s *Server) removePaths(ctx context.Context, req *RemovePathsRequest) (*Rem
 			if _, err := s.safeHomePath(p); err != nil {
 				return nil, &Error{Status: http.StatusForbidden, Message: err.Error()}
 			}
-			// never remove the home or data directory itself
+			// never remove the home or data directory itself; an empty directory
+			// right under the home (the mount point of a shared folder after
+			// unmounting) may go, and only with rmdir semantics
 			if depth := strings.Count(strings.TrimPrefix(p, root+"/"), "/"); depth < 2 {
-				return nil, &Error{Status: http.StatusForbidden, Message: "refusing to remove " + p}
+				st, err := os.Lstat(p)
+				if errors.Is(err, os.ErrNotExist) {
+					continue
+				}
+				entries, _ := os.ReadDir(p)
+				if err != nil || depth < 1 || req.Recursive || !st.IsDir() || len(entries) > 0 {
+					return nil, &Error{Status: http.StatusForbidden, Message: "refusing to remove " + p}
+				}
+				if err := os.Remove(p); err != nil {
+					return nil, &Error{Message: "remove " + p, Output: err.Error()}
+				}
+				resp.Removed = append(resp.Removed, p)
+				continue
 			}
 		case s.pathAllowed(p) || s.pathAllowed(p+"/"):
 		default:

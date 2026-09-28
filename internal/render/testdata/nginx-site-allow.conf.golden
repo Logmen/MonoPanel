@@ -48,6 +48,8 @@ server {
 
     include monopanel/snippets/deny-dotfiles.conf;
     include monopanel/sites/example.com.d/*.conf;
+    # Shared folder: files land here from another account, PHP in it never runs
+    location ~ ^/upload/exchange/.*\.(?:php|phtml|phar)$ { return 403; }
 
     location ~* \.(?:css|js|mjs|map|jpe?g|png|gif|webp|avif|svg|ico|woff2?|ttf|eot|otf|mp4|webm|mp3|pdf|zip|gz)$ {
         try_files $uri =404;

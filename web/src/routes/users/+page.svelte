@@ -15,9 +15,11 @@
   let job = $state<number | null>(null);
   let showForm = $state(false);
   let form = $state({ login: '', password: '', email: '', role: 'user', shell: false });
-  type PanelKind = 'cron' | 'apps' | 'valkey';
+  type PanelKind = 'cron' | 'apps' | 'valkey' | 'shares';
   let panel = $state<{ login: string; kind: PanelKind; items: any[]; engine?: string } | null>(null);
   let cronForm = $state({ schedule: '*/5 * * * *', command: '' });
+  // Общая папка: каталог сайта другого аккаунта, смонтированный в дом гостя.
+  let shareForm = $state({ site: '', path: '', name: '', no_php: true });
   let appForm = $state({ name: '', command: '', workdir: '', env_file: '' });
   // Valkey of an account: a cache and a PHP sessions instance, memory in MB.
   const vkPurposes = ['cache', 'sessions'] as const;
@@ -83,12 +85,14 @@
         if (panel?.login !== login || panel.kind !== 'valkey') vkMem = { cache: 128, sessions: 64 };
         for (const v of r.instances) vkMem[v.instance.purpose as VkPurpose] = v.instance.memory_mb;
         panel = { login, kind, items: r.instances, engine: r.engine };
-      } else panel = { login, kind, items: await api(kind === 'cron' ? `/users/${login}/cron` : `/users/${login}/apps`) };
+      } else panel = { login, kind, items: await api(kind === 'cron' ? `/users/${login}/cron` : kind === 'shares' ? `/users/${login}/shares` : `/users/${login}/apps`) };
     } catch (e) { fail(e); }
   }
   async function refreshPanel() { if (panel) await openPanel(panel.login, panel.kind); }
   async function addCron(e: Event) { e.preventDefault(); if (!panel) return; try { await api(`/users/${panel.login}/cron`, { method: 'POST', json: cronForm }); cronForm.command = ''; await refreshPanel(); } catch (e) { fail(e); } }
   async function rmCron(id: number) { if (!panel) return; try { await api(`/users/${panel.login}/cron/${id}`, { method: 'DELETE' }); await refreshPanel(); } catch (e) { fail(e); } }
+  async function addShare(e: Event) { e.preventDefault(); if (!panel) return; try { const body: any = { ...shareForm }; if (!body.name) delete body.name; const r: any = await api(`/users/${panel.login}/shares`, { method: 'POST', json: body }); if (r.job_id) job = r.job_id; shareForm = { site: '', path: '', name: '', no_php: true }; await refreshPanel(); notify(t('users.shareAdded')); } catch (e) { fail(e); } }
+  async function rmShare(name: string) { if (!panel) return; try { const r: any = await api(`/users/${panel.login}/shares/${name}`, { method: 'DELETE' }); if (r.job_id) job = r.job_id; await refreshPanel(); } catch (e) { fail(e); } }
   async function addApp(e: Event) { e.preventDefault(); if (!panel) return; try { const body: any = { ...appForm }; if (!body.workdir) delete body.workdir; if (!body.env_file) delete body.env_file; await api(`/users/${panel.login}/apps`, { method: 'POST', json: body }); appForm = { name: '', command: '', workdir: '', env_file: '' }; await refreshPanel(); notify(t('users.appStarted')); } catch (e) { fail(e); } }
   const vkOf = (purpose: VkPurpose) => panel?.items.find((v) => v.instance.purpose === purpose);
   const vkTitle = (purpose: VkPurpose) => (purpose === 'cache' ? t('users.vkCache') : t('users.vkSessions'));
@@ -148,6 +152,7 @@
               <button class="btn btn-sm" onclick={() => openPanel(u.login, 'cron')}><Icon name="clock" size={13} /> cron</button>
               <button class="btn btn-sm" onclick={() => openPanel(u.login, 'apps')}><Icon name="box" size={13} /> apps</button>
               <button class="btn btn-sm" onclick={() => openPanel(u.login, 'valkey')}><Icon name="db" size={13} /> valkey</button>
+              <button class="btn btn-sm" onclick={() => openPanel(u.login, 'shares')}><Icon name="file" size={13} /> {t('users.sharesBtn')}</button>
               <button class="btn btn-sm" onclick={() => (ask = askStatus(u))}>{u.status === 'active' ? t('users.suspend') : t('users.unsuspend')}</button>
             {/if}
             {#if u.login !== auth.me?.login}<button class="btn btn-danger btn-sm" onclick={() => { del = u; purge = false; confirmLogin = ''; }} title={t('users.delete')}><Icon name="trash" size={13} /></button>{/if}
@@ -161,7 +166,7 @@
 
 {#if panel}
   <div class="card rise" transition:slide={{ duration: dur(180) }}>
-    <div class="flex justify-between items-center mb-3"><span class="font-medium">{panel.kind === 'cron' ? 'Cron' : panel.kind === 'valkey' ? 'Valkey' : t('users.appServices')}: <span class="font-mono">{panel.login}</span></span><div class="flex gap-1"><button class="btn btn-sm" onclick={refreshPanel}><Icon name="refresh" size={13} /></button><button class="btn btn-sm" onclick={() => (panel = null)}>{t('users.closePanel')}</button></div></div>
+    <div class="flex justify-between items-center mb-3"><span class="font-medium">{panel.kind === 'cron' ? 'Cron' : panel.kind === 'valkey' ? 'Valkey' : panel.kind === 'shares' ? t('users.shares') : t('users.appServices')}: <span class="font-mono">{panel.login}</span></span><div class="flex gap-1"><button class="btn btn-sm" onclick={refreshPanel}><Icon name="refresh" size={13} /></button><button class="btn btn-sm" onclick={() => (panel = null)}>{t('users.closePanel')}</button></div></div>
     {#if panel.kind === 'cron'}
       <form class="grid md:grid-cols-4 gap-2 items-end mb-3" onsubmit={addCron}>
         <div><label class="label" for="cs">{t('users.schedule')}</label><input id="cs" class="input font-mono" bind:value={cronForm.schedule} /></div>
@@ -201,6 +206,24 @@
         </div>
         <p class="text-xs text-muted mt-3">{t('users.vkIsolation', { login: panel.login, engine: panel.engine === 'valkey' ? 'Valkey' : 'Redis' })}</p>
       {/if}
+    {:else if panel.kind === 'shares'}
+      {#if auth.me?.role === 'admin'}
+      <form class="grid md:grid-cols-5 gap-2 items-end mb-3" onsubmit={addShare}>
+        <div><label class="label" for="ss">{t('users.shareSite')}</label><input id="ss" class="input font-mono" bind:value={shareForm.site} placeholder="shop.example.com" required /></div>
+        <div><label class="label" for="sp">{t('users.sharePath')}</label><input id="sp" class="input font-mono" bind:value={shareForm.path} placeholder="upload/exchange" required /></div>
+        <div><label class="label" for="sn">{t('users.shareName')}</label><input id="sn" class="input font-mono" bind:value={shareForm.name} placeholder="exchange" pattern="[a-z0-9][a-z0-9_-]{'{'}0,31{'}'}" /></div>
+        <label class="flex items-center gap-1.5 text-sm pb-2"><input type="checkbox" bind:checked={shareForm.no_php} /> {t('users.shareNoPHP')}</label>
+        <button class="btn btn-primary">{t('common.add')}</button>
+      </form>
+      {/if}
+      <table class="tbl"><thead><tr><th>{t('common.name')}</th><th>{t('users.shareInHome')}</th><th>{t('users.shareFolder')}</th><th>{t('users.colState')}</th><th>PHP</th><th></th></tr></thead><tbody>
+        {#each panel.items as sh}
+          <tr><td data-label={t('common.name')} class="font-mono">{sh.share.name}</td><td data-label={t('users.shareInHome')} class="font-mono text-xs">{sh.where}</td><td data-label={t('users.shareFolder')} class="font-mono text-xs">{sh.share.domain}/{sh.share.path} <span class="text-muted">({sh.share.owner_login})</span></td><td data-label={t('users.colState')}><span class="tag {sh.mounted ? 'tag-ok' : 'tag-err'}">{sh.mounted ? t('users.shareMounted') : t('users.shareNotMounted')}</span></td><td data-label="PHP"><span class="tag {sh.share.no_php ? 'tag-ok' : 'tag-warn'}">{sh.share.no_php ? t('users.sharePHPDenied') : t('users.sharePHPAllowed')}</span></td>
+          <td><div class="row-actions">{#if auth.me?.role === 'admin'}<button class="btn btn-danger btn-sm" onclick={() => rmShare(sh.share.name)} title={t('users.delete')}><Icon name="trash" size={13} /></button>{/if}</div></td></tr>
+        {/each}
+        {#if !panel.items.length}<tr><td colspan="6" class="text-muted text-center py-4">{t('users.noShares')}</td></tr>{/if}
+      </tbody></table>
+      <p class="text-xs text-muted mt-3">{t('users.shareNote')}</p>
     {:else}
       <form class="grid md:grid-cols-5 gap-2 items-end mb-3" onsubmit={addApp}>
         <div><label class="label" for="an">{t('common.name')}</label><input id="an" class="input font-mono" bind:value={appForm.name} pattern="[a-z0-9][a-z0-9_-]{'{'}0,31{'}'}" required /></div>

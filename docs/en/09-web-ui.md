@@ -138,6 +138,12 @@ cron jobs and app services — background applications such as a bot or a Node o
 backend under systemd. The panel and SFTP share one password. Deleting an account also
 removes its sites, databases, cron, Valkey instances and certificates.
 
+The "folders" button is for shared folders: a folder of another account's site,
+bind-mounted into this account's home. The guest sees it after signing in over SFTP and
+nothing else, both accounts and the web server read and write the files, and the "no
+PHP" box stops the site from executing scripts uploaded there. That is how a contractor
+or an exchange service gets one folder of a site without getting the account.
+
 ![The account's Valkey: instances for the cache and for PHP sessions](img/valkey.webp)
 
 The valkey button opens the account's two Valkey instances — one for the cache and one for

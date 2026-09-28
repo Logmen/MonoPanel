@@ -189,6 +189,7 @@ and the terminal menu. Under each heading are that area's `mp` commands.
 
 - A panel account is a unix user. SFTP-only means a chroot into `/var/www/<login>` via `sshd_config.d/monopanel.conf`; one password for the panel and SFTP; a shell is given by a flag, and with it access to `mp` over the local socket (group `monopanel-cli`); requests to the socket from php-fpm, Apache and nginx processes are refused.
 - `mp user rm <login> [--purge]` removes the account together with its sites, databases, cron, app services and certificates.
+- A shared folder (`mp user share add <guest> --site <domain> --path <folder> [--no-php]`): a folder of one account's site is bind-mounted (a systemd unit) into another account's home — the guest sees it after signing in over SFTP and nothing else, both accounts and the web server read and write the files (ACLs), and `--no-php` stops the site from executing PHP from that folder. The guest's home does not change: the chroot stays root-owned and account isolation stays as it is. A file uploaded over SFTP with mode 0644 can be read and deleted by the other side but not rewritten in place — that is how the ACL mask works; `mp site fix` lifts the limit from the files already there.
 
 ### Cron
 

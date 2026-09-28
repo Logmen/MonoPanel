@@ -14,7 +14,7 @@ The unit of migration is the **account**: a user and everything that belongs to 
 | `site:<domain>` | one site with its files, its database (if there is only one and it is the site's own), the cron jobs that mention it, its certificate |
 | `server` | all accounts + firewall, real-ip, DNS providers, mail settings, PHP branches |
 
-Not moved: the server itself (OS, kernel, network), edits to `/etc` made outside the panel, metrics and the job log, sessions and API tokens (they are issued anew), backup targets with their repository passwords.
+Not moved: the server itself (OS, kernel, network), edits to `/etc` made outside the panel, metrics and the job log, sessions and API tokens (they are issued anew), backup targets with their repository passwords, shared folders between accounts (the files arrive with the site; the guest gets the folder again with `mp user share add`).
 
 ## 2. The migration bundle (design)
 

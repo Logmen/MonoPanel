@@ -47,6 +47,7 @@ type Site struct {
 	IPv6              string   // the host's IPv6 the site also listens on; empty = IPv4 only
 	SecurityHeaders   bool     // X-Content-Type-Options, X-Frame-Options, Referrer-Policy on every response
 	RateLimit         int      // requests per second from one address on dynamic pages; 0 = no limit
+	NoPHPPaths        []string // docroot-relative folders where PHP is never executed (shared folders of other accounts)
 }
 
 // Plain is the site as seen by its :80 server: no TLS-only headers.

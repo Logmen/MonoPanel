@@ -165,6 +165,12 @@ func (s *Server) jobUserDelete(ctx context.Context, jc *jobs.Context) error {
 		}
 	}
 
+	jc.Progress(70, "shared folders")
+	// Folders of other accounts mounted into this home go before the home does.
+	if err := s.removeUserShares(ctx, jc, u.ID); err != nil {
+		return fail(err)
+	}
+
 	jc.Progress(75, "unix account")
 	if u.UnixUID != nil {
 		// The account is "deleting" and drops out of the log rotation before

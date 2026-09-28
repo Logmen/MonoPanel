@@ -872,6 +872,24 @@ func (c *Client) DeleteApp(ctx context.Context, login, name string) error {
 	return c.do(ctx, http.MethodDelete, "/users/"+login+"/apps/"+name, nil, nil)
 }
 
+// ListShares lists the shared folders an account reaches.
+func (c *Client) ListShares(ctx context.Context, login string) ([]*apitypes.ShareStatus, error) {
+	var out []*apitypes.ShareStatus
+	return out, c.do(ctx, http.MethodGet, "/users/"+login+"/shares", nil, &out)
+}
+
+// CreateShare gives an account a folder of another account's site.
+func (c *Client) CreateShare(ctx context.Context, login string, req apitypes.ShareRequest) (*apitypes.ShareStatus, error) {
+	var out apitypes.ShareStatus
+	return &out, c.do(ctx, http.MethodPost, "/users/"+login+"/shares", req, &out)
+}
+
+// DeleteShare takes a shared folder away.
+func (c *Client) DeleteShare(ctx context.Context, login, name string) (*apitypes.ShareStatus, error) {
+	var out apitypes.ShareStatus
+	return &out, c.do(ctx, http.MethodDelete, "/users/"+login+"/shares/"+name, nil, &out)
+}
+
 // ValkeyAll lists every Valkey instance on the host (administrators).
 func (c *Client) ValkeyAll(ctx context.Context) (*apitypes.ValkeyList, error) {
 	var out apitypes.ValkeyList

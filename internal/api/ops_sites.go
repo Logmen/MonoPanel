@@ -729,6 +729,8 @@ func (s *Server) jobSiteFix(ctx context.Context, jc *jobs.Context) error {
 		jc.Logf("warning: SELinux policy: %v", err)
 	}
 	s.relabel(ctx, jc, l.data, true)
+	// The tree-wide ACL pass above knows nothing about guests' entries.
+	s.reapplyShareACLs(ctx, jc, site.ID)
 	jc.Progress(100, "fixed")
 	return nil
 }
@@ -842,6 +844,10 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 		IncludeDir: "monopanel/sites/" + site.Domain + ".d", ClientMaxBodySize: strings.ToLower(site.ClientMaxBody), StaticByNginx: site.StaticByNginx,
 		ApacheBackend: "127.0.0.1:8080", FPMSocket: l.socket, ProxyTimeout: terminate, Backend: site.Backend, AllowFrom: site.AllowFrom,
 		HSTS: tls && site.RedirectHTTPS, Preset: site.Preset, IPv6: site.IPv6, SecurityHeaders: site.SecurityHeaders, RateLimit: site.RateLimit,
+		NoPHPPaths: s.siteNoPHPPaths(ctx, site.ID),
+	}
+	for _, p := range rs.NoPHPPaths {
+		jc.Logf("shared folder %s: PHP execution denied", p)
 	}
 	if site.RateLimit > 0 {
 		jc.Logf("rate limit: %d requests/s per address on dynamic pages", site.RateLimit)
@@ -1190,6 +1196,9 @@ func (s *Server) jobSiteDelete(ctx context.Context, jc *jobs.Context) error {
 // removeSiteConfig deletes the nginx/Apache/php-fpm configuration of a site
 // (validating and reloading) and, with purge, the site directory.
 func (s *Server) removeSiteConfig(ctx context.Context, jc *jobs.Context, site *store.Site, user *store.User, purge bool) error {
+	if err := s.removeSiteShares(ctx, jc, site.ID); err != nil {
+		return err
+	}
 	l := s.layoutFor(site, user)
 	web := s.profile.Web()
 	paths := []string{l.nginxConf, l.nginxDir, l.apacheConf, path.Join(web.ApacheConfDir, "monopanel", "sites", site.Domain+".d")}

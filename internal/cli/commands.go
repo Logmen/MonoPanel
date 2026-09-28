@@ -249,7 +249,7 @@ func userCmd() *cobra.Command {
 	set.Flags().BoolVar(&shell, "shell", false, T("разрешить SSH shell", "allow an SSH shell"))
 	set.Flags().BoolVar(&sftpOnly, "sftp-only", false, T("только SFTP в chroot домашнего каталога", "SFTP only, chrooted to the home directory"))
 	set.Flags().StringVar(&upd.Status, "status", "", T("active или suspended", "active or suspended"))
-	c.AddCommand(add, list, show, set, totpReset, userRmCmd())
+	c.AddCommand(add, list, show, set, totpReset, userRmCmd(), userShareCmd())
 	return c
 }
 

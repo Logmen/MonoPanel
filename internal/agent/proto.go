@@ -190,6 +190,9 @@ type SetACLRequest struct {
 	Entries   []string `json:"entries"`           // e.g. "g:monopanel-web:rX"
 	Default   bool     `json:"default,omitempty"` // also set default entries (directories)
 	Recursive bool     `json:"recursive,omitempty"`
+	// Remove drops entries (setfacl -x), e.g. "u:alex"; with Default the
+	// matching default entries go too.
+	Remove []string `json:"remove,omitempty"`
 }
 
 // SiteACLRequest gives the web group read access to a site tree: r-x and a
