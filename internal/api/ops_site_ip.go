@@ -33,7 +33,7 @@ func (s *Server) defaultServersDir() string {
 // longer has. With no address at all (network not up yet) it keeps them.
 func (s *Server) pruneDefaultServers(ctx context.Context) []string {
 	local := map[string]bool{}
-	for _, ip := range s.hostIPs() {
+	for _, ip := range append(s.hostIPs(), s.hostIPv6s()...) {
 		local[ip] = true
 	}
 	if len(local) == 0 {
@@ -77,9 +77,16 @@ func (s *Server) sitesOffHost(ctx context.Context) map[string][]string {
 	if err != nil {
 		return out
 	}
+	local6 := map[string]bool{}
+	for _, ip := range s.hostIPv6s() {
+		local6[ip] = true
+	}
 	for _, site := range sites {
 		if site.IP != "" && !local[site.IP] {
 			out[site.IP] = append(out[site.IP], site.Domain)
+		}
+		if site.IPv6 != "" && !local6[site.IPv6] {
+			out[site.IPv6] = append(out[site.IPv6], site.Domain)
 		}
 	}
 	return out
@@ -93,14 +100,33 @@ func (s *Server) offHostHint(off map[string][]string) string {
 	}
 	sort.Strings(ips)
 	var parts []string
+	v6 := false
 	for _, ip := range ips {
 		parts = append(parts, fmt.Sprintf("%s (%s)", ip, strings.Join(off[ip], ", ")))
+		v6 = v6 || strings.Contains(ip, ":")
 	}
 	to := "<address>"
 	if local := s.hostIPs(); len(local) == 1 {
 		to = local[0]
 	}
-	return "addresses not on this server, nginx cannot bind them: " + strings.Join(parts, "; ") + " — mp site move-ip " + to
+	hint := "mp site move-ip " + to
+	if v6 {
+		hint += "; IPv6: mp site set <domain> --ipv6 <address>|none"
+	}
+	return "addresses not on this server, nginx cannot bind them: " + strings.Join(parts, "; ") + " — " + hint
+}
+
+// checkHostIPv6 refuses an IPv6 address the host does not have.
+func (s *Server) checkHostIPv6(ip string) error {
+	for _, local := range s.hostIPv6s() {
+		if local == ip {
+			return nil
+		}
+	}
+	if have := s.hostIPv6s(); len(have) > 0 {
+		return fmt.Errorf("IPv6 address %s is not on this server (available: %s)", ip, strings.Join(have, ", "))
+	}
+	return fmt.Errorf("IPv6 address %s is not on this server (it has no global IPv6 address)", ip)
 }
 
 // checkHostIP refuses an address the host does not have: nginx would not

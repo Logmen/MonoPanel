@@ -111,6 +111,7 @@ and the terminal menu. Under each heading are that area's `mp` commands.
 
 - Three modes: `fpm` (nginx → php-fpm), `apache` (nginx → Apache on loopback 8080 via mod_proxy_fcgi) and `proxy` (nginx → your own backend).
 - Every site gets its own php-fpm pool, ACLs for the `monopanel-web` group, a placeholder page and an automatic certificate; a suspended site serves a 503 page.
+- A site listens on the server's IPv6 address too (`--ipv6`, the first global one by default; `none` — IPv4 only). Security headers with one flag (`--security-headers`: X-Content-Type-Options, X-Frame-Options, Referrer-Policy), a rate limit per address on dynamic pages (`--rate-limit 10` requests per second; static files do not count, the excess gets 429).
 - Access only from listed addresses (`--allow`), HSTS when HTTPS is forced, custom nginx directives in `sites/<domain>.d/*.conf`. `mp site nginx <domain> --set file` writes them with an `nginx -t` check and a rollback; `mp site php <domain>` shows the effective PHP settings and where each one comes from.
 - CMS presets `--preset wordpress|joomla|bitrix|opencart` (`mp site presets`): their own nginx locations (pretty URLs, Joomla `/api/`, Bitrix `urlrewrite.php`, OpenCart `_route_`, denied service directories, no PHP execution in uploads) and PHP defaults. Bitrix follows the BitrixVM rules: opcache for 100,000 files, no open_basedir.
 

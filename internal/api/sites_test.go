@@ -71,7 +71,8 @@ func newFixture(t *testing.T, tweak func(*config.Config)) *siteFixture {
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	runner := jobs.NewRunner(db, 2, quiet)
 	s := New(cfg, db, fake.Client(), runner, profile, quiet)
-	s.SetReadinessWaits(0, 0) // no php-fpm socket and no nginx behind the fake agent
+	s.SetReadinessWaits(0, 0)                      // no php-fpm socket and no nginx behind the fake agent
+	s.SetHostIPv6s(func() []string { return nil }) // the developer's machine may have one; tests set their own
 	runner.Start(ctx)
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)

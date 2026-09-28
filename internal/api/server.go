@@ -55,8 +55,10 @@ type Server struct {
 	// own outside addresses: a daemon bound to 127.0.0.1 answers the probe
 	// above and still serves nobody. Tests replace it with the probe.
 	reach func(ip string, port int) bool
-	// hostIPs lists the host's IPv4 addresses; tests move the host.
-	hostIPs func() []string
+	// hostIPs lists the host's IPv4 addresses, hostIPv6s its global IPv6
+	// ones; tests move the host.
+	hostIPs   func() []string
+	hostIPv6s func() []string
 	// lookup resolves a name in public DNS; tests answer themselves.
 	lookup func(ctx context.Context, name string) ([]string, error)
 }
@@ -68,6 +70,9 @@ func (s *Server) SetReadinessWaits(poolSocket, nginx time.Duration) {
 
 // SetHostIPs overrides the host's addresses. Intended for tests.
 func (s *Server) SetHostIPs(fn func() []string) { s.hostIPs = fn }
+
+// SetHostIPv6s replaces the host's IPv6 address list (tests, the demo).
+func (s *Server) SetHostIPv6s(fn func() []string) { s.hostIPv6s = fn }
 
 // SetLookup overrides the public DNS lookup. Intended for tests.
 func (s *Server) SetLookup(fn func(ctx context.Context, name string) ([]string, error)) {
@@ -108,6 +113,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	s.probe = probePort
 	s.reach = reachPort
 	s.hostIPs = localIPv4s
+	s.hostIPv6s = localIPv6s
 	s.lookup = publicLookup
 	s.tls = newCertHolder(cfg, log)
 	if box, err := secrets.Open(cfg.SecretKeyFile); err == nil {

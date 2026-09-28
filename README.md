@@ -102,6 +102,7 @@ mp                              # TUI-меню
 
 - Три режима: `fpm` (nginx → php-fpm), `apache` (nginx → Apache на loopback 8080 через mod_proxy_fcgi) и `proxy` (nginx → свой backend).
 - У каждого сайта свой пул php-fpm, ACL для группы `monopanel-web`, страница-заглушка и автоматический сертификат; приостановленный сайт отдаёт страницу 503.
+- Сайт слушает и на IPv6-адресе сервера (`--ipv6`, по умолчанию первый глобальный; `none` — только IPv4). Заголовки безопасности одним флагом (`--security-headers`: X-Content-Type-Options, X-Frame-Options, Referrer-Policy), ограничение частоты запросов с одного адреса на динамические страницы (`--rate-limit 10` — запросов в секунду, статика не считается, лишним — 429).
 - Доступ только с перечисленных адресов (`--allow`), HSTS при принудительном HTTPS, свои директивы nginx в `sites/<domain>.d/*.conf`. `mp site nginx <domain> --set файл` записывает их с проверкой `nginx -t` и откатом; `mp site php <domain>` показывает действующие PHP-параметры и откуда каждый взялся.
 - Пресеты CMS `--preset wordpress|joomla|bitrix|opencart` (`mp site presets`): свои location в nginx (ЧПУ, `/api` Joomla, `urlrewrite.php` Битрикса, `_route_` OpenCart, закрытые служебные каталоги, запрет PHP в uploads) и PHP-параметры по умолчанию. Битрикс настраивается по правилам BitrixVM: opcache на 100 000 файлов, без open_basedir.
 

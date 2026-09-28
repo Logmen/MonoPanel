@@ -73,6 +73,8 @@ for f in "$golden"/nginx-site-*.golden; do
 		-e "s#include monopanel/sites/example.com.d/\*.conf;##" \
 		-e "s#listen 203.0.113.10:80#listen 127.0.0.1:18080#g" \
 		-e "s#listen 203.0.113.10:443#listen 127.0.0.1:18443#g" \
+		-e "s#listen \[2001:db8::10\]:80#listen [::1]:18080#g" \
+		-e "s#listen \[2001:db8::10\]:443#listen [::1]:18443#g" \
 		"$f" > "$work/sites/site.conf"
 	write_main
 	if out=$(nginx -t -c "$work/conf/nginx.conf" -p "$work" -e "$work/logs/startup.log" 2>&1); then

@@ -30,6 +30,7 @@ type Site struct {
 	PHPVersion     string            `json:"php_version"`
 	Docroot        string            `json:"docroot"`
 	IP             string            `json:"ip"`
+	IPv6           string            `json:"ipv6"`
 	HTTP2          bool              `json:"http2"`
 	HTTP3          bool              `json:"http3"`
 	SSL            string            `json:"ssl"`
@@ -44,7 +45,12 @@ type Site struct {
 	CertificateID  *int64            `json:"certificate_id,omitempty"`
 	Backend        string            `json:"backend,omitempty"`
 	AllowFrom      []string          `json:"allow_from"`
-	Preset         string            `json:"preset"`
+	// SecurityHeaders adds X-Content-Type-Options, X-Frame-Options and
+	// Referrer-Policy to every response; RateLimit caps requests per second
+	// from one address on dynamic pages (0 — no limit).
+	SecurityHeaders bool   `json:"security_headers"`
+	RateLimit       int    `json:"rate_limit"`
+	Preset          string `json:"preset"`
 	// CMS the panel installed here (mp cms install), its version and when.
 	CMS        string `json:"cms"`
 	CMSVersion string `json:"cms_version,omitempty"`
@@ -63,15 +69,15 @@ type Site struct {
 	Login string `json:"login,omitempty"`
 }
 
-const siteCols = `s.id, s.user_id, s.domain, s.aliases, s.mode, s.php_version, s.docroot, s.ip, s.http2, s.http3, s.ssl, s.redirect_https, s.redirect_www, s.static_by_nginx, s.fpm_pm, s.fpm_max_children, s.php_ini, s.allow_exec, s.client_max_body, s.certificate_id, s.status, s.last_error, s.created_at, s.updated_at, u.login, s.backend, s.allow_from, s.preset, s.cms, s.cms_version, s.cms_at, s.cms_database, s.session_store`
+const siteCols = `s.id, s.user_id, s.domain, s.aliases, s.mode, s.php_version, s.docroot, s.ip, s.http2, s.http3, s.ssl, s.redirect_https, s.redirect_www, s.static_by_nginx, s.fpm_pm, s.fpm_max_children, s.php_ini, s.allow_exec, s.client_max_body, s.certificate_id, s.status, s.last_error, s.created_at, s.updated_at, u.login, s.backend, s.allow_from, s.preset, s.cms, s.cms_version, s.cms_at, s.cms_database, s.session_store, s.ipv6, s.security_headers, s.rate_limit`
 const siteFrom = ` FROM sites s JOIN users u ON u.id = s.user_id`
 
 func scanSite(sc scanner) (*Site, error) {
 	var s Site
 	var aliases, ini, allow, created, updated string
-	var http2, http3, redir, static, exec int
+	var http2, http3, redir, static, exec, headers int
 	var cert sql.NullInt64
-	if err := sc.Scan(&s.ID, &s.UserID, &s.Domain, &aliases, &s.Mode, &s.PHPVersion, &s.Docroot, &s.IP, &http2, &http3, &s.SSL, &redir, &s.RedirectWWW, &static, &s.FPMPM, &s.FPMMaxChildren, &ini, &exec, &s.ClientMaxBody, &cert, &s.Status, &s.LastError, &created, &updated, &s.Login, &s.Backend, &allow, &s.Preset, &s.CMS, &s.CMSVersion, &s.CMSAt, &s.CMSDatabase, &s.SessionStore); err != nil {
+	if err := sc.Scan(&s.ID, &s.UserID, &s.Domain, &aliases, &s.Mode, &s.PHPVersion, &s.Docroot, &s.IP, &http2, &http3, &s.SSL, &redir, &s.RedirectWWW, &static, &s.FPMPM, &s.FPMMaxChildren, &ini, &exec, &s.ClientMaxBody, &cert, &s.Status, &s.LastError, &created, &updated, &s.Login, &s.Backend, &allow, &s.Preset, &s.CMS, &s.CMSVersion, &s.CMSAt, &s.CMSDatabase, &s.SessionStore, &s.IPv6, &headers, &s.RateLimit); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -89,7 +95,7 @@ func scanSite(sc scanner) (*Site, error) {
 	if s.PHPIni == nil {
 		s.PHPIni = map[string]string{}
 	}
-	s.HTTP2, s.HTTP3, s.RedirectHTTPS, s.StaticByNginx, s.AllowExec = http2 != 0, http3 != 0, redir != 0, static != 0, exec != 0
+	s.HTTP2, s.HTTP3, s.RedirectHTTPS, s.StaticByNginx, s.AllowExec, s.SecurityHeaders = http2 != 0, http3 != 0, redir != 0, static != 0, exec != 0, headers != 0
 	if cert.Valid {
 		v := cert.Int64
 		s.CertificateID = &v
@@ -134,9 +140,9 @@ func (d *DB) CreateSite(ctx context.Context, s *Site) error {
 	ini, _ := json.Marshal(s.PHPIni)
 	allow, _ := json.Marshal(s.AllowFrom)
 	ts := now()
-	err := d.sql.QueryRowContext(ctx, `INSERT INTO sites(user_id, domain, aliases, mode, php_version, docroot, ip, http2, http3, ssl, redirect_https, redirect_www, static_by_nginx, fpm_pm, fpm_max_children, php_ini, allow_exec, client_max_body, certificate_id, backend, allow_from, preset, cms, cms_version, cms_at, cms_database, session_store, status, last_error, created_at, updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
-		s.UserID, s.Domain, string(aliases), s.Mode, s.PHPVersion, s.Docroot, s.IP, boolInt(s.HTTP2), boolInt(s.HTTP3), s.SSL, boolInt(s.RedirectHTTPS), s.RedirectWWW, boolInt(s.StaticByNginx), s.FPMPM, s.FPMMaxChildren, string(ini), boolInt(s.AllowExec), s.ClientMaxBody, nullInt64Ptr(s.CertificateID), s.Backend, string(allow), s.Preset, s.CMS, s.CMSVersion, s.CMSAt, s.CMSDatabase, s.SessionStore, s.Status, s.LastError, ts, ts).Scan(&s.ID)
+	err := d.sql.QueryRowContext(ctx, `INSERT INTO sites(user_id, domain, aliases, mode, php_version, docroot, ip, http2, http3, ssl, redirect_https, redirect_www, static_by_nginx, fpm_pm, fpm_max_children, php_ini, allow_exec, client_max_body, certificate_id, backend, allow_from, preset, cms, cms_version, cms_at, cms_database, session_store, ipv6, security_headers, rate_limit, status, last_error, created_at, updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+		s.UserID, s.Domain, string(aliases), s.Mode, s.PHPVersion, s.Docroot, s.IP, boolInt(s.HTTP2), boolInt(s.HTTP3), s.SSL, boolInt(s.RedirectHTTPS), s.RedirectWWW, boolInt(s.StaticByNginx), s.FPMPM, s.FPMMaxChildren, string(ini), boolInt(s.AllowExec), s.ClientMaxBody, nullInt64Ptr(s.CertificateID), s.Backend, string(allow), s.Preset, s.CMS, s.CMSVersion, s.CMSAt, s.CMSDatabase, s.SessionStore, s.IPv6, boolInt(s.SecurityHeaders), s.RateLimit, s.Status, s.LastError, ts, ts).Scan(&s.ID)
 	if err != nil {
 		if isUnique(err) {
 			return ErrExists
@@ -156,8 +162,8 @@ func (d *DB) UpdateSite(ctx context.Context, s *Site) error {
 		s.AllowFrom = []string{}
 	}
 	allow, _ := json.Marshal(s.AllowFrom)
-	res, err := d.sql.ExecContext(ctx, `UPDATE sites SET aliases=?, mode=?, php_version=?, docroot=?, ip=?, http2=?, http3=?, ssl=?, redirect_https=?, redirect_www=?, static_by_nginx=?, fpm_pm=?, fpm_max_children=?, php_ini=?, allow_exec=?, client_max_body=?, certificate_id=?, backend=?, allow_from=?, preset=?, cms=?, cms_version=?, cms_at=?, cms_database=?, session_store=?, status=?, last_error=?, updated_at=? WHERE id=?`,
-		string(aliases), s.Mode, s.PHPVersion, s.Docroot, s.IP, boolInt(s.HTTP2), boolInt(s.HTTP3), s.SSL, boolInt(s.RedirectHTTPS), s.RedirectWWW, boolInt(s.StaticByNginx), s.FPMPM, s.FPMMaxChildren, string(ini), boolInt(s.AllowExec), s.ClientMaxBody, nullInt64Ptr(s.CertificateID), s.Backend, string(allow), s.Preset, s.CMS, s.CMSVersion, s.CMSAt, s.CMSDatabase, s.SessionStore, s.Status, s.LastError, now(), s.ID)
+	res, err := d.sql.ExecContext(ctx, `UPDATE sites SET aliases=?, mode=?, php_version=?, docroot=?, ip=?, http2=?, http3=?, ssl=?, redirect_https=?, redirect_www=?, static_by_nginx=?, fpm_pm=?, fpm_max_children=?, php_ini=?, allow_exec=?, client_max_body=?, certificate_id=?, backend=?, allow_from=?, preset=?, cms=?, cms_version=?, cms_at=?, cms_database=?, session_store=?, ipv6=?, security_headers=?, rate_limit=?, status=?, last_error=?, updated_at=? WHERE id=?`,
+		string(aliases), s.Mode, s.PHPVersion, s.Docroot, s.IP, boolInt(s.HTTP2), boolInt(s.HTTP3), s.SSL, boolInt(s.RedirectHTTPS), s.RedirectWWW, boolInt(s.StaticByNginx), s.FPMPM, s.FPMMaxChildren, string(ini), boolInt(s.AllowExec), s.ClientMaxBody, nullInt64Ptr(s.CertificateID), s.Backend, string(allow), s.Preset, s.CMS, s.CMSVersion, s.CMSAt, s.CMSDatabase, s.SessionStore, s.IPv6, boolInt(s.SecurityHeaders), s.RateLimit, s.Status, s.LastError, now(), s.ID)
 	if err != nil {
 		return err
 	}

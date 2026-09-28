@@ -256,13 +256,34 @@ func (s *Server) registerSites() {
 		if err := validateIni(b.PHPIni); err != nil {
 			return nil, huma.Error422UnprocessableEntity(err.Error())
 		}
+		// IPv6 comes along by default when the host has a global address;
+		// "none" keeps the site on IPv4 only.
+		ipv6 := b.IPv6
+		switch ipv6 {
+		case "":
+			if v6 := s.hostIPv6s(); len(v6) > 0 {
+				ipv6 = v6[0]
+			}
+		case "none":
+			ipv6 = ""
+		default:
+			if err := s.checkHostIPv6(ipv6); err != nil {
+				return nil, huma.Error422UnprocessableEntity(err.Error())
+			}
+		}
 		if b.IP != "" {
 			if err := s.checkHostIP(b.IP); err != nil {
 				return nil, huma.Error422UnprocessableEntity(err.Error())
 			}
 		}
-		site := &store.Site{UserID: owner.ID, Domain: domain, Aliases: names, Mode: b.Mode, Backend: b.Backend, PHPVersion: phpVersion, Docroot: strings.Trim(b.Docroot, "/"), IP: b.IP, SSL: b.SSL,
+		site := &store.Site{UserID: owner.ID, Domain: domain, Aliases: names, Mode: b.Mode, Backend: b.Backend, PHPVersion: phpVersion, Docroot: strings.Trim(b.Docroot, "/"), IP: b.IP, IPv6: ipv6, SSL: b.SSL,
 			HTTP2: true, RedirectHTTPS: true, RedirectWWW: b.RedirectWWW, StaticByNginx: true, FPMPM: b.FPMPM, FPMMaxChildren: b.FPMMaxChildren, PHPIni: b.PHPIni, ClientMaxBody: b.ClientMaxBody}
+		if b.SecurityHeaders != nil {
+			site.SecurityHeaders = *b.SecurityHeaders
+		}
+		if b.RateLimit != nil {
+			site.RateLimit = *b.RateLimit
+		}
 		if site.AllowFrom, err = normalizeAllowFrom(b.AllowFrom); err != nil {
 			return nil, huma.Error422UnprocessableEntity(err.Error())
 		}
@@ -377,6 +398,23 @@ func (s *Server) registerSites() {
 				return nil, huma.Error422UnprocessableEntity(err.Error())
 			}
 			site.IP = b.IP
+		}
+		if b.IPv6 != nil {
+			switch v := strings.TrimSpace(*b.IPv6); v {
+			case "", "none":
+				site.IPv6 = ""
+			default:
+				if err := s.checkHostIPv6(v); err != nil {
+					return nil, huma.Error422UnprocessableEntity(err.Error())
+				}
+				site.IPv6 = v
+			}
+		}
+		if b.SecurityHeaders != nil {
+			site.SecurityHeaders = *b.SecurityHeaders
+		}
+		if b.RateLimit != nil {
+			site.RateLimit = *b.RateLimit
 		}
 		if b.SSL != "" {
 			site.SSL = b.SSL
@@ -803,7 +841,10 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 		RedirectHTTPS: site.RedirectHTTPS, RedirectWWW: site.RedirectWWW, Docroot: l.docroot, LogDir: path.Join(l.data, "logs"),
 		IncludeDir: "monopanel/sites/" + site.Domain + ".d", ClientMaxBodySize: strings.ToLower(site.ClientMaxBody), StaticByNginx: site.StaticByNginx,
 		ApacheBackend: "127.0.0.1:8080", FPMSocket: l.socket, ProxyTimeout: terminate, Backend: site.Backend, AllowFrom: site.AllowFrom,
-		HSTS: tls && site.RedirectHTTPS, Preset: site.Preset,
+		HSTS: tls && site.RedirectHTTPS, Preset: site.Preset, IPv6: site.IPv6, SecurityHeaders: site.SecurityHeaders, RateLimit: site.RateLimit,
+	}
+	if site.RateLimit > 0 {
+		jc.Logf("rate limit: %d requests/s per address on dynamic pages", site.RateLimit)
 	}
 	if len(site.AllowFrom) > 0 {
 		jc.Logf("access limited to %s", strings.Join(site.AllowFrom, ", "))

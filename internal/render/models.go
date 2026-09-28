@@ -44,12 +44,36 @@ type Site struct {
 	AllowFrom         []string // IPs/CIDRs allowed to open the site; empty = everyone
 	HSTS              bool     // send Strict-Transport-Security (TLS + forced HTTPS)
 	Preset            string   // wordpress | joomla | bitrix | opencart | "" (generic php-fpm locations)
+	IPv6              string   // the host's IPv6 the site also listens on; empty = IPv4 only
+	SecurityHeaders   bool     // X-Content-Type-Options, X-Frame-Options, Referrer-Policy on every response
+	RateLimit         int      // requests per second from one address on dynamic pages; 0 = no limit
 }
 
 // Plain is the site as seen by its :80 server: no TLS-only headers.
 func (s Site) Plain() Site {
 	s.TLS, s.HTTP3, s.HSTS = false, false, false
 	return s
+}
+
+// RateZone names the limit_req zone and its key variable: nginx variable
+// names take letters, digits and underscores, so the domain is flattened.
+func (s Site) RateZone() string {
+	return "mp_" + strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			return r
+		}
+		return '_'
+	}, strings.ToLower(s.Domain))
+}
+
+// RateBurst is how many requests above the rate one address may make at
+// once before nginx answers 429: a page loads a handful of dynamic requests
+// together, so the burst is twice the rate and never below ten.
+func (s Site) RateBurst() int {
+	if b := s.RateLimit * 2; b > 10 {
+		return b
+	}
+	return 10
 }
 
 // ServerNames joins the domain and its aliases for server_name.

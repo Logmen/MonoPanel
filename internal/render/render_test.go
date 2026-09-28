@@ -12,8 +12,8 @@ var update = flag.Bool("update", false, "rewrite golden files")
 
 func exampleSite(mode string) Site {
 	return Site{
-		Domain: "example.com", Aliases: []string{"www.example.com"}, Mode: mode, IP: "203.0.113.10",
-		TLS: true, HTTP2: true, HTTP3: true, RedirectHTTPS: true, HSTS: true, RedirectWWW: "to_root",
+		Domain: "example.com", Aliases: []string{"www.example.com"}, Mode: mode, IP: "203.0.113.10", IPv6: "2001:db8::10",
+		TLS: true, HTTP2: true, HTTP3: true, RedirectHTTPS: true, HSTS: true, RedirectWWW: "to_root", SecurityHeaders: true, RateLimit: 10,
 		CertPath: "/var/lib/monopanel/certs/example.com/fullchain.pem", KeyPath: "/var/lib/monopanel/certs/example.com/privkey.pem",
 		Docroot: "/var/www/alex/data/www/example.com", LogDir: "/var/www/alex/data/logs",
 		IncludeDir: "monopanel/sites/example.com.d", ClientMaxBodySize: "64m", StaticByNginx: true,
@@ -41,7 +41,7 @@ func TestGolden(t *testing.T) {
 	}{
 		{"nginx-main.conf", "nginx/nginx.conf.tmpl", NginxMain{User: "nginx"}, []string{"user  nginx;", "include /etc/nginx/monopanel/sites/*.conf;"}},
 		{"nginx-ip-default.conf", "nginx/ip-default.conf.tmpl", IPDefault{IP: "203.0.113.10", TLS: true, HTTP3: true, CertPath: "/c.pem", KeyPath: "/k.pem", PanelHost: "panel.example.com", PanelPort: 8443}, []string{"quic reuseport", "default_server"}},
-		{"nginx-site-fpm.conf", "nginx/site.conf.tmpl", exampleSite("fpm"), []string{"fastcgi_pass unix:/run/monopanel/php/example.com.sock;", "return 301 https://$host$request_uri;", "listen 203.0.113.10:443 quic;", "if ($host = www.example.com)", "add_header Strict-Transport-Security \"max-age=31536000\" always;"}},
+		{"nginx-site-fpm.conf", "nginx/site.conf.tmpl", exampleSite("fpm"), []string{"fastcgi_pass unix:/run/monopanel/php/example.com.sock;", "return 301 https://$host$request_uri;", "listen 203.0.113.10:443 quic;", "listen [2001:db8::10]:443 ssl;", "listen [2001:db8::10]:443 quic;", "if ($host = www.example.com)", "add_header Strict-Transport-Security \"max-age=31536000\" always;", "add_header X-Frame-Options SAMEORIGIN always;", "map $uri $mp_example_com_key", "limit_req_zone $mp_example_com_key zone=mp_example_com:2m rate=10r/s;", "limit_req zone=mp_example_com burst=20 nodelay;", "limit_req_status 429;"}},
 		{"nginx-site-proxy.conf", "nginx/site.conf.tmpl", func() Site { s := exampleSite("proxy"); s.Backend = "http://127.0.0.1:3000"; return s }(), []string{"proxy_pass http://127.0.0.1:3000;", "proxy-app.conf"}},
 		{"nginx-site-apache.conf", "nginx/site.conf.tmpl", exampleSite("apache"), []string{"proxy_pass http://127.0.0.1:8080;", "try_files $uri @apache;", "proxy-apache.conf"}},
 		{"apache-site.conf", "apache/site.conf.tmpl", exampleSite("apache"), []string{"<VirtualHost 127.0.0.1:8080>", "ServerAlias www.example.com", "proxy:unix:/run/monopanel/php/example.com.sock|fcgi://localhost", "ProxyTimeout 150"}},

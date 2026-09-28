@@ -235,6 +235,7 @@ func start(ctx context.Context, o Options, cfg config.Config, ag *Agent) (*runni
 	srv := api.New(cfg, db, agent.NewClient(cfg.AgentSocket()), runner, Profile(), log)
 	srv.SetReadinessWaits(0, 0)
 	srv.SetHostIPs(func() []string { return []string{SiteIP} })
+	srv.SetHostIPv6s(func() []string { return nil })
 	srv.SetLookup(lookup)
 	srv.SetPortProbe(ag.probe)
 	runner.Start(cctx)

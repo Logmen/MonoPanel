@@ -208,52 +208,58 @@ type PHPVersions struct {
 
 // SiteRequest creates a site. Unset optional fields take panel defaults.
 type SiteRequest struct {
-	Domain         string            `json:"domain" doc:"Primary hostname"`
-	User           string            `json:"user,omitempty" doc:"Owner login (admins only; users create their own)"`
-	Aliases        []string          `json:"aliases,omitempty"`
-	WWW            bool              `json:"www,omitempty" doc:"Add www.<domain> alias"`
-	Mode           string            `json:"mode,omitempty" enum:"fpm,apache,proxy"`
-	Backend        string            `json:"backend,omitempty" doc:"proxy mode: http://127.0.0.1:PORT or http://unix:/path.sock:"`
-	PHPVersion     string            `json:"php_version,omitempty"`
-	Docroot        string            `json:"docroot,omitempty" doc:"Subdirectory of the site root, e.g. public"`
-	IP             string            `json:"ip,omitempty"`
-	SSL            string            `json:"ssl,omitempty" enum:"auto,none"`
-	HTTP2          *bool             `json:"http2,omitempty"`
-	HTTP3          *bool             `json:"http3,omitempty"`
-	RedirectHTTPS  *bool             `json:"redirect_https,omitempty"`
-	RedirectWWW    string            `json:"redirect_www,omitempty" enum:"none,to_www,to_root"`
-	StaticByNginx  *bool             `json:"static_by_nginx,omitempty"`
-	FPMPM          string            `json:"fpm_pm,omitempty" enum:"ondemand,dynamic,static"`
-	FPMMaxChildren int               `json:"fpm_max_children,omitempty" minimum:"1" maximum:"512"`
-	PHPIni         map[string]string `json:"php_ini,omitempty"`
-	AllowExec      *bool             `json:"allow_exec,omitempty"`
-	ClientMaxBody  string            `json:"client_max_body,omitempty" pattern:"^[0-9]+[kKmMgG]?$"`
-	AllowFrom      []string          `json:"allow_from,omitempty" maxItems:"64" doc:"Only these IPs/CIDRs may open the site (empty = everyone); ACME challenges stay reachable"`
-	Preset         string            `json:"preset,omitempty" doc:"CMS preset: wordpress, joomla, bitrix, opencart (empty = generic php-fpm)"`
+	Domain          string            `json:"domain" doc:"Primary hostname"`
+	User            string            `json:"user,omitempty" doc:"Owner login (admins only; users create their own)"`
+	Aliases         []string          `json:"aliases,omitempty"`
+	WWW             bool              `json:"www,omitempty" doc:"Add www.<domain> alias"`
+	Mode            string            `json:"mode,omitempty" enum:"fpm,apache,proxy"`
+	Backend         string            `json:"backend,omitempty" doc:"proxy mode: http://127.0.0.1:PORT or http://unix:/path.sock:"`
+	PHPVersion      string            `json:"php_version,omitempty"`
+	Docroot         string            `json:"docroot,omitempty" doc:"Subdirectory of the site root, e.g. public"`
+	IP              string            `json:"ip,omitempty"`
+	IPv6            string            `json:"ipv6,omitempty" doc:"IPv6 address of this host the site also listens on; none = IPv4 only; unset = the host's first global IPv6, if any"`
+	SSL             string            `json:"ssl,omitempty" enum:"auto,none"`
+	HTTP2           *bool             `json:"http2,omitempty"`
+	HTTP3           *bool             `json:"http3,omitempty"`
+	RedirectHTTPS   *bool             `json:"redirect_https,omitempty"`
+	RedirectWWW     string            `json:"redirect_www,omitempty" enum:"none,to_www,to_root"`
+	StaticByNginx   *bool             `json:"static_by_nginx,omitempty"`
+	FPMPM           string            `json:"fpm_pm,omitempty" enum:"ondemand,dynamic,static"`
+	FPMMaxChildren  int               `json:"fpm_max_children,omitempty" minimum:"1" maximum:"512"`
+	PHPIni          map[string]string `json:"php_ini,omitempty"`
+	AllowExec       *bool             `json:"allow_exec,omitempty"`
+	ClientMaxBody   string            `json:"client_max_body,omitempty" pattern:"^[0-9]+[kKmMgG]?$"`
+	SecurityHeaders *bool             `json:"security_headers,omitempty" doc:"Send X-Content-Type-Options, X-Frame-Options and Referrer-Policy"`
+	RateLimit       *int              `json:"rate_limit,omitempty" minimum:"0" maximum:"10000" doc:"Requests per second from one address on dynamic pages; 0 = no limit"`
+	AllowFrom       []string          `json:"allow_from,omitempty" maxItems:"64" doc:"Only these IPs/CIDRs may open the site (empty = everyone); ACME challenges stay reachable"`
+	Preset          string            `json:"preset,omitempty" doc:"CMS preset: wordpress, joomla, bitrix, opencart (empty = generic php-fpm)"`
 }
 
 // SiteUpdateRequest patches a site; every field is optional.
 type SiteUpdateRequest struct {
-	Aliases        *[]string         `json:"aliases,omitempty"`
-	Mode           string            `json:"mode,omitempty" enum:"fpm,apache,proxy"`
-	Backend        string            `json:"backend,omitempty"`
-	PHPVersion     string            `json:"php_version,omitempty"`
-	Docroot        *string           `json:"docroot,omitempty"`
-	IP             string            `json:"ip,omitempty"`
-	SSL            string            `json:"ssl,omitempty" enum:"auto,none"`
-	HTTP2          *bool             `json:"http2,omitempty"`
-	HTTP3          *bool             `json:"http3,omitempty"`
-	RedirectHTTPS  *bool             `json:"redirect_https,omitempty"`
-	RedirectWWW    string            `json:"redirect_www,omitempty" enum:"none,to_www,to_root"`
-	StaticByNginx  *bool             `json:"static_by_nginx,omitempty"`
-	FPMPM          string            `json:"fpm_pm,omitempty" enum:"ondemand,dynamic,static"`
-	FPMMaxChildren int               `json:"fpm_max_children,omitempty" minimum:"1" maximum:"512"`
-	PHPIni         map[string]string `json:"php_ini,omitempty" doc:"Merged into the site ini; empty value removes a key"`
-	AllowExec      *bool             `json:"allow_exec,omitempty"`
-	ClientMaxBody  string            `json:"client_max_body,omitempty" pattern:"^[0-9]+[kKmMgG]?$"`
-	AllowFrom      *[]string         `json:"allow_from,omitempty" maxItems:"64" doc:"Replace the IP allow-list; [] opens the site to everyone"`
-	Preset         *string           `json:"preset,omitempty" doc:"CMS preset: wordpress, joomla, bitrix, opencart or \"\" for generic"`
-	SessionStore   string            `json:"session_store,omitempty" enum:"files,valkey" doc:"Where PHP keeps sessions: files in the account's tmp, or its Valkey sessions instance (needs the redis extension of the site's PHP)"`
+	Aliases         *[]string         `json:"aliases,omitempty"`
+	Mode            string            `json:"mode,omitempty" enum:"fpm,apache,proxy"`
+	Backend         string            `json:"backend,omitempty"`
+	PHPVersion      string            `json:"php_version,omitempty"`
+	Docroot         *string           `json:"docroot,omitempty"`
+	IP              string            `json:"ip,omitempty"`
+	IPv6            *string           `json:"ipv6,omitempty" doc:"IPv6 address of this host the site also listens on; \"\" or none = IPv4 only"`
+	SSL             string            `json:"ssl,omitempty" enum:"auto,none"`
+	HTTP2           *bool             `json:"http2,omitempty"`
+	HTTP3           *bool             `json:"http3,omitempty"`
+	RedirectHTTPS   *bool             `json:"redirect_https,omitempty"`
+	RedirectWWW     string            `json:"redirect_www,omitempty" enum:"none,to_www,to_root"`
+	StaticByNginx   *bool             `json:"static_by_nginx,omitempty"`
+	FPMPM           string            `json:"fpm_pm,omitempty" enum:"ondemand,dynamic,static"`
+	FPMMaxChildren  int               `json:"fpm_max_children,omitempty" minimum:"1" maximum:"512"`
+	PHPIni          map[string]string `json:"php_ini,omitempty" doc:"Merged into the site ini; empty value removes a key"`
+	AllowExec       *bool             `json:"allow_exec,omitempty"`
+	ClientMaxBody   string            `json:"client_max_body,omitempty" pattern:"^[0-9]+[kKmMgG]?$"`
+	AllowFrom       *[]string         `json:"allow_from,omitempty" maxItems:"64" doc:"Replace the IP allow-list; [] opens the site to everyone"`
+	SecurityHeaders *bool             `json:"security_headers,omitempty" doc:"Send X-Content-Type-Options, X-Frame-Options and Referrer-Policy"`
+	RateLimit       *int              `json:"rate_limit,omitempty" minimum:"0" maximum:"10000" doc:"Requests per second from one address on dynamic pages; 0 = no limit"`
+	Preset          *string           `json:"preset,omitempty" doc:"CMS preset: wordpress, joomla, bitrix, opencart or \"\" for generic"`
+	SessionStore    string            `json:"session_store,omitempty" enum:"files,valkey" doc:"Where PHP keeps sessions: files in the account's tmp, or its Valkey sessions instance (needs the redis extension of the site's PHP)"`
 }
 
 // SiteMoveIPRequest moves the sites of one address to another: after the

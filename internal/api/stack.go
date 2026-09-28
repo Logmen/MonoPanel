@@ -443,6 +443,33 @@ func (s *Server) installNginx(ctx context.Context, jc *jobs.Context) error {
 	return nil
 }
 
+// localIPv6s lists the host's global IPv6 addresses: sites listen on the
+// first one unless told otherwise, so link-local and unique-local ones are
+// left out — nobody reaches a site through those.
+func localIPv6s() []string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok {
+			if ip := ipn.IP; ip.To4() == nil && ip.To16() != nil && ip.IsGlobalUnicast() && !ip.IsPrivate() {
+				out = append(out, ip.String())
+			}
+		}
+	}
+	return out
+}
+
+// bracket writes an IPv6 address the way nginx wants it in listen: [addr].
+func bracket(ip string) string {
+	if strings.Contains(ip, ":") {
+		return "[" + ip + "]"
+	}
+	return ip
+}
+
 // localIPv4s lists the host's non-loopback IPv4 addresses (the API runs on
 // the managed host itself).
 func localIPv4s() []string {
@@ -548,8 +575,8 @@ func (s *Server) nginxGlobalFiles() ([]agent.FileSpec, error) {
 	for name, content := range snippets {
 		files = append(files, agent.FileSpec{Path: path.Join(confDir, "monopanel", "snippets", name), Content: content, Mode: 0o644})
 	}
-	for _, ip := range s.hostIPs() {
-		conf, err := s.render.Render("nginx/ip-default.conf.tmpl", render.IPDefault{IP: ip, PanelHost: s.cfg.Web.Hostname, PanelPort: s.panelPort()})
+	for _, ip := range append(s.hostIPs(), s.hostIPv6s()...) {
+		conf, err := s.render.Render("nginx/ip-default.conf.tmpl", render.IPDefault{IP: bracket(ip), PanelHost: s.cfg.Web.Hostname, PanelPort: s.panelPort()})
 		if err != nil {
 			return nil, err
 		}

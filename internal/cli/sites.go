@@ -99,7 +99,8 @@ func siteCmd() *cobra.Command {
 
 	var req apitypes.SiteRequest
 	var ini []string
-	var http3, allowExec, noRedirect bool
+	var http3, allowExec, noRedirect, securityHeaders bool
+	var addRateLimit int
 	add := &cobra.Command{Use: "add <domain>", Short: T("создать сайт (каталоги, пул php-fpm, nginx, welcome-страница, сертификат)", "create a site (directories, php-fpm pool, nginx, placeholder page, certificate)"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
@@ -116,6 +117,13 @@ func siteCmd() *cobra.Command {
 		if allowExec {
 			t := true
 			req.AllowExec = &t
+		}
+		if securityHeaders {
+			t := true
+			req.SecurityHeaders = &t
+		}
+		if addRateLimit > 0 {
+			req.RateLimit = &addRateLimit
 		}
 		if noRedirect {
 			f := false
@@ -141,6 +149,9 @@ func siteCmd() *cobra.Command {
 	add.Flags().StringVar(&req.Docroot, "docroot", "", T("подкаталог docroot, например public", "docroot subdirectory, for example public"))
 	add.Flags().StringVar(&req.SSL, "ssl", "auto", T("auto (Let's Encrypt автоматически) или none", "auto (Let's Encrypt, issued automatically) or none"))
 	add.Flags().StringVar(&req.IP, "ip", "", T("IP-адрес (по умолчанию первый адрес сервера)", "IP address (the server's first address by default)"))
+	add.Flags().StringVar(&req.IPv6, "ipv6", "", T("IPv6-адрес сервера, на котором сайт тоже слушает (по умолчанию первый глобальный IPv6 сервера, none — только IPv4)", "IPv6 address of the server the site also listens on (the server's first global IPv6 by default, none — IPv4 only)"))
+	add.Flags().BoolVar(&securityHeaders, "security-headers", false, T("заголовки X-Content-Type-Options, X-Frame-Options и Referrer-Policy", "the X-Content-Type-Options, X-Frame-Options and Referrer-Policy headers"))
+	add.Flags().IntVar(&addRateLimit, "rate-limit", 0, T("запросов в секунду с одного адреса на динамические страницы (0 — без лимита)", "requests per second from one address on dynamic pages (0 — no limit)"))
 	add.Flags().StringVar(&req.RedirectWWW, "redirect-www", "", T("none, to_www или to_root", "none, to_www or to_root"))
 	add.Flags().StringVar(&req.FPMPM, "pm", "", T("ondemand, dynamic или static", "ondemand, dynamic or static"))
 	add.Flags().IntVar(&req.FPMMaxChildren, "max-children", 0, "pm.max_children")
@@ -197,7 +208,8 @@ func siteCmd() *cobra.Command {
 	var docroot string
 	var allowFrom []string
 	var allowAll bool
-	var preset string
+	var preset, ipv6 string
+	var rateLimit int
 	set := &cobra.Command{Use: "set <domain>", Short: T("изменить настройки сайта и применить", "change a site's settings and apply them"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
@@ -250,11 +262,17 @@ func siteCmd() *cobra.Command {
 		for _, f := range []struct {
 			name string
 			dst  **bool
-		}{{"http2", &upd.HTTP2}, {"http3", &upd.HTTP3}, {"https-redirect", &upd.RedirectHTTPS}, {"static-by-nginx", &upd.StaticByNginx}, {"allow-exec", &upd.AllowExec}} {
+		}{{"http2", &upd.HTTP2}, {"http3", &upd.HTTP3}, {"https-redirect", &upd.RedirectHTTPS}, {"static-by-nginx", &upd.StaticByNginx}, {"allow-exec", &upd.AllowExec}, {"security-headers", &upd.SecurityHeaders}} {
 			if cmd.Flags().Changed(f.name) {
 				v, _ := cmd.Flags().GetBool(f.name)
 				*f.dst = &v
 			}
+		}
+		if cmd.Flags().Changed("ipv6") {
+			upd.IPv6 = &ipv6
+		}
+		if cmd.Flags().Changed("rate-limit") {
+			upd.RateLimit = &rateLimit
 		}
 		res, err := cl.UpdateSite(cmd.Context(), args[0], upd)
 		if err != nil {
@@ -271,6 +289,9 @@ func siteCmd() *cobra.Command {
 	set.Flags().BoolVar(&unsetWWW, "no-www", false, T("убрать www.<domain>", "remove www.<domain>"))
 	set.Flags().StringVar(&docroot, "docroot", "", T("подкаталог docroot (пустая строка — корень сайта)", "docroot subdirectory (an empty string means the site root)"))
 	set.Flags().StringVar(&upd.IP, "ip", "", T("IP-адрес", "IP address"))
+	set.Flags().StringVar(&ipv6, "ipv6", "", T("IPv6-адрес сервера, на котором сайт тоже слушает; none — только IPv4", "IPv6 address of the server the site also listens on; none — IPv4 only"))
+	set.Flags().Bool("security-headers", false, T("заголовки X-Content-Type-Options, X-Frame-Options и Referrer-Policy", "the X-Content-Type-Options, X-Frame-Options and Referrer-Policy headers"))
+	set.Flags().IntVar(&rateLimit, "rate-limit", 0, T("запросов в секунду с одного адреса на динамические страницы (0 — без лимита)", "requests per second from one address on dynamic pages (0 — no limit)"))
 	set.Flags().StringVar(&upd.SSL, "ssl", "", T("auto или none", "auto or none"))
 	set.Flags().StringVar(&upd.RedirectWWW, "redirect-www", "", T("none, to_www или to_root", "none, to_www or to_root"))
 	set.Flags().StringVar(&upd.FPMPM, "pm", "", T("ondemand, dynamic или static", "ondemand, dynamic or static"))

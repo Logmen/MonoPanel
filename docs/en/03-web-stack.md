@@ -218,7 +218,8 @@ The site's PHP branch needs the redis extension. The socket, with mode 600, belo
 - Redirects: http→https, www↔non-www; arbitrary 301/302 by path — through custom directives in `<domain>.d/` or `mp site nginx`.
 - Site aliases (shared docroot) and separate sites on subdomains.
 - A custom docroot inside `data/www/<domain>/` (for example `/public` for Laravel and Symfony).
-- Access only from listed addresses (`--allow`). Basic auth per path, blocking by country (geoip2 as a dynamic module) and `limit_req` per site are planned.
+- Access only from listed addresses (`--allow`); a rate limit per address (`--rate-limit N` — `limit_req` on dynamic pages, static files do not count, the excess gets 429); security headers (`--security-headers`). Basic auth per path and blocking by country (geoip2 as a dynamic module) are planned.
+- IPv6: a site listens on the server's IPv6 address too (`--ipv6`; the first global one by default, `none` — IPv4 only), and every address has its own default server.
 - Browser caching of static files, `gzip`; `brotli` as a dynamic module of our own build is planned.
 - A "site suspended" placeholder for `status=suspended`: the config is replaced with a minimal one serving a 503 page, and the FPM pool is removed from the master's config.
 - `proxy` mode — the site is served by your own application (Node, Python, Docker): `--mode proxy --backend http://127.0.0.1:3000`; a background application can run under systemd as an app service (`mp app`).

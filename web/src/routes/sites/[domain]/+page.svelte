@@ -91,6 +91,7 @@
       docroot: site.docroot, ssl: site.ssl, http2: site.http2, http3: site.http3, redirect_https: site.redirect_https, redirect_www: site.redirect_www,
       static_by_nginx: site.static_by_nginx, fpm_pm: site.fpm_pm, fpm_max_children: site.fpm_max_children, allow_exec: site.allow_exec, client_max_body: site.client_max_body,
       allow_from: allow.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean), preset: site.preset || '',
+      ipv6: site.ipv6 || 'none', security_headers: site.security_headers, rate_limit: Number(site.rate_limit) || 0,
       session_store: site.mode === 'proxy' ? undefined : site.session_store || 'files'
     };
   }
@@ -179,6 +180,8 @@
       <div><label class="label" for="pm">php-fpm pm</label><select id="pm" class="input" bind:value={site.fpm_pm}><option value="ondemand">ondemand</option><option value="dynamic">dynamic</option><option value="static">static</option></select></div>
       <div><label class="label" for="mc">max_children</label><input id="mc" class="input" type="number" min="1" bind:value={site.fpm_max_children} /></div>
       <div><label class="label" for="mb">client_max_body_size</label><input id="mb" class="input font-mono" bind:value={site.client_max_body} /></div>
+      <div><label class="label" for="ip6">{t('site.ipv6')}</label><input id="ip6" class="input font-mono" bind:value={site.ipv6} placeholder="2001:db8::10" /></div>
+      <div><label class="label" for="rl">{t('site.rateLimit')}</label><input id="rl" class="input" type="number" min="0" bind:value={site.rate_limit} /></div>
       <div class="md:col-span-3"><label class="label" for="allow">{t('site.allowFrom')}</label><input id="allow" class="input font-mono" bind:value={allow} placeholder="203.0.113.0/24, 198.51.100.7" /></div>
       <div class="md:col-span-3 flex flex-wrap gap-x-5 gap-y-2 text-sm">
         <label class="flex items-center gap-1.5"><input type="checkbox" bind:checked={site.redirect_https} /> HTTP → HTTPS (+HSTS)</label>
@@ -186,6 +189,7 @@
         <label class="flex items-center gap-1.5"><input type="checkbox" bind:checked={site.http3} /> HTTP/3</label>
         <label class="flex items-center gap-1.5"><input type="checkbox" bind:checked={site.static_by_nginx} /> {t('site.staticByNginx')}</label>
         <label class="flex items-center gap-1.5"><input type="checkbox" bind:checked={site.allow_exec} /> {t('site.allowExec')}</label>
+        <label class="flex items-center gap-1.5"><input type="checkbox" bind:checked={site.security_headers} /> {t('site.securityHeaders')}</label>
       </div>
       <div class="md:col-span-3"><button class="btn btn-primary"><Icon name="save" size={14} /> {t('site.saveApply')}</button></div>
     </form>
