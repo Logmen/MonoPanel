@@ -17,7 +17,7 @@ mp status                            # panel, host, services, jobs
 mp doctor                            # diagnostics
 mp version
 mp update                            # what is installed and what is available
-mp update check | apply [--version v0.8.13]
+mp update check | apply [--version v0.8.14]
 mp update settings [--repo owner/name] [--channel …] [--check-hours 24] [--auto-apply] [--token-stdin|--clear-token]
 mp update trust [--key <fork key>] [--restart] | --clear | --off   # no flags — which key checks the signature
 
