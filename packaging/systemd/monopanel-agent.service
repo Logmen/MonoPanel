@@ -7,6 +7,23 @@ Type=simple
 ExecStart=/usr/bin/monopanel agent
 Restart=on-failure
 RestartSec=2
+# The agent runs as root on purpose: it installs packages, makes unix users,
+# writes /etc and reloads services. What it never needs is fenced off here.
+# Homes under /home and /root stay read-only (clients live in /var/www),
+# kernel modules, tunables, cgroups, the clock and the host name are out of
+# reach, and /tmp is its own. ProtectSystem= and a capability set are not
+# possible: apt/dnf write everywhere and package scripts need every capability.
+ProtectHome=read-only
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+PrivateTmp=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target
