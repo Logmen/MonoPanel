@@ -501,6 +501,7 @@ scripts/testbed/      the testbed: VMs on Proxmox, panel bootstrap, matrix and m
 | [docs/en/06-mail.md](docs/en/06-mail.md) | Mail: postfix + dovecot + opendkim, the path of a message, files and ports, DNS records, webmail, limits |
 | [docs/en/07-migration.md](docs/en/07-migration.md) | Moving in: between two MonoPanel servers and from BitrixVM/FASTPANEL over ssh — what moves and how, the order around the DNS switch, the migration bundle and the other adapters (design) |
 | [docs/en/08-testbed.md](docs/en/08-testbed.md) | The testbed: a VM on Proxmox for every distribution in the matrix, the e2e and panel-to-panel migration runs, what it found |
+| [docs/en/10-shared-folders.md](docs/en/10-shared-folders.md) | Shared folders: a contractor's SFTP access to one folder of a site — step by step, how it works, file permissions |
 | [docs/en/09-web-ui.md](docs/en/09-web-ui.md) | The web UI page by page, with screenshots in the light and dark themes: dashboard, sites, PHP, databases, mail, files, jobs, firewall, backups, settings; how to retake the screenshots |
 
 The same documents in Russian are in [docs/](docs/).

@@ -38,7 +38,7 @@ const LANGS = {
       'Безопасность': null,
       'Лицензия': null
     },
-    nav: { architecture: 'Архитектура', platforms: 'Платформы', 'web-stack': 'Веб-стек', 'cli-api': 'CLI, TUI и API', roadmap: 'Дорожная карта', mail: 'Почта', migration: 'Перенос между панелями', testbed: 'Тестовая площадка', 'web-ui': 'Web UI' },
+    nav: { architecture: 'Архитектура', platforms: 'Платформы', 'web-stack': 'Веб-стек', 'cli-api': 'CLI, TUI и API', roadmap: 'Дорожная карта', mail: 'Почта', migration: 'Перенос между панелями', testbed: 'Тестовая площадка', 'web-ui': 'Web UI', 'shared-folders': 'Общие папки' },
     // Описания страниц docs/ для поисковиков и карточек обзора — предложениями, а не списком слов.
     docDesc: {
       '01-architecture.md': 'Как устроена MonoPanel: один бинарник в ролях api, agent и helper, состояние в SQLite, конвейер применения конфигов с проверкой и откатом, безопасность и обновления.',
@@ -49,7 +49,8 @@ const LANGS = {
       '06-mail.md': 'Почтовый сервер MonoPanel: postfix, dovecot и opendkim, путь письма, порты и TLS, нужные DNS-записи, домены «только отправка» и вебпочта Roundcube.',
       '07-migration.md': 'Переезд аккаунта на MonoPanel: с другой MonoPanel по токену, с BitrixVM и FASTPANEL по ssh — что переносится, как идут файлы и пароли, порядок с DNS.',
       '08-testbed.md': 'Тестовая площадка на Proxmox: по машине на каждую из одиннадцати ОС, прогон установки, e2e, CMS и переездов перед релизом и что она нашла.',
-      '09-web-ui.md': 'Веб-интерфейс MonoPanel по страницам со скриншотами: дашборд, сайты, PHP, базы, почта, файлы, задачи, firewall, бэкапы, пользователи и настройки.'
+      '09-web-ui.md': 'Веб-интерфейс MonoPanel по страницам со скриншотами: дашборд, сайты, PHP, базы, почта, файлы, задачи, firewall, бэкапы, пользователи и настройки.',
+      '10-shared-folders.md': 'Как дать подрядчику доступ по SFTP к одной папке сайта: общая папка вместо смены домашнего каталога — пошагово, права на файлы и чего не делать.'
     },
     // Абзацы вступления README, которые не нужны на обзоре: значки, язык, состояние.
     introSkip: /^\[!\[|^\[English\]|^Состояние:/,
@@ -84,7 +85,7 @@ const LANGS = {
       'Security': null,
       'License': null
     },
-    nav: { architecture: 'Architecture', platforms: 'Platforms', 'web-stack': 'Web stack', 'cli-api': 'CLI, TUI and API', roadmap: 'Roadmap', mail: 'Mail', migration: 'Panel-to-panel migration', testbed: 'Testbed', 'web-ui': 'Web UI' },
+    nav: { architecture: 'Architecture', platforms: 'Platforms', 'web-stack': 'Web stack', 'cli-api': 'CLI, TUI and API', roadmap: 'Roadmap', mail: 'Mail', migration: 'Panel-to-panel migration', testbed: 'Testbed', 'web-ui': 'Web UI', 'shared-folders': 'Shared folders' },
     docDesc: {
       '01-architecture.md': 'How MonoPanel is built: one binary in the api, agent and helper roles, state in SQLite, a config pipeline with validation and rollback, security and updates.',
       '02-platform-matrix.md': 'Supported operating systems and package sources: nginx.org, Sury and Remi for PHP 5.6–8.5, MySQL and Percona 8.4, SELinux enforcing, firewall, Valkey per account.',
@@ -94,7 +95,8 @@ const LANGS = {
       '06-mail.md': 'The MonoPanel mail server: postfix, dovecot and opendkim, the path of a message, ports and TLS, the DNS records you need, send-only domains and Roundcube webmail.',
       '07-migration.md': 'Moving an account to MonoPanel: from another MonoPanel by token, from BitrixVM and FASTPANEL over ssh — what moves, how files and passwords travel, the DNS order.',
       '08-testbed.md': 'The Proxmox testbed: a machine for each of the eleven OSes, install, e2e, CMS and migration runs before a release, and what it found.',
-      '09-web-ui.md': 'The MonoPanel web UI page by page with screenshots: dashboard, sites, PHP, databases, mail, files, jobs, firewall, backups, users and settings.'
+      '09-web-ui.md': 'The MonoPanel web UI page by page with screenshots: dashboard, sites, PHP, databases, mail, files, jobs, firewall, backups, users and settings.',
+      '10-shared-folders.md': 'How to give a contractor SFTP access to one folder of a site: a shared folder instead of a changed home — step by step, file permissions and what not to do.'
     },
     introSkip: /^\[!\[|^English ·|^Status:/,
     t: {
@@ -117,14 +119,14 @@ const META = {
   install: ['download', 'start'], quickstart: ['play', 'start'], features: ['tasks', 'start'], update: ['refresh', 'start'],
   migrate: ['users', 'guide'], how: ['cpu', 'inside'], stack: ['code', 'inside'], development: ['pencil', 'inside'],
   architecture: ['settings', 'inside'], platforms: ['box', 'guide'], 'web-stack': ['globe', 'guide'], 'cli-api': ['terminal', 'guide'],
-  roadmap: ['clock', 'inside'], mail: ['mail', 'guide'], migration: ['file', 'inside'], testbed: ['check', 'inside'], 'web-ui': ['monitor', 'start']
+  roadmap: ['clock', 'inside'], mail: ['mail', 'guide'], migration: ['file', 'inside'], testbed: ['check', 'inside'], 'web-ui': ['monitor', 'start'], 'shared-folders': ['users', 'guide']
 };
 const DOC_SLUGS = {
   '01-architecture.md': 'architecture', '02-platform-matrix.md': 'platforms', '03-web-stack.md': 'web-stack', '04-cli-tui-api.md': 'cli-api',
-  '05-roadmap.md': 'roadmap', '06-mail.md': 'mail', '07-migration.md': 'migration', '08-testbed.md': 'testbed', '09-web-ui.md': 'web-ui'
+  '05-roadmap.md': 'roadmap', '06-mail.md': 'mail', '07-migration.md': 'migration', '08-testbed.md': 'testbed', '09-web-ui.md': 'web-ui', '10-shared-folders.md': 'shared-folders'
 };
 // Порядок внутри групп; чего нет в списке — следом, в порядке исходников.
-const ORDER = ['install', 'quickstart', 'web-ui', 'features', 'update', 'web-stack', 'mail', 'migrate', 'cli-api', 'platforms', 'how', 'architecture', 'migration', 'stack', 'roadmap', 'testbed', 'development'];
+const ORDER = ['install', 'quickstart', 'web-ui', 'features', 'update', 'web-stack', 'mail', 'shared-folders', 'migrate', 'cli-api', 'platforms', 'how', 'architecture', 'migration', 'stack', 'roadmap', 'testbed', 'development'];
 
 const read = (f) => fs.readFileSync(path.join(ROOT, f), 'utf8');
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');

@@ -491,6 +491,7 @@ scripts/testbed/      площадка: VM на Proxmox, bootstrap панели,
 | [docs/06-mail.md](docs/06-mail.md) | Почта: postfix + dovecot + opendkim, путь письма, файлы и порты, DNS-записи, вебпочта, границы |
 | [docs/07-migration.md](docs/07-migration.md) | Переезд: между двумя MonoPanel и с BitrixVM/FASTPANEL по ssh — что переносится и как, порядок с переключением DNS, пакет переезда и остальные адаптеры (проект) |
 | [docs/08-testbed.md](docs/08-testbed.md) | Тестовая площадка: по машине на каждый дистрибутив матрицы на Proxmox, прогон e2e и переноса между панелями, что она нашла |
+| [docs/10-shared-folders.md](docs/10-shared-folders.md) | Общие папки: доступ подрядчика по SFTP к одной папке сайта — пошагово, как устроено, права на файлы |
 | [docs/09-web-ui.md](docs/09-web-ui.md) | Web UI по страницам со скриншотами в светлой и тёмной теме: дашборд, сайты, PHP, базы, почта, файлы, задачи, firewall, бэкапы, настройки; как переснять скриншоты |
 
 Те же документы на английском — в [docs/en/](docs/en/).
