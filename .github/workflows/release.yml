@@ -65,6 +65,12 @@ jobs:
             exit 0
           fi
           make sign
+          {
+            echo '## Ключ подписи релиза (публичный)'
+            echo '```'
+            go run ./scripts/release pubkey
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: publish
         env:

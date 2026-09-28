@@ -31,6 +31,8 @@ func main() {
 		err = sign(os.Args[2:])
 	case "verify":
 		err = verify(os.Args[2:])
+	case "pubkey":
+		err = pubkey()
 	default:
 		usage()
 	}
@@ -41,8 +43,20 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: release keygen | sign [--key-file f] <file> | verify --key <public> <file> <signature>")
+	fmt.Fprintln(os.Stderr, "usage: release keygen | pubkey | sign [--key-file f] <file> | verify --key <public> <file> <signature>")
 	os.Exit(2)
+}
+
+// pubkey prints the public half of the private key in MONOPANEL_RELEASE_KEY:
+// the key servers pin lives only inside the release secret, and this is how
+// it gets out without the secret leaving the workflow.
+func pubkey() error {
+	key, err := parsePrivate(os.Getenv("MONOPANEL_RELEASE_KEY"))
+	if err != nil {
+		return err
+	}
+	fmt.Println(base64.StdEncoding.EncodeToString(key.Public().(ed25519.PublicKey)))
+	return nil
 }
 
 // keygen prints a fresh pair: the private key goes into the repository secret

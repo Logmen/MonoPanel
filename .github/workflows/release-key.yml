@@ -1,0 +1,33 @@
+name: release-key
+# Prints the public half of the release signing key. The private key lives only
+# in the MONOPANEL_RELEASE_KEY secret, so this is the one place the public key
+# can be read from without the secret ever leaving GitHub.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pubkey:
+    name: public key of the release signature
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+          cache-dependency-path: go.sum
+      - name: public key
+        env:
+          MONOPANEL_RELEASE_KEY: ${{ secrets.MONOPANEL_RELEASE_KEY }}
+        run: |
+          key=$(go run ./scripts/release pubkey)
+          echo "public key: $key"
+          {
+            echo '## Ключ подписи релиза (публичный)'
+            echo '```'
+            echo "$key"
+            echo '```'
+            echo 'Приватный ключ остаётся в секрете MONOPANEL_RELEASE_KEY.'
+          } >> "$GITHUB_STEP_SUMMARY"
