@@ -17,7 +17,7 @@ mp status                            # панель, хост, сервисы, �
 mp doctor                            # диагностика
 mp version
 mp update                            # что стоит и что вышло
-mp update check | apply [--version v0.8.12]
+mp update check | apply [--version v0.8.13]
 mp update settings [--repo owner/name] [--channel …] [--check-hours 24] [--auto-apply] [--token-stdin|--clear-token]
 mp update trust [--key <ключ форка>] [--restart] | --clear | --off   # без флагов — какой ключ проверяет подпись
 
