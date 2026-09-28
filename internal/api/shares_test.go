@@ -83,3 +83,70 @@ func TestMountUnitName(t *testing.T) {
 		}
 	}
 }
+
+// An entry folder puts a per-user block into the sshd drop-in: the guest's
+// SFTP session starts inside the folder. The guest has one; it goes with the
+// folder, and a shell account cannot have one.
+func TestShareEntryPointRendersSSHD(t *testing.T) {
+	f := newSiteFixture(t)
+	f.createSite(map[string]any{"domain": "shop.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	var created struct {
+		JobID int64 `json:"job_id"`
+	}
+	f.call(http.MethodPost, "/users", map[string]any{"login": "guest", "password": "guest-password-1", "role": "user"}, http.StatusAccepted, &created)
+	f.waitJob(created.JobID)
+
+	const dropIn = "/etc/ssh/sshd_config.d/monopanel.conf"
+	var st apitypes.ShareStatus
+	f.call(http.MethodPost, "/users/guest/shares", map[string]any{"site": "shop.example.com", "path": "kaspy", "entry": true}, http.StatusCreated, &st)
+	if !st.Share.Entry {
+		t.Fatalf("share not an entry: %+v", st.Share)
+	}
+	conf, _ := f.agent.File(dropIn)
+	block := "Match User guest Group monopanel-sftp\n    ForceCommand internal-sftp -u 0027 -d /kaspy\n"
+	if !strings.Contains(conf, block) || strings.Index(conf, block) > strings.Index(conf, "Match Group monopanel-sftp\n") {
+		t.Fatalf("sshd drop-in lacks the user block before the group block:\n%s", conf)
+	}
+
+	// A second entry folder takes over; the guest still has one.
+	f.call(http.MethodPost, "/users/guest/shares", map[string]any{"site": "shop.example.com", "path": "upload", "entry": true}, http.StatusCreated, &st)
+	var list []*apitypes.ShareStatus
+	f.call(http.MethodGet, "/users/guest/shares", nil, http.StatusOK, &list)
+	entries := 0
+	for _, sh := range list {
+		if sh.Share.Entry {
+			entries++
+			if sh.Share.Name != "upload" {
+				t.Fatalf("entry stayed with %s", sh.Share.Name)
+			}
+		}
+	}
+	if entries != 1 {
+		t.Fatalf("%d entry folders", entries)
+	}
+	conf, _ = f.agent.File(dropIn)
+	if !strings.Contains(conf, "-d /upload\n") || strings.Contains(conf, "-d /kaspy\n") || strings.Count(conf, "Match User guest") != 1 {
+		t.Fatalf("sshd drop-in after the switch:\n%s", conf)
+	}
+
+	// Switching it off and back on by PATCH; then the folder goes and takes the block with it.
+	f.call(http.MethodPatch, "/users/guest/shares/upload", map[string]any{"entry": false}, http.StatusOK, &st)
+	if conf, _ = f.agent.File(dropIn); strings.Contains(conf, "Match User") {
+		t.Fatalf("sshd drop-in still has a user block:\n%s", conf)
+	}
+	f.call(http.MethodPatch, "/users/guest/shares/kaspy", map[string]any{"entry": true}, http.StatusOK, &st)
+	if conf, _ = f.agent.File(dropIn); !strings.Contains(conf, "-d /kaspy\n") {
+		t.Fatalf("sshd drop-in after PATCH:\n%s", conf)
+	}
+	f.call(http.MethodDelete, "/users/guest/shares/kaspy", nil, http.StatusOK, &st)
+	if conf, _ = f.agent.File(dropIn); strings.Contains(conf, "Match User") {
+		t.Fatalf("sshd drop-in keeps the block of a removed folder:\n%s", conf)
+	}
+
+	// A shell account signs in wherever it likes.
+	f.call(http.MethodPatch, "/users/alex/shares/nothing", map[string]any{"entry": true}, http.StatusNotFound, nil)
+	f.call(http.MethodPost, "/users/guest/shares", map[string]any{"site": "shop.example.com", "path": "x", "entry": true}, http.StatusCreated, &st)
+	f.call(http.MethodPatch, "/users/guest", map[string]any{"shell": true}, http.StatusAccepted, &created)
+	f.waitJob(created.JobID)
+	f.call(http.MethodPatch, "/users/guest/shares/x", map[string]any{"entry": true}, http.StatusUnprocessableEntity, nil)
+}

@@ -19,7 +19,7 @@
   let panel = $state<{ login: string; kind: PanelKind; items: any[]; engine?: string } | null>(null);
   let cronForm = $state({ schedule: '*/5 * * * *', command: '' });
   // Общая папка: каталог сайта другого аккаунта, смонтированный в дом гостя.
-  let shareForm = $state({ site: '', path: '', name: '', no_php: true });
+  let shareForm = $state({ site: '', path: '', name: '', no_php: true, entry: false });
   let appForm = $state({ name: '', command: '', workdir: '', env_file: '' });
   // Valkey of an account: a cache and a PHP sessions instance, memory in MB.
   const vkPurposes = ['cache', 'sessions'] as const;
@@ -91,7 +91,8 @@
   async function refreshPanel() { if (panel) await openPanel(panel.login, panel.kind); }
   async function addCron(e: Event) { e.preventDefault(); if (!panel) return; try { await api(`/users/${panel.login}/cron`, { method: 'POST', json: cronForm }); cronForm.command = ''; await refreshPanel(); } catch (e) { fail(e); } }
   async function rmCron(id: number) { if (!panel) return; try { await api(`/users/${panel.login}/cron/${id}`, { method: 'DELETE' }); await refreshPanel(); } catch (e) { fail(e); } }
-  async function addShare(e: Event) { e.preventDefault(); if (!panel) return; try { const body: any = { ...shareForm }; if (!body.name) delete body.name; const r: any = await api(`/users/${panel.login}/shares`, { method: 'POST', json: body }); if (r.job_id) job = r.job_id; shareForm = { site: '', path: '', name: '', no_php: true }; await refreshPanel(); notify(t('users.shareAdded')); } catch (e) { fail(e); } }
+  async function addShare(e: Event) { e.preventDefault(); if (!panel) return; try { const body: any = { ...shareForm }; if (!body.name) delete body.name; const r: any = await api(`/users/${panel.login}/shares`, { method: 'POST', json: body }); if (r.job_id) job = r.job_id; shareForm = { site: '', path: '', name: '', no_php: true, entry: false }; await refreshPanel(); notify(t('users.shareAdded')); } catch (e) { fail(e); } }
+  async function entryShare(name: string, entry: boolean) { if (!panel) return; try { await api(`/users/${panel.login}/shares/${name}`, { method: 'PATCH', json: { entry } }); await refreshPanel(); notify(t(entry ? 'users.shareEntrySet' : 'users.shareEntryUnset')); } catch (e) { fail(e); } }
   async function rmShare(name: string) { if (!panel) return; try { const r: any = await api(`/users/${panel.login}/shares/${name}`, { method: 'DELETE' }); if (r.job_id) job = r.job_id; await refreshPanel(); } catch (e) { fail(e); } }
   async function addApp(e: Event) { e.preventDefault(); if (!panel) return; try { const body: any = { ...appForm }; if (!body.workdir) delete body.workdir; if (!body.env_file) delete body.env_file; await api(`/users/${panel.login}/apps`, { method: 'POST', json: body }); appForm = { name: '', command: '', workdir: '', env_file: '' }; await refreshPanel(); notify(t('users.appStarted')); } catch (e) { fail(e); } }
   const vkOf = (purpose: VkPurpose) => panel?.items.find((v) => v.instance.purpose === purpose);
@@ -212,16 +213,16 @@
         <div><label class="label" for="ss">{t('users.shareSite')}</label><input id="ss" class="input font-mono" bind:value={shareForm.site} placeholder="shop.example.com" required /></div>
         <div><label class="label" for="sp">{t('users.sharePath')}</label><input id="sp" class="input font-mono" bind:value={shareForm.path} placeholder="upload/exchange" required /></div>
         <div><label class="label" for="sn">{t('users.shareName')}</label><input id="sn" class="input font-mono" bind:value={shareForm.name} placeholder="exchange" pattern="[a-z0-9][a-z0-9_-]{'{'}0,31{'}'}" /></div>
-        <label class="flex items-center gap-1.5 text-sm pb-2"><input type="checkbox" bind:checked={shareForm.no_php} /> {t('users.shareNoPHP')}</label>
+        <div class="flex flex-col gap-1 pb-2"><label class="flex items-center gap-1.5 text-sm"><input type="checkbox" bind:checked={shareForm.no_php} /> {t('users.shareNoPHP')}</label><label class="flex items-center gap-1.5 text-sm"><input type="checkbox" bind:checked={shareForm.entry} /> {t('users.shareEntry')}</label></div>
         <button class="btn btn-primary">{t('common.add')}</button>
       </form>
       {/if}
-      <table class="tbl"><thead><tr><th>{t('common.name')}</th><th>{t('users.shareInHome')}</th><th>{t('users.shareFolder')}</th><th>{t('users.colState')}</th><th>PHP</th><th></th></tr></thead><tbody>
+      <table class="tbl"><thead><tr><th>{t('common.name')}</th><th>{t('users.shareInHome')}</th><th>{t('users.shareFolder')}</th><th>{t('users.colState')}</th><th>PHP</th><th>{t('users.shareEntryCol')}</th><th></th></tr></thead><tbody>
         {#each panel.items as sh}
-          <tr><td data-label={t('common.name')} class="font-mono">{sh.share.name}</td><td data-label={t('users.shareInHome')} class="font-mono text-xs">{sh.where}</td><td data-label={t('users.shareFolder')} class="font-mono text-xs">{sh.share.domain}/{sh.share.path} <span class="text-muted">({sh.share.owner_login})</span></td><td data-label={t('users.colState')}><span class="tag {sh.mounted ? 'tag-ok' : 'tag-err'}">{sh.mounted ? t('users.shareMounted') : t('users.shareNotMounted')}</span></td><td data-label="PHP"><span class="tag {sh.share.no_php ? 'tag-ok' : 'tag-warn'}">{sh.share.no_php ? t('users.sharePHPDenied') : t('users.sharePHPAllowed')}</span></td>
-          <td><div class="row-actions">{#if auth.me?.role === 'admin'}<button class="btn btn-danger btn-sm" onclick={() => rmShare(sh.share.name)} title={t('users.delete')}><Icon name="trash" size={13} /></button>{/if}</div></td></tr>
+          <tr><td data-label={t('common.name')} class="font-mono">{sh.share.name}</td><td data-label={t('users.shareInHome')} class="font-mono text-xs">{sh.where}</td><td data-label={t('users.shareFolder')} class="font-mono text-xs">{sh.share.domain}/{sh.share.path} <span class="text-muted">({sh.share.owner_login})</span></td><td data-label={t('users.colState')}><span class="tag {sh.mounted ? 'tag-ok' : 'tag-err'}">{sh.mounted ? t('users.shareMounted') : t('users.shareNotMounted')}</span></td><td data-label="PHP"><span class="tag {sh.share.no_php ? 'tag-ok' : 'tag-warn'}">{sh.share.no_php ? t('users.sharePHPDenied') : t('users.sharePHPAllowed')}</span></td><td data-label={t('users.shareEntryCol')}>{#if sh.share.entry}<span class="tag tag-ok">{t('users.shareEntryYes')}</span>{/if}</td>
+          <td><div class="row-actions">{#if auth.me?.role === 'admin'}<button class="btn btn-sm {sh.share.entry ? 'btn-primary' : ''}" onclick={() => entryShare(sh.share.name, !sh.share.entry)} title={sh.share.entry ? t('users.shareEntryUnsetBtn') : t('users.shareEntrySetBtn')}>{t('users.shareEntry')}</button><button class="btn btn-danger btn-sm" onclick={() => rmShare(sh.share.name)} title={t('users.delete')}><Icon name="trash" size={13} /></button>{/if}</div></td></tr>
         {/each}
-        {#if !panel.items.length}<tr><td colspan="6" class="text-muted text-center py-4">{t('users.noShares')}</td></tr>{/if}
+        {#if !panel.items.length}<tr><td colspan="7" class="text-muted text-center py-4">{t('users.noShares')}</td></tr>{/if}
       </tbody></table>
       <p class="text-xs text-muted mt-3">{t('users.shareNote')}</p>
     {:else}

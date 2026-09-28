@@ -25,7 +25,7 @@ mp user add <login> [--password …|--password-stdin|--generate] [--email …] [
 mp user set <login> [--password …|--generate] [--email …] [--shell|--sftp-only] [--status active|suspended]
 mp user list | show <login> | totp-reset <login>
 mp user rm <login> [--purge] [--yes]
-mp user share list <login> | add <login> --site <domain> --path <folder> [--name …] [--no-php] | rm <login> <name>   # a folder of another account's site over SFTP
+mp user share list <login> | add <login> --site <domain> --path <folder> [--name …] [--no-php] [--entry] | entry <login> <name> [--off] | rm <login> <name>   # a folder of another account's site over SFTP; entry — the session starts inside it
 
 mp site add <domain> --user <login> [--php 8.4] [--mode fpm|apache|proxy] [--backend http://127.0.0.1:3000]
             [--alias www.<domain>] [--www] [--preset wordpress|joomla|opencart|bitrix] [--ssl auto|none]
@@ -141,7 +141,7 @@ GET/POST        /users/{login}/cron               PATCH/DELETE /users/{login}/cr
 GET/POST        /users/{login}/apps               GET/PATCH/DELETE /users/{login}/apps/{name}   GET /apps
 GET             /users/{login}/apps/{name}/logs   POST /users/{login}/apps/{name}/{start|stop|restart}
 GET             /users/{login}/valkey             PUT/DELETE /users/{login}/valkey/{cache|sessions}   GET /valkey
-GET/POST        /users/{login}/shares             DELETE /users/{login}/shares/{name}
+GET/POST        /users/{login}/shares             PATCH/DELETE /users/{login}/shares/{name}
 POST            /users/{login}/valkey/{purpose}/restart
 GET/POST        /sites                            GET/PATCH/DELETE /sites/{domain}   GET /sites/presets
 POST            /sites/{domain}/apply | fix | suspend | unsuspend | cms | tls/issue    POST /sites/move-ip

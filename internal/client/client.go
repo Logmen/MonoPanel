@@ -884,6 +884,12 @@ func (c *Client) CreateShare(ctx context.Context, login string, req apitypes.Sha
 	return &out, c.do(ctx, http.MethodPost, "/users/"+login+"/shares", req, &out)
 }
 
+// UpdateShare changes a shared folder's settings (the SFTP entry point).
+func (c *Client) UpdateShare(ctx context.Context, login, name string, req apitypes.ShareUpdate) (*apitypes.ShareStatus, error) {
+	var out apitypes.ShareStatus
+	return &out, c.do(ctx, http.MethodPatch, "/users/"+login+"/shares/"+name, req, &out)
+}
+
 // DeleteShare takes a shared folder away.
 func (c *Client) DeleteShare(ctx context.Context, login, name string) (*apitypes.ShareStatus, error) {
 	var out apitypes.ShareStatus

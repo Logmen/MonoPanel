@@ -35,9 +35,13 @@ func userShareCmd() *cobra.Command {
 			if st.Share.NoPHP {
 				php = T("запрещён", "denied")
 			}
-			rows = append(rows, []string{st.Share.Name, st.Where, st.Share.Domain + "/" + st.Share.Path, st.Share.OwnerLogin, mounted, php})
+			entry := ""
+			if st.Share.Entry {
+				entry = T("да", "yes")
+			}
+			rows = append(rows, []string{st.Share.Name, st.Where, st.Share.Domain + "/" + st.Share.Path, st.Share.OwnerLogin, mounted, php, entry})
 		}
-		table([]string{"NAME", "IN HOME", "SITE FOLDER", "OWNER", "MOUNTED", "PHP"}, rows)
+		table([]string{"NAME", "IN HOME", "SITE FOLDER", "OWNER", "MOUNTED", "PHP", "ENTRY"}, rows)
 		return nil
 	}}
 
@@ -58,6 +62,9 @@ func userShareCmd() *cobra.Command {
 			return printJSON(st)
 		}
 		fmt.Printf(T("папка %s → %s смонтирована в %s, ACL выданы\n", "folder %s → %s mounted at %s, ACLs granted\n"), st.Target, st.Share.Login, st.Where)
+		if st.Share.Entry {
+			fmt.Println(T("вход по SFTP теперь начинается в этой папке", "SFTP sign-in now starts inside this folder"))
+		}
 		if st.Share.NoPHP {
 			fmt.Println(T("PHP в этой папке на сайте запрещён; конфигурация сайта применяется", "PHP in this folder is denied on the site; the site configuration is being applied"))
 		} else {
@@ -72,6 +79,29 @@ func userShareCmd() *cobra.Command {
 	add.Flags().StringVar(&req.Path, "path", "", T("папка внутри docroot сайта, например kaspy или upload/exchange (создаётся, если нет)", "folder inside the site's docroot, e.g. kaspy or upload/exchange (created if missing)"))
 	add.Flags().StringVar(&req.Name, "name", "", T("имя папки в доме гостя (по умолчанию последний сегмент пути)", "folder name in the guest's home (default: the last path segment)"))
 	add.Flags().BoolVar(&req.NoPHP, "no-php", false, T("не выполнять PHP из этой папки на сайте", "never execute PHP from this folder on the site"))
+	add.Flags().BoolVar(&req.Entry, "entry", false, T("точка входа: сессия SFTP начинается в этой папке, а не в доме (у аккаунта одна)", "entry point: the SFTP session starts inside this folder, not the home (one per account)"))
+
+	var off bool
+	entry := &cobra.Command{Use: "entry <login> <name>", Short: T("точка входа: начинать сессию SFTP в этой папке (--off — снова в доме)", "entry point: start the SFTP session inside this folder (--off: in the home again)"), Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
+		cl, err := newClient()
+		if err != nil {
+			return err
+		}
+		st, err := cl.UpdateShare(cmd.Context(), args[0], args[1], apitypes.ShareUpdate{Entry: !off})
+		if err != nil {
+			return err
+		}
+		if g.json {
+			return printJSON(st)
+		}
+		if st.Share.Entry {
+			fmt.Printf(T("вход %s по SFTP теперь начинается в папке %s\n", "SFTP sign-in of %s now starts inside the folder %s\n"), args[0], args[1])
+		} else {
+			fmt.Printf(T("вход %s по SFTP снова начинается в доме\n", "SFTP sign-in of %s starts in the home again\n"), args[0])
+		}
+		return nil
+	}}
+	entry.Flags().BoolVar(&off, "off", false, T("снова начинать сессию в доме", "start the session in the home again"))
 
 	rm := &cobra.Command{Use: "rm <login> <name>", Short: T("отобрать папку: размонтировать и снять ACL гостя, файлы остаются у сайта", "take the folder away: unmount and drop the guest's ACLs, the files stay with the site"), Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
@@ -91,6 +121,6 @@ func userShareCmd() *cobra.Command {
 		}
 		return nil
 	}}
-	c.AddCommand(list, add, rm)
+	c.AddCommand(list, add, entry, rm)
 	return c
 }

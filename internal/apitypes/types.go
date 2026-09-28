@@ -552,6 +552,12 @@ type ShareRequest struct {
 	Path  string `json:"path" minLength:"1" maxLength:"200" doc:"Folder inside the site's docroot, e.g. kaspy or upload/exchange; created if missing"`
 	Name  string `json:"name,omitempty" pattern:"^[a-z0-9][a-z0-9_-]{0,31}$" doc:"Folder name in the guest's home (default: the last path segment)"`
 	NoPHP bool   `json:"no_php,omitempty" doc:"Never execute PHP from this folder on the site (recommended for file exchange)"`
+	Entry bool   `json:"entry,omitempty" doc:"SFTP sign-in lands in this folder instead of the home (one per account)"`
+}
+
+// ShareUpdate changes a shared folder's settings.
+type ShareUpdate struct {
+	Entry bool `json:"entry" doc:"SFTP sign-in lands in this folder (true) or in the home (false)"`
 }
 
 // ShareStatus is a share with whether its mount is active.

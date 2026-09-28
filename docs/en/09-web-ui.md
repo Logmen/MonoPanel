@@ -141,8 +141,10 @@ removes its sites, databases, cron, Valkey instances and certificates.
 The "folders" button is for shared folders: a folder of another account's site,
 bind-mounted into this account's home. The guest sees it after signing in over SFTP and
 nothing else, both accounts and the web server read and write the files, and the "no
-PHP" box stops the site from executing scripts uploaded there. That is how a contractor
-or an exchange service gets one folder of a site without getting the account.
+PHP" box stops the site from executing scripts uploaded there. The "entry point" box (and the
+"entry point" button in the table) makes the SFTP session start right inside the folder
+instead of the home. That is how a contractor or an exchange service gets one folder of a
+site without getting the account.
 
 ![The account's Valkey: instances for the cache and for PHP sessions](img/valkey.webp)
 

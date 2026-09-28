@@ -16,7 +16,8 @@ On `mp user share add` the panel:
 2. sets ACLs on the folder: `rwx` for the guest and the owner, `r-x` for the web group, inherited by everything created inside;
 3. makes a root-owned mount point in the guest's home (`/var/www/<guest>/<name>`) — the chroot stays root-owned, sshd is happy;
 4. writes and enables a systemd mount unit that bind-mounts the folder there — it survives a reboot;
-5. with `--no-php` adds a `location` to the site configuration that answers 403 to any `.php`, `.phtml` or `.phar` in the folder.
+5. with `--no-php` adds a `location` to the site configuration that answers 403 to any `.php`, `.phtml` or `.phar` in the folder;
+6. with `--entry` writes a `Match User <guest> Group monopanel-sftp` block with `internal-sftp -d /<name>` into the sshd drop-in: the SFTP session starts right inside the folder rather than at the chroot root. The block applies to accounts without a shell only.
 
 There is no way out of the bind mount: symlinks pointing outside do not resolve inside the chroot, `../` stops at the guest's home. On EL the site's SELinux labels are kept; nothing extra to set up.
 
@@ -35,10 +36,19 @@ The password is for SFTP (and for the panel, where the guest sees only its own f
 **Step 2. The folder.** Hand out the site folder. The path is relative to the site's docroot; the folder is created if missing:
 
 ```bash
-mp user share add userkaspy --site vstrade.kz --path kaspy --no-php
+mp user share add userkaspy --site vstrade.kz --path kaspy --no-php --entry
 ```
 
 Keep `--no-php` whenever the folder is for files rather than code: without it the contractor could drop a `.php` there and the site would execute it as the `bitrix` account — with all the site's rights. `--name` sets the folder name in the guest's home when it should differ from the last path segment.
+
+`--entry` makes the folder the entry point: after connecting the contractor lands straight in `kaspy`, as if it were the home directory. Without the flag the session starts in the home, where `data` and `kaspy` are visible. The entry point can be set later, and taken back:
+
+```bash
+mp user share entry userkaspy kaspy        # sign in straight into kaspy
+mp user share entry userkaspy kaspy --off  # in the home again
+```
+
+An account has one entry point: setting a new one clears the previous. An account with a shell gets none — it goes wherever it likes anyway.
 
 **Step 3. Check.**
 
@@ -46,9 +56,9 @@ Keep `--no-php` whenever the folder is for files rather than code: without it th
 mp user share list userkaspy
 ```
 
-The `MOUNTED` column should say `yes` and `PHP` — `denied`. The contractor connects over SFTP as `userkaspy` with the password from step 1 and sees the folder `kaspy` — that is the site's `/var/www/bitrix/data/www/vstrade.kz/kaspy`.
+The `MOUNTED` column should say `yes`, `PHP` — `denied`, `ENTRY` — `yes`. The contractor connects over SFTP as `userkaspy` with the password from step 1 and lands straight in the folder `kaspy` — that is the site's `/var/www/bitrix/data/www/vstrade.kz/kaspy`. One level up is the home with an empty `data`; there is no way further.
 
-The same in the web UI: Users → the "folders" button on the account → site, folder, the "no PHP" box → Add.
+The same in the web UI: Users → the "folders" button on the account → site, folder, the "no PHP" and "entry point" boxes → Add. The "entry point" button in the table sets and clears it on a folder already handed out.
 
 **Step 4. When the access is no longer needed.**
 
@@ -56,7 +66,7 @@ The same in the web UI: Users → the "folders" button on the account → site, 
 mp user share rm userkaspy kaspy
 ```
 
-The mount and the unit go, the guest's ACLs are dropped, the PHP denial leaves the site configuration. The files stay in the site folder. Deleting the guest account (`mp user rm`) or the site does the same by itself.
+The mount and the unit go, the guest's ACLs are dropped, the PHP denial leaves the site configuration and the entry point leaves the sshd drop-in. The files stay in the site folder. Deleting the guest account (`mp user rm`) or the site does the same by itself.
 
 ## 3. File permissions
 

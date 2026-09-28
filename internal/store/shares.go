@@ -21,6 +21,7 @@ type Share struct {
 	Path       string `json:"path"` // inside the site's docroot
 	Name       string `json:"name"` // folder name in the guest's home
 	NoPHP      bool   `json:"no_php"`
+	Entry      bool   `json:"entry"` // SFTP sign-in lands here instead of the chroot root
 	Status     string `json:"status,omitempty"`
 	LastError  string `json:"last_error,omitempty"`
 	CreatedAt  Time   `json:"created_at"`
@@ -45,33 +46,48 @@ func MountUnit(where string) string {
 	return b.String() + ".mount"
 }
 
-const shareCols = `sh.id, sh.user_id, u.login, sh.site_id, s.domain, o.login, sh.path, sh.name, sh.no_php, sh.status, sh.last_error, sh.created_at, sh.updated_at`
+const shareCols = `sh.id, sh.user_id, u.login, sh.site_id, s.domain, o.login, sh.path, sh.name, sh.no_php, sh.entry, sh.status, sh.last_error, sh.created_at, sh.updated_at`
 const shareFrom = ` FROM user_shares sh JOIN users u ON u.id = sh.user_id JOIN sites s ON s.id = sh.site_id JOIN users o ON o.id = s.user_id`
 
 func scanShare(sc scanner) (*Share, error) {
 	var sh Share
-	var noPHP int
+	var noPHP, entry int
 	var created, updated string
-	if err := sc.Scan(&sh.ID, &sh.UserID, &sh.Login, &sh.SiteID, &sh.Domain, &sh.OwnerLogin, &sh.Path, &sh.Name, &noPHP, &sh.Status, &sh.LastError, &created, &updated); err != nil {
+	if err := sc.Scan(&sh.ID, &sh.UserID, &sh.Login, &sh.SiteID, &sh.Domain, &sh.OwnerLogin, &sh.Path, &sh.Name, &noPHP, &entry, &sh.Status, &sh.LastError, &created, &updated); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
-	sh.NoPHP = noPHP != 0
+	sh.NoPHP, sh.Entry = noPHP != 0, entry != 0
 	sh.CreatedAt, sh.UpdatedAt = Time(parseTime(created)), Time(parseTime(updated))
 	return &sh, nil
 }
 
 // CreateShare stores a share; the guest may not have two folders of one name.
+// A share created as the entry point takes the role from the guest's previous
+// one.
 func (d *DB) CreateShare(ctx context.Context, sh *Share) error {
 	ts := now()
-	err := d.sql.QueryRowContext(ctx, `INSERT INTO user_shares(user_id, site_id, path, name, no_php, status, last_error, created_at, updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?) RETURNING id`, sh.UserID, sh.SiteID, sh.Path, sh.Name, boolInt(sh.NoPHP), sh.Status, sh.LastError, ts, ts).Scan(&sh.ID)
+	tx, err := d.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after Commit
+	if sh.Entry {
+		if _, err := tx.ExecContext(ctx, `UPDATE user_shares SET entry=0, updated_at=? WHERE user_id=? AND entry=1`, ts, sh.UserID); err != nil {
+			return err
+		}
+	}
+	err = tx.QueryRowContext(ctx, `INSERT INTO user_shares(user_id, site_id, path, name, no_php, entry, status, last_error, created_at, updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id`, sh.UserID, sh.SiteID, sh.Path, sh.Name, boolInt(sh.NoPHP), boolInt(sh.Entry), sh.Status, sh.LastError, ts, ts).Scan(&sh.ID)
 	if err != nil {
 		if isUnique(err) {
 			return ErrExists
 		}
+		return err
+	}
+	if err := tx.Commit(); err != nil {
 		return err
 	}
 	sh.CreatedAt = Time(parseTime(ts))
@@ -82,6 +98,35 @@ func (d *DB) CreateShare(ctx context.Context, sh *Share) error {
 func (d *DB) SetShareStatus(ctx context.Context, id int64, status, lastError string) error {
 	_, err := d.sql.ExecContext(ctx, `UPDATE user_shares SET status=?, last_error=?, updated_at=? WHERE id=?`, status, lastError, now(), id)
 	return err
+}
+
+// SetShareEntry makes the share the guest's entry point (or stops it being
+// one); the guest has at most one.
+func (d *DB) SetShareEntry(ctx context.Context, sh *Share, entry bool) error {
+	ts := now()
+	tx, err := d.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after Commit
+	if entry {
+		if _, err := tx.ExecContext(ctx, `UPDATE user_shares SET entry=0, updated_at=? WHERE user_id=? AND entry=1 AND id<>?`, ts, sh.UserID, sh.ID); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE user_shares SET entry=?, updated_at=? WHERE id=?`, boolInt(entry), ts, sh.ID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	sh.Entry = entry
+	return nil
+}
+
+// ListEntryShares lists the shares guests sign in straight into, by login.
+func (d *DB) ListEntryShares(ctx context.Context) ([]*Share, error) {
+	return d.shares(ctx, `SELECT `+shareCols+shareFrom+` WHERE sh.entry=1 ORDER BY u.login`)
 }
 
 func (d *DB) DeleteShare(ctx context.Context, id int64) error {

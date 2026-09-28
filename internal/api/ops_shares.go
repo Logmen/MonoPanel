@@ -46,6 +46,12 @@ type shareNameInput struct {
 	Name  string `path:"name"`
 }
 
+type shareUpdateInput struct {
+	Login string `path:"login"`
+	Name  string `path:"name"`
+	Body  apitypes.ShareUpdate
+}
+
 // sharePaths is where the folder is (in the owner's site) and where the
 // guest sees it (in its own home).
 func (s *Server) sharePaths(ctx context.Context, sh *store.Share) (target, where string, err error) {
@@ -194,11 +200,18 @@ func (s *Server) removeSiteShares(ctx context.Context, jc *jobs.Context, siteID 
 	if err != nil {
 		return err
 	}
+	entry := false
 	for _, sh := range shares {
 		if err := s.removeShare(ctx, sh); err != nil {
 			return fmt.Errorf("shared folder %s for %s: %w", sh.Path, sh.Login, err)
 		}
 		jc.Logf("shared folder %s for %s removed", sh.Path, sh.Login)
+		entry = entry || sh.Entry
+	}
+	if entry {
+		if err := s.ensureSSHConfig(ctx); err != nil {
+			jc.Logf("warning: sshd drop-in not refreshed: %v", err)
+		}
 	}
 	return nil
 }
@@ -211,6 +224,7 @@ func (s *Server) removeUserShares(ctx context.Context, jc *jobs.Context, userID 
 		return err
 	}
 	reapply := map[int64]string{}
+	entry := false
 	for _, sh := range shares {
 		if err := s.removeShare(ctx, sh); err != nil {
 			return fmt.Errorf("shared folder %s: %w", sh.Name, err)
@@ -218,6 +232,12 @@ func (s *Server) removeUserShares(ctx context.Context, jc *jobs.Context, userID 
 		jc.Logf("shared folder %s (%s/%s) removed", sh.Name, sh.Domain, sh.Path)
 		if sh.NoPHP {
 			reapply[sh.SiteID] = sh.Domain
+		}
+		entry = entry || sh.Entry
+	}
+	if entry {
+		if err := s.ensureSSHConfig(ctx); err != nil {
+			jc.Logf("warning: sshd drop-in not refreshed: %v", err)
 		}
 	}
 	for id, domain := range reapply {
@@ -287,7 +307,10 @@ func (s *Server) registerShares() {
 		if err != nil {
 			return nil, err
 		}
-		sh := &store.Share{UserID: guest.ID, Login: guest.Login, SiteID: site.ID, Domain: site.Domain, OwnerLogin: owner.Login, Path: rel, Name: name, NoPHP: in.Body.NoPHP}
+		if in.Body.Entry && guest.Shell {
+			return nil, huma.Error422UnprocessableEntity("an entry folder is for SFTP-only accounts; an account with a shell signs in wherever it likes")
+		}
+		sh := &store.Share{UserID: guest.ID, Login: guest.Login, SiteID: site.ID, Domain: site.Domain, OwnerLogin: owner.Login, Path: rel, Name: name, NoPHP: in.Body.NoPHP, Entry: in.Body.Entry}
 		if err := s.db.CreateShare(ctx, sh); err != nil {
 			if errors.Is(err, store.ErrExists) {
 				return nil, huma.Error409Conflict("the account already has a shared folder named " + name)
@@ -299,6 +322,11 @@ func (s *Server) registerShares() {
 			s.db.DeleteShare(context.WithoutCancel(ctx), sh.ID) //nolint:errcheck // nothing to keep
 			return nil, huma.Error502BadGateway(err.Error())
 		}
+		if sh.Entry {
+			if err := s.ensureSSHConfig(ctx); err != nil {
+				return nil, huma.Error502BadGateway("sshd: " + err.Error())
+			}
+		}
 		if sh.NoPHP {
 			job, err := s.jobs.Enqueue(ctx, "site.apply", sitePayload{SiteID: site.ID}, jobs.WithLockKey("site:"+site.Domain), jobs.WithRequestedBy(p.Login))
 			if err != nil {
@@ -306,8 +334,35 @@ func (s *Server) registerShares() {
 			}
 			st.JobID = job.ID
 		}
-		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "share.create", Target: guest.Login, IP: requestInfo(ctx).IP, Details: map[string]any{"site": site.Domain, "path": rel, "name": name, "no_php": sh.NoPHP}})
+		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "share.create", Target: guest.Login, IP: requestInfo(ctx).IP, Details: map[string]any{"site": site.Domain, "path": rel, "name": name, "no_php": sh.NoPHP, "entry": sh.Entry}})
 		return &shareOutput{Status: http.StatusCreated, Body: st}, nil
+	})
+
+	huma.Register(s.api, huma.Operation{
+		OperationID: "shares-update", Method: http.MethodPatch, Path: "/users/{login}/shares/{name}", Summary: "Make the folder the account's SFTP entry point, or stop that: the session starts inside the folder instead of the home (admin)", Tags: []string{"users"}, Security: secured, Metadata: adminOnly,
+	}, func(ctx context.Context, in *shareUpdateInput) (*shareOutput, error) {
+		p := principalFrom(ctx)
+		guest, err := s.loadUserFor(ctx, in.Login)
+		if err != nil {
+			return nil, err
+		}
+		sh, err := s.db.GetShare(ctx, guest.ID, in.Name)
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, huma.Error404NotFound("shared folder not found")
+		} else if err != nil {
+			return nil, err
+		}
+		if in.Body.Entry && guest.Shell {
+			return nil, huma.Error422UnprocessableEntity("an entry folder is for SFTP-only accounts; an account with a shell signs in wherever it likes")
+		}
+		if err := s.db.SetShareEntry(ctx, sh, in.Body.Entry); err != nil {
+			return nil, err
+		}
+		if err := s.ensureSSHConfig(ctx); err != nil {
+			return nil, huma.Error502BadGateway("sshd: " + err.Error())
+		}
+		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "share.update", Target: guest.Login, IP: requestInfo(ctx).IP, Details: map[string]any{"name": sh.Name, "entry": sh.Entry}})
+		return &shareOutput{Status: http.StatusOK, Body: s.shareStatus(ctx, sh)}, nil
 	})
 
 	huma.Register(s.api, huma.Operation{
@@ -326,6 +381,11 @@ func (s *Server) registerShares() {
 		}
 		if err := s.removeShare(ctx, sh); err != nil {
 			return nil, huma.Error502BadGateway(err.Error())
+		}
+		if sh.Entry {
+			if err := s.ensureSSHConfig(ctx); err != nil {
+				return nil, huma.Error502BadGateway("sshd: " + err.Error())
+			}
 		}
 		st := &apitypes.ShareStatus{Share: sh}
 		if sh.NoPHP {
