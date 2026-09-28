@@ -91,26 +91,37 @@ func updateCmd() *cobra.Command {
 	c.AddCommand(settings)
 
 	var key string
-	var restart, clear bool
+	var restart, clear, off bool
 	trust := &cobra.Command{Use: "trust", Short: T("ключ, которым подписаны релизы (пишется в config.yaml)", "the key releases are signed with (written to config.yaml)"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cfg, err := loadConfig()
 		if err != nil {
 			return err
 		}
-		if clear {
+		if clear || off {
 			cfg.Update.PublicKey = ""
+			if off {
+				cfg.Update.PublicKey = updater.KeyOff
+			}
 			if err := cfg.Save(cfg.Path()); err != nil {
 				return err
 			}
-			fmt.Println(T("ключ удалён: релизы будут приниматься по контрольной сумме", "key removed: releases will be accepted by their checksum"))
+			if off {
+				fmt.Println(T("проверка подписи выключена: релизы будут приниматься по контрольной сумме", "signature check switched off: releases will be accepted by their checksum"))
+			} else {
+				fmt.Println(T("свой ключ убран: релизы проверяются встроенным ключом", "custom key removed: releases are checked against the built-in key"))
+			}
 			key = "-"
 		}
 		if key == "" {
-			if cfg.Update.PublicKey == "" {
-				fmt.Println(T("ключ обновлений не задан: релизы принимаются по контрольной сумме", "no update key set: releases are accepted by their checksum"))
-				return nil
+			current, source := updater.ReleaseKey(cfg.Update.PublicKey)
+			switch source {
+			case "":
+				fmt.Println(T("проверка подписи выключена (update.public_key: none): релизы принимаются по контрольной сумме", "signature check is off (update.public_key: none): releases are accepted by their checksum"))
+			case "builtin":
+				fmt.Println(current, T("(встроенный ключ)", "(built-in key)"))
+			default:
+				fmt.Println(current, T("(из config.yaml)", "(from config.yaml)"))
 			}
-			fmt.Println(cfg.Update.PublicKey)
 			return nil
 		}
 		if key != "-" {
@@ -142,8 +153,9 @@ func updateCmd() *cobra.Command {
 		fmt.Println(T("панель перезапущена", "panel restarted"))
 		return nil
 	}}
-	trust.Flags().StringVar(&key, "key", "", T("публичный ключ ed25519 в base64 (без флага — показать текущий)", "ed25519 public key in base64 (omit it to see the current one)"))
-	trust.Flags().BoolVar(&clear, "clear", false, T("убрать ключ и принимать релизы без подписи", "remove the key and accept unsigned releases"))
+	trust.Flags().StringVar(&key, "key", "", T("публичный ключ ed25519 в base64 вместо встроенного (без флага — показать текущий)", "ed25519 public key in base64 instead of the built-in one (omit it to see the current one)"))
+	trust.Flags().BoolVar(&clear, "clear", false, T("убрать свой ключ и вернуться к встроенному", "remove the custom key and go back to the built-in one"))
+	trust.Flags().BoolVar(&off, "off", false, T("выключить проверку подписи и принимать релизы по контрольной сумме", "switch the signature check off and accept releases by their checksum"))
 	trust.Flags().BoolVar(&restart, "restart", false, T("перезапустить панель, чтобы ключ начал действовать", "restart the panel so that the key takes effect"))
 	c.AddCommand(trust)
 	return c
@@ -210,9 +222,12 @@ func printUpdate(st *apitypes.UpdateStatus) {
 	if st.Settings.CheckHours == 0 {
 		every = T("проверка выключена", "checks off")
 	}
-	key := T("без подписи", "no signature check")
-	if st.KeyPinned {
-		key = T("подпись обязательна", "signature required")
+	key := T("подпись не проверяется", "no signature check")
+	switch st.KeySource {
+	case "builtin":
+		key = T("подпись: встроенный ключ", "signature: built-in key")
+	case "config":
+		key = T("подпись: ключ из config.yaml", "signature: key from config.yaml")
 	}
 	fmt.Printf(T("Обновления:  %s, %s, %s\n", "Updates:    %s, %s, %s\n"), every, auto, key)
 	if a := st.LastAttempt; a != nil {

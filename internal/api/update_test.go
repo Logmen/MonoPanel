@@ -220,9 +220,10 @@ func TestUpdateRefusesAnUnsignedReleaseWhenAKeyIsPinned(t *testing.T) {
 		t.Fatalf("an unsigned release must be refused where a key is pinned: %s %s", job.Status, job.Error)
 	}
 
-	// Without a pinned key the same release installs: the digest still has to
-	// match, but nothing vouches for who produced it.
-	f2 := newFixture(t, nil)
+	// With the check switched off the same release installs: the digest still
+	// has to match, but nothing vouches for who produced it. (An empty setting
+	// means the built-in key, so switching off has to be explicit.)
+	f2 := newFixture(t, func(c *config.Config) { c.Update.PublicKey = updater.KeyOff })
 	f2.configureUpdates(rel)
 	f2.call(http.MethodPost, "/system/update/apply", map[string]any{}, http.StatusAccepted, &ref)
 	if job := f2.waitJob(ref.JobID); job.Status != store.JobDone {

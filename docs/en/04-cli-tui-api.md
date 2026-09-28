@@ -19,7 +19,7 @@ mp version
 mp update                            # what is installed and what is available
 mp update check | apply [--version v0.8.12]
 mp update settings [--repo owner/name] [--channel …] [--check-hours 24] [--auto-apply] [--token-stdin|--clear-token]
-mp update trust --key <public key> [--restart] | --clear
+mp update trust [--key <fork key>] [--restart] | --clear | --off   # no flags — which key checks the signature
 
 mp user add <login> [--password …|--password-stdin|--generate] [--email …] [--role user|admin] [--shell]
 mp user set <login> [--password …|--generate] [--email …] [--shell|--sftp-only] [--status active|suspended]

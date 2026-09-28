@@ -113,9 +113,11 @@ func (s *Server) updateClient(c updateConfig) (*updater.Client, error) {
 }
 
 func (s *Server) updateStatus(ctx context.Context, c updateConfig) apitypes.UpdateStatus {
+	key, source := updater.ReleaseKey(s.cfg.Update.PublicKey)
 	out := apitypes.UpdateStatus{
 		Current:   buildinfo.Version,
-		KeyPinned: strings.TrimSpace(s.cfg.Update.PublicKey) != "",
+		KeyPinned: key != "",
+		KeySource: source,
 		CheckedAt: c.CheckedAt,
 		LastError: c.LastError,
 		Settings: apitypes.UpdateSettings{
@@ -404,12 +406,12 @@ func (s *Server) releaseSums(ctx context.Context, cl *updater.Client, rel *updat
 			return nil, nil, err
 		}
 	}
-	key := strings.TrimSpace(s.cfg.Update.PublicKey)
+	key, _ := updater.ReleaseKey(s.cfg.Update.PublicKey)
 	if key == "" {
 		return sums, sig, nil
 	}
 	if len(sig) == 0 {
-		return nil, nil, fmt.Errorf("release %s is not signed, but this server has an update key set", rel.Tag)
+		return nil, nil, fmt.Errorf("release %s is not signed, but this server checks release signatures", rel.Tag)
 	}
 	if err := updater.VerifySums(key, sums, sig); err != nil {
 		return nil, nil, fmt.Errorf("release signature: %w", err)

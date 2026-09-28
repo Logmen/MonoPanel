@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -580,6 +581,35 @@ func ParseSums(b []byte) map[string]string {
 		out[strings.TrimPrefix(f[1], "*")] = strings.ToLower(f[0])
 	}
 	return out
+}
+
+// builtinKey is the public half of the key the releases of Logmen/MonoPanel
+// are signed with (the private half is the MONOPANEL_RELEASE_KEY secret of
+// the release workflow). A fork that signs its own releases replaces the file.
+//
+//go:embed release.pub
+var builtinKey string
+
+// KeyOff is the config.yaml value that switches the signature check off.
+const KeyOff = "none"
+
+// BuiltinKey is the release key compiled into this binary.
+func BuiltinKey() string { return strings.TrimSpace(builtinKey) }
+
+// ReleaseKey resolves the key releases are checked against from the
+// `update.public_key` setting: a key written there wins, an empty setting
+// means the built-in key, and KeyOff means no check at all. source names
+// where the key came from: "config", "builtin" or "" when there is none.
+func ReleaseKey(configured string) (key, source string) {
+	switch c := strings.TrimSpace(configured); {
+	case c == KeyOff:
+		return "", ""
+	case c != "":
+		return c, "config"
+	case BuiltinKey() != "":
+		return BuiltinKey(), "builtin"
+	}
+	return "", ""
 }
 
 // VerifySums checks the detached signature of the checksum list. An empty

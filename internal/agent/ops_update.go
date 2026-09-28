@@ -40,7 +40,7 @@ func (s *Server) installPanel(ctx context.Context, req *InstallPanelRequest) (*I
 	}
 
 	signed := false
-	if key := strings.TrimSpace(s.cfg.Update.PublicKey); key != "" {
+	if key, _ := updater.ReleaseKey(s.cfg.Update.PublicKey); key != "" {
 		if req.Sums == "" || req.Sig == "" {
 			return nil, &Error{Status: http.StatusBadRequest, Message: "release is unsigned but this host requires a signature"}
 		}
@@ -52,7 +52,7 @@ func (s *Server) installPanel(ctx context.Context, req *InstallPanelRequest) (*I
 		}
 		signed = true
 	} else {
-		s.log.Warn("installing an unsigned panel package: no release key in config.yaml", "package", pkg)
+		s.log.Warn("installing a panel package without a signature check: update.public_key is none", "package", pkg)
 	}
 
 	exe, err := os.Executable()

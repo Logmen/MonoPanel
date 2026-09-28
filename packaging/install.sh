@@ -8,13 +8,17 @@
 # Set MONOPANEL_VERSION to pin a version (0.6.0), MONOPANEL_REPO to install
 # from a fork, and MONOPANEL_TOKEN to read a private repository.
 #
-# The package is checked against the SHA256SUMS published with the release.
-# That is a transport check, not a signature: it proves the download arrived
-# intact from GitHub. Once the panel is installed it verifies the release
-# signature itself on every later update (mp update trust).
+# The package is checked against the SHA256SUMS published with the release, and
+# the list itself against its ed25519 signature (SHA256SUMS.sig) with the key
+# below — the same key the installed panel checks every later update against.
+# The signature check needs openssl 1.1.1+; without it only the checksums are
+# checked, which proves the download arrived intact from GitHub but not who
+# built it. A fork with its own key sets MONOPANEL_RELEASE_KEY.
 set -eu
 
 REPO="${MONOPANEL_REPO:-Logmen/MonoPanel}"
+RELEASE_KEY="eoGfJciXIG9upyFNJQR7rIsXtSs506DkiXT5kiBUyhg="
+RELEASE_KEY="${MONOPANEL_RELEASE_KEY:-$RELEASE_KEY}"
 API="${MONOPANEL_API:-https://api.github.com}"
 TOKEN="${MONOPANEL_TOKEN:-}"
 
@@ -108,6 +112,24 @@ fetch "$(asset_url SHA256SUMS)" "$tmp/SHA256SUMS" application/octet-stream ||
 	{ echo "release $tag of $REPO has no SHA256SUMS" >&2; exit 1; }
 (cd "$tmp" && sha256sum -c --ignore-missing SHA256SUMS >/dev/null) ||
 	{ echo "checksum mismatch: refusing to install $package" >&2; exit 1; }
+
+# The signature is base64 of the raw ed25519 signature; openssl wants the key
+# as SubjectPublicKeyInfo, which for ed25519 is a fixed 12-byte DER prefix in
+# front of the raw key — base64 of the prefix is exactly 16 characters, so the
+# two base64 strings can simply be joined.
+if [ "$RELEASE_KEY" = none ]; then
+	echo "signature check skipped (MONOPANEL_RELEASE_KEY=none)" >&2
+elif ! command -v openssl >/dev/null || ! openssl pkeyutl -help 2>&1 | grep -q -- '-rawin'; then
+	echo "openssl 1.1.1+ not found: release signature not checked, checksums only" >&2
+else
+	fetch "$(asset_url SHA256SUMS.sig)" "$tmp/SHA256SUMS.sig" application/octet-stream ||
+		{ echo "release $tag of $REPO has no SHA256SUMS.sig: refusing to install an unsigned release" >&2; exit 1; }
+	printf -- '-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA%s\n-----END PUBLIC KEY-----\n' "$RELEASE_KEY" > "$tmp/release.pem"
+	tr -d ' \n' < "$tmp/SHA256SUMS.sig" | base64 -d > "$tmp/SHA256SUMS.sig.bin"
+	openssl pkeyutl -verify -pubin -inkey "$tmp/release.pem" -rawin -in "$tmp/SHA256SUMS" -sigfile "$tmp/SHA256SUMS.sig.bin" >/dev/null 2>&1 ||
+		{ echo "release signature does not match the key: refusing to install $package" >&2; exit 1; }
+	echo "release signature ok"
+fi
 
 if [ "$KIND" = deb ]; then
 	apt-get -q update

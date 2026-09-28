@@ -323,18 +323,28 @@ make packages VERSION=0.8.12 # the same artefacts locally, without publishing
 On a server:
 
 ```bash
-mp update trust --key <public key>   # written to config.yaml, which only root may write
 mp update settings --repo owner/name # --token-stdin for a private repository
 mp update                            # what is installed and what is available
-mp update apply                      # download, verify, install, restart
+mp update apply                      # download, verify the signature, install, restart
+mp update trust                      # which key the signature is checked against
+mp update trust --key <fork key>     # your own key instead of the built-in one; --off disables the check
 ```
 
-Checks run on a schedule (daily by default) and `--auto-apply` installs what they
+The public half of the release signing key is built into the panel and into
+`install.sh`, so the signature is checked by default — on the first install (when
+openssl 1.1.1+ is present) and on every update. The key can be compared with what the
+`release-key` workflow prints:
+
+```
+eoGfJciXIG9upyFNJQR7rIsXtSs506DkiXT5kiBUyhg=
+```
+
+Update checks run on a schedule (daily by default) and `--auto-apply` installs what they
 find. The panel does not install the package itself: the agent starts a transient
 `monopanel-update.service`, which survives the restart of both daemons and restores
-the previous binary if the new version fails to answer. While a key is pinned, an
-unsigned release will not install. A slow link is fine: the package download has no
-overall deadline, only a stalled stream is given up.
+the previous binary if the new version fails to answer. An unsigned release will not
+install unless the check is switched off explicitly. A slow link is fine: the package
+download has no overall deadline, only a stalled stream is given up.
 
 ## Moving in
 

@@ -724,7 +724,8 @@ type UpdateStatus struct {
 	Notes       string         `json:"notes,omitempty"`
 	PublishedAt *time.Time     `json:"published_at,omitempty"`
 	Available   bool           `json:"available" doc:"Latest is newer than the current version"`
-	KeyPinned   bool           `json:"key_pinned" doc:"A release signing key is configured"`
+	KeyPinned   bool           `json:"key_pinned" doc:"Release signatures are checked"`
+	KeySource   string         `json:"key_source,omitempty" doc:"Where the release key comes from: builtin (compiled into the panel) or config (update.public_key)"`
 	Settings    UpdateSettings `json:"settings"`
 	CheckedAt   *time.Time     `json:"checked_at,omitempty"`
 	LastError   string         `json:"last_error,omitempty"`
