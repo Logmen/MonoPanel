@@ -134,7 +134,7 @@ whole server, an account, a site or a database; a snapshot is restored alongside
 ![Panel users](img/users.webp)
 
 A panel account is a unix user with its own home directory: SFTP (chroot) or SSH access,
-cron jobs and app services — background applications such as a bot or a Node or Python
+cron jobs (added, edited in place and switched off) and app services — background applications such as a bot or a Node or Python
 backend under systemd. The panel and SFTP share one password. Deleting an account also
 removes its sites, databases, cron, Valkey instances and certificates.
 

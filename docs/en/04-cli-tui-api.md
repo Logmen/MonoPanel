@@ -81,7 +81,7 @@ mp backup run [--target …] [--scope server|user:<login>|site:<domain>|db:<name
 mp backup list | snapshots [--target …]
 mp backup restore <snapshot> [--target …] [--include path…] [--in-place]
 
-mp cron list | add | enable <id> | disable <id> | rm <id> --user <login>
+mp cron list | add | set <id> [--schedule …] [--command …] | enable <id> | disable <id> | rm <id> --user <login>
             [--schedule "*/5 * * * *" --command "…" --comment … --disabled]   # for an administrator, list without --user shows everyone's cron jobs
 mp app list | show | add | set | start | stop | restart | logs | rm <name> --user <login>
             [--command … --workdir … --env KEY=… --env-file … --restart … --description …]

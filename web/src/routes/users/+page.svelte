@@ -90,6 +90,9 @@
   }
   async function refreshPanel() { if (panel) await openPanel(panel.login, panel.kind); }
   async function addCron(e: Event) { e.preventDefault(); if (!panel) return; try { await api(`/users/${panel.login}/cron`, { method: 'POST', json: cronForm }); cronForm.command = ''; await refreshPanel(); } catch (e) { fail(e); } }
+  let cronEdit = $state<{ id: number; schedule: string; command: string } | null>(null);
+  async function saveCron(e: Event) { e.preventDefault(); if (!panel || !cronEdit) return; try { await api(`/users/${panel.login}/cron/${cronEdit.id}`, { method: 'PATCH', json: { schedule: cronEdit.schedule, command: cronEdit.command } }); cronEdit = null; await refreshPanel(); notify(t('users.cronSaved')); } catch (e) { fail(e); } }
+  async function toggleCron(j: any) { if (!panel) return; try { await api(`/users/${panel.login}/cron/${j.id}`, { method: 'PATCH', json: { enabled: !j.enabled } }); await refreshPanel(); } catch (e) { fail(e); } }
   async function rmCron(id: number) { if (!panel) return; try { await api(`/users/${panel.login}/cron/${id}`, { method: 'DELETE' }); await refreshPanel(); } catch (e) { fail(e); } }
   async function addShare(e: Event) { e.preventDefault(); if (!panel) return; try { const body: any = { ...shareForm }; if (!body.name) delete body.name; const r: any = await api(`/users/${panel.login}/shares`, { method: 'POST', json: body }); if (r.job_id) job = r.job_id; shareForm = { site: '', path: '', name: '', no_php: true, entry: false }; await refreshPanel(); notify(t('users.shareAdded')); } catch (e) { fail(e); } }
   async function entryShare(name: string, entry: boolean) { if (!panel) return; try { await api(`/users/${panel.login}/shares/${name}`, { method: 'PATCH', json: { entry } }); await refreshPanel(); notify(t(entry ? 'users.shareEntrySet' : 'users.shareEntryUnset')); } catch (e) { fail(e); } }
@@ -174,8 +177,15 @@
         <div class="md:col-span-2"><label class="label" for="cc">{t('users.command')}</label><input id="cc" class="input font-mono" bind:value={cronForm.command} placeholder="php ~/data/www/site/cron.php" required /></div>
         <button class="btn btn-primary">{t('common.add')}</button>
       </form>
+      <form id="cron-edit" onsubmit={saveCron}></form>
       <table class="tbl"><thead><tr><th>ID</th><th>{t('users.schedule')}</th><th>{t('users.command')}</th><th></th></tr></thead><tbody>
-        {#each panel.items as j}<tr><td data-label="ID">{j.id}</td><td data-label={t('users.schedule')} class="font-mono">{j.schedule}{#if !j.enabled} <span class="tag tag-muted">off</span>{/if}</td><td data-label={t('users.command')} class="font-mono text-xs">{j.command}</td><td data-label="" class="text-right"><button class="btn btn-danger btn-sm" onclick={() => (ask = askCron(j))}><Icon name="trash" size={13} /></button></td></tr>{/each}
+        {#each panel.items as j}
+          {#if cronEdit?.id === j.id}
+            <tr><td data-label="ID">{j.id}</td><td data-label={t('users.schedule')}><input class="input font-mono" form="cron-edit" bind:value={cronEdit.schedule} aria-label={t('users.schedule')} required /></td><td data-label={t('users.command')}><input class="input font-mono text-xs" form="cron-edit" bind:value={cronEdit.command} aria-label={t('users.command')} required /></td><td data-label=""><div class="row-actions"><button class="btn btn-primary btn-sm" form="cron-edit" title={t('common.save')}><Icon name="check" size={13} /></button><button class="btn btn-sm" type="button" onclick={() => (cronEdit = null)} title={t('common.cancel')}><Icon name="x" size={13} /></button></div></td></tr>
+          {:else}
+            <tr><td data-label="ID">{j.id}</td><td data-label={t('users.schedule')} class="font-mono">{j.schedule}{#if !j.enabled} <span class="tag tag-muted">off</span>{/if}</td><td data-label={t('users.command')} class="font-mono text-xs">{j.command}</td><td data-label=""><div class="row-actions"><button class="btn btn-sm" onclick={() => (cronEdit = { id: j.id, schedule: j.schedule, command: j.command })} title={t('users.cronEdit')}><Icon name="pencil" size={13} /></button><button class="btn btn-sm" onclick={() => toggleCron(j)} title={j.enabled ? t('users.cronDisable') : t('users.cronEnable')}><Icon name={j.enabled ? 'stop' : 'play'} size={13} /></button><button class="btn btn-danger btn-sm" onclick={() => (ask = askCron(j))} title={t('users.delete')}><Icon name="trash" size={13} /></button></div></td></tr>
+          {/if}
+        {/each}
         {#if !panel.items.length}<tr><td colspan="4" class="text-muted text-center py-4">{t('users.noCron')}</td></tr>{/if}
       </tbody></table>
     {:else if panel.kind === 'valkey'}

@@ -135,7 +135,42 @@ func cronCmd() *cobra.Command {
 			return err
 		}})
 	}
-	c.AddCommand(list, add)
+	var upd apitypes.CronUpdateRequest
+	var comment string
+	set := &cobra.Command{Use: "set <id>", Short: T("изменить расписание, команду или комментарий задания", "change a cron job's schedule, command or comment"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		cmd0 = cmd
+		cl, err := newClient()
+		if err != nil {
+			return err
+		}
+		u, err := whose()
+		if err != nil {
+			return err
+		}
+		id, err := strconv.ParseInt(args[0], 10, 64)
+		if err != nil {
+			return &exitError{code: 2, msg: T("id должен быть числом", "id must be a number")}
+		}
+		if cmd.Flags().Changed("comment") {
+			upd.Comment = &comment
+		}
+		if upd.Schedule == "" && upd.Command == "" && upd.Comment == nil {
+			return &exitError{code: 2, msg: T("нечего менять: укажите --schedule, --command или --comment", "nothing to change: pass --schedule, --command or --comment")}
+		}
+		j, err := cl.CronUpdate(cmd.Context(), u, id, upd)
+		if err != nil {
+			return err
+		}
+		if g.json {
+			return printJSON(j)
+		}
+		fmt.Printf(T("задание #%d изменено: %s %s\n", "cron job #%d changed: %s %s\n"), j.ID, j.Schedule, j.Command)
+		return nil
+	}}
+	set.Flags().StringVar(&upd.Schedule, "schedule", "", T("новое расписание", "new schedule"))
+	set.Flags().StringVar(&upd.Command, "command", "", T("новая команда", "new command"))
+	set.Flags().StringVar(&comment, "comment", "", T("новый комментарий (пустой — убрать)", "new comment (empty clears it)"))
+	c.AddCommand(list, add, set)
 	return c
 }
 
