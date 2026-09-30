@@ -160,7 +160,7 @@
 ## Этап 3 — v1.x
 
 - [x] Режим `proxy` для Node/Python/Docker-приложений.
-- [x] Почта: postfix + dovecot + opendkim + Roundcube (Debian/Ubuntu).
+- [x] Почта: postfix + dovecot + opendkim + Roundcube (Debian/Ubuntu; с 2026-09-30 — EL 9 и 10).
 - [x] Перенос аккаунтов между панелями (MonoPanel → MonoPanel).
 - [x] Сборка под arm64: пакеты .deb и .rpm для arm64 выходят с каждым релизом (на площадке не проверяются — её машины amd64).
 - [ ] Изолированные пулы с cgroup-лимитами, FTP, DNS (PowerDNS), WAF, роль реселлера, несколько серверов из одной панели.

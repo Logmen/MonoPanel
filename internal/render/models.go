@@ -289,6 +289,18 @@ type Postfix struct {
 	RBL              []string
 	// Milter is the opendkim socket in Postfix notation, empty when DKIM is off.
 	Milter string
+	// CompatLevel is "3.6", or "2" for Postfix older than 3.6.
+	CompatLevel string
+	// MapType is hash or lmdb, CacheType btree or lmdb: what this postfix is
+	// built with.
+	MapType   string
+	CacheType string
+	// CA is the smtp_tls_CApath / smtp_tls_CAfile line of this OS.
+	CA string
+	// TLSProtocols is the protocol list: ">=TLSv1.2", or the exclusion form
+	// for Postfix older than 3.6, which does not know the comparison syntax
+	// and switches TLS off altogether on it.
+	TLSProtocols string
 }
 
 // PostfixMaster feeds mail/master.cf.tmpl. Port25 is off on hosts where

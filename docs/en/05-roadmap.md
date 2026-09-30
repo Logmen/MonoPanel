@@ -160,7 +160,7 @@ This is the project log by stage and date: what is done, what is verified and wh
 ## Stage 3 — v1.x
 
 - [x] `proxy` mode for Node/Python/Docker applications.
-- [x] Mail: postfix + dovecot + opendkim + Roundcube (Debian/Ubuntu).
+- [x] Mail: postfix + dovecot + opendkim + Roundcube (Debian/Ubuntu; EL 9 and 10 since 2026-09-30).
 - [x] Migrating accounts between panels (MonoPanel → MonoPanel).
 - [x] arm64 build: .deb and .rpm packages for arm64 ship with every release (not verified on the testbed — its machines are amd64).
 - [ ] Isolated pools with cgroup limits, FTP, DNS (PowerDNS), WAF, a reseller role, several servers from one panel.

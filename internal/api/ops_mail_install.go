@@ -2,10 +2,11 @@ package api
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,93 @@ import (
 var mailPackages = []string{
 	"postfix", "dovecot-core", "dovecot-imapd", "dovecot-pop3d", "dovecot-lmtpd",
 	"dovecot-sieve", "dovecot-managesieved", "opendkim", "opendkim-tools",
+}
+
+// mailPackagesEL is the same stack under its EL names: dovecot is one package
+// with pigeonhole (sieve) beside it, and opendkim comes from EPEL.
+var mailPackagesEL = []string{"postfix", "dovecot", "dovecot-pigeonhole", "opendkim", "opendkim-tools"}
+
+// mailPkgs is the package list of this OS and the name dovecot's version is
+// asked under.
+func (s *Server) mailPkgs() (pkgs []string, dovecot string) {
+	if s.profile.Family() == osprofile.FamilyDebian {
+		return mailPackages, "dovecot-core"
+	}
+	return mailPackagesEL, "dovecot"
+}
+
+var postfixVersionRe = regexp.MustCompile(`(?:^|:)([0-9]+)\.([0-9]+)`)
+
+// postfixCompat is the compatibility_level to write: Postfix before 3.6 knows
+// only the integer levels and refuses to start on "3.6" (EL 9 ships 3.5).
+func postfixCompat(version string) string {
+	m := postfixVersionRe.FindStringSubmatch(version)
+	if m == nil {
+		return "3.6"
+	}
+	major, _ := strconv.Atoi(m[1])
+	minor, _ := strconv.Atoi(m[2])
+	if major < 3 || (major == 3 && minor < 6) {
+		return "2"
+	}
+	return "3.6"
+}
+
+// postfixMapType asks postfix which lookup tables it was built with: EL 10
+// dropped Berkeley DB, so hash: and btree: are gone there and lmdb: takes
+// their place.
+func (s *Server) postfixMapType(ctx context.Context) string {
+	res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "postconf", Args: []string{"-m"}, TimeoutSeconds: 30})
+	if err != nil || res.ExitCode != 0 {
+		return "hash"
+	}
+	types := map[string]bool{}
+	for _, f := range strings.Fields(res.Output) {
+		types[f] = true
+	}
+	if !types["hash"] && types["lmdb"] {
+		return "lmdb"
+	}
+	return "hash"
+}
+
+// enableCRB switches on the CodeReady Builder repository: EPEL's opendkim
+// needs libmilter and libmemcached from it. The repository is named crb on
+// Alma and Rocky, ol<N>_codeready_builder on Oracle Linux and
+// codeready-builder-… on RHEL. It stays enabled so that those libraries keep
+// getting updates.
+func (s *Server) enableCRB(ctx context.Context, jc *jobs.Context) error {
+	res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "dnf", Args: []string{"-q", "repolist", "--all"}, TimeoutSeconds: 120})
+	if err != nil {
+		return err
+	}
+	for _, line := range strings.Split(res.Output, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 {
+			continue
+		}
+		id := strings.ToLower(f[0])
+		if id != "crb" && !strings.Contains(id, "codeready") {
+			continue
+		}
+		if strings.Contains(id, "debug") || strings.Contains(id, "source") {
+			continue
+		}
+		if f[len(f)-1] == "enabled" {
+			return nil
+		}
+		out, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "dnf", Args: []string{"-y", "config-manager", "--set-enabled", f[0]}, TimeoutSeconds: 120})
+		if err != nil {
+			return err
+		}
+		if out.ExitCode != 0 {
+			return fmt.Errorf("dnf config-manager --set-enabled %s: %s", f[0], strings.TrimSpace(out.Output))
+		}
+		jc.Logf("repository %s enabled: opendkim needs libmilter and libmemcached from it", f[0])
+		return nil
+	}
+	jc.Logf("warning: no CodeReady Builder repository found; opendkim may fail to install")
+	return nil
 }
 
 // mailPorts are the listeners the panel manages, in the order the UI shows them.
@@ -46,9 +134,7 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 	if err := jc.Unmarshal(&p); err != nil {
 		return err
 	}
-	if s.profile.Family() != osprofile.FamilyDebian {
-		return errors.New("the mail server is only implemented for Debian/Ubuntu so far")
-	}
+	pkgs, dovecotPkg := s.mailPkgs()
 	c := s.loadMailConfig(ctx)
 	if p.Hostname != "" {
 		c.Hostname = acme.NormalizeName(p.Hostname)
@@ -70,7 +156,7 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 
 	// Порты проверяются до установки: пакет postfix стартует сам, и если 25-й
 	// уже занят чужим демоном, установка упала бы на его postinst.
-	installed, err := s.agent.Pkg(ctx, "query", "postfix", "dovecot-core")
+	installed, err := s.agent.Pkg(ctx, "query", "postfix", dovecotPkg)
 	if err != nil {
 		return err
 	}
@@ -89,17 +175,46 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 	}
 
 	jc.Progress(10, "installing packages")
-	if err := s.ensurePackages(ctx, jc, mailPackages...); err != nil {
+	// A stale package index fails the install with 404 on files the mirrors
+	// have already replaced; nothing before this step refreshes it.
+	if fresh {
+		if _, err := s.agent.Pkg(ctx, "update-index"); err != nil {
+			jc.Logf("warning: package index not refreshed: %v", err)
+		}
+	}
+	if s.profile.Family() != osprofile.FamilyDebian {
+		// opendkim lives in EPEL and pulls libraries from CodeReady Builder.
+		if epel := s.profile.EPELPackage(); epel != "" {
+			if q, err := s.agent.Pkg(ctx, "query", "epel-release"); err != nil || q.Installed["epel-release"] == "" {
+				jc.Logf("installing the EPEL repository")
+				if _, err := s.agent.Pkg(ctx, "install", epel); err != nil {
+					return err
+				}
+			}
+		}
+		if err := s.enableCRB(ctx, jc); err != nil {
+			return err
+		}
+	}
+	if err := s.ensurePackages(ctx, jc, pkgs...); err != nil {
 		return err
 	}
-	q, err := s.agent.Pkg(ctx, "query", "postfix", "dovecot-core", "opendkim")
+	q, err := s.agent.Pkg(ctx, "query", "postfix", dovecotPkg, "opendkim")
 	if err != nil {
 		return err
 	}
-	c.PostfixVersion, c.DovecotVersion = q.Installed["postfix"], q.Installed["dovecot-core"]
+	c.PostfixVersion, c.DovecotVersion = q.Installed["postfix"], q.Installed[dovecotPkg]
+	c.MapType = s.postfixMapType(ctx)
+	if c.MapType != "hash" {
+		jc.Logf("postfix has no Berkeley DB here: lookup tables are %s", c.MapType)
+	}
 	jc.Logf("postfix %s, dovecot %s, opendkim %s", c.PostfixVersion, c.DovecotVersion, q.Installed["opendkim"])
 	if dovecot24(c) {
 		jc.Logf("dovecot 2.4: the configuration is written in the 2.4 syntax")
+	}
+
+	if err := s.selinuxMailPolicy(ctx, jc); err != nil {
+		return err
 	}
 
 	jc.Progress(35, "vmail system user")
@@ -120,6 +235,16 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 	}
 	jc.Logf("mail is stored in %s (%s, uid %d)", mailBase, vmailUser, vm.UID)
 
+	// The EL package leaves /etc/opendkim/keys closed to everyone but root on
+	// some releases (root:root 0750 on EL 10): opendkim then cannot reach the
+	// keys and every signed message is deferred with 451.
+	if c.DKIM {
+		if _, err := s.agent.EnsureDirs(ctx, &agent.EnsureDirsRequest{Dirs: []agent.DirSpec{
+			{Path: dkimDir + "/keys", Mode: 0o750, Owner: "root", Group: "opendkim"},
+		}}); err != nil {
+			return fmt.Errorf("opendkim keys directory: %w", err)
+		}
+	}
 	// smtpd обращается к сокету opendkim, а тот открыт для группы opendkim.
 	if c.DKIM {
 		if _, err := s.agent.EnsureUnixUser(ctx, &agent.EnsureUnixUserRequest{Login: "postfix", System: true, Groups: []string{"opendkim"}}); err != nil {
@@ -177,7 +302,7 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 	for _, p := range firewallMailPorts(c) {
 		tcp = append(tcp, fmt.Sprintf("%d/tcp", p))
 	}
-	s.firewalldOpen(ctx, jc, tcp...)
+	s.firewalldOpen(ctx, jc.Logf, tcp...)
 	probes := s.probePorts(allMailPorts())
 	open := []string{}
 	for _, mp := range mailPorts {
@@ -281,7 +406,7 @@ func mailPortsFor(c mailConfig) []int {
 // package cannot fail on a port another daemon already holds. The real
 // configuration is written a few steps later.
 func (s *Server) stubPostfix(ctx context.Context, c mailConfig) error {
-	main := fmt.Sprintf("# MonoPanel: temporary configuration while the package is being installed.\ncompatibility_level = 3.6\nmyhostname = %s\ninet_interfaces = loopback-only\nmydestination = localhost\n", c.Hostname)
+	main := fmt.Sprintf("# MonoPanel: temporary configuration while the package is being installed.\ncompatibility_level = 2\nmyhostname = %s\ninet_interfaces = loopback-only\nmydestination = localhost\n", c.Hostname)
 	master := "# MonoPanel: no inet services, so that the installation takes no ports.\npickup unix n - n 60 1 pickup\ncleanup unix n - n - 0 cleanup\nqmgr unix n - n 300 1 qmgr\nrewrite unix - - n - - trivial-rewrite\nbounce unix - - n - 0 bounce\ndefer unix - - n - 0 bounce\ntrace unix - - n - 0 bounce\nverify unix - - n - 1 verify\nflush unix n - n 1000? 0 flush\nsmtp unix - - n - - smtp\nrelay unix - - n - - smtp\nshowq unix n - n - - showq\nerror unix - - n - - error\nretry unix - - n - - error\ndiscard unix - - n - - discard\nlocal unix - n n - - local\nvirtual unix - n n - - virtual\nlmtp unix - - n - - lmtp\nanvil unix - - n - 1 anvil\nscache unix - - n - 1 scache\npostlog unix-dgram n - n - 1 postlogd\n"
 	_, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: []agent.FileSpec{
 		{Path: postfixDir + "/main.cf", Content: main, Mode: 0o644},
@@ -396,4 +521,27 @@ func (s *Server) mailStatus(ctx context.Context) apitypes.MailStatus {
 		out.Warnings = s.mailWarnings(ctx, c, kind, probes)
 	}
 	return out
+}
+
+// selinuxMailPolicy labels the certificate store so that postfix may read
+// it: smtpd runs in postfix_smtpd_t, which reads cert_t but not the var_lib_t
+// the store gets by default — STARTTLS answered "TLS not available due to
+// local problem". nginx and dovecot read cert_t as well, and new certificates
+// inherit the label from the directory.
+func (s *Server) selinuxMailPolicy(ctx context.Context, jc *jobs.Context) error {
+	if s.profile.MAC() != "selinux" {
+		return nil
+	}
+	if _, err := s.agent.Pkg(ctx, "install", "policycoreutils-python-utils"); err != nil {
+		return fmt.Errorf("install semanage: %w", err)
+	}
+	certs := filepath.Join(s.cfg.DataDir, "certs")
+	if err := s.selinuxFileContext(ctx, certs+"(/.*)?", "cert_t"); err != nil {
+		return err
+	}
+	if _, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "restorecon", Args: []string{"-RF", certs}}); err != nil {
+		return fmt.Errorf("restorecon: %w", err)
+	}
+	jc.Logf("selinux: %s is labelled cert_t so that postfix reads the certificate", certs)
+	return nil
 }

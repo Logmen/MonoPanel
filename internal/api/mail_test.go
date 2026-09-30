@@ -4,6 +4,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"net/http"
 	"path/filepath"
@@ -28,8 +29,17 @@ func newMailFixture(t *testing.T) *siteFixture {
 // e.g. the dovecot of Debian 13 / Ubuntu 26.04.
 func newMailFixtureWith(t *testing.T, versions map[string]string) *siteFixture {
 	t.Helper()
+	return newMailFixtureOn(t, versions, nil)
+}
+
+// newMailFixtureOn lets a test shape the fake host before the install runs.
+func newMailFixtureOn(t *testing.T, versions map[string]string, prepare func(*siteFixture)) *siteFixture {
+	t.Helper()
 	f := newSiteFixture(t)
 	f.agent.PackageVersions = versions
+	if prepare != nil {
+		prepare(f)
+	}
 	// За фейковым агентом никто портов не занимает: считаем, что слушает наш
 	// же postfix — его установка узнаёт по баннеру с именем хоста.
 	f.s.SetPortProbe(func(int, bool) (bool, string) { return true, "220 mail.example.com ESMTP" })
@@ -468,5 +478,84 @@ func TestSPFWith(t *testing.T) {
 		if got := spfWith(in, "a:mail.example.com"); got != want {
 			t.Errorf("spfWith(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// On EL the same stack goes by other package names, opendkim needs EPEL and
+// CodeReady Builder, EL 9 ships a Postfix that knows neither
+// compatibility_level 3.6 nor ">=TLSv1.2", EL 10 a Postfix without Berkeley
+// DB, and the milter is a loopback port because SELinux keeps smtpd away from
+// opendkim's unix socket.
+func TestMailInstallOnEL(t *testing.T) {
+	for _, tc := range []struct {
+		name, osRelease, postfix, maps, mapType, compat, protocols string
+	}{
+		{"el9", "ID=almalinux\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=9.8\n", "2:3.5.25-3.el9_8", "btree cidr hash lmdb regexp", "hash", "2", "!SSLv2, !SSLv3, !TLSv1, !TLSv1.1"},
+		{"el10", "ID=ol\nID_LIKE=fedora\nVERSION_ID=10.1\n", "2:3.8.5-10.el10_2", "cidr lmdb regexp texthash", "lmdb", "3.6", ">=TLSv1.2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withOSRelease(t, tc.osRelease)
+			f := newMailFixtureOn(t, map[string]string{"postfix": tc.postfix, "dovecot": "1:2.3.21-19.el10"}, func(f *siteFixture) {
+				f.agent.ToolOutput = map[string]string{"postconf": tc.maps}
+				f.agent.ToolHook = func(req agentReq) *agentRes {
+					if req.Name == "dnf" && len(req.Args) > 1 && req.Args[1] == "repolist" {
+						return &agentRes{Output: "repo id      repo name      status\nbaseos   BaseOS   enabled\ncrb    CRB    disabled\ncrb-debuginfo   CRB - Debug   disabled\n"}
+					}
+					return nil
+				}
+			})
+			crb, pkgs := false, ""
+			for _, tool := range f.agent.Tools() {
+				if tool.Name == "dnf" && strings.Join(tool.Args, " ") == "-y config-manager --set-enabled crb" {
+					crb = true
+				}
+				if tool.Name == "postmap" && len(tool.Args) == 1 && !strings.HasPrefix(tool.Args[0], tc.mapType+":/etc/postfix/monopanel/") {
+					t.Errorf("postmap %v: want %s: tables", tool.Args, tc.mapType)
+				}
+			}
+			if !crb {
+				t.Errorf("CodeReady Builder not enabled; tools: %v", f.agent.Tools())
+			}
+			for _, call := range f.agent.Calls() {
+				var req struct {
+					Action   string   `json:"action"`
+					Packages []string `json:"packages"`
+				}
+				if call.Path == "/v1/pkg" && json.Unmarshal(call.Body, &req) == nil {
+					pkgs += " " + strings.Join(req.Packages, " ")
+				}
+			}
+			for _, want := range []string{"dovecot-pigeonhole", "opendkim", "postfix"} {
+				if !strings.Contains(pkgs, want) {
+					t.Errorf("package %s never asked for: %s", want, pkgs)
+				}
+			}
+			if strings.Contains(pkgs, "dovecot-core") {
+				t.Errorf("Debian package names on EL: %s", pkgs)
+			}
+			main, _ := f.agent.File("/etc/postfix/main.cf")
+			for _, want := range []string{
+				"compatibility_level = " + tc.compat + "\n",
+				"virtual_mailbox_maps = " + tc.mapType + ":/etc/postfix/monopanel/mailboxes",
+				"alias_maps = " + tc.mapType + ":/etc/aliases",
+				"smtpd_tls_protocols = " + tc.protocols + "\n",
+				"smtp_tls_CAfile = /etc/pki/tls/certs/ca-bundle.crt",
+				"smtpd_milters = inet:127.0.0.1:8891",
+			} {
+				if !strings.Contains(main, want) {
+					t.Errorf("main.cf lacks %q:\n%s", want, main)
+				}
+			}
+			if tc.mapType == "lmdb" && (strings.Contains(main, "hash:") || strings.Contains(main, "btree:")) {
+				t.Errorf("main.cf uses Berkeley DB tables on a Postfix without them:\n%s", main)
+			}
+			dkim, _ := f.agent.File("/etc/opendkim.conf")
+			if !strings.Contains(dkim, "inet:8891@127.0.0.1") {
+				t.Errorf("opendkim.conf: want a loopback socket:\n%s", dkim)
+			}
+			if _, ok := f.agent.File("/etc/default/opendkim"); ok {
+				t.Error("/etc/default/opendkim written on EL")
+			}
+		})
 	}
 }

@@ -184,7 +184,7 @@ mp                              # TUI-меню
 
 ### Cron
 
-`mp cron add|list|enable|disable|rm`
+`mp cron add|list|set|enable|disable|rm`
 
 - Crontab пользователя целиком собирается из базы панели; в PATH есть `~/data/bin` с php нужной версии.
 
@@ -268,8 +268,8 @@ mp                              # TUI-меню
 Собственные сборки PHP (используются Sury/Remi), проверенный Apache на EL, phpMyAdmin,
 дисковые квоты, cgroup-лимиты на сайт, DNS-сервер, WAF, несколько серверов из одной
 панели, apt/yum-репозиторий (пакеты выкладываются релизами, панель ставит их сама).
-Почта работает только на Debian и Ubuntu (с dovecot 2.3 и 2.4); для EL конфигурация
-ещё не написана, контент-фильтра (rspamd) нет. Переезд —
+Почта работает на всех одиннадцати ОС (dovecot 2.3 и 2.4, на EL — с SELinux в enforcing);
+контент-фильтра (rspamd) нет. Переезд —
 между двумя MonoPanel и с BitrixVM и FASTPANEL, без досинхронизации перед переключением
 DNS; другие панели и серверы без панели — в планах ([docs/07-migration.md](docs/07-migration.md)).
 

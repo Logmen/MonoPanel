@@ -166,6 +166,29 @@ func (s *Server) selinuxFileContext(ctx context.Context, spec, label string) err
 	return nil
 }
 
+// selinuxHTTPPort lets nginx listen on a port outside the policy's http
+// list: without the label the bind is refused and the reload fails.
+func (s *Server) selinuxHTTPPort(ctx context.Context, port int) error {
+	if s.profile.MAC() != "selinux" {
+		return nil
+	}
+	args := []string{"port", "-a", "-t", "http_port_t", "-p", "tcp", fmt.Sprint(port)}
+	res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "semanage", Args: args})
+	if err != nil {
+		return fmt.Errorf("semanage port %d: %w", port, err)
+	}
+	if res.ExitCode != 0 && strings.Contains(res.Output, "already defined") {
+		args[1] = "-m"
+		if res, err = s.agent.Tool(ctx, &agent.ToolRequest{Name: "semanage", Args: args}); err != nil {
+			return fmt.Errorf("semanage port %d: %w", port, err)
+		}
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("semanage port %d: %s", port, strings.TrimSpace(res.Output))
+	}
+	return nil
+}
+
 // selinuxEnforcePath tells the SELinux mode: "1" enforcing, "0" permissive;
 // absent when SELinux is off or the kernel has none. Tests point it elsewhere.
 var selinuxEnforcePath = "/sys/fs/selinux/enforce"

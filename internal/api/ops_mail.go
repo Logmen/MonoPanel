@@ -24,6 +24,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"monopanel/internal/agent"
+	"monopanel/internal/osprofile"
 	"monopanel/internal/render"
 	"monopanel/internal/store"
 )
@@ -32,18 +33,20 @@ import (
 // files: it rewrites them in full on each change, so nothing here is a place
 // for hand edits.
 const (
-	settingMail    = "mail"
-	mailBase       = "/var/mail/monopanel"
-	postfixDir     = "/etc/postfix"
-	postfixMapsDir = "/etc/postfix/monopanel"
-	dovecotConf    = "/etc/dovecot/dovecot.conf"
-	dovecotDir     = "/etc/dovecot/monopanel"
-	dovecotUsers   = "/etc/dovecot/monopanel/users"
-	dkimDir        = "/etc/opendkim"
-	dkimConf       = "/etc/opendkim.conf"
-	dkimDefaults   = "/etc/default/opendkim"
-	dkimSocketPath = "/run/opendkim/opendkim.sock"
-	vmailUser      = "vmail"
+	settingMail = "mail"
+	// settingWebmailPortReady is the webmail port the host was last prepared for.
+	settingWebmailPortReady = "mail.webmail_port_ready"
+	mailBase                = "/var/mail/monopanel"
+	postfixDir              = "/etc/postfix"
+	postfixMapsDir          = "/etc/postfix/monopanel"
+	dovecotConf             = "/etc/dovecot/dovecot.conf"
+	dovecotDir              = "/etc/dovecot/monopanel"
+	dovecotUsers            = "/etc/dovecot/monopanel/users"
+	dkimDir                 = "/etc/opendkim"
+	dkimConf                = "/etc/opendkim.conf"
+	dkimDefaults            = "/etc/default/opendkim"
+	dkimSocketPath          = "/run/opendkim/opendkim.sock"
+	vmailUser               = "vmail"
 
 	postfixService = "postfix.service"
 	dovecotService = "dovecot.service"
@@ -74,6 +77,16 @@ type mailConfig struct {
 	WebmailVersion string   `json:"webmail_version,omitempty"`
 	PostfixVersion string   `json:"postfix_version,omitempty"`
 	DovecotVersion string   `json:"dovecot_version,omitempty"`
+	// MapType is the postfix lookup table type: hash, or lmdb where postfix
+	// is built without Berkeley DB (EL 10).
+	MapType string `json:"map_type,omitempty"`
+}
+
+func (c mailConfig) mapType() string {
+	if c.MapType == "" {
+		return "hash"
+	}
+	return c.MapType
 }
 
 func (s *Server) loadMailConfig(ctx context.Context) mailConfig {
@@ -258,8 +271,9 @@ func (s *Server) applyMailConfig(ctx context.Context, logf func(string, ...any),
 	}
 	// The OS may have moved dovecot 2.3 → 2.4 in a release upgrade since the
 	// install: the syntax follows the version installed now.
-	if q, err := s.agent.Pkg(ctx, "query", "dovecot-core"); err == nil {
-		if v := q.Installed["dovecot-core"]; v != "" && v != c.DovecotVersion {
+	_, dovecotPkg := s.mailPkgs()
+	if q, err := s.agent.Pkg(ctx, "query", dovecotPkg); err == nil {
+		if v := q.Installed[dovecotPkg]; v != "" && v != c.DovecotVersion {
 			logf("dovecot %s → %s", c.DovecotVersion, v)
 			c.DovecotVersion = v
 			if err := s.saveMailConfig(ctx, c); err != nil {
@@ -290,7 +304,7 @@ func (s *Server) applyMailConfig(ctx context.Context, logf func(string, ...any),
 		logf("opendkim restarted: the key tables changed")
 	}
 	for _, m := range maps {
-		res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "postmap", Args: []string{postfixMapsDir + "/" + m}, TimeoutSeconds: 60})
+		res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "postmap", Args: []string{c.mapType() + ":" + postfixMapsDir + "/" + m}, TimeoutSeconds: 60})
 		if err != nil {
 			return err
 		}
@@ -301,10 +315,25 @@ func (s *Server) applyMailConfig(ctx context.Context, logf func(string, ...any),
 
 	certPath, keyPath, kind, _ := s.mailTLS(ctx, c)
 	tls := certPath != ""
+	// The TLS session caches are Berkeley DB btree tables where postfix has
+	// it; the system CA store is a hashed directory on Debian and one bundle
+	// file on EL.
+	cacheType, ca := "btree", "smtp_tls_CApath = /etc/ssl/certs"
+	compat, tlsProtocols := postfixCompat(c.PostfixVersion), ">=TLSv1.2"
+	if compat != "3.6" {
+		tlsProtocols = "!SSLv2, !SSLv3, !TLSv1, !TLSv1.1"
+	}
+	if c.mapType() == "lmdb" {
+		cacheType = "lmdb"
+	}
+	if s.profile.Family() != osprofile.FamilyDebian {
+		ca = "smtp_tls_CAfile = /etc/pki/tls/certs/ca-bundle.crt"
+	}
 	main, err := s.render.Render("mail/main.cf.tmpl", render.Postfix{
 		Hostname: c.Hostname, MapsDir: postfixMapsDir, MailBase: mailBase,
 		MessageSizeBytes: int64(c.MaxSizeMB) * 1024 * 1024, VmailUID: c.VmailUID, VmailGID: c.VmailGID,
-		TLS: tls, CertPath: certPath, KeyPath: keyPath, RBL: c.RBL, Milter: mailMilter(c),
+		TLS: tls, CertPath: certPath, KeyPath: keyPath, RBL: c.RBL, Milter: s.mailMilter(c),
+		CompatLevel: compat, MapType: c.mapType(), CacheType: cacheType, CA: ca, TLSProtocols: tlsProtocols,
 	})
 	if err != nil {
 		return err
@@ -333,18 +362,21 @@ func (s *Server) applyMailConfig(ctx context.Context, logf func(string, ...any),
 	reload := []string{postfixService, dovecotService}
 	validate := [][]string{{"/usr/sbin/postfix", "check"}, {"/usr/bin/doveconf", "-n"}}
 	if c.DKIM {
+		dkimSocket, _ := s.dkimSocket()
 		dkim, err := s.render.Render("mail/opendkim.conf.tmpl", render.OpenDKIM{
-			Socket: "local:" + dkimSocketPath, KeyTable: dkimDir + "/KeyTable",
+			Socket: dkimSocket, KeyTable: dkimDir + "/KeyTable",
 			SigningTable: dkimDir + "/SigningTable", TrustedHosts: dkimDir + "/TrustedHosts",
 		})
 		if err != nil {
 			return err
 		}
-		confFiles = append(confFiles,
-			agent.FileSpec{Path: dkimConf, Content: dkim, Mode: 0o644},
-			agent.FileSpec{Path: dkimDefaults, Mode: 0o644,
-				Content: "# Generated by MonoPanel\nRUNDIR=/run/opendkim\nSOCKET=\"local:" + dkimSocketPath + "\"\nUSER=opendkim\nGROUP=opendkim\nPIDFILE=$RUNDIR/$NAME.pid\n"},
-		)
+		confFiles = append(confFiles, agent.FileSpec{Path: dkimConf, Content: dkim, Mode: 0o644})
+		// Debian's unit takes the socket from /etc/default; on EL the unit
+		// runs opendkim -x /etc/opendkim.conf and the file above is enough.
+		if s.profile.Family() == osprofile.FamilyDebian {
+			confFiles = append(confFiles, agent.FileSpec{Path: dkimDefaults, Mode: 0o644,
+				Content: "# Generated by MonoPanel\nRUNDIR=/run/opendkim\nSOCKET=\"local:" + dkimSocketPath + "\"\nUSER=opendkim\nGROUP=opendkim\nPIDFILE=$RUNDIR/$NAME.pid\n"})
+		}
 		reload = append(reload, dkimService)
 	}
 	apply, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{
@@ -352,6 +384,15 @@ func (s *Server) applyMailConfig(ctx context.Context, logf func(string, ...any),
 	})
 	if err != nil {
 		return err
+	}
+	// opendkim re-reads its tables on a reload but keeps the socket it started
+	// with: a changed opendkim.conf takes a restart.
+	for _, p := range apply.Written {
+		if p == dkimConf && c.DKIM {
+			if _, err := s.agent.Service(ctx, dkimService, "restart"); err != nil {
+				return err
+			}
+		}
 	}
 	logf("mail: %d files written, %d unchanged, TLS: %s", len(apply.Written)+len(data.Written), len(apply.Unchanged)+len(data.Unchanged), kind)
 	return s.applyWebmailPort(ctx, logf, c, certPath, keyPath)
@@ -389,6 +430,17 @@ func (s *Server) applyWebmailPort(ctx context.Context, logf func(string, ...any)
 	if err != nil {
 		return fmt.Errorf("webmail site %s: %w", c.Webmail, err)
 	}
+	// The host is prepared for the port once: the SELinux label that lets
+	// nginx bind it and the opening in firewalld, where there is one.
+	if v, _ := s.db.GetSetting(ctx, settingWebmailPortReady); v != fmt.Sprint(c.WebmailPort) {
+		if err := s.selinuxHTTPPort(ctx, c.WebmailPort); err != nil {
+			return err
+		}
+		s.firewalldOpen(ctx, logf, fmt.Sprintf("%d/tcp", c.WebmailPort))
+		if err := s.db.SetSetting(ctx, settingWebmailPortReady, fmt.Sprint(c.WebmailPort)); err != nil {
+			return err
+		}
+	}
 	owner, err := s.db.GetUserByID(ctx, site.UserID)
 	if err != nil {
 		return err
@@ -423,11 +475,25 @@ func (s *Server) applyWebmailPort(ctx context.Context, logf func(string, ...any)
 	return nil
 }
 
-func mailMilter(c mailConfig) string {
+func (s *Server) mailMilter(c mailConfig) string {
 	if !c.DKIM {
 		return ""
 	}
-	return "local:" + dkimSocketPath
+	_, milter := s.dkimSocket()
+	return milter
+}
+
+// dkimSocket is where opendkim listens, in its own notation and in
+// postfix's. Debian: the unix socket of the package. EL: a loopback TCP
+// port — the targeted policy lets postfix connect to any port, while the
+// unix socket works only where the policy still has a domain for opendkim
+// (EL 10 dropped it: opendkim runs unconfined there and its socket is
+// var_run_t, which smtpd may not touch). 8891 is the policy's milter port.
+func (s *Server) dkimSocket() (opendkim, postfix string) {
+	if s.profile.Family() == osprofile.FamilyDebian {
+		return "local:" + dkimSocketPath, "local:" + dkimSocketPath
+	}
+	return "inet:8891@127.0.0.1", "inet:127.0.0.1:8891"
 }
 
 // newDKIMKey generates a signing key: the PEM opendkim reads and the base64

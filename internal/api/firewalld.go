@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"monopanel/internal/agent"
-	"monopanel/internal/jobs"
 )
 
 // firewalldOpen opens ports ("80/tcp") in firewalld when it is running. Some
@@ -14,7 +13,7 @@ import (
 // nobody can reach is no panel. Without firewalld nothing happens; once the
 // panel's own nftables firewall takes over, firewalld is gone (see
 // firewallEnable). Failures are logged, not fatal: the service itself works.
-func (s *Server) firewalldOpen(ctx context.Context, jc *jobs.Context, ports ...string) {
+func (s *Server) firewalldOpen(ctx context.Context, logf func(string, ...any), ports ...string) {
 	if !s.firewalldRunning(ctx) {
 		return
 	}
@@ -28,11 +27,11 @@ func (s *Server) firewalldOpen(ctx context.Context, jc *jobs.Context, ports ...s
 	}
 	switch {
 	case err != nil:
-		jc.Logf("firewalld: cannot open %s: %v", strings.Join(ports, " "), err)
+		logf("firewalld: cannot open %s: %v", strings.Join(ports, " "), err)
 	case res.ExitCode != 0:
-		jc.Logf("firewalld: cannot open %s: %s", strings.Join(ports, " "), strings.TrimSpace(res.Output))
+		logf("firewalld: cannot open %s: %s", strings.Join(ports, " "), strings.TrimSpace(res.Output))
 	default:
-		jc.Logf("firewalld: opened %s", strings.Join(ports, " "))
+		logf("firewalld: opened %s", strings.Join(ports, " "))
 	}
 }
 

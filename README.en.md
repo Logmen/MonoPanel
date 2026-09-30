@@ -193,7 +193,7 @@ and the terminal menu. Under each heading are that area's `mp` commands.
 
 ### Cron
 
-`mp cron add|list|enable|disable|rm`
+`mp cron add|list|set|enable|disable|rm`
 
 - The account's crontab is rendered whole from the panel database, with `~/data/bin` on PATH (the php of the right version).
 
@@ -277,8 +277,8 @@ and the terminal menu. Under each heading are that area's `mp` commands.
 Own PHP builds (Sury/Remi are used instead), tested Apache on EL, phpMyAdmin, disk
 quotas, per-site cgroup limits, a DNS server, a WAF, several servers from one panel,
 an apt/yum repository (packages ship as releases and the panel installs them itself).
-Mail runs on Debian/Ubuntu with dovecot 2.3 and 2.4 (Debian 13, Ubuntu 26.04 get a
-configuration in the 2.4 syntax); the configuration for EL is not written yet, and
+Mail runs on all eleven OSes with dovecot 2.3 and 2.4 (Debian 13, Ubuntu 26.04 get a
+configuration in the 2.4 syntax; EL keeps SELinux enforcing);
 there is no content filter (rspamd). Accounts move between two MonoPanel servers and in from BitrixVM and
 FASTPANEL, without a resync before the DNS switch; other panels and servers without a
 panel are planned ([docs/en/07-migration.md](docs/en/07-migration.md)).

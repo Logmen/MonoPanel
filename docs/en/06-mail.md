@@ -1,6 +1,6 @@
 # 06. Mail server
 
-Working since 2026-09-07. Verified on Ubuntu 24.04 (postfix 3.8.6, dovecot 2.3.21, opendkim 2.11, Roundcube 1.7.4) and on Ubuntu 26.04 (postfix 3.10.6, dovecot 2.4.2).
+Working since 2026-09-07. Verified on Ubuntu 24.04 (postfix 3.8.6, dovecot 2.3.21, opendkim 2.11, Roundcube 1.7.4) and on Ubuntu 26.04 (postfix 3.10.6, dovecot 2.4.2). Since 2026-09-30 on EL too: AlmaLinux, Rocky and Oracle Linux 9 (postfix 3.5, dovecot 2.3.16) and 10 (postfix 3.8, dovecot 2.3.21), SELinux enforcing.
 
 The panel runs a complete mail server for the domains it serves: receiving and sending (SMTP), mailbox access (IMAP/POP3), message signing (DKIM) and webmail (Roundcube). As everywhere in MonoPanel, the source of truth is the panel database: the postfix and dovecot configuration is regenerated whole on every change, and there is no need to edit it by hand.
 
@@ -106,7 +106,12 @@ This is how the mail server and mail-tester coexist on the panel's dev host: pos
 
 ## 11. Limitations
 
-- **Debian and Ubuntu only.** On EL the packages exist, but the configuration has not been verified — the installation refuses right away instead of breaking halfway.
+- **EL is built a little differently.** The packages are `postfix`, `dovecot`, `dovecot-pigeonhole` and `opendkim` from EPEL; for opendkim's libraries the panel enables the CodeReady Builder repository (`crb`, `ol<N>_codeready_builder` on Oracle Linux) and leaves it on so that they keep getting updates. The rest the panel adapts itself:
+  - postfix 3.5 in EL 9 knows neither `compatibility_level = 3.6` nor `>=TLSv1.2` — it gets `2` and an exclusion list;
+  - postfix in EL 10 is built without Berkeley DB — the maps and the TLS session caches are `lmdb:` there instead of `hash:` and `btree:` (the panel asks `postconf -m`);
+  - opendkim listens on `127.0.0.1:8891` rather than a unix socket: the EL 10 policy has no domain for it and smtpd is kept away from its socket, but not from the port;
+  - the panel's certificate directory is labelled `cert_t`, otherwise smtpd cannot read the certificate and STARTTLS answers "TLS not available";
+  - the webmail port (`--port`) is labelled `http_port_t` and opened in firewalld.
 - **Anti-spam** — only postfix's own tools: HELO/sender checks, connection limits and optional RBLs. There is no full content filter (rspamd) yet; incoming messages go through DKIM verification, but nothing is rejected based on its result.
 - **Quotas** are counted by dovecot (`maildir:User quota`); going over is reported to the sender as `552 5.2.2 Mailbox is full`.
 - There is no mailbox password change from webmail: passwords are changed in the panel.
