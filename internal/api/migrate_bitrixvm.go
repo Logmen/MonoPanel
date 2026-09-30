@@ -430,12 +430,13 @@ func (b *bitrixVMSource) bundle(ctx context.Context, _ string, withSecrets bool)
 			}
 			more := ""
 			if n > 5 {
-				more = fmt.Sprintf(" and %d more", n-5)
+				more = fmt.Sprintf("\n    … and %d more", n-5)
 			}
 			if n >= maxHardcoded {
 				more += " (not all are listed)"
 			}
-			out.Notes = append(out.Notes, fmt.Sprintf("site %s: %s is hard-coded in the site's files (%d): %s%s — it will be rewritten to the new path", site.domain, bitrixHome, n, strings.Join(list, ", "), more))
+			// One path per line: a run of five paths in a sentence is unreadable.
+			out.Notes = append(out.Notes, fmt.Sprintf("site %s: %s is hard-coded in the site's files (%d), it will be rewritten to the new path:\n    %s%s", site.domain, bitrixHome, n, strings.Join(list, "\n    "), more))
 		}
 	}
 	out.Notes = append(out.Notes,

@@ -467,7 +467,7 @@ func TestMigrationFromBitrixVM(t *testing.T) {
 	if len(b.Cron) != 3 || b.Cron[0].Command != "php -f "+target.s.cfg.WWWRoot+"/bitrix/data/www/main.example.com/bitrix/modules/main/tools/cron_events.php" || b.Cron[2].Command != "php "+target.s.cfg.WWWRoot+"/bitrix/data/www/main.example.com/export/export-csv.php" {
 		t.Errorf("cron не переписан: %+v", b.Cron)
 	}
-	for _, want := range []string{"cron jobs moved from root's crontab: 1", "@daily /opt/webdir/bin/bx-backup", `perl /var/tmp/LLVPnNU" looks like a planted backdoor`, "the Bitrix cache is CPHPCacheMemcacheCluster", "/home/bitrix/www/export/export-csv.php — it will be rewritten"} {
+	for _, want := range []string{"cron jobs moved from root's crontab: 1", "@daily /opt/webdir/bin/bx-backup", `perl /var/tmp/LLVPnNU" looks like a planted backdoor`, "the Bitrix cache is CPHPCacheMemcacheCluster", "it will be rewritten to the new path:\n    /home/bitrix/www/export/export-csv.php"} {
 		if !hasNote(b.Notes, want) {
 			t.Errorf("в разборе нет %q: %q", want, b.Notes)
 		}
@@ -663,6 +663,16 @@ func TestMigrationFromFastpanel(t *testing.T) {
 		} `json:"bundle"`
 		Conflicts []struct{ Text string }
 	}
+	// blog.example.com arrives in the nginx + Apache mode: without Apache here
+	// the plan refuses and says what to install.
+	target.call(http.MethodPost, "/migrate/plan", body, http.StatusOK, &plan)
+	if plan.OK || len(plan.Conflicts) != 1 || !strings.Contains(plan.Conflicts[0].Text, "Apache is not installed") {
+		t.Fatalf("разбор без Apache: %+v", plan.Conflicts)
+	}
+	if err := target.db.SetSetting(target.ctx, settingApache, "installed"); err != nil {
+		t.Fatal(err)
+	}
+	plan.Conflicts = nil
 	target.call(http.MethodPost, "/migrate/plan", body, http.StatusOK, &plan)
 	if !plan.OK || plan.Login != "shop2" {
 		t.Fatalf("разбор: %+v", plan)

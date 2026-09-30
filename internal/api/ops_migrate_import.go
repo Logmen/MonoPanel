@@ -199,6 +199,21 @@ func (s *Server) migrationPlan(ctx context.Context, req apitypes.MigrationSource
 	if _, err := s.db.GetUserByLogin(ctx, login); err == nil {
 		block("user", login, "an account with this login already exists", "take it under another login: --as <login>")
 	}
+	// Sites need the web server: without nginx the account would arrive and
+	// every site.apply would fail, leaving the sites down until someone
+	// installed it by hand.
+	if len(b.Sites) > 0 {
+		if q, err := s.agent.Pkg(ctx, "query", "nginx"); err == nil && q.Installed["nginx"] == "" {
+			block("site", "", "sites are coming but nginx is not installed here", "mp stack install nginx")
+		}
+		apache := false
+		for _, site := range b.Sites {
+			apache = apache || site.Mode == store.ModeApache
+		}
+		if v, _ := s.db.GetSetting(ctx, settingApache); apache && v != "installed" {
+			block("site", "", "sites in the nginx + Apache mode are coming but Apache is not installed here", "mp stack install apache")
+		}
+	}
 	for _, site := range b.Sites {
 		for _, name := range append([]string{site.Domain}, site.Aliases...) {
 			if existing, err := s.db.GetSiteByDomain(ctx, name); err == nil {

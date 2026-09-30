@@ -82,6 +82,22 @@ func TestMigrationMovesAccountBetweenPanels(t *testing.T) {
 	if plan.Login != "alex2" || len(plan.Bundle.Sites) != 1 || plan.Bundle.Sites[0].Domain != "shop.example.com" {
 		t.Fatalf("разбор: %+v", plan)
 	}
+
+	// Sites without a web server here: the plan refuses and names the fix
+	// instead of letting every site.apply fail after the move.
+	target.agent.MissingPackages = map[string]bool{"nginx": true}
+	var noNginx struct {
+		OK        bool `json:"ok"`
+		Conflicts []struct {
+			Text string `json:"text"`
+			Fix  string `json:"fix"`
+		} `json:"conflicts"`
+	}
+	target.call(http.MethodPost, "/migrate/plan", body, http.StatusOK, &noNginx)
+	if noNginx.OK || len(noNginx.Conflicts) != 1 || noNginx.Conflicts[0].Fix != "mp stack install nginx" {
+		t.Fatalf("разбор без nginx: %+v", noNginx)
+	}
+	target.agent.MissingPackages = nil
 	if plan.Bundle.Secrets != nil {
 		t.Error("предварительный разбор не должен тянуть хеши паролей")
 	}
