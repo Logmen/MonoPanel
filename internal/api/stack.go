@@ -427,6 +427,10 @@ func (s *Server) installNginx(ctx context.Context, jc *jobs.Context) error {
 	jc.Logf("configuration: %d written, %d unchanged, validated with %s", len(apply.Written), len(apply.Unchanged), web.NginxCheckArgv[0])
 
 	s.firewalldOpen(ctx, jc.Logf, "80/tcp", "443/tcp")
+	if err := s.ensureNginxBoot(ctx); err != nil {
+		return err
+	}
+	jc.Logf("boot: net.ipv6.ip_nonlocal_bind=1 and a restart-on-failure drop-in, so an IPv6 address that arrives late does not leave nginx down")
 	jc.Progress(90, "enabling service")
 	if _, err := s.agent.Service(ctx, web.NginxService, "enable"); err != nil {
 		return err
@@ -594,6 +598,9 @@ func (s *Server) refreshDefaultServers(ctx context.Context) {
 	if err != nil || q.Installed["nginx"] == "" {
 		return
 	}
+	if err := s.ensureNginxBoot(ctx); err != nil {
+		s.log.Warn("nginx boot settings", "err", err)
+	}
 	if gone := s.pruneDefaultServers(ctx); len(gone) > 0 {
 		s.log.Warn("removed default servers of addresses this host no longer has", "files", gone)
 	}
@@ -606,7 +613,9 @@ func (s *Server) refreshDefaultServers(ctx context.Context) {
 		return
 	}
 	web := s.profile.Web()
-	if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Validate: [][]string{web.NginxCheckArgv}, Reload: []string{web.NginxService}, Origin: "stack:nginx"}); err != nil {
+	// Restore: nginx -t creates the pid file with the agent's SELinux label
+	// when nginx is down, and nginx's own domain could not open it then.
+	if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Validate: [][]string{web.NginxCheckArgv}, Reload: []string{web.NginxService}, Restore: []string{"/run/nginx.pid"}, Origin: "stack:nginx"}); err != nil {
 		s.log.Warn("default servers", "err", err)
 	}
 }

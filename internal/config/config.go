@@ -134,6 +134,7 @@ var DefaultAllowedWritePrefixes = []string{
 	"/etc/ssh/sshd_config.d/",
 	"/etc/tmpfiles.d/",
 	"/etc/sysusers.d/",
+	"/etc/sysctl.d/90-monopanel.conf", // nginx may bind an IPv6 address the host does not have yet
 	"/var/lib/monopanel/",
 	"/var/lib/monopanel-valkey/", // snapshots of the per-account Valkey instances, removed with them
 	"/usr/share/keyrings/",

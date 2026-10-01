@@ -8,6 +8,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -48,6 +49,11 @@ func (s *Server) pruneDefaultServers(ctx context.Context) []string {
 	for _, e := range list.Entries {
 		ip := strings.TrimSuffix(strings.TrimPrefix(e.Name, "ip-"), ".conf")
 		if e.Name == "ip-"+ip+".conf" && net.ParseIP(ip) != nil && !local[ip] {
+			// Right after boot an IPv6 address from router advertisements may
+			// simply not be there yet; its default server is not stale.
+			if strings.Contains(ip, ":") && justBooted(5*time.Minute) {
+				continue
+			}
 			stale = append(stale, path.Join(dir, e.Name))
 		}
 	}
