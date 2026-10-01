@@ -200,6 +200,8 @@ func (s *Server) jobUserDelete(ctx context.Context, jc *jobs.Context) error {
 	if err := s.db.DeleteUser(context.WithoutCancel(ctx), u.ID); err != nil {
 		return fail(err)
 	}
+	// The account's sites are gone: their logs leave the fail2ban jails.
+	s.refreshFail2ban(ctx)
 	jc.Progress(100, fmt.Sprintf("user %s deleted (%d sites, %d databases, %d apps)", u.Login, len(sites), len(dbs), len(apps)))
 	return nil
 }

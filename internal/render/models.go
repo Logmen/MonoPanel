@@ -200,6 +200,10 @@ type Fail2ban struct {
 	PanelPort string
 	Nginx     bool
 	IgnoreIPs []string
+	// AccessLogs and ErrorLogs are the sites' own nginx logs, which the nginx
+	// jails read besides the shared ones.
+	AccessLogs []string
+	ErrorLogs  []string
 }
 
 // Crontab feeds cron/crontab.tmpl.

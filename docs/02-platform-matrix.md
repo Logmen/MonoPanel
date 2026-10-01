@@ -182,7 +182,12 @@ type Profile interface {
 
 - Собственная таблица `inet monopanel` в nftables: цепочка `input` с правилами панели (ssh, 80/443, порт панели всегда открыты; allow, deny и баны из UI и CLI). Правила хранятся в `/etc/nftables.d/monopanel.nft`, их применяет юнит `monopanel-firewall`, так что после перезагрузки они на месте. Управление через библиотеку `google/nftables` вместо файла правил и `nft`, ограничение частоты соединений на ssh и порт панели, блокировки по странам — планируются.
 - EL: firewalld не удаляется. Пока панель им не управляет: если он запущен (образы Oracle Linux поставляются с ним, Alma и Rocky — нет), `mp setup` открывает в нём порт панели, установка nginx — 80 и 443, установка почты — её порты (`firewall-cmd --permanent` + `--reload`); `mp firewall enable` останавливает и выключает firewalld, дальше таблицу ведёт панель. Управление зоной через D-Bus и выбор при `mp setup` — позже. Ubuntu: ufw аналогично.
-- fail2ban: jail'ы `sshd`, `monopanel` (лог панели), `nginx-http-auth`, `nginx-botsearch`, `mysqld-auth`, позже `proftpd`/`postfix`; действие — `nftables-multiport` в таблице панели, чтобы баны были видны в UI.
+- fail2ban: jail'ы `sshd`, `monopanel` (лог панели), `nginx-http-auth`, `nginx-botsearch`; действие — `nftables-multiport`.
+  - Jail'ы nginx читают общий лог и логи каждого сайта (`<домен>.access.log`, `<домен>.error.log` в `data/logs` аккаунта). Список явный, а не маска: `*.error.log` захватила бы и `<домен>.php.error.log`. Панель переписывает его при создании и удалении сайта.
+  - После изменения списка панель перезапускает fail2ban, а не делает `reload`: reload идёт через `fail2ban-client`, который SELinux держит в своём домене (`fail2ban_client_t`), — он не видит каталоги аккаунтов и молча выбрасывает логи сайтов из jail'ов. Сам сервер (`fail2ban_t`) их читает. Баны перезапуск переживает: fail2ban хранит их в своей базе.
+  - Доверенные адреса (`mp firewall trust`, страница Firewall) попадают в `ignoreip`.
+  - Файл `/etc/fail2ban/jail.d/monopanel.local` панель переписывает целиком. Свои настройки — в `/etc/fail2ban/jail.d/zz-local.local`: fail2ban читает его позже, панель его не трогает.
+  - На EL ставится только `fail2ban-server`: мета-пакет `fail2ban` тянет `fail2ban-sendmail` (а с ним любой почтовый сервер, на хосте без postfix — exim) и `fail2ban-firewalld` вместе с firewalld. Панель банит через nftables и писем не шлёт. Где мета-пакет уже стоит, `mp doctor` называет лишнее и команды: `dnf mark install fail2ban-server fail2ban-selinux`, затем `dnf remove fail2ban fail2ban-sendmail fail2ban-firewalld` (без первой команды удаление унесло бы и сам сервер — он числится зависимостью).
 
 ## 8. Sphinx для 1С-Битрикс
 

@@ -213,11 +213,11 @@ and the terminal menu. Under each heading are that area's `mp` commands.
 
 ### Firewall and real IP
 
-`mp firewall enable|allow|deny|ban|unban`, `mp stack install fail2ban`, `mp stack real-ip --cloudflare [--from CIDR]`
+`mp firewall enable|allow|deny|ban|unban|trust|untrust`, `mp stack install fail2ban`, `mp stack real-ip --cloudflare [--from CIDR]`
 
 - The nftables table `inet monopanel` with a drop policy; SSH, 80, 443 and the panel port are always open; the `monopanel-firewall` unit.
 - Allows with a source are checked before denies: `deny --port 8443` + `allow --port 8443 --source <VPN>` limits the panel to the VPN. A deny that would lock you out (SSH or the panel with no per-source allow, or your own current address) is refused.
-- fail2ban jails for sshd, nginx and the panel itself.
+- fail2ban jails for sshd, nginx and the panel itself. The nginx jails read every site's own logs (the list follows the sites), not only the shared log. Trusted addresses (`mp firewall trust <ip|network>`) go to `ignoreip`. Your own settings live in `/etc/fail2ban/jail.d/zz-local.local`, which the panel never touches.
 - Trusted proxies for nginx `real_ip` (Cloudflare ranges built in), so allow-lists and logs see the visitor rather than the proxy.
 
 ### Metrics, logs and diagnostics
@@ -431,7 +431,7 @@ does not, in detail: [docs/en/07-migration.md](docs/en/07-migration.md).
 
 ```bash
 make build            # dist/monopanel
-make check            # gofmt + go vet + golangci-lint + tests (about 2 s)
+make check            # gofmt + go vet + golangci-lint + tests + the web UI type check
 make web              # the web UI into web/build (needs node and pnpm)
 make help             # every target
 ```
@@ -439,7 +439,7 @@ make help             # every target
 | Command | What it does |
 | --- | --- |
 | `make test` | unit tests; the panel's logic is exercised through a fake agent, without root or systemd |
-| `make check` | the above plus `gofmt`, `go vet` and `golangci-lint` — what CI runs |
+| `make check` | the above plus `gofmt`, `go vet`, `golangci-lint` and `svelte-check` — what CI runs |
 | `make test-race` | the race detector (about a minute): job queue, SSE broker, certificate cache |
 | `make cover` | coverage per package; `make cover-html` opens the report |
 | `make web-check` | types and markup of the web UI (`svelte-check`) |

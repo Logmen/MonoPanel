@@ -354,6 +354,7 @@ type Fail2banStatus struct {
 	Installed bool         `json:"installed"`
 	Running   bool         `json:"running"`
 	Jails     []JailStatus `json:"jails"`
+	Trusted   []string     `json:"trusted" doc:"Addresses and networks fail2ban never bans (ignoreip), besides loopback"`
 }
 
 // FirewallStatus is the firewall page.

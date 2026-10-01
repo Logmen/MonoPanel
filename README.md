@@ -204,11 +204,11 @@ mp                              # TUI-меню
 
 ### Firewall и Real IP
 
-`mp firewall enable|allow|deny|ban|unban`, `mp stack install fail2ban`, `mp stack real-ip --cloudflare [--from CIDR]`
+`mp firewall enable|allow|deny|ban|unban|trust|untrust`, `mp stack install fail2ban`, `mp stack real-ip --cloudflare [--from CIDR]`
 
 - nftables `inet monopanel` с policy drop; SSH, 80, 443 и порт панели открыты всегда; юнит `monopanel-firewall`.
 - Allow с источником проверяются раньше deny: `deny --port 8443` + `allow --port 8443 --source <VPN>` ограничивает панель адресами VPN. Deny, который запер бы вас самих (SSH или панель без allow с источником, ваш текущий адрес), панель отклоняет.
-- fail2ban с jail'ами sshd, nginx и панели.
+- fail2ban с jail'ами sshd, nginx и панели. Jail'ы nginx читают логи каждого сайта (список обновляется вместе с сайтами), а не только общий лог. Доверенные адреса (`mp firewall trust <ip|сеть>`) попадают в `ignoreip`. Свои настройки — в `/etc/fail2ban/jail.d/zz-local.local`, панель этот файл не трогает.
 - Доверенные прокси для nginx `real_ip` (сети Cloudflare встроены): allow-list и логи видят адрес клиента, а не прокси.
 
 ### Метрики, логи и диагностика
@@ -418,7 +418,7 @@ ssh-команда разбора занимает секунды — почин
 
 ```bash
 make build            # dist/monopanel
-make check            # gofmt + go vet + golangci-lint + тесты (≈2 с)
+make check            # gofmt + go vet + golangci-lint + тесты + проверка типов Web UI
 make web              # Web UI в web/build (нужен node + pnpm)
 make help             # все цели
 ```
@@ -429,7 +429,7 @@ make help             # все цели
 | Команда | Что делает |
 | --- | --- |
 | `make test` | юнит-тесты; вся логика панели проверяется через фейковый агент, без root и systemd |
-| `make check` | то же плюс `gofmt`, `go vet` и `golangci-lint` — то, что гоняет CI |
+| `make check` | то же плюс `gofmt`, `go vet`, `golangci-lint` и `svelte-check` — то, что гоняет CI |
 | `make test-race` | детектор гонок (≈1 мин): очередь задач, SSE-брокер, кеш сертификатов |
 | `make cover` | покрытие по пакетам; `make cover-html` — отчёт в браузере |
 | `make web-check` | типы и разметка Web UI (`svelte-check`) |

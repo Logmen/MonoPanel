@@ -42,6 +42,8 @@
     run: () => doBan('unban', ip)
   });
   async function doBan(a: string, ip: string) { error = ''; try { fw = await api(`/firewall/${a}`, { method: 'POST', json: { ip } }); ban = ''; notify(`${ip}: ${done(a)}`); } catch (e) { fail(e); } }
+  let trustIP = $state('');
+  async function doTrust(action: 'trust' | 'untrust', ip: string) { if (!ip) return; try { fw = await api('/firewall/' + action, { method: 'POST', json: { ip } }); trustIP = ''; notify(t(action === 'trust' ? 'firewall.trusted' : 'firewall.untrusted')); } catch (e) { fail(e); } }
   async function installF2b() { try { const r: any = await api('/stack/install', { method: 'POST', json: { component: 'fail2ban' } }); job = r.job_id; } catch (e) { fail(e); } }
 </script>
 
@@ -77,6 +79,14 @@
       <table class="tbl"><thead><tr><th>Jail</th><th>{t('firewall.colNow')}</th><th>{t('firewall.colTotal')}</th><th>{t('firewall.colIps')}</th></tr></thead><tbody>
         {#each fw.fail2ban.jails as j}<tr><td data-label="Jail" class="font-mono">{j.name}</td><td data-label={t('firewall.colNow')} class="tabular-nums">{j.banned}</td><td data-label={t('firewall.colTotal')} class="tabular-nums">{j.total}</td><td data-label={t('firewall.colIps')} class="font-mono text-xs">{#each j.ips || [] as ip}<button class="tag tag-err mr-1 mb-1 hover:bg-danger hover:text-white transition-colors" onclick={() => (ask = askUnban(ip))} title={t('firewall.unbanTitle')}>{ip} ✕</button>{/each}</td></tr>{/each}
       </tbody></table>
+      <div class="mt-4 pt-3 border-t border-line">
+        <div class="flex flex-wrap items-center gap-2 mb-2"><span class="text-sm font-medium">{t('firewall.trustTitle')}</span>
+          {#each fw.fail2ban.trusted || [] as ip}<span class="tag tag-ok font-mono">{ip} <button class="ml-1" onclick={() => doTrust('untrust', ip)} title={t('firewall.untrustBtn')} aria-label="{t('firewall.untrustBtn')} {ip}">×</button></span>{/each}
+          {#if !(fw.fail2ban.trusted || []).length}<span class="text-xs text-muted">{t('firewall.trustNone')}</span>{/if}
+          <form class="ml-auto flex gap-2" onsubmit={(e) => { e.preventDefault(); doTrust('trust', trustIP); }}><input class="input w-48 font-mono" bind:value={trustIP} placeholder={t('firewall.trustPlaceholder')} aria-label={t('firewall.trustTitle')} /><button class="btn btn-sm">{t('firewall.trustBtn')}</button></form>
+        </div>
+        <p class="text-xs text-muted">{t('firewall.trustNote')}</p>
+      </div>
     {/if}
   </div>
   {#if job}<div class="mt-4"><JobLog jobId={job} onfinish={() => load()} /></div>{/if}

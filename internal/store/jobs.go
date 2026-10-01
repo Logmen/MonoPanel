@@ -107,6 +107,14 @@ func (d *DB) AppendJobLog(ctx context.Context, id int64, text string) error {
 	return err
 }
 
+// JobLogContains reports whether some job wrote the text into its log: how
+// the panel recognises a step an earlier version of it took.
+func (d *DB) JobLogContains(ctx context.Context, text string) bool {
+	var one int
+	err := d.sql.QueryRowContext(ctx, `SELECT 1 FROM jobs WHERE instr(log, ?) > 0 LIMIT 1`, text).Scan(&one)
+	return err == nil
+}
+
 // FinishJob marks a job done or failed.
 func (d *DB) FinishJob(ctx context.Context, id int64, status, errMsg string) error {
 	progress := 100

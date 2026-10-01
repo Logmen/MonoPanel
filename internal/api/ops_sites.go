@@ -993,6 +993,8 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 			s.orderSiteCertificate(ctx, jc, site, true)
 		}
 	}
+	// fail2ban reads the sites' own logs: a new site joins its nginx jails.
+	s.refreshFail2ban(ctx)
 	if suspended {
 		jc.Progress(100, fmt.Sprintf("%s is suspended (503 stub, pool stopped)", site.Domain))
 		return nil
@@ -1189,6 +1191,7 @@ func (s *Server) jobSiteDelete(ctx context.Context, jc *jobs.Context) error {
 	if err := s.db.DeleteSite(context.WithoutCancel(ctx), site.ID); err != nil {
 		return err
 	}
+	s.refreshFail2ban(ctx)
 	jc.Progress(100, "site removed")
 	return nil
 }

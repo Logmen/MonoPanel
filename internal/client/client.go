@@ -586,7 +586,7 @@ func (c *Client) FirewallRuleDelete(ctx context.Context, id int64) error {
 	return c.do(ctx, http.MethodDelete, fmt.Sprintf("/firewall/rules/%d", id), nil, nil)
 }
 
-// FirewallBan bans or unbans an address.
+// FirewallBan bans, unbans, trusts or untrusts an address (the action).
 func (c *Client) FirewallBan(ctx context.Context, action, ip string) (*apitypes.FirewallStatus, error) {
 	var out apitypes.FirewallStatus
 	return &out, c.do(ctx, http.MethodPost, "/firewall/"+action, apitypes.BanRequest{IP: ip}, &out)

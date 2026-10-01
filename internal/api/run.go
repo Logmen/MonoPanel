@@ -61,6 +61,7 @@ func (s *Server) Run(ctx context.Context) error {
 				s.refreshDBConfig(ctx)
 				s.refreshPHPCLIInis(ctx)
 				s.refreshSiteLogrotate(ctx)
+				s.refreshFail2ban(ctx)
 				s.refreshSELinuxModule(ctx)
 				s.refreshSFTPHomes(ctx)
 				s.refreshCLIGroup(ctx)

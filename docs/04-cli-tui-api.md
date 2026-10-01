@@ -89,7 +89,7 @@ mp files ls|get|put|mkdir|rm|mv|chmod|extract|size --user <login> <путь…> 
 
 mp firewall status | enable | disable | apply
 mp firewall allow|deny --port 8443 [--proto tcp] [--source CIDR] [--comment …]
-mp firewall rm <id> | ban <ip> | unban <ip>
+mp firewall rm <id> | ban <ip> | unban <ip> | trust <ip|cidr> | untrust <ip|cidr>
 
 mp mail install | status | settings | apply | domain … | box … | alias … | webmail …   # подробно — 06-mail.md
 mp migrate grant user:<login> | plan | run                                             # подробно — 07-migration.md
@@ -158,7 +158,7 @@ GET/DELETE      /ssl/panel                        POST /ssl/panel/issue | import
 GET/POST        /dns-providers                    DELETE /dns-providers/{name}        GET /dns-providers/types
 GET/POST        /backups/targets                  DELETE /backups/targets/{ref}       GET /backups/targets/{ref}/snapshots
 GET             /backups                          POST /backups/run | restore
-GET             /firewall                         POST /firewall/enable | disable | apply | rules | ban | unban
+GET             /firewall                         POST /firewall/enable | disable | apply | rules | ban | unban | trust | untrust
 DELETE          /firewall/rules/{id}
 GET             /mail                             POST /mail/install | apply | webmail    PUT /mail/settings
 GET/POST        /mail/domains | mailboxes | aliases    PATCH/DELETE /mail/domains/{name} | mailboxes/{address}

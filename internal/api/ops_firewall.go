@@ -238,7 +238,7 @@ func (s *Server) firewallStatus(ctx context.Context) (*apitypes.FirewallStatus, 
 		st.Active = true
 	}
 	if f, _ := s.db.GetSetting(ctx, settingFail2ban); f == "installed" {
-		st.Fail2ban = &apitypes.Fail2banStatus{Installed: true, Jails: []apitypes.JailStatus{}}
+		st.Fail2ban = &apitypes.Fail2banStatus{Installed: true, Jails: []apitypes.JailStatus{}, Trusted: s.fail2banTrusted(ctx)}
 		if res, err := s.agent.Tool(actx, &agent.ToolRequest{Name: "fail2ban-client", Args: []string{"status"}}); err == nil && res.ExitCode == 0 {
 			st.Fail2ban.Running = true
 			for _, line := range strings.Split(res.Output, "\n") {
@@ -363,6 +363,53 @@ func (s *Server) registerFirewall() {
 		return nil, nil
 	})
 
+	for _, action := range []string{"trust", "untrust"} {
+		action := action
+		summary := "Trust an address: fail2ban never bans it (ignoreip)"
+		if action == "untrust" {
+			summary = "Stop trusting an address"
+		}
+		huma.Register(s.api, huma.Operation{
+			OperationID: "firewall-" + action, Method: http.MethodPost, Path: "/firewall/" + action, Summary: summary, Tags: []string{"firewall"}, Security: secured, Metadata: adminOnly,
+		}, func(ctx context.Context, in *banInput) (*firewallOutput, error) {
+			p := principalFrom(ctx)
+			ip, ok := normalizeSource(in.Body.IP)
+			if !ok {
+				return nil, huma.Error422UnprocessableEntity("ip must be an address or CIDR")
+			}
+			list, kept := s.fail2banTrusted(ctx), []string{}
+			for _, t := range list {
+				if t != ip {
+					kept = append(kept, t)
+				}
+			}
+			if action == "trust" {
+				kept = append(kept, ip)
+			} else if len(kept) == len(list) {
+				return nil, huma.Error404NotFound(ip + " is not in the trusted list")
+			}
+			if err := s.setFail2banTrusted(ctx, kept); err != nil {
+				return nil, err
+			}
+			var err error
+			if v, _ := s.db.GetSetting(ctx, settingFail2ban); v == "installed" {
+				if err = s.applyFail2ban(ctx, false); err == nil && action == "trust" {
+					// A ban it already earned would outlive the trust.
+					s.agent.Tool(ctx, &agent.ToolRequest{Name: "fail2ban-client", Args: []string{"unban", ip}}) //nolint:errcheck // best effort
+				}
+			}
+			s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "firewall." + action, Target: ip, IP: requestInfo(ctx).IP, Result: resultOf(err)})
+			if err != nil {
+				return nil, huma.Error502BadGateway(err.Error())
+			}
+			st, err := s.firewallStatus(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return &firewallOutput{Body: *st}, nil
+		})
+	}
+
 	for _, action := range []string{"ban", "unban"} {
 		action := action
 		huma.Register(s.api, huma.Operation{
@@ -410,8 +457,9 @@ func (s *Server) registerFirewall() {
 // fail2ban looked missing there and in mp stack list.
 func (s *Server) fail2banComponent(ctx context.Context) apitypes.StackComponent {
 	c := apitypes.StackComponent{Name: "fail2ban", Kind: "security"}
-	if q, err := s.agent.Pkg(ctx, "query", "fail2ban"); err == nil {
-		if v, ok := q.Installed["fail2ban"]; ok {
+	_, pkg := s.fail2banPackages()
+	if q, err := s.agent.Pkg(ctx, "query", pkg); err == nil {
+		if v, ok := q.Installed[pkg]; ok {
 			c.Installed, c.Version = true, v
 			if st, err := s.agent.Service(ctx, "fail2ban.service", "status"); err == nil {
 				c.Service = &st.Status
@@ -424,7 +472,7 @@ func (s *Server) fail2banComponent(ctx context.Context) apitypes.StackComponent 
 // installFail2ban installs fail2ban with jails for sshd, nginx and the panel.
 func (s *Server) installFail2ban(ctx context.Context, jc *jobs.Context) error {
 	jc.Progress(10, "installing fail2ban")
-	pkgs := []string{"fail2ban", "python3-systemd"}
+	pkgs, _ := s.fail2banPackages()
 	if epel := s.profile.EPELPackage(); epel != "" {
 		pkgs = append([]string{epel}, pkgs...)
 	}
@@ -438,19 +486,11 @@ func (s *Server) installFail2ban(ctx context.Context, jc *jobs.Context) error {
 	if q, err := s.agent.Pkg(ctx, "query", "nginx"); err == nil {
 		_, nginx = q.Installed["nginx"]
 	}
-	jail, err := s.render.Render("fail2ban/jail.local.tmpl", render.Fail2ban{BanTime: "1h", FindTime: "10m", MaxRetry: 5, PanelPort: strconv.Itoa(s.panelPort()), Nginx: nginx})
-	if err != nil {
+	if err := s.applyFail2ban(ctx, true); err != nil {
 		return err
 	}
-	filter, _, err := s.render.Source("fail2ban/filter-monopanel.conf")
-	if err != nil {
-		return err
-	}
-	if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: []agent.FileSpec{
-		{Path: "/etc/fail2ban/jail.d/monopanel.local", Content: jail, Mode: 0o644},
-		{Path: "/etc/fail2ban/filter.d/monopanel.conf", Content: string(filter), Mode: 0o644},
-	}, Restart: []string{"fail2ban.service"}, Force: true, Origin: "fail2ban"}); err != nil {
-		return err
+	if access, _ := s.fail2banSiteLogs(ctx); len(access) > 0 {
+		jc.Logf("the nginx jails read the logs of %d site(s) besides the shared ones", len(access))
 	}
 	if _, err := s.agent.Service(ctx, "fail2ban.service", "enable"); err != nil {
 		return err

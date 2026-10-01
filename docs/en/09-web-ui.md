@@ -118,7 +118,8 @@ Firewall rules in nftables on top of a drop policy; SSH, 80, 443 and the panel p
 always open. Allow rules with a source are checked before deny rules, so a port can be
 closed to everyone except your own network or VPN, and the panel will not accept a rule
 that would lock you out. Below are the fail2ban jails and their bans; an address is
-unbanned with a click.
+unbanned with a click. Under them are the trusted addresses: fail2ban never bans those —
+the office and the administrators' addresses go there.
 
 ## Backups
 

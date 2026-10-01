@@ -210,6 +210,9 @@ func firewallCmd() *cobra.Command {
 		}
 		if st.Fail2ban != nil {
 			fmt.Printf(T("fail2ban: установлен, running=%v\n", "fail2ban: installed, running=%v\n"), st.Fail2ban.Running)
+			if len(st.Fail2ban.Trusted) > 0 {
+				fmt.Printf(T("  доверенные адреса (не банятся): %s\n", "  trusted addresses (never banned): %s\n"), strings.Join(st.Fail2ban.Trusted, ", "))
+			}
 			for _, j := range st.Fail2ban.Jails {
 				fmt.Printf("  jail %-16s banned now %d, total %d %s\n", j.Name, j.Banned, j.Total, strings.Join(j.IPs, " "))
 			}
@@ -314,9 +317,15 @@ refused, so you cannot lock yourself out.`), RunE: func(cmd *cobra.Command, _ []
 		}
 		return cl.FirewallRuleDelete(cmd.Context(), id)
 	}}
-	for _, action := range []string{"ban", "unban"} {
+	short := map[string]string{
+		"ban":     "ban" + T(" адреса", " an address"),
+		"unban":   "unban" + T(" адреса", " an address"),
+		"trust":   T("доверенный адрес или сеть: fail2ban их не банит (ignoreip)", "trust an address or a network: fail2ban never bans it (ignoreip)"),
+		"untrust": T("убрать адрес из доверенных", "stop trusting an address"),
+	}
+	for _, action := range []string{"ban", "unban", "trust", "untrust"} {
 		action := action
-		c.AddCommand(&cobra.Command{Use: action + " <ip>", Short: action + T(" адреса", " an address"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		c.AddCommand(&cobra.Command{Use: action + " <ip>", Short: short[action], Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 			cl, err := newClient()
 			if err != nil {
 				return err

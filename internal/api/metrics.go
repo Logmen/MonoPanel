@@ -404,6 +404,12 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 	if c := s.selinuxCheck(actx); c != nil {
 		add(*c)
 	}
+	if c := s.crbLeftoverCheck(actx); c != nil {
+		add(*c)
+	}
+	if c := s.fail2banLeftoverCheck(actx); c != nil {
+		add(*c)
+	}
 	if h := s.cfg.Web.Hostname; h != "" {
 		addrs, err := s.lookup(actx, h)
 		local := map[string]bool{}
