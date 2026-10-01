@@ -24,7 +24,7 @@ all speak the same REST API — anything you can do with a mouse you can script.
 > same rule (`MP_LANG=ru` or `MP_LANG=en` overrides it). The code and the security
 > policy are in English.
 
-Status: **0.8.15**, in daily use on a production server hosting several sites and
+Status: **0.8.16**, in daily use on a production server hosting several sites and
 mail. Development moves quickly and breaking changes are possible before 1.0.
 
 ## Install
@@ -312,15 +312,15 @@ The principles, briefly:
 
 ## Releases and updates
 
-A version is cut by tagging; CI does the rest. The tag `v0.8.15` builds `.deb` and
+A version is cut by tagging; CI does the rest. The tag `v0.8.16` builds `.deb` and
 `.rpm` for amd64 and arm64, signs the checksum list with an ed25519 key held as a
 repository secret and publishes the release; the annotated tag's message becomes the
 release notes.
 
 ```bash
 make keygen                  # once: a signing key pair (the private half becomes the secret)
-make release VERSION=0.8.15  # tag and push; CI builds and publishes
-make packages VERSION=0.8.15 # the same artefacts locally, without publishing
+make release VERSION=0.8.16  # tag and push; CI builds and publishes
+make packages VERSION=0.8.16 # the same artefacts locally, without publishing
 ```
 
 On a server:

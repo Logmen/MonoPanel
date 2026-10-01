@@ -1,6 +1,6 @@
 # 01. MonoPanel architecture
 
-As of September 2026 (MonoPanel 0.8.15). Component versions are given as of that date; before a release, a run of the OS matrix on the [testbed](08-testbed.md) checks that they are still current.
+As of September 2026 (MonoPanel 0.8.16). Component versions are given as of that date; before a release, a run of the OS matrix on the [testbed](08-testbed.md) checks that they are still current.
 
 > This is a design document: it describes decisions and the reasoning behind them, including the parts the implementation has not reached yet. What actually works is in the [README](../../README.en.md) and in the [x] marks in [05-roadmap.md](05-roadmap.md). Below, such parts are marked "planned".
 
