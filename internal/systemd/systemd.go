@@ -74,7 +74,9 @@ func (c *Conn) Enable(ctx context.Context, unit string) error {
 	if _, _, err := c.c.EnableUnitFilesContext(ctx, []string{unit}, false, true); err != nil {
 		return fmt.Errorf("enable %s: %w", unit, err)
 	}
-	return nil
+	// As systemctl enable does: without the reload systemd keeps saying the
+	// unit "changed on disk" on every status.
+	return c.c.ReloadContext(ctx)
 }
 
 // Disable disables a unit.
@@ -82,7 +84,7 @@ func (c *Conn) Disable(ctx context.Context, unit string) error {
 	if _, err := c.c.DisableUnitFilesContext(ctx, []string{unit}, false); err != nil {
 		return fmt.Errorf("disable %s: %w", unit, err)
 	}
-	return nil
+	return c.c.ReloadContext(ctx)
 }
 
 // DaemonReload re-reads unit files.
