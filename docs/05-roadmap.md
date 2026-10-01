@@ -34,7 +34,7 @@
 - [x] Фейковый агент `internal/agent/agenttest`: unix-сокет, типизированные ответы, запись всех вызовов — покрывает задачи панели (сайты, пользователи, пресеты) без root и systemd.
 - [x] Тесты пайплайна сайта: рендер nginx/пула, пресеты CMS и их PHP-значения, приоритет `php_ini` над пресетом, allow-list, отказы валидации, suspend, удаление, свои nginx-директивы с откатом, каскадное удаление пользователя. Покрытие `internal/api` 9.5% → 21.2%, общее 23.3%.
 - [x] Таймауты готовности вынесены в `Server.SetReadinessWaits`: тесты не ждут nginx и сокет php-fpm (набор идёт ~2 с).
-- [x] `make check` (fmt + vet + lint + test), `make test-race`, `make cover`, `make web-check`, `make help`.
+- [x] `make check` (fmt + vet + lint + test + web-check), `make test-race`, `make cover`, `make web-check`, `make help`.
 - [x] `golangci-lint` v2.13.2 с `.golangci.yml`; намеренно игнорируемые ошибки помечены `//nolint:errcheck` с причиной, реальные находки (S1017, S1009, ineffassign, unconvert) исправлены.
 - [x] `scripts/check-templates.sh`: golden-конфиги проверяются настоящими `nginx -t` и `apachectl -t` (в CI ставится nginx-core и apache2).
 - [x] `e2e/` (тег `e2e`): сценарий против живой панели — аккаунт, сайт с пресетом, PHP отвечает, запрет PHP в uploads работает, база, удаление; чистит за собой. Токен или логин/пароль через переменные окружения.

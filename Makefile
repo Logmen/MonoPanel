@@ -75,7 +75,7 @@ fmt-check:
 web-check: ## Type-check the web UI
 	cd web && pnpm install --frozen-lockfile && node_modules/.bin/svelte-kit sync && node_modules/.bin/svelte-check --tsconfig ./tsconfig.json
 
-check: fmt-check vet lint test ## Everything CI runs, locally
+check: fmt-check vet lint test web-check ## Everything CI runs, locally
 
 web: ## Build the web UI into web/build
 	cd web && pnpm install --frozen-lockfile && node_modules/.bin/svelte-kit sync && node_modules/.bin/vite build

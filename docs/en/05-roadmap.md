@@ -34,7 +34,7 @@ This is the project log by stage and date: what is done, what is verified and wh
 - [x] Fake agent `internal/agent/agenttest`: a unix socket, typed responses, a record of every call — covers the panel's jobs (sites, users, presets) without root or systemd.
 - [x] Site pipeline tests: nginx/pool rendering, CMS presets and their PHP values, `php_ini` taking priority over the preset, allow-list, validation rejections, suspend, removal, custom nginx directives with rollback, cascading user removal. Coverage of `internal/api` 9.5% → 21.2%, 23.3% overall.
 - [x] Readiness timeouts moved into `Server.SetReadinessWaits`: tests do not wait for nginx or the php-fpm socket (the suite runs in ~2 s).
-- [x] `make check` (fmt + vet + lint + test), `make test-race`, `make cover`, `make web-check`, `make help`.
+- [x] `make check` (fmt + vet + lint + test + web-check), `make test-race`, `make cover`, `make web-check`, `make help`.
 - [x] `golangci-lint` v2.13.2 with `.golangci.yml`; deliberately ignored errors are marked `//nolint:errcheck` with a reason, real findings (S1017, S1009, ineffassign, unconvert) are fixed.
 - [x] `scripts/check-templates.sh`: golden configs are checked by real `nginx -t` and `apachectl -t` (CI installs nginx-core and apache2).
 - [x] `e2e/` (tag `e2e`): a scenario against a live panel — account, site with a preset, PHP answers, the ban on PHP in uploads works, database, removal; cleans up after itself. Token or login/password via environment variables.
