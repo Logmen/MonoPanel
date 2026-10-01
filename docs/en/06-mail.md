@@ -106,7 +106,7 @@ This is how the mail server and mail-tester coexist on the panel's dev host: pos
 
 ## 11. Limitations
 
-- **EL is built a little differently.** The packages are `postfix`, `dovecot`, `dovecot-pigeonhole` and `opendkim` from EPEL; for opendkim's libraries the panel enables the CodeReady Builder repository (`crb`, `ol<N>_codeready_builder` on Oracle Linux) and leaves it on so that they keep getting updates. The rest the panel adapts itself:
+- **EL is built a little differently.** The packages are `postfix`, `dovecot`, `dovecot-pigeonhole` and `opendkim` from EPEL; on EL 10 its libraries are in EPEL too, while on EL 9 only CodeReady Builder has them (`crb`, `ol9_codeready_builder` on Oracle Linux). The panel does not switch that repository on: when the packages do not install without it, it serves that one transaction (`dnf install --enablerepo=…`). Enabled for good, it would feed its own packages into a plain `dnf upgrade`. The flip side: `sendmail-milter` and `libmemcached-awesome` on EL 9 get no updates while the repository is off. Version 0.8.15 switched it on for good; if it is still enabled, `mp doctor` says so and shows the command. The rest the panel adapts itself:
   - postfix 3.5 in EL 9 knows neither `compatibility_level = 3.6` nor `>=TLSv1.2` — it gets `2` and an exclusion list;
   - postfix in EL 10 is built without Berkeley DB — the maps and the TLS session caches are `lmdb:` there instead of `hash:` and `btree:` (the panel asks `postconf -m`);
   - opendkim listens on `127.0.0.1:8891` rather than a unix socket: the EL 10 policy has no domain for it and smtpd is kept away from its socket, but not from the port;

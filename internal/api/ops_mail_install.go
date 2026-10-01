@@ -73,42 +73,55 @@ func (s *Server) postfixMapType(ctx context.Context) string {
 	return "hash"
 }
 
-// enableCRB switches on the CodeReady Builder repository: EPEL's opendkim
-// needs libmilter and libmemcached from it. The repository is named crb on
-// Alma and Rocky, ol<N>_codeready_builder on Oracle Linux and
-// codeready-builder-… on RHEL. It stays enabled so that those libraries keep
-// getting updates.
-func (s *Server) enableCRB(ctx context.Context, jc *jobs.Context) error {
-	res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "dnf", Args: []string{"-q", "repolist", "--all"}, TimeoutSeconds: 120})
+// crbRepo finds the CodeReady Builder repository of this EL — crb on Alma and
+// Rocky, ol<N>_codeready_builder on Oracle Linux, codeready-builder-… on RHEL —
+// and says whether it is switched on. cached asks dnf's cache only (the doctor
+// must not wait for the mirrors).
+func (s *Server) crbRepo(ctx context.Context, cached bool) (id string, enabled bool) {
+	args := []string{"-q", "repolist", "--all"}
+	if cached {
+		args = []string{"-q", "-C", "repolist", "--all"}
+	}
+	res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "dnf", Args: args, TimeoutSeconds: 120})
 	if err != nil {
-		return err
+		return "", false
 	}
 	for _, line := range strings.Split(res.Output, "\n") {
 		f := strings.Fields(line)
 		if len(f) < 2 {
 			continue
 		}
-		id := strings.ToLower(f[0])
-		if id != "crb" && !strings.Contains(id, "codeready") {
-			continue
+		name := strings.ToLower(f[0])
+		if (name == "crb" || strings.Contains(name, "codeready")) && !strings.Contains(name, "debug") && !strings.Contains(name, "source") {
+			return f[0], f[len(f)-1] == "enabled"
 		}
-		if strings.Contains(id, "debug") || strings.Contains(id, "source") {
-			continue
-		}
-		if f[len(f)-1] == "enabled" {
-			return nil
-		}
-		out, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "dnf", Args: []string{"-y", "config-manager", "--set-enabled", f[0]}, TimeoutSeconds: 120})
-		if err != nil {
-			return err
-		}
-		if out.ExitCode != 0 {
-			return fmt.Errorf("dnf config-manager --set-enabled %s: %s", f[0], strings.TrimSpace(out.Output))
-		}
-		jc.Logf("repository %s enabled: opendkim needs libmilter and libmemcached from it", f[0])
+	}
+	return "", false
+}
+
+// installMailPackagesEL installs the stack on EL. EPEL's opendkim needs
+// libmilter and libmemcached: on EL 10 they are in EPEL itself, on EL 9 only
+// in CodeReady Builder. That repository is not switched on for good — with it
+// enabled a plain dnf upgrade starts pulling other packages from it (Oracle
+// marks it unsupported) — it serves this one transaction, and only when the
+// install does not resolve without it.
+func (s *Server) installMailPackagesEL(ctx context.Context, jc *jobs.Context, pkgs []string) error {
+	first := s.ensurePackages(ctx, jc, pkgs...)
+	if first == nil {
 		return nil
 	}
-	jc.Logf("warning: no CodeReady Builder repository found; opendkim may fail to install")
+	crb, _ := s.crbRepo(ctx, false)
+	if crb == "" {
+		return first
+	}
+	jc.Logf("the packages do not install from the enabled repositories; retrying with %s for this transaction only (it is not switched on)", crb)
+	res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "dnf", Args: append([]string{"-y", "install", "--enablerepo=" + crb}, pkgs...), TimeoutSeconds: 900})
+	if err != nil {
+		return err
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("dnf install --enablerepo=%s: %s", crb, strings.Join(lastLines(res.Output, 12), "\n"))
+	}
 	return nil
 }
 
@@ -183,7 +196,7 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 		}
 	}
 	if s.profile.Family() != osprofile.FamilyDebian {
-		// opendkim lives in EPEL and pulls libraries from CodeReady Builder.
+		// opendkim lives in EPEL.
 		if epel := s.profile.EPELPackage(); epel != "" {
 			if q, err := s.agent.Pkg(ctx, "query", "epel-release"); err != nil || q.Installed["epel-release"] == "" {
 				jc.Logf("installing the EPEL repository")
@@ -192,11 +205,10 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 				}
 			}
 		}
-		if err := s.enableCRB(ctx, jc); err != nil {
+		if err := s.installMailPackagesEL(ctx, jc, pkgs); err != nil {
 			return err
 		}
-	}
-	if err := s.ensurePackages(ctx, jc, pkgs...); err != nil {
+	} else if err := s.ensurePackages(ctx, jc, pkgs...); err != nil {
 		return err
 	}
 	q, err := s.agent.Pkg(ctx, "query", "postfix", dovecotPkg, "opendkim")

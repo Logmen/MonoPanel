@@ -61,6 +61,9 @@ type Agent struct {
 	// MissingPackages are absent from every repository: "available" leaves
 	// them out and "query" reports them as not installed.
 	MissingPackages map[string]bool
+	// InstallFails makes "install" fail with the given output when the
+	// request names the package: a dependency no enabled repository carries.
+	InstallFails map[string]string
 	// PackageVersions overrides the version "query" and "available" report
 	// (default 1.0-test).
 	PackageVersions map[string]string
@@ -172,6 +175,15 @@ func (a *Agent) handle(w http.ResponseWriter, r *http.Request) {
 	a.calls = append(a.calls, Call{Path: r.URL.Path, Body: body})
 	msg, failing := a.Fail[r.URL.Path]
 	status := a.FailStatus[r.URL.Path]
+	if r.URL.Path == "/v1/pkg" && !failing {
+		var req agent.PkgRequest
+		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		for _, p := range req.Packages {
+			if out, ok := a.InstallFails[p]; ok && req.Action == "install" {
+				msg, failing = out, true
+			}
+		}
+	}
 	a.mu.Unlock()
 
 	if failing {

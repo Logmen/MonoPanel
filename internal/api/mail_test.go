@@ -504,17 +504,14 @@ func TestMailInstallOnEL(t *testing.T) {
 					return nil
 				}
 			})
-			crb, pkgs := false, ""
+			pkgs := ""
 			for _, tool := range f.agent.Tools() {
-				if tool.Name == "dnf" && strings.Join(tool.Args, " ") == "-y config-manager --set-enabled crb" {
-					crb = true
+				if tool.Name == "dnf" && strings.Contains(strings.Join(tool.Args, " "), "config-manager") {
+					t.Errorf("a repository was switched on for good: %v", tool.Args)
 				}
 				if tool.Name == "postmap" && len(tool.Args) == 1 && !strings.HasPrefix(tool.Args[0], tc.mapType+":/etc/postfix/monopanel/") {
 					t.Errorf("postmap %v: want %s: tables", tool.Args, tc.mapType)
 				}
-			}
-			if !crb {
-				t.Errorf("CodeReady Builder not enabled; tools: %v", f.agent.Tools())
 			}
 			for _, call := range f.agent.Calls() {
 				var req struct {
@@ -557,5 +554,43 @@ func TestMailInstallOnEL(t *testing.T) {
 				t.Error("/etc/default/opendkim written on EL")
 			}
 		})
+	}
+}
+
+// EPEL's opendkim on EL 9 needs two libraries that only CodeReady Builder
+// carries. The repository serves that one transaction (--enablerepo) and is
+// never switched on: enabled for good, it feeds a plain dnf upgrade with
+// packages nobody asked for. Where the install resolves without it (EL 10),
+// it is not touched at all.
+func TestMailInstallUsesCRBOnlyForTheTransaction(t *testing.T) {
+	withOSRelease(t, "ID=almalinux\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=9.8\n")
+	f := newMailFixtureOn(t, map[string]string{"postfix": "2:3.5.25-3.el9_8", "dovecot": "1:2.3.16-18.el9"}, func(f *siteFixture) {
+		f.agent.ToolOutput = map[string]string{"postconf": "btree hash lmdb"}
+		f.agent.MissingPackages = map[string]bool{"opendkim": true, "opendkim-tools": true}
+		f.agent.InstallFails = map[string]string{"opendkim": "nothing provides libmilter.so.1.0()(64bit) needed by opendkim"}
+		f.agent.ToolHook = func(req agentReq) *agentRes {
+			if req.Name != "dnf" {
+				return nil
+			}
+			if len(req.Args) > 1 && req.Args[1] == "repolist" {
+				return &agentRes{Output: "repo id      repo name      status\nbaseos   BaseOS   enabled\ncrb-debuginfo   CRB - Debug   disabled\ncrb    CRB    disabled\n"}
+			}
+			if len(req.Args) > 2 && req.Args[1] == "install" {
+				f.agent.MissingPackages = nil // the transaction went through
+			}
+			return &agentRes{}
+		}
+	})
+	var install []string
+	for _, tool := range f.agent.Tools() {
+		if tool.Name == "dnf" && len(tool.Args) > 1 && tool.Args[1] == "install" {
+			install = tool.Args
+		}
+		if tool.Name == "dnf" && strings.Contains(strings.Join(tool.Args, " "), "config-manager") {
+			t.Errorf("CodeReady Builder switched on for good: %v", tool.Args)
+		}
+	}
+	if got := strings.Join(install, " "); !strings.HasPrefix(got, "-y install --enablerepo=crb ") || !strings.Contains(got, "opendkim") {
+		t.Fatalf("install with the repository for one transaction: %q", got)
 	}
 }
