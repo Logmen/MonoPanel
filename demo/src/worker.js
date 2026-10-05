@@ -1,7 +1,7 @@
 // demo.monopanel.app — живое демо панели. Каждый посетитель по кнопке
 // «Открыть демо» получает свою MonoPanel в контейнере: настоящий API и Web UI
 // поверх сервера-имитации (internal/demo, образ собирает demo/Dockerfile).
-// Контейнер без выхода в интернет засыпает после 15 минут без запросов и
+// Контейнер без выхода в интернет засыпает после 5 минут без запросов и
 // живёт не дольше часа; следующий визит начинает с чистого демо.
 import { Container, getContainer } from '@cloudflare/containers';
 
@@ -11,7 +11,7 @@ const LIFETIME = 60 * 60; // секунд
 
 export class DemoPanel extends Container {
   defaultPort = 8080;
-  sleepAfter = '15m';
+  sleepAfter = '5m';
   enableInternet = false;
 
   // Час на сессию, даже если в ней всё время что-то делают: демо не должно
@@ -109,8 +109,8 @@ async function landing(request, env, url, notice, status = 200) {
 // «скрыть» сделано флажком и CSS, без JavaScript.
 function banner(lang) {
   const t = {
-    ru: ['Это демо: действия выполняет сервер-имитация, а не настоящий сервер. Через 15 минут без действий всё вернётся к началу.', 'Вход, если выйдете', 'Завершить демо', 'Скрыть'],
-    en: ['This is a demo: a pretend server carries out the actions, not a real one. After 15 idle minutes everything starts over.', 'Sign-in if you sign out', 'End the demo', 'Hide']
+    ru: ['Это демо: действия выполняет сервер-имитация, а не настоящий сервер. Через 5 минут без действий всё вернётся к началу.', 'Вход, если выйдете', 'Завершить демо', 'Скрыть'],
+    en: ['This is a demo: a pretend server carries out the actions, not a real one. After 5 idle minutes everything starts over.', 'Sign-in if you sign out', 'End the demo', 'Hide']
   }[lang];
   return `<input type="checkbox" id="mp-demo-hide" hidden>
 <div id="mp-demo" role="note" style="position:fixed;z-index:2147483000;left:50%;bottom:14px;transform:translateX(-50%);width:max-content;max-width:calc(100% - 24px);display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;padding:9px 12px 9px 14px;border:1px solid rgba(55,201,224,.45);background:rgba(7,17,28,.94);color:#d6e9f5;font:13px/1.4 system-ui,-apple-system,'Segoe UI',sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.4)">
