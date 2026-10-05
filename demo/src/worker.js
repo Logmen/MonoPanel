@@ -2,19 +2,19 @@
 // «Открыть демо» получает свою MonoPanel в контейнере: настоящий API и Web UI
 // поверх сервера-имитации (internal/demo, образ собирает demo/Dockerfile).
 // Контейнер без выхода в интернет засыпает после 5 минут без запросов и
-// живёт не дольше часа; следующий визит начинает с чистого демо.
+// живёт не дольше 15 минут; следующий визит начинает с чистого демо.
 import { Container, getContainer } from '@cloudflare/containers';
 
 const SESSION = 'mp_demo';
 const LANG = 'mp_demo_lang';
-const LIFETIME = 60 * 60; // секунд
+const LIFETIME = 15 * 60; // секунд
 
 export class DemoPanel extends Container {
   defaultPort = 8080;
   sleepAfter = '5m';
   enableInternet = false;
 
-  // Час на сессию, даже если в ней всё время что-то делают: демо не должно
+  // 15 минут на сессию, даже если в ней всё время что-то делают: демо не должно
   // становиться чьим-то постоянным сервером.
   async onStart() {
     await this.schedule(LIFETIME, 'expire');
