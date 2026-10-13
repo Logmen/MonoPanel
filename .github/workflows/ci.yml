@@ -50,9 +50,12 @@ jobs:
       - run: make web-stub
       - name: gofmt
         run: make fmt-check
+      # Built from source with the runner's Go: a prebuilt binary cannot read
+      # the export data of a newer Go patch release (1.27.2 broke v2.13.2).
       - uses: golangci/golangci-lint-action@v8
         with:
           version: v2.13.2
+          install-mode: goinstall
 
   templates:
     name: templates (real nginx / apache)
