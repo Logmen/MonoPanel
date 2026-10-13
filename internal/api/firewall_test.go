@@ -178,3 +178,78 @@ func TestFirewallApplyOrdersExceptionsFirst(t *testing.T) {
 		t.Fatalf("restricted = %+v", st.Restricted)
 	}
 }
+
+// Unbanning from the fail2ban list does just that: with the panel's firewall
+// off it neither switches the firewall on nor retires firewalld (which on EL
+// took fail2ban down with it, ozarign.kz 13.10.2026). A ban is a deny rule and
+// needs the firewall, so it is refused while the firewall is off.
+func TestFirewallUnbanLeavesFirewallOff(t *testing.T) {
+	f := newSiteFixture(t)
+	f.login()
+	f.agent.ToolHook = func(req agentReq) *agentRes {
+		if req.Name == "firewall-cmd" && len(req.Args) == 1 && req.Args[0] == "--state" {
+			return &agentRes{ExitCode: 0, Output: "running\n"}
+		}
+		return nil
+	}
+	if code, detail := fwCall(f, http.MethodPost, "/firewall/unban", map[string]any{"ip": "203.0.113.7"}); code != 200 {
+		t.Fatalf("unban: %d %q", code, detail)
+	}
+	unbanned := false
+	for _, tool := range f.agent.Tools() {
+		args := strings.Join(tool.Args, " ")
+		if tool.Name == "fail2ban-client" && args == "unban 203.0.113.7" {
+			unbanned = true
+		}
+		if tool.Name == "nft" && strings.Contains(args, "-f") {
+			t.Fatalf("the firewall was applied: nft %s", args)
+		}
+	}
+	if !unbanned {
+		t.Fatal("fail2ban was not asked to unban the address")
+	}
+	if a := f.agent.UnitAction("firewalld.service"); a != "" {
+		t.Fatalf("firewalld touched: %s", a)
+	}
+	if v, _ := f.db.GetSetting(f.ctx, settingFirewall); v == "yes" {
+		t.Fatal("unban switched the firewall on")
+	}
+	if code, detail := fwCall(f, http.MethodPost, "/firewall/ban", map[string]any{"ip": "203.0.113.8"}); code != 409 || !strings.Contains(detail, "firewall is off") {
+		t.Fatalf("ban with the firewall off: %d %q", code, detail)
+	}
+	if rules, _ := f.db.ListFirewallRules(f.ctx); len(rules) != 0 {
+		t.Fatalf("a refused ban left a rule: %+v", rules)
+	}
+}
+
+// Enabling the firewall retires firewalld; the EL fail2ban unit is
+// PartOf=firewalld.service and stops with it, so the panel starts it again.
+// Without firewalld fail2ban is not touched.
+func TestFirewallEnableBringsFail2banBack(t *testing.T) {
+	f := newSiteFixture(t)
+	f.login()
+	f.agent.ToolHook = func(req agentReq) *agentRes {
+		if req.Name == "firewall-cmd" && len(req.Args) == 1 && req.Args[0] == "--state" {
+			return &agentRes{ExitCode: 0, Output: "running\n"}
+		}
+		return nil
+	}
+	if code, detail := fwCall(f, http.MethodPost, "/firewall/enable", nil); code != 200 {
+		t.Fatalf("enable: %d %q", code, detail)
+	}
+	if a := f.agent.UnitAction("firewalld.service"); a != "disable" {
+		t.Fatalf("firewalld: %q", a)
+	}
+	if a := f.agent.UnitAction(fail2banService); a != "start" {
+		t.Fatalf("fail2ban after firewalld was retired: %q", a)
+	}
+
+	g := newSiteFixture(t)
+	g.login()
+	if code, detail := fwCall(g, http.MethodPost, "/firewall/enable", nil); code != 200 {
+		t.Fatalf("enable without firewalld: %d %q", code, detail)
+	}
+	if a := g.agent.UnitAction(fail2banService); a != "" {
+		t.Fatalf("fail2ban touched without firewalld: %q", a)
+	}
+}

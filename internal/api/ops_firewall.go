@@ -187,7 +187,8 @@ func (s *Server) applyFirewall(ctx context.Context) (*apitypes.FirewallStatus, e
 	if check.ExitCode != 0 {
 		return nil, fmt.Errorf("nft check failed: %s", strings.TrimSpace(check.Output))
 	}
-	if err := s.firewalldRetire(ctx); err != nil {
+	fail2banStopped, err := s.firewalldRetire(ctx)
+	if err != nil {
 		return nil, err
 	}
 	load, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "nft", Args: []string{"-f", nftRulesPath}})
@@ -203,6 +204,13 @@ func (s *Server) applyFirewall(ctx context.Context) (*apitypes.FirewallStatus, e
 	}
 	s.agent.Service(ctx, nftUnit, "start") //nolint:errcheck // best effort: the state is read back afterwards
 	s.db.SetSetting(ctx, settingFirewall, "yes")
+	if fail2banStopped {
+		// firewalld took fail2ban down with it (PartOf); its bans live in its
+		// own nftables table, so it simply starts next to the panel's one.
+		if _, err := s.agent.Service(ctx, fail2banService, "start"); err != nil {
+			return nil, fmt.Errorf("firewall applied, but fail2ban did not start again after firewalld was stopped: %w", err)
+		}
+	}
 	return s.firewallStatus(ctx)
 }
 
@@ -420,10 +428,20 @@ func (s *Server) registerFirewall() {
 			if _, _, err := net.ParseCIDR(ip); err != nil && net.ParseIP(ip) == nil {
 				return nil, huma.Error422UnprocessableEntity("ip must be an address or CIDR")
 			}
+			// The panel's firewall is switched on by its own button only: an
+			// unban from the fail2ban list once enabled it, which retired
+			// firewalld and (PartOf) fail2ban with it.
+			enabled := false
+			if v, _ := s.db.GetSetting(ctx, settingFirewall); v == "yes" {
+				enabled = true
+			}
 			rules, _ := s.db.ListFirewallRules(ctx)
 			if action == "ban" {
 				if caller := requestInfo(ctx).IP; sourceHas(ip, caller) {
 					return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("you cannot ban your own address: %s includes %s, which you are connected from", ip, caller))
+				}
+				if !enabled {
+					return nil, huma.Error409Conflict("the panel firewall is off: a ban is a deny rule and works only with it; enable the firewall first")
 				}
 				exists := false
 				for _, r := range rules {
@@ -442,7 +460,13 @@ func (s *Server) registerFirewall() {
 				}
 				s.agent.Tool(ctx, &agent.ToolRequest{Name: "fail2ban-client", Args: []string{"unban", ip}}) //nolint:errcheck // best effort: the state is read back afterwards
 			}
-			st, err := s.applyFirewall(ctx)
+			var st *apitypes.FirewallStatus
+			var err error
+			if enabled {
+				st, err = s.applyFirewall(ctx)
+			} else {
+				st, err = s.firewallStatus(ctx)
+			}
 			s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "firewall." + action, Target: ip, IP: requestInfo(ctx).IP, Result: resultOf(err)})
 			if err != nil {
 				return nil, huma.Error502BadGateway(err.Error())

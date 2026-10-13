@@ -43,14 +43,23 @@ func (s *Server) firewalldRunning(ctx context.Context) bool {
 
 // firewalldRetire stops and disables firewalld before the panel's nftables
 // table takes over: two rule sets on one host only confuse each other.
-func (s *Server) firewalldRetire(ctx context.Context) error {
+//
+// The EL fail2ban unit is PartOf=firewalld.service, so stopping firewalld
+// stops fail2ban too — and fail2ban lifts every ban on the way out. It
+// reports whether fail2ban was running then; the caller starts it again once
+// the panel's table is loaded (ozarign.kz, 13.10.2026: fail2ban stayed dead
+// after an unban that enabled the firewall).
+func (s *Server) firewalldRetire(ctx context.Context) (fail2banStopped bool, err error) {
 	if !s.firewalldRunning(ctx) {
-		return nil
+		return false, nil
+	}
+	if st, err := s.agent.Service(ctx, fail2banService, "status"); err == nil && st.Status.ActiveState == "active" {
+		fail2banStopped = true
 	}
 	for _, action := range []string{"stop", "disable"} {
 		if _, err := s.agent.Service(ctx, "firewalld.service", action); err != nil {
-			return fmt.Errorf("firewalld %s: %w", action, err)
+			return fail2banStopped, fmt.Errorf("firewalld %s: %w", action, err)
 		}
 	}
-	return nil
+	return fail2banStopped, nil
 }
