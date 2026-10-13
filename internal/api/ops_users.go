@@ -232,6 +232,13 @@ func (s *Server) sshdDropIn(ctx context.Context) (string, error) {
 // home. Every place that (re)creates the home goes through here — creating
 // a site used to hand an SFTP-only home to the client, and sshd then turned
 // the account away.
+// sshDirSpec is the account's ~/.ssh, made by the panel: an SFTP-only home
+// belongs to root and the client could not make it, and on EL one made by the
+// client inherits the home's web-content label that sshd may not read.
+func sshDirSpec(home, login string) agent.DirSpec {
+	return agent.DirSpec{Path: filepath.Join(home, ".ssh"), Mode: 0o700, Owner: login, Group: login}
+}
+
 func homeDirSpec(home, login string, shell bool) agent.DirSpec {
 	if !shell {
 		return agent.DirSpec{Path: home, Mode: 0o750, Owner: "root", Group: login}
@@ -340,6 +347,7 @@ func (s *Server) provisionUser(ctx context.Context, p userProvisionPayload, logf
 	dirs := []agent.DirSpec{
 		{Path: s.cfg.WWWRoot, Mode: 0o711, Owner: "root", Group: "root"},
 		homeDirSpec(home, p.Login, p.Shell),
+		sshDirSpec(home, p.Login),
 		{Path: data, Mode: 0o750, Owner: p.Login, Group: p.Login},
 		{Path: filepath.Join(data, "www"), Mode: 0o750, Owner: p.Login, Group: p.Login},
 		{Path: filepath.Join(data, "logs"), Mode: 0o750, Owner: p.Login, Group: p.Login},

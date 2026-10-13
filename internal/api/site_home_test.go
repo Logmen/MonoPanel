@@ -109,3 +109,20 @@ func TestRefreshSFTPHomes(t *testing.T) {
 		t.Fatal("the chroot root is not listable for its client")
 	}
 }
+
+// Every account gets its ~/.ssh from the panel: an SFTP-only client cannot make
+// it in a root-owned home, and on EL one made by the client inherits the
+// home's web-content label that sshd may not read.
+func TestProvisionMakesSSHDir(t *testing.T) {
+	f := newSiteFixture(t)
+	f.login()
+	var created apitypes.UserWithJob
+	f.call(http.MethodPost, "/users", map[string]any{"login": "sftpbob"}, http.StatusAccepted, &created)
+	if job := f.waitJob(created.JobID); job.Status != store.JobDone {
+		t.Fatalf("provision: %s %s", job.Status, job.Error)
+	}
+	want := agent.DirSpec{Path: "/var/www/sftpbob/.ssh", Mode: 0o700, Owner: "sftpbob", Group: "sftpbob"}
+	if got := lastHomeSpec(t, f, want.Path); got != want {
+		t.Fatalf("~/.ssh: %+v, want %+v", got, want)
+	}
+}

@@ -63,6 +63,7 @@ func (s *Server) Run(ctx context.Context) error {
 				s.refreshSiteLogrotate(ctx)
 				s.refreshFail2ban(ctx)
 				s.refreshSELinuxModule(ctx)
+				s.refreshSELinuxSSH(ctx)
 				s.refreshSFTPHomes(ctx)
 				s.refreshCLIGroup(ctx)
 				return

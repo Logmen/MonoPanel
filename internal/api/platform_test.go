@@ -201,7 +201,7 @@ func TestNginxInstallOnELPreparesSELinux(t *testing.T) {
 	if job := f.waitJob(ref.JobID); job.Status != store.JobDone {
 		t.Fatalf("nginx install on EL: %s %s", job.Status, job.Error)
 	}
-	var fcontext, docroot, booleans, relabel bool
+	var fcontext, docroot, ssh, booleans, relabel bool
 	for _, tool := range f.agent.Tools() {
 		args := strings.Join(tool.Args, " ")
 		switch tool.Name {
@@ -211,6 +211,9 @@ func TestNginxInstallOnELPreparesSELinux(t *testing.T) {
 			}
 			if strings.Contains(args, "httpd_sys_content_t /var/www/[^/]+/data/www(/.*)?") {
 				docroot = true
+			}
+			if strings.Contains(args, `ssh_home_t /var/www/[^/]+/\.ssh(/.*)?`) {
+				ssh = true
 			}
 		case "setsebool":
 			if strings.Contains(args, "-P") && strings.Contains(args, "httpd_unified=1") {
@@ -222,8 +225,8 @@ func TestNginxInstallOnELPreparesSELinux(t *testing.T) {
 			}
 		}
 	}
-	if !fcontext || !docroot || !booleans || !relabel {
-		t.Fatalf("selinux policy incomplete: fcontext=%v docroot=%v booleans=%v relabel=%v (%+v)", fcontext, docroot, booleans, relabel, f.agent.Tools())
+	if !fcontext || !docroot || !ssh || !booleans || !relabel {
+		t.Fatalf("selinux policy incomplete: fcontext=%v docroot=%v ssh=%v booleans=%v relabel=%v (%+v)", fcontext, docroot, ssh, booleans, relabel, f.agent.Tools())
 	}
 	restore := false
 	for _, c := range f.agent.Calls() {
@@ -290,6 +293,55 @@ func TestSELinuxModuleReachesPreparedHosts(t *testing.T) {
 	old.s.refreshSELinuxModule(old.ctx)
 	if n := loads(old); n != 1 {
 		t.Fatalf("the module must be loaded once: %d loads", n)
+	}
+}
+
+// A host prepared by a v2 panel gets the ~/.ssh rule at start: the context,
+// a ~/.ssh for each account and a relabel of those only — not of the sites.
+// Unprepared hosts and hosts already on v3 are left alone.
+func TestSELinuxSSHReachesPreparedHosts(t *testing.T) {
+	withOSRelease(t, "ID=ol\nVERSION_ID=10.2\nID_LIKE=\"fedora\"\n")
+	touched := func(f *siteFixture) (fcontext, relabel bool) {
+		for _, tool := range f.agent.Tools() {
+			args := strings.Join(tool.Args, " ")
+			switch tool.Name {
+			case "semanage":
+				if strings.Contains(args, `ssh_home_t /var/www/[^/]+/\.ssh(/.*)?`) {
+					fcontext = true
+				}
+			case "restorecon":
+				if args != "-R -i /var/www/alex/.ssh" {
+					t.Fatalf("relabel beyond ~/.ssh: %q", args)
+				}
+				relabel = true
+			}
+		}
+		return fcontext, relabel
+	}
+	fresh := newSiteFixture(t)
+	fresh.s.refreshSELinuxSSH(fresh.ctx)
+	if fc, rl := touched(fresh); fc || rl {
+		t.Fatal("a host never prepared for hosting got the ~/.ssh rule")
+	}
+
+	old := newSiteFixture(t)
+	if err := old.db.SetSetting(old.ctx, settingSELinux, "v2"); err != nil {
+		t.Fatal(err)
+	}
+	old.s.refreshSELinuxSSH(old.ctx)
+	if fc, rl := touched(old); !fc || !rl {
+		t.Fatalf("v2 host: fcontext=%v relabel=%v (%+v)", fc, rl, old.agent.Tools())
+	}
+	if got := lastHomeSpec(t, old, "/var/www/alex/.ssh"); got.Mode != 0o700 || got.Owner != "alex" {
+		t.Fatalf("~/.ssh of an existing account: %+v", got)
+	}
+	if v, _ := old.db.GetSetting(old.ctx, settingSELinux); v != selinuxPolicyVersion {
+		t.Fatalf("policy version after the refresh: %q", v)
+	}
+	old.agent.Reset()
+	old.s.refreshSELinuxSSH(old.ctx)
+	if len(old.agent.Tools()) != 0 {
+		t.Fatalf("refreshed twice: %+v", old.agent.Tools())
 	}
 }
 

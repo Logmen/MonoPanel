@@ -8,6 +8,7 @@ import (
 	"monopanel/internal/store"
 	"net/http"
 	"os"
+	"path"
 	"regexp"
 	"strings"
 	"time"
@@ -48,7 +49,17 @@ var selinuxFileContexts = [][2]string{
 	{"/var/www/[^/]+/data/www(/.*)?", "httpd_sys_content_t"},
 	{"/run/monopanel(/.*)?", "httpd_var_run_t"},
 	{"/var/www/[^/]+/data/logs(/.*)?", "httpd_log_t"},
+	// An account's home is /var/www/<login>, web content to the policy, and a
+	// ~/.ssh made there inherits httpd_sys_content_t: sshd cannot read
+	// authorized_keys and key logins fail while passwords work (ozarign.kz,
+	// 13.10.2026). The home itself may stay as it is; sshd passes through it.
+	selinuxSSHContext,
 }
+
+// selinuxSSHContext labels the accounts' ~/.ssh the way the policy labels it
+// under /home. A file made inside an existing ~/.ssh inherits the label, which
+// is why the panel creates the directory with the account (sshDirSpec).
+var selinuxSSHContext = [2]string{`/var/www/[^/]+/\.ssh(/.*)?`, "ssh_home_t"}
 
 // selinuxBooleans is the usual shared-hosting set: PHP writes into the
 // document root, connects to MySQL and to the network, sends mail.
@@ -131,8 +142,52 @@ func (s *Server) refreshSELinuxModule(ctx context.Context) {
 }
 
 // selinuxPolicyVersion changes when the rules above do: a host that applied
-// an older set applies the current one at the next site fix.
-const selinuxPolicyVersion = "v2"
+// an older set applies the current one at the next site fix. v3: ~/.ssh.
+const selinuxPolicyVersion = "v3"
+
+// refreshSELinuxSSH brings the ~/.ssh rule of v3 to a host that applied v2,
+// at start and without the full relabel of every site: the rule, a ~/.ssh
+// for every account (so ssh-copy-id writes into a labelled directory) and a
+// relabel of those directories only. Older or unprepared hosts wait for the
+// full policy at the next site fix.
+func (s *Server) refreshSELinuxSSH(ctx context.Context) {
+	if s.profile.MAC() != "selinux" {
+		return
+	}
+	if v, _ := s.db.GetSetting(ctx, settingSELinux); v != "v2" {
+		return
+	}
+	if err := s.selinuxFileContext(ctx, selinuxSSHContext[0], selinuxSSHContext[1]); err != nil {
+		s.log.Warn("selinux ~/.ssh context", "err", err)
+		return
+	}
+	users, err := s.db.ListUsers(ctx)
+	if err != nil {
+		s.log.Warn("selinux ~/.ssh context", "err", err)
+		return
+	}
+	paths := []string{}
+	for _, u := range users {
+		if u.Home == "" || u.Status != store.UserActive {
+			continue
+		}
+		if _, err := s.agent.EnsureDirs(ctx, &agent.EnsureDirsRequest{Dirs: []agent.DirSpec{sshDirSpec(u.Home, u.Login)}}); err != nil {
+			s.log.Warn("selinux ~/.ssh", "login", u.Login, "err", err)
+			continue
+		}
+		paths = append(paths, path.Join(u.Home, ".ssh"))
+	}
+	if len(paths) > 0 {
+		// -i: a directory that vanished meanwhile is not an error
+		res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "restorecon", Args: append([]string{"-R", "-i"}, paths...), TimeoutSeconds: 120})
+		if err != nil || res.ExitCode != 0 {
+			s.log.Warn("selinux ~/.ssh relabel", "err", err)
+			return
+		}
+	}
+	s.db.SetSetting(ctx, settingSELinux, selinuxPolicyVersion) //nolint:errcheck // retried at the next start
+	s.log.Info("selinux: ~/.ssh of the accounts labelled ssh_home_t", "accounts", len(paths))
+}
 
 // settingSELinuxRelabeledAt remembers the last relabel: the doctor counts
 // denials from then on, so a fixed label is not reported all day.
