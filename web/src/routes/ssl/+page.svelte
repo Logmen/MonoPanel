@@ -25,6 +25,8 @@
   let pform = $state({ name: '', type: 'cloudflare', creds: '' });
   let siteIssue = $state<any>(null); // the site a certificate is being ordered for
   let sform = $state({ staging: false, dns: '' });
+  let siteImport = $state<any>(null); // the site an existing certificate is being installed for
+  let simp = $state({ certificate: '', private_key: '' });
   let del = $state<any>(null);
   let ask = $state<Ask | null>(null);
   const fail = (e: unknown) => { error = e instanceof ApiError ? e.text : String(e); notify(error, 'err'); };
@@ -54,6 +56,19 @@
     run: async () => { const r: any = await api(`/certificates/${c.id}/renew`, { method: 'POST' }); job = r.job_id; }
   });
   async function issueSite(e: Event) { e.preventDefault(); if (!siteIssue) return; error = ''; try { const r: any = await api(`/sites/${encodeURIComponent(siteIssue.domain)}/tls/issue`, { method: 'POST', json: { staging: sform.staging, dns: sform.dns || undefined } }); job = r.job_id; siteIssue = null; } catch (e) { fail(e); } }
+  // An existing certificate for a site: the panel checks it covers the domain,
+  // and the sites it covers switch to it. A site without HTTPS gets it turned
+  // on — that is what installing a certificate is for.
+  async function importSite(e: Event) {
+    e.preventDefault(); if (!siteImport) return; error = '';
+    const site = siteImport;
+    try {
+      const c: any = await api('/certificates/import', { method: 'POST', json: { name: site.domain, ...simp } });
+      if (site.ssl !== 'auto') { const r: any = await api(`/sites/${encodeURIComponent(site.domain)}`, { method: 'PATCH', json: { ssl: 'auto' } }); if (r?.job_id) job = r.job_id; }
+      notify(t(c.auto_renew ? 'ssl.siteImportedRenew' : 'ssl.siteImported', { domain: site.domain }));
+      siteImport = null; simp = { certificate: '', private_key: '' }; await load();
+    } catch (e) { fail(e); }
+  }
   async function remove() { if (!del) return; try { await api(`/certificates/${del.id}`, { method: 'DELETE' }); del = null; await load(); } catch (e) { fail(e); } }
   async function addProvider(e: Event) { e.preventDefault(); error = ''; try { const credentials: Record<string, string> = {}; for (const l of pform.creds.split('\n')) { const [k, ...v] = l.split('='); if (k.trim()) credentials[k.trim()] = v.join('=').trim(); } await api('/dns-providers', { method: 'POST', json: { name: pform.name, type: pform.type, credentials } }); pform = { name: '', type: 'cloudflare', creds: '' }; mode = ''; await load(); } catch (e) { fail(e); } }
   const expiryTag = (s: string | null) => { if (!s) return 'tag-muted'; const d = days(s); return d < 14 ? 'tag-err' : d < 30 ? 'tag-warn' : 'tag-muted'; };
@@ -133,6 +148,7 @@
           <td data-label={t('ssl.colExpires')} class="text-xs">{#if c?.not_after}<span class="tag {expiryTag(c.not_after)}">{daysLeft(c.not_after)}</span>{:else}—{/if}</td>
           <td data-label=""><div class="row-actions">
             <button class="btn btn-sm" onclick={() => { siteIssue = s; sform = { staging: false, dns: '' }; }}><Icon name="plus" size={13} /> {t('ssl.issueRow')}</button>
+            <button class="btn btn-sm" onclick={() => { siteImport = s; simp = { certificate: '', private_key: '' }; }}><Icon name="file" size={13} /> {t('ssl.importRow')}</button>
             {#if c?.kind === 'acme'}<button class="btn btn-sm" onclick={() => (ask = askRenew(c))}><Icon name="refresh" size={13} /> {t('ssl.renewRow')}</button>{/if}
           </div></td>
         </tr>
@@ -164,6 +180,16 @@
     <label class="text-sm flex items-center gap-1"><input type="checkbox" bind:checked={sform.staging} /> {t('ssl.stagingSite')}</label>
   </form>
   {#snippet footer()}<button class="btn" onclick={() => (siteIssue = null)}>{t('common.cancel')}</button><button class="btn btn-primary" form="site-issue">{t('ssl.issue')}</button>{/snippet}
+</Modal>
+
+<Modal open={!!siteImport} title={t('ssl.certFor', { domain: siteImport?.domain ?? '' })} onclose={() => (siteImport = null)}>
+  <form id="site-import" class="grid gap-3" onsubmit={importSite}>
+    <p class="text-sm text-muted">{t('ssl.siteImportNote', { domain: siteImport?.domain ?? '' })}</p>
+    {#if certOfSite(siteImport ?? {})}<p class="text-sm text-warn">{t('ssl.siteImportReplaces', { name: certOfSite(siteImport).name, issuer: certOfSite(siteImport).issuer || '—' })}</p>{/if}
+    <div><label class="label" for="sic">{t('ssl.certChainPem')}</label><textarea id="sic" class="input font-mono text-xs h-36" bind:value={simp.certificate} required placeholder="-----BEGIN CERTIFICATE-----"></textarea></div>
+    <div><label class="label" for="sik">{t('ssl.privateKeyPem')}</label><textarea id="sik" class="input font-mono text-xs h-36" bind:value={simp.private_key} required placeholder="-----BEGIN PRIVATE KEY-----"></textarea></div>
+  </form>
+  {#snippet footer()}<button class="btn" onclick={() => (siteImport = null)}>{t('common.cancel')}</button><button class="btn btn-primary" form="site-import">{t('ssl.installFor', { host: siteImport?.domain ?? '' })}</button>{/snippet}
 </Modal>
 
 <Modal open={!!del} title={t('ssl.deleteTitle', { name: del?.name ?? '' })} onclose={() => (del = null)}>
