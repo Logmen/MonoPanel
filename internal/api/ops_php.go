@@ -5,8 +5,12 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"path"
+	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -491,19 +495,40 @@ func phpLayout(s *Server, version string) *osprofile.PHPLayout {
 // while a 1C-Bitrix site runs on the branch: its cron scripts and the prolog
 // start with <?, and PHP would print them as text and exit 0. The FPM pools
 // set short_open_tag themselves, so the shared directory of Remi is fine.
+// The server-wide layer goes into these files too: the pools get it as
+// php_value, but PHP from the command line — and with it every cron job,
+// Bitrix agents included — reads nothing but the ini files. A timezone set
+// with mp php ini set used to reach the sites and leave cron in UTC.
 func (s *Server) phpIniFiles(ctx context.Context, layout *osprofile.PHPLayout, cliOnly bool) ([]agent.FileSpec, error) {
 	tz, _ := s.db.GetSetting(ctx, settingTZ)
 	if tz == "" {
 		tz = "UTC"
 	}
+	global := s.globalIni(ctx)
+	if v := global["date.timezone"]; v != "" {
+		tz = v
+	}
 	data := render.PHPIni{Version: layout.Version, Timezone: tz, OpcacheMemory: 128}
+	if n, err := strconv.Atoi(global["opcache.memory_consumption"]); err == nil && n > 0 {
+		data.OpcacheMemory = n
+	}
+	globalShort := iniOn(global["short_open_tag"])
+	for _, k := range slices.Sorted(maps.Keys(global)) {
+		switch k {
+		case "date.timezone", "opcache.memory_consumption", "short_open_tag":
+			continue // written by the template's own lines
+		}
+		data.Global = append(data.Global, render.KV{Key: k, Value: global[k]})
+	}
 	var files []agent.FileSpec
 	for _, dir := range layout.IniDirs {
 		cli := dir == layout.CLIIniDir
 		if cliOnly && !cli {
 			continue
 		}
-		data.ShortOpenTag = cli && s.branchRunsBitrix(ctx, layout.Version)
+		// 1C-Bitrix needs short tags from the command line too, whatever the
+		// server-wide value says — as its preset wins over it in the pools.
+		data.ShortOpenTag = globalShort || (cli && s.branchRunsBitrix(ctx, layout.Version))
 		ini, err := s.render.Render("php/monopanel.ini.tmpl", data)
 		if err != nil {
 			return nil, err
@@ -511,6 +536,61 @@ func (s *Server) phpIniFiles(ctx context.Context, layout *osprofile.PHPLayout, c
 		files = append(files, agent.FileSpec{Path: path.Join(dir, "99-monopanel.ini"), Content: ini, Mode: 0o644})
 	}
 	return files, nil
+}
+
+// iniOn reads an ini boolean the way PHP does.
+func iniOn(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "on", "true", "yes":
+		return true
+	}
+	return false
+}
+
+// shortOpenTagRe finds the short_open_tag line of a written ini file.
+var shortOpenTagRe = regexp.MustCompile(`(?m)^short_open_tag\s*=\s*(\S+)`)
+
+// refreshPHPInis writes a branch's ini files (all of them, or the CLI copy
+// only). A file FPM reads as well — Remi's shared php.d, Debian's
+// fpm/conf.d — is left for the next site apply when its short_open_tag
+// would change: short tags opened there for 1C-Bitrix's command line reach
+// every pool of the branch that does not close them itself, and only pools
+// rendered by 0.8.6 or later do. reload asks FPM to re-read what changed.
+func (s *Server) refreshPHPInis(ctx context.Context, layout *osprofile.PHPLayout, cliOnly, reload bool) ([]string, error) {
+	files, err := s.phpIniFiles(ctx, layout, cliOnly)
+	if err != nil || len(files) == 0 {
+		return nil, err
+	}
+	keep := files[:0]
+	var deferred []string
+	for _, f := range files {
+		fpmReads := path.Dir(f.Path) != layout.CLIIniDir || len(layout.IniDirs) == 1
+		if fpmReads {
+			if cur, err := s.agent.ReadFile(ctx, f.Path, 64<<10); err == nil && cur.Content != "" {
+				was, now := shortOpenTagRe.FindStringSubmatch(cur.Content), shortOpenTagRe.FindStringSubmatch(f.Content)
+				if was != nil && now != nil && iniOn(was[1]) != iniOn(now[1]) {
+					deferred = append(deferred, f.Path)
+					continue
+				}
+			}
+		}
+		keep = append(keep, f)
+	}
+	if len(deferred) > 0 {
+		s.log.Info("php ini: short_open_tag changes at the next site apply", "files", deferred)
+	}
+	if len(keep) == 0 {
+		return nil, nil
+	}
+	req := &agent.ApplyConfigSetRequest{Files: keep, Origin: "php:" + layout.Version}
+	if reload {
+		req.Validate, req.Reload = [][]string{layout.FPMCheckArgv}, []string{layout.FPMService}
+	}
+	res, err := s.agent.ApplyConfigSet(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return res.Written, nil
 }
 
 func (s *Server) branchRunsBitrix(ctx context.Context, version string) bool {
@@ -524,9 +604,9 @@ func (s *Server) branchRunsBitrix(ctx context.Context, version string) bool {
 }
 
 // refreshPHPCLIInis brings the CLI copies of every branch up to date at
-// startup (a panel update that changed them, sites migrated before it).
-// Remi's shared directory waits for a site apply: FPM reads it too, and the
-// pools of that branch must set short_open_tag themselves first.
+// startup: a panel update that changed them, the server-wide layer an older
+// panel did not write there. Remi's shared directory is FPM's too, so a
+// change of its short_open_tag waits for a site apply (refreshPHPInis).
 func (s *Server) refreshPHPCLIInis(ctx context.Context) {
 	versions, err := s.db.ListPHPVersions(ctx)
 	if err != nil {
@@ -534,13 +614,37 @@ func (s *Server) refreshPHPCLIInis(ctx context.Context) {
 	}
 	for _, v := range versions {
 		l := phpLayout(s, v.Version)
-		if v.Status != store.PHPInstalled || l == nil || len(l.IniDirs) < 2 {
+		if v.Status != store.PHPInstalled || l == nil {
 			continue
 		}
-		if err := s.refreshPHPCLIIni(ctx, l); err != nil {
+		if _, err := s.refreshPHPInis(ctx, l, true, false); err != nil {
 			s.log.Warn("php cli ini", "version", v.Version, "err", err)
 		}
 	}
+}
+
+// refreshPHPAllInis rewrites every ini file of every installed branch after
+// the server-wide layer changed, and reloads FPM where one changed: the
+// opcache sizes are read at FPM start only, a pool cannot set them.
+func (s *Server) refreshPHPAllInis(ctx context.Context) []string {
+	versions, err := s.db.ListPHPVersions(ctx)
+	if err != nil {
+		return nil
+	}
+	var written []string
+	for _, v := range versions {
+		l := phpLayout(s, v.Version)
+		if v.Status != store.PHPInstalled || l == nil {
+			continue
+		}
+		w, err := s.refreshPHPInis(ctx, l, false, true)
+		if err != nil {
+			s.log.Warn("php ini", "version", v.Version, "err", err)
+			continue
+		}
+		written = append(written, w...)
+	}
+	return written
 }
 
 // refreshPHPCLIIni re-renders the CLI copy after a site changed; the CLI

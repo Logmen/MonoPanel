@@ -97,6 +97,9 @@ type PHPIni struct {
 	OpcacheMemory int
 	// ShortOpenTag opens <? for the copy CLI reads (see phpIniFiles).
 	ShortOpenTag bool
+	// Global is the server-wide layer (mp php ini set) besides the keys above:
+	// the pools get it as php_value, CLI and cron only from this file.
+	Global []KV
 }
 
 // Welcome feeds site/index.html.tmpl (placeholder page for an empty docroot;

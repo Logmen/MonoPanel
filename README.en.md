@@ -120,7 +120,7 @@ and the terminal menu. Under each heading are that area's `mp` commands.
 `mp php list|install|remove`, `mp php ext list|enable|disable`, `mp php ini [set|unset]`
 
 - Branches from Sury, the ondrej PPA or Remi, as many side by side as you like; each has its own php-fpm and `99-monopanel.ini`.
-- php.ini values stack in layers: panel → global (`mp php ini set`, the PHP page) → preset → site (`mp site set --ini`). Any parameter can be changed for one site or for all of them.
+- php.ini values stack in layers: panel → global (`mp php ini set`, the PHP page) → preset → site (`mp site set --ini`). Any parameter can be changed for one site or for all of them. The global layer also goes into the branch's `99-monopanel.ini`, which PHP reads from the command line, so cron jobs get the same values; `mp doctor` shows a mismatch.
 - A branch's extensions can be switched off and on (Debian/Ubuntu — `phpenmod`/`phpdismod`, EL — editing `extension=` in the Remi branch's ini, then a php-fpm restart). It applies to every site on the branch: there is one php-fpm master per version.
 - Extensions the repository offers but that are not installed (memcache, redis, imagick …) appear in the same list; enabling one installs the package.
 

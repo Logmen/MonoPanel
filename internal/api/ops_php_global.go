@@ -192,6 +192,8 @@ func (s *Server) registerPHPGlobal() {
 		if err := s.db.SetSetting(ctx, settingPHPGlobal, string(raw)); err != nil {
 			return nil, err
 		}
+		// PHP from the command line (and cron) reads the ini files only.
+		s.refreshPHPAllInis(ctx)
 		// Every PHP site gets the new layer in its pool now, not at its
 		// next unrelated change.
 		sites, err := s.db.ListSites(ctx, 0)
