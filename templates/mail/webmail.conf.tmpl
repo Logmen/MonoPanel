@@ -26,6 +26,14 @@ server {
         try_files $uri $uri/ /index.php$is_args$args;
     }
 
+    # Roundcube 1.7 serves its CSS and JS through /static.php/<path>: the
+    # script takes the path after its name (PATH_INFO).
+    location ~ ^/[^/]+\.php(?:/|$) {
+        if (!-f $document_root$fastcgi_script_name) { return 404; }
+        fastcgi_pass unix:{{ .Socket }};
+        include monopanel/snippets/fastcgi.conf;
+    }
+
     location ~ \.php$ {
         try_files $uri =404;
         fastcgi_pass unix:{{ .Socket }};

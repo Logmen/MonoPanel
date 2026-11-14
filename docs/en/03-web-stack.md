@@ -88,6 +88,11 @@ server {
     include monopanel/snippets/static-cache.conf;      # expires for images/fonts/js/css
     include monopanel/sites/example.com.d/*.conf;      # user locations — before the common ones
 
+    location ~ ^/[^/]+\.php(?:/|$) {                  # a script at the docroot's root, a path after its name included
+        if (!-f $document_root$fastcgi_script_name) { return 404; }
+        include monopanel/snippets/fastcgi.conf;
+        fastcgi_pass unix:/run/monopanel/php/example.com.sock;
+    }
     location / { try_files $uri $uri/ /index.php?$args; }
     location ~ \.php$ {
         try_files $uri =404;
@@ -96,6 +101,8 @@ server {
     }
 }
 ```
+
+A script at the docroot's root takes a path after its name (PATH_INFO): Roundcube 1.7 serves its CSS and JS as `/static.php/skins/…`, other front controllers take `/index.php/route`. This `location` comes before the static files' one, which would otherwise answer `/static.php/…/styles.css` with 404. A path after a script deeper down — in an uploads folder, say — still goes through `try_files` and ends at `index.php`. The CMS presets do not get this block: their rules that close particular scripts are written for `\.php$`. If you close a root-level script in your own `<domain>.d/*.conf`, end the rule with `(?:/|$)` rather than `$`, or `/script.php/x` gets around it.
 
 Mode B differs in its location blocks: static files matched by an extension regex are served by nginx (the `static_by_nginx` switch), everything else goes to `proxy_pass http://127.0.0.1:8080` with the `proxy-apache.conf` snippet (`proxy_http_version 1.1`, `Host`, `X-Real-IP`, `X-Forwarded-Proto`, `X-Forwarded-For`, buffers, timeouts).
 

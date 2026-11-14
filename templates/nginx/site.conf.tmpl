@@ -82,7 +82,7 @@ server {
     include {{ .IncludeDir }}/*.conf;
 {{- range .NoPHPPaths }}
     # Shared folder: files land here from another account, PHP in it never runs
-    location ~ ^/{{ . }}/.*\.(?:php|phtml|phar)$ { return 403; }
+    location ~ ^/{{ . }}/.*\.(?:php|phtml|phar)(?:/|$) { return 403; }
 {{- end }}
 {{- if eq .Mode "apache" }}
 {{- if .StaticByNginx }}
@@ -117,6 +117,7 @@ server {
 {{- else if eq .Preset "opencart" }}
 {{- template "preset-opencart" . }}
 {{- else }}
+{{- template "php-pathinfo" . }}
 
     location ~* \.(?:css|js|mjs|map|jpe?g|png|gif|webp|avif|svg|ico|woff2?|ttf|eot|otf|mp4|webm|mp3|pdf|zip|gz)$ {
         try_files $uri =404;
@@ -130,6 +131,22 @@ server {
         fastcgi_pass unix:{{ .FPMSocket }};
     }
 {{- end }}
+{{- end }}
+
+{{- /* A script at the docroot's root may take a path after its name: Roundcube 1.7
+        serves its CSS and JS as /static.php/skins/…, other front controllers take
+        /index.php/route. It comes before the static files' location, which would
+        otherwise answer /static.php/…/styles.css with 404. Only the root: a path after
+        a script deeper down — in an uploads folder — still goes through try_files and
+        ends at index.php, as before. try_files would empty $fastcgi_path_info, hence
+        the if; return is the one thing safe in it. */}}
+{{- define "php-pathinfo" }}
+
+    location ~ ^/[^/]+\.php(?:/|$) {
+        if (!-f $document_root$fastcgi_script_name) { return 404; }
+        include monopanel/snippets/fastcgi.conf;
+        fastcgi_pass unix:{{ .FPMSocket }};
+    }
 {{- end }}
 
 {{- /* add_header in a location drops the server-level headers; repeat the TLS and security ones there */}}

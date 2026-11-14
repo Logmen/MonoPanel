@@ -94,6 +94,11 @@ server {
     include monopanel/snippets/static-cache.conf;      # expires для картинок/шрифтов/js/css
     include monopanel/sites/example.com.d/*.conf;      # пользовательские location — раньше общих
 
+    location ~ ^/[^/]+\.php(?:/|$) {                  # скрипт в корне docroot, в т.ч. с путём после имени
+        if (!-f $document_root$fastcgi_script_name) { return 404; }
+        include monopanel/snippets/fastcgi.conf;
+        fastcgi_pass unix:/run/monopanel/php/example.com.sock;
+    }
     location / { try_files $uri $uri/ /index.php?$args; }
     location ~ \.php$ {
         try_files $uri =404;
@@ -102,6 +107,8 @@ server {
     }
 }
 ```
+
+Скрипт в корне docroot принимает путь после своего имени (PATH_INFO): Roundcube 1.7 отдаёт CSS и JS как `/static.php/skins/…`, другие фронт-контроллеры принимают `/index.php/маршрут`. Этот `location` стоит раньше статики по расширению, иначе `/static.php/…/styles.css` получал бы 404. Путь после скрипта глубже — например, в каталоге загрузок — по-прежнему уходит в `try_files` и до `index.php`. Пресеты CMS этот блок не получают: их правила, закрывающие отдельные скрипты, написаны для `\.php$`. Если в своём `<domain>.d/*.conf` закрываете скрипт в корне, пишите правило с окончанием `(?:/|$)`, а не `$`, — иначе `/script.php/x` его обойдёт.
 
 Режим B отличается блоками location: статика по regex расширений отдаётся nginx (переключатель `static_by_nginx`), всё остальное — `proxy_pass http://127.0.0.1:8080` со сниппетом `proxy-apache.conf` (`proxy_http_version 1.1`, `Host`, `X-Real-IP`, `X-Forwarded-Proto`, `X-Forwarded-For`, буферы, таймауты).
 

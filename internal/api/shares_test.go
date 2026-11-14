@@ -37,7 +37,7 @@ func TestSharedFolderLifecycle(t *testing.T) {
 		t.Fatalf("site apply: %s %s", job.Status, job.Error)
 	}
 	conf, _ := f.agent.File("/etc/nginx/monopanel/sites/shop.example.com.conf")
-	if !strings.Contains(conf, `location ~ ^/upload/kaspy/.*\.(?:php|phtml|phar)$ { return 403; }`) {
+	if !strings.Contains(conf, `location ~ ^/upload/kaspy/.*\.(?:php|phtml|phar)(?:/|$) { return 403; }`) {
 		t.Fatalf("nginx config lacks the PHP denial:\n%s", conf)
 	}
 
