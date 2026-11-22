@@ -1,0 +1,490 @@
+package confcheck
+
+import (
+	"fmt"
+	"path"
+	"regexp"
+	"strings"
+)
+
+// PHP. The php-fpm master runs as root: it loads every extension of its
+// ini files, runs opcache's preload, writes its own log and pid file, opens
+// the pools' slow logs and access logs, and creates their sockets. The CLI
+// runs as root too — Debian's sessionclean, pecl and pear, composer and
+// cron scripts an administrator starts — and reads the CLI ini directory
+// (on Remi the one php.d it shares with FPM). Pools run as their account,
+// so a pool's PHP settings are the account's business; who the pool runs
+// as, and what its master opens, are not.
+
+var phpDirs = []string{"/etc/php", "/etc/opt/remi"}
+
+func isPHP(p string) bool { return underAny(p, phpDirs...) }
+
+func checkPHP(c *checker, p string, content []byte) error {
+	switch {
+	case strings.HasSuffix(p, ".ini"):
+		return checkPHPIni(content)
+	case path.Base(p) == "php-fpm.conf":
+		return c.checkFPM(p, content, true)
+	case strings.HasSuffix(p, ".conf"):
+		return c.checkFPM(p, content, false)
+	}
+	return notAllowed("writing "+p, "the panel writes *.ini and php-fpm *.conf files there; PHP and its tools read others (pear.conf) as root")
+}
+
+type iniEntry struct {
+	line    int
+	section string
+	key     string // as written
+	base    string // lower-case, without [offset]
+	offset  string // php_value[offset], env[offset]
+	value   string // unquoted, without a trailing comment
+	raw     string // the value as written
+	hasEq   bool
+}
+
+// parsePHPIni reads the ini syntax of PHP and php-fpm line by line. A
+// quoted value that spans lines is read as separate lines here: each of
+// them is checked as if it were a directive, which refuses more, never less.
+func parsePHPIni(content []byte) ([]iniEntry, error) {
+	lines, err := textLines(content)
+	if err != nil {
+		return nil, err
+	}
+	var out []iniEntry
+	section := ""
+	for i, raw := range lines {
+		n := i + 1
+		// The scanner's blanks are spaces and tabs (TABS_AND_SPACES).
+		s := trimBlanks(raw)
+		if s == "" || s[0] == ';' || s[0] == '#' {
+			continue
+		}
+		if s[0] == '[' {
+			end := strings.IndexByte(s, ']')
+			if end < 0 {
+				return nil, unreadable(n, "unterminated section %q", s)
+			}
+			if tail := trimBlanks(s[end+1:]); tail != "" && tail[0] != ';' {
+				return nil, unreadable(n, "text after the section %q", s)
+			}
+			section = trimBlanks(s[1:end])
+			continue
+		}
+		e := iniEntry{line: n, section: section}
+		key, val, hasEq := strings.Cut(s, "=")
+		e.key, e.hasEq = trimBlanks(key), hasEq
+		e.raw = trimBlanks(val)
+		e.value = iniValue(e.raw)
+		e.base = strings.ToLower(e.key)
+		if i := strings.IndexByte(e.key, '['); i >= 0 {
+			if !strings.HasSuffix(e.key, "]") {
+				return nil, unreadable(n, "bad key %q", e.key)
+			}
+			// The scanner eats the blanks around the offset (and before the
+			// "["); a quoted or ${} offset is a string PHP builds, which this
+			// check does not.
+			e.offset = trimBlanks(e.key[i+1 : len(e.key)-1])
+			if strings.ContainsAny(e.offset, "\"'$[]") {
+				return nil, unreadable(n, "the offset of %q is not a plain name", e.key)
+			}
+			e.base = strings.ToLower(trimBlanks(e.key[:i]))
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+// iniValue is the value without its quotes and trailing comment.
+func iniValue(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	if q := raw[0]; q == '"' || q == '\'' {
+		if end := strings.IndexByte(raw[1:], q); end >= 0 {
+			return raw[1 : 1+end]
+		}
+		return raw
+	}
+	if i := strings.IndexByte(raw, ';'); i >= 0 {
+		raw = raw[:i]
+	}
+	return trimBlanks(raw)
+}
+
+// iniToken is a value that is one plain token: unquoted without blanks,
+// quotes, ${...} or the ini operators, or one quoted string without escapes
+// and expansions, either followed by nothing but a comment. PHP's ini
+// grammar joins several strings and expands ${...} inside double quotes, so
+// a value the checks below vouch for has to be one the check reads exactly
+// as PHP does.
+func iniToken(raw string) (string, bool) {
+	if raw == "" {
+		return "", false
+	}
+	if q := raw[0]; q == '"' || q == '\'' {
+		end := strings.IndexByte(raw[1:], q)
+		if end < 0 {
+			return "", false
+		}
+		v := raw[1 : 1+end]
+		if rest := trimBlanks(raw[2+end:]); rest != "" && rest[0] != ';' {
+			return "", false
+		}
+		if v == "" || strings.ContainsAny(v, "\\\"'$\n") {
+			return "", false
+		}
+		return v, true
+	}
+	if i := strings.IndexByte(raw, ';'); i >= 0 {
+		raw = raw[:i]
+	}
+	v := trimBlanks(raw)
+	if v == "" || strings.ContainsAny(v, " \t\"'$&|^~!(){}[]=\\") {
+		return "", false
+	}
+	return v, true
+}
+
+// phpRootKeys are the ini settings through which a php.ini file runs code,
+// loads a library or writes files for a PHP that runs as root (the CLI, the
+// FPM master at start): include and extension paths, opcache's preload and
+// file cache, FFI's preload, mail commands and logs, temporary and session
+// directories, xdebug's and mysqlnd's traces.
+var phpRootKeys = map[string]string{
+	"extension_dir":               "extensions load from the directory it names",
+	"auto_prepend_file":           "PHP runs the file before every script, the root CLI's included",
+	"auto_append_file":            "PHP runs the file after every script, the root CLI's included",
+	"include_path":                "scripts the root CLI runs include files from it",
+	"error_log":                   "the root CLI appends its errors to the file",
+	"mail.log":                    "the root CLI appends to the file",
+	"sendmail_path":               "mail() runs it through the shell",
+	"mail.force_extra_parameters": "the parameters go to the sendmail command line",
+	"sys_temp_dir":                "the root CLI makes its temporary files there",
+	"upload_tmp_dir":              "PHP writes uploads there",
+	"session.save_path":           "the root CLI writes session files there",
+	"soap.wsdl_cache_dir":         "the root CLI writes its WSDL cache there",
+	"opcache.preload":             "the FPM master runs the preload script at start",
+	"opcache.preload_user":        "it decides whom the preload script runs as",
+	"opcache.file_cache":          "compiled scripts are read back from the directory and run",
+	"opcache.file_cache_only":     "compiled scripts are read back from the file cache and run",
+	"opcache.error_log":           "the root master appends to the file",
+	"ffi.enable":                  "FFI calls into any library",
+	"ffi.preload":                 "the master loads the headers and their libraries at start",
+	"apc.preload_path":            "APCu unserializes the files at start, in the root master",
+	"mysqlnd.debug":               "mysqlnd writes its trace to the file",
+	"imap.enable_insecure_rsh":    "imap_open() runs rsh/ssh commands",
+	"unserialize_callback_func":   "unserialize() calls the function with a name taken from the data",
+	"output_handler":              "PHP passes everything a script prints to the function it names (system), the root CLI's output included",
+	"zlib.output_handler":         "PHP passes everything a script prints to the function it names",
+	"phar.cache_list":             "the FPM master opens the archives at start, as root",
+	"sqlite3.extension_dir":       "SQLite loads extensions from the directory it names",
+	"assert.callback":             "assert() calls the function",
+	"user_dir":                    "the panel never sets it",
+	"doc_root":                    "the panel never sets it",
+	"xdebug.log":                  "xdebug writes the file",
+	"xdebug.output_dir":           "xdebug writes there",
+	"xdebug.trace_output_dir":     "xdebug writes there",
+	"xdebug.profiler_output_dir":  "xdebug writes there",
+	"xdebug.remote_log":           "xdebug writes the file",
+	"xdebug.gc_stats_output_dir":  "xdebug writes there",
+	"newrelic.daemon.location":    "the master starts the program",
+	"newrelic.logfile":            "the master writes the file",
+	"newrelic.daemon.logfile":     "the daemon writes the file as root",
+	// php-fpm reads its configuration from fpm.config when its command line
+	// names none (EL's and Remi's units do not): a file of the API's choosing
+	// would set the root master's logs, pid file and sockets, and the pools'
+	// users.
+	"fpm.config": "the root php-fpm master reads its whole configuration from the file it names",
+	// The interactive shell (php -a) an administrator starts as root runs
+	// the pager and evaluates the PHP code in backticks of the prompt.
+	"cli.pager":  "php -a runs it as the administrator who started it, root included",
+	"cli.prompt": "php -a evaluates the PHP code in its backticks, as root when root started it",
+	// xdebug builds trace and profile file names from these; "../" in one
+	// leaves the output directory.
+	"xdebug.trace_output_name":    "xdebug writes the file it names",
+	"xdebug.profiler_output_name": "xdebug writes the file it names",
+	"xdebug.gc_stats_output_name": "xdebug writes the file it names",
+}
+
+// phpRootKeySuffix explains why a key outside phpRootKeys is refused by its
+// shape: extensions the panel does not install (APM agents, profilers,
+// tracers) name log, pid and output files the root CLI writes, or a file
+// they include into every script. None of the settings the panel writes
+// ends like this.
+func phpRootKeySuffix(base string) string {
+	last := base[strings.LastIndexByte(base, '.')+1:]
+	switch {
+	case last == "log" || strings.HasSuffix(last, "_log") || last == "logfile" || last == "log_file" || last == "log_path":
+		return "the root CLI writes the log it names"
+	case last == "pidfile" || last == "pid_file":
+		return "the root CLI writes the pid file it names"
+	case last == "output_dir" || strings.HasSuffix(last, "_output_dir") || last == "output_name" || strings.HasSuffix(last, "_output_name"):
+		return "the root CLI writes its output where it says"
+	case strings.HasSuffix(last, "request_init_hook") || strings.HasSuffix(last, "prepend_file") || strings.HasSuffix(last, "append_file"):
+		return "the file it names is run with every script, the root CLI's included"
+	case strings.HasPrefix(base, "newrelic.daemon."):
+		return "the PHP agent starts its daemon with these settings, as root from the root CLI"
+	}
+	return ""
+}
+
+// extensionNameRe is a bare extension name: PHP looks it up in
+// extension_dir. A path would load any shared object.
+var extensionNameRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
+
+// extensionPathRe is an extension spelled out in the module directory of a
+// distribution's PHP (Sury's API directories, EL's and Remi's modules):
+// root's directories, which hold what the PHP packages installed.
+var extensionPathRe = regexp.MustCompile(`^(/usr/lib/php/[0-9]{8}|/usr/lib64/php/modules|/opt/remi/php[0-9]{2}/root/usr/lib64/php/modules)/[A-Za-z0-9_][A-Za-z0-9_.-]*\.so$`)
+
+func phpExtension(what, raw string) error {
+	if v, ok := iniToken(raw); ok && !strings.Contains(v, "..") && (extensionNameRe.MatchString(v) || extensionPathRe.MatchString(v)) {
+		return nil
+	}
+	return notAllowed(fmt.Sprintf("%s = %s", what, raw), "an extension is given by its bare name (or in the distribution's module directory); a path loads any shared object into a root PHP")
+}
+
+func checkPHPIni(content []byte) error {
+	entries, err := parsePHPIni(content)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if err := atLine(e.line, phpIniEntry(e)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func phpIniEntry(e iniEntry) error {
+	what := fmt.Sprintf("PHP setting %q", e.key)
+	if e.offset != "" {
+		// key[offset] = value lands in the configuration hash, extensions
+		// and the settings above are read by their plain name.
+		return nil
+	}
+	switch e.base {
+	case "extension", "zend_extension":
+		if !e.hasEq {
+			return notAllowed(what, "it needs a value")
+		}
+		return phpExtension(e.key, e.raw)
+	}
+	if why, ok := phpRootKeys[e.base]; ok {
+		return notAllowed(what, "%s", why)
+	}
+	if why := phpRootKeySuffix(e.base); why != "" {
+		return notAllowed(what, "%s", why)
+	}
+	return nil
+}
+
+// FPM. A pool file holds pools only: keys before the first section, and a
+// [global] section, set the master's own options. php-fpm.conf may set
+// those, within the distribution's paths.
+
+var fpmPoolKeys = map[string]bool{
+	"user": true, "group": true, "listen": true, "listen.owner": true, "listen.group": true, "listen.mode": true,
+	"listen.acl_users": true, "listen.acl_groups": true, "listen.allowed_clients": true, "listen.backlog": true, "listen.setfib": true,
+	"process.priority": true, "process.dumpable": true, "pm": true, "pm.max_children": true, "pm.start_servers": true,
+	"pm.min_spare_servers": true, "pm.max_spare_servers": true, "pm.max_spawn_rate": true, "pm.process_idle_timeout": true,
+	"pm.max_requests": true, "pm.status_path": true, "pm.status_listen": true, "ping.path": true, "ping.response": true,
+	"access.log": true, "access.format": true, "access.suppress_path": true, "slowlog": true, "request_slowlog_timeout": true,
+	"request_slowlog_trace_depth": true, "request_terminate_timeout": true, "request_terminate_timeout_track_finished": true,
+	"rlimit_files": true, "rlimit_core": true, "catch_workers_output": true, "decorate_workers_output": true, "clear_env": true,
+	"security.limit_extensions": true, "apparmor_hat": true, "chdir": true,
+	"env": true, "php_value": true, "php_flag": true, "php_admin_value": true, "php_admin_flag": true,
+}
+
+var fpmGlobalKeys = map[string]bool{
+	"pid": true, "error_log": true, "syslog.facility": true, "syslog.ident": true, "log_level": true, "log_limit": true,
+	"log_buffering": true, "emergency_restart_threshold": true, "emergency_restart_interval": true,
+	"process_control_timeout": true, "process.max": true, "process.priority": true, "daemonize": true, "rlimit_files": true,
+	"rlimit_core": true, "events.mechanism": true, "systemd_interval": true, "include": true,
+}
+
+var (
+	fpmNameRe = regexp.MustCompile(`^[a-z_][a-z0-9_.-]*$`)
+	fpmModeRe = regexp.MustCompile(`^0?[0-7][0-7]0$`)
+)
+
+func (c *checker) checkFPM(p string, content []byte, main bool) error {
+	entries, err := parsePHPIni(content)
+	if err != nil {
+		return err
+	}
+	// The last user and group of a pool count (php-fpm merges sections of
+	// the same name); the group is checked against the user once both are
+	// known.
+	users := map[string]string{}
+	var groups []iniEntry
+	for _, e := range entries {
+		global := e.section == "" || strings.EqualFold(e.section, "global")
+		var err error
+		switch {
+		case global && !main:
+			err = notAllowed(fmt.Sprintf("php-fpm setting %q outside a pool", e.key), "a pool file holds pools; global settings (the master's log, pid file and includes) belong to php-fpm.conf")
+		case global:
+			err = c.fpmGlobal(p, e)
+		default:
+			err = c.fpmPool(e)
+			switch e.base {
+			case "user":
+				users[e.section], _ = iniToken(e.raw)
+			case "group":
+				groups = append(groups, e)
+			}
+		}
+		if err := atLine(e.line, err); err != nil {
+			return err
+		}
+	}
+	for _, e := range groups {
+		if err := atLine(e.line, c.fpmPoolGroup(e.section, users[e.section], e)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// fpmPoolGroup allows the pool's own group: the primary group of its user,
+// the one the panel writes (and php-fpm's default without a group line).
+// Another group, even an unprivileged one, hands the account's PHP files of
+// other daemons and accounts (vmail, opendkim, the web server's).
+func (c *checker) fpmPoolGroup(section, user string, e iniEntry) error {
+	g, _ := iniToken(e.raw)
+	what := fmt.Sprintf("php-fpm pool [%s] setting %q = %s", section, e.key, g)
+	db, err := c.accounts()
+	if err != nil {
+		return notAllowed(what, "cannot read the accounts: %v", err)
+	}
+	a, ok := db.users[user]
+	if !ok {
+		return notAllowed(what, "the pool names no user of the panel whose group it could be")
+	}
+	if pg, ok := db.byGID[a.gid]; ok && pg.name == g {
+		return nil
+	}
+	return notAllowed(what, "a pool runs with the primary group of its user %s", user)
+}
+
+// fpmGlobal allows the master's options with the distribution's paths.
+func (c *checker) fpmGlobal(p string, e iniEntry) error {
+	what := fmt.Sprintf("php-fpm setting %q", e.key)
+	if e.offset != "" || !fpmGlobalKeys[e.base] {
+		return notAllowed(what, "it is not one of php-fpm's global settings")
+	}
+	if e.base != "pid" && e.base != "error_log" && e.base != "include" {
+		return nil
+	}
+	v, ok := iniToken(e.raw)
+	if !ok {
+		return notAllowed(what+" = "+e.raw, "the value must be one plain path")
+	}
+	switch e.base {
+	case "pid":
+		if fp, ok := absPath(v); ok && !strings.ContainsAny(fp, "$*?[") && (underAny(fp, "/run/php", "/run/php-fpm", "/var/run/php", "/var/run/php-fpm") || remiRunFile(fp)) {
+			return nil
+		}
+		return notAllowed(what+" = "+v, "the root master writes and removes the pid file; it belongs in /run/php or /run/php-fpm")
+	case "error_log":
+		if v == "syslog" {
+			return nil
+		}
+		if fp, ok := absPath(v); ok && !strings.ContainsAny(fp, "$*?[") && (directChild(fp, "/var/log") || under(fp, "/var/log/php-fpm") || remiLogFile(fp)) {
+			return nil
+		}
+		return notAllowed(what+" = "+v, "the root master appends to the log; it belongs in /var/log")
+	case "include":
+		dir := path.Dir(p)
+		if fp, ok := absPath(v); ok && (under(fp, dir+"/pool.d") || under(fp, dir+"/php-fpm.d")) && strings.HasSuffix(fp, ".conf") {
+			return nil
+		}
+		return notAllowed(what+" = "+v, "php-fpm.conf includes the pool files of its own branch (pool.d/*.conf, php-fpm.d/*.conf)")
+	}
+	return nil
+}
+
+var remiRunRe = regexp.MustCompile(`^/var/opt/remi/php[0-9]+/run/php-fpm/[^/]+$`)
+var remiLogRe = regexp.MustCompile(`^/var/opt/remi/php[0-9]+/log/php-fpm/[^/]+$`)
+
+func remiRunFile(p string) bool { return remiRunRe.MatchString(p) }
+func remiLogFile(p string) bool { return remiLogRe.MatchString(p) }
+
+func (c *checker) fpmPool(e iniEntry) error {
+	what := fmt.Sprintf("php-fpm pool [%s] setting %q", e.section, e.key)
+	if !fpmPoolKeys[e.base] || (e.offset != "") != (e.base == "env" || strings.HasPrefix(e.base, "php_")) {
+		return notAllowed(what, "it is not one of the pool settings the panel writes (chroot, prefix and include move what the root master opens)")
+	}
+	v := e.value
+	switch e.base {
+	case "user", "group", "listen", "pm.status_listen", "listen.owner", "listen.group", "listen.acl_users", "listen.acl_groups", "slowlog", "access.log":
+		t, ok := iniToken(e.raw)
+		if !ok {
+			return notAllowed(fmt.Sprintf("%s = %s", what, e.raw), "the value must be one plain token: PHP joins strings and expands ${...} and $pool")
+		}
+		v = t
+	}
+	switch e.base {
+	case "user":
+		if err := c.panelAccount(v); err != nil {
+			return notAllowed(fmt.Sprintf("%s = %s", what, v), "a pool runs as an account of the panel: %v", err)
+		}
+	case "group":
+		if !fpmNameRe.MatchString(v) {
+			return notAllowed(fmt.Sprintf("%s = %s", what, v), "not a group name")
+		}
+		if err := c.groupAllowed(v); err != nil {
+			return notAllowed(fmt.Sprintf("%s = %s", what, v), "%v", err)
+		}
+	case "listen", "pm.status_listen":
+		return c.fpmListen(what, v)
+	case "listen.mode":
+		if t, ok := iniToken(e.raw); !ok || !fpmModeRe.MatchString(t) {
+			return notAllowed(fmt.Sprintf("%s = %s", what, e.raw), "the socket is the account's and the web server's, not every local user's")
+		}
+	case "listen.owner", "listen.group", "listen.acl_users", "listen.acl_groups":
+		for _, n := range strings.Split(v, ",") {
+			if n = trimBlanks(n); !fpmNameRe.MatchString(n) {
+				return notAllowed(fmt.Sprintf("%s = %s", what, v), "not a list of names")
+			}
+		}
+	case "slowlog", "access.log":
+		// Only the site log tree: EL's and Remi's php-fpm log directories
+		// belong to the apache user, who could swap a log for a symlink the
+		// root master then appends to.
+		fp, ok := absPath(v)
+		if ok && !strings.ContainsAny(fp, "$*?[") && under(fp, c.l.siteLogRoot()) {
+			return nil
+		}
+		return notAllowed(fmt.Sprintf("%s = %s", what, v), "the root master opens the log; a site's logs live in %s", c.l.siteLogRoot())
+	case "php_value", "php_admin_value", "php_flag", "php_admin_flag":
+		switch strings.ToLower(e.offset) {
+		case "extension", "zend_extension":
+			return phpExtension(e.key, e.raw)
+		}
+	}
+	return nil
+}
+
+var fpmTCPRe = regexp.MustCompile(`^(?:(?:[0-9.]+|\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):)?[0-9]{1,5}$`)
+
+var fpmSocketNameRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*\.sock$`)
+
+// fpmListen allows TCP addresses and sockets in the panel's socket
+// directory, where every pool of the panel listens: the root master removes
+// what is at the path and makes the socket there. Debian's /run/php belongs
+// to www-data, so a socket there is the web server's to swap for a symlink.
+// The name ends in .sock: should the directory ever be swapped under the
+// master, what it removes is a socket, not a configuration.
+func (c *checker) fpmListen(what, v string) error {
+	if fpmTCPRe.MatchString(v) {
+		return nil
+	}
+	if fp, ok := absPath(v); ok && directChild(fp, c.l.phpRunDir()) && fpmSocketNameRe.MatchString(path.Base(fp)) {
+		return nil
+	}
+	return notAllowed(fmt.Sprintf("%s = %s", what, v), "the root master removes what is at the path and creates the socket; it is a *.sock right in %s", c.l.phpRunDir())
+}

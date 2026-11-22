@@ -1,0 +1,3 @@
+MAIL_DIR	/var/mail
+UID_MIN			 1000
+UID_MAX			60000
