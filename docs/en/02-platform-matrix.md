@@ -10,6 +10,8 @@
 
 Architectures: amd64 and arm64 — packages are built for both, and every package source below has arm64 builds; the testbed matrix runs on amd64.
 
+Kernel: restic's sandbox needs Landlock (Linux 5.13+, `landlock` in the list in `/sys/kernel/security/lsm`); the "restic sandbox" line of `mp doctor` tells whether the host has it. Without it restic runs without the sandbox and `mp doctor` warns. For the backup's view of the web root without symlinks the agent needs to mount (a mount namespace of its own and `mount_setattr` with `nosymfollow`, Linux 5.14); in a container whose profile forbids mounting, `mp doctor` warns. In detail: [01 §7](01-architecture.md#7-security).
+
 Minimum requirements: 1 vCPU / 1 GB RAM / 10 GB disk (panel + nginx + one PHP version + a database server with a 128 MB buffer pool). Recommended: 2 vCPU / 2 GB.
 
 ## 2. Package sources
@@ -17,7 +19,7 @@ Minimum requirements: 1 vCPU / 1 GB RAM / 10 GB disk (panel + nginx + one PHP ve
 | Component | Debian / Ubuntu | EL9 / EL10 | Comment |
 |---|---|---|---|
 | nginx | nginx.org, the `nginx` repository (stable) | nginx.org `nginx-stable` | The same layout on every OS: `/etc/nginx/nginx.conf` + `conf.d/`, user `nginx`. HTTP/3 (QUIC) in the nginx.org builds. Option: Angie (a fork with built-in ACME and API) as a drop-in |
-| Apache 2.4 | distribution (`apache2`) | distribution (`httpd`) | Only `mpm_event` + `mod_proxy_fcgi`. `mod_php` is not installed |
+| Apache 2.4 | distribution (`apache2`) | — | Debian/Ubuntu only: one instance per account (`monopanel-apache@<login>`), `mpm_event` + `mod_proxy_fcgi`; `mod_php` is not installed. EL has no apache mode |
 | PHP (stage 1) | Debian: `packages.sury.org/php`; Ubuntu: `ppa:ondrej/php` | Remi (`remi-release-9` / `remi-release-10`), SCL-style packages `php{56..85}-php-*` | Parallel versions out of the box. Each of the two repositories is maintained by a single person — a risk, hence stage 2 |
 | PHP (stage 2, planned) | own repository | own repository | A build farm, layout `/opt/monopanel/php/<X.Y>`, the same on every OS |
 | MySQL 8.4 LTS | MySQL APT repo (`mysql-apt-config`) | MySQL Yum repo (`mysql84-community-release-el9` / `-el10`) | Community Server 8.4.x |
@@ -113,9 +115,9 @@ Common to both (implemented in the `DBEngine` provider):
 |---|---|---|
 | Package manager | apt/dpkg, `DEBIAN_FRONTEND=noninteractive` | dnf/rpm |
 | nginx user | `nginx` (nginx.org package) | `nginx` |
-| Apache user | `www-data` | `apache` |
-| Apache: package / service / directory | `apache2` / `apache2.service` / `/etc/apache2/` (`mods-enabled`, `conf-enabled`, `ports.conf`, `a2enmod`) | `httpd` / `httpd.service` / `/etc/httpd/` (`conf.modules.d/`, `conf.d/`) |
-| Apache: config check | `apache2ctl -t` | `apachectl -t` |
+| Apache user | `www-data` (the panel takes it out of `monopanel-web`; the children of an account's Apache run as the account) | `apache` (no apache mode) |
+| Apache: package / service / directory | `apache2` / `monopanel-apache@<login>.service` (`apache2.service` disabled) / `/etc/apache2/monopanel/accounts/<login>/` | — |
+| Apache: config check | `apache2 -t -f /etc/apache2/monopanel/accounts/<login>/httpd.conf` | — |
 | PHP (stage 1) | `/etc/php/X.Y/fpm/{php.ini,pool.d/}`, binary `php-fpmX.Y`, service `phpX.Y-fpm.service`, CLI `phpX.Y` | `/etc/opt/remi/phpXY/{php.ini,php-fpm.d/}`, binary `/opt/remi/phpXY/root/usr/sbin/php-fpm`, service `phpXY-php-fpm.service`, CLI `phpXY` |
 | PHP (stage 2) | `/opt/monopanel/php/X.Y` | `/opt/monopanel/php/X.Y` |
 | The panel's database config | `/etc/mysql/mysql.conf.d/zz-monopanel.cnf` (MySQL) / `/etc/mysql/conf.d/zz-monopanel.cnf` (Percona) | `/etc/my.cnf.d/zz-monopanel.cnf`; with Percona on EL, `/etc/my.cnf` includes nothing, and `mysqld` reads only `/etc/my.cnf`, `/etc/mysql/my.cnf`, `/usr/etc/my.cnf` — the panel writes `/etc/mysql/my.cnf` with `!includedir /etc/my.cnf.d/` (found by the testbed on 2026-09-10: until then the panel's settings were not applied on EL) |
@@ -127,6 +129,8 @@ Common to both (implemented in the `DBEngine` provider):
 | fail2ban | distribution | EPEL |
 | Client shells | `/bin/bash`, `/usr/sbin/nologin` | `/bin/bash`, `/sbin/nologin` |
 | Certificates bundle | `/etc/ssl/certs/ca-certificates.crt` | `/etc/pki/tls/certs/ca-bundle.crt` |
+
+On both layouts the package's stock `www` pool is the panel's idle pool (see [03 §5](03-web-stack.md#5-php-fpm-pool-template)). On EL the php-fpm master logs to syslog, not into `/var/opt/remi/phpXY/log/php-fpm/` (that directory is apache's). The panel neither installs nor touches AppStream PHP.
 
 The interface in code:
 
@@ -160,7 +164,7 @@ The planned `monopanel-selinux` package with the rest of the policy rules and `f
 - Docroot `/var/www(/.*)?` → `httpd_sys_content_t` (already in the base policy). Writable directories (`uploads`, `cache`, `tmp`, `logs`) → `httpd_sys_rw_content_t` via `semanage fcontext` + `restorecon` when the site is created; a user can mark any directory as "writable" from the UI.
 - FPM sockets `/run/monopanel/php(/.*)?` → `httpd_var_run_t`.
 - Own PHP builds: `/opt/monopanel/php/[^/]+/sbin/php-fpm` → `httpd_exec_t`, libraries → `lib_t`, configs → `httpd_config_t`, logs → `httpd_log_t`.
-- Apache on `127.0.0.1:8080` — the port is already in `http_port_t`; non-standard ports — `semanage port -a -t http_port_t -p tcp <port>`.
+- EL has no apache mode: the panel installs and runs the accounts' Apaches (`monopanel-apache@<login>`) on Debian and Ubuntu only, so they need no SELinux rules.
 - Booleans: `httpd_can_network_connect_db=1`, `httpd_can_sendmail=1`; `httpd_can_network_connect=1` — only if at least one site makes outgoing HTTP requests (a site flag, on by default, since almost any CMS does); `httpd_execmem=1` — only when ionCube/JIT is enabled.
 - The panel (`monopaneld`) — unconfined in the first release, in v1.0 its own `monopanel_t` domain in the shipped module.
 - `mp doctor` shows AVC denials from `ausearch` for the last 24 hours with a hint on how to fix them.

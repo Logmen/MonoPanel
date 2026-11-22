@@ -115,10 +115,10 @@ Under each heading are that area's `mp` commands.
 
 `mp site add|set|list|show|apply|fix|suspend|unsuspend|rm|logs|presets|move-ip`, `mp site nginx|php|tls`, `mp selinux`
 
-- Three modes: `fpm` (nginx → php-fpm), `apache` (nginx → Apache on loopback 8080 via mod_proxy_fcgi) and `proxy` (nginx → your own backend).
+- Three modes: `fpm` (nginx → php-fpm), `apache` (nginx → the account's own Apache → php-fpm via mod_proxy_fcgi: every account with sites in this mode has an Apache of its own, `monopanel-apache@<login>`, on an address of its own, `127.100.x.y:81`, its children running as the account) and `proxy` (nginx → your own backend).
 - Every site gets its own php-fpm pool, ACLs for the `monopanel-web` group, a placeholder page and an automatic certificate; a suspended site serves a 503 page.
 - A site listens on the server's IPv6 address too (`--ipv6`, the first global one by default; `none` — IPv4 only). Security headers with one flag (`--security-headers`: X-Content-Type-Options, X-Frame-Options, Referrer-Policy), a rate limit per address on dynamic pages (`--rate-limit 10` requests per second; static files do not count, the excess gets 429).
-- Access only from listed addresses (`--allow`), HSTS when HTTPS is forced, custom nginx directives in `sites/<domain>.d/*.conf`. `mp site nginx <domain> --set file` writes them with an `nginx -t` check and a rollback; `mp site php <domain>` shows the effective PHP settings and where each one comes from.
+- Access only from listed addresses (`--allow`), HSTS when HTTPS is forced, custom nginx directives in `sites/<domain>.d/*.conf`. `mp site nginx <domain> --set file` writes them with an `nginx -t` check and a rollback, and what the panel does not take (`fastcgi_pass` to anything but the site's pool, `fastcgi_param PHP_VALUE` and the like) it refuses before anything is written, saying so; `mp site php <domain>` shows the effective PHP settings and where each one comes from.
 - CMS presets `--preset wordpress|joomla|bitrix|opencart` (`mp site presets`): their own nginx locations (pretty URLs, Joomla `/api/`, Bitrix `urlrewrite.php`, OpenCart `_route_`, denied service directories, no PHP execution in uploads) and PHP defaults. Bitrix follows the BitrixVM rules: opcache for 100,000 files, no open_basedir.
 
 ### PHP 5.6–8.5
@@ -134,8 +134,9 @@ Under each heading are that area's `mp` commands.
 
 `mp cms list|install <domain> <cms>`
 
-- Installs WordPress, Joomla, OpenCart and 1C-Bitrix into an existing site: the distribution comes from the vendor's site, is unpacked into the docroot as the client, gets its own database, and the site gets the matching preset.
+- Installs WordPress, Joomla, OpenCart and 1C-Bitrix into an existing site: the distribution comes from the vendor's site, is unpacked into the docroot and handed to the client, gets its own database, and the site gets the matching preset.
 - The installer is the CMS's own: wp-cli, the Joomla and OpenCart CLI installers, the Bitrix web wizard, which the panel walks through itself. For Bitrix — the trial Start, Standard, Small business or Business edition, the marketplace's clean install or the demo site.
+- A download of the distribution that breaks off is picked up where it stopped when the server serves byte ranges (HTTP Range); what was unpacked before a failure is handed to the client.
 - The administrator credentials are shown once. In the web UI — the CMS tab on the site page.
 
 ### Databases
@@ -180,6 +181,7 @@ Under each heading are that area's `mp` commands.
 
 - restic in local, SFTP, S3, B2 or REST: files, MySQL dumps and a copy of panel.db.
 - Retention by days, weeks and months, a daily schedule; restore into `/var/lib/monopanel-agent/restore/<snapshot>` (root's alone) or in place.
+- restic runs in a Landlock sandbox: a backup reads only what it backs up and follows no symlink in the web root, and a restore writes only into its target; a run that could not read some files is marked `partial`. A local repository is a directory of restic's own.
 
 ### Files
 
@@ -196,7 +198,7 @@ Under each heading are that area's `mp` commands.
 - A panel account is a unix user. SFTP-only means a chroot into `/var/www/<login>` via `sshd_config.d/monopanel.conf`; one password for the panel and SFTP; a shell is given by a flag, and with it access to `mp` over the local socket (group `monopanel-cli`); requests to the socket from php-fpm, Apache and nginx processes are refused.
 - `mp user rm <login> [--purge]` removes the account together with its sites, databases, cron, app services, Valkey instances and certificates.
 - An ordinary account sees what concerns it in the web UI and the terminal menu: its own sites, databases, mail, files, jobs and the Account page — cron, app services, Valkey, shared folders, API tokens, password and 2FA.
-- A shared folder (`mp user share add <guest> --site <domain> --path <folder> [--no-php]`): a folder of one account's site is bind-mounted (a systemd unit) into another account's home — the guest sees it after signing in over SFTP and nothing else, both accounts and the web server read and write the files (ACLs), `--no-php` stops the site from executing PHP from that folder, and `--entry` (or `mp user share entry`) makes the folder the entry point — the SFTP session starts right inside it. The guest's home does not change: the chroot stays root-owned and account isolation stays as it is. A file uploaded over SFTP with mode 0644 can be read and deleted by the other side but not rewritten in place — that is how the ACL mask works; `mp site fix` lifts the limit from the files already there.
+- A shared folder (`mp user share add <guest> --site <domain> --path <folder> [--no-php]`): a folder of one account's site is bind-mounted (a systemd unit) into another account's home (for a guest with a shell into `/var/www/.shares/<guest>`, with a symlink in its home) — the guest sees it after signing in over SFTP and nothing else, both accounts and the web server read and write the files (ACLs), `--no-php` stops the site from executing PHP from that folder, and `--entry` (or `mp user share entry`) makes the folder the entry point — the SFTP session starts right inside it. The guest's home does not change: the chroot stays root-owned and account isolation stays as it is. A file uploaded over SFTP with mode 0644 can be read and deleted by the other side but not rewritten in place — that is how the ACL mask works; `mp site fix` lifts the limit from the files already there.
 
 ### Cron
 
@@ -214,7 +216,7 @@ Under each heading are that area's `mp` commands.
 
 `mp stack list`, `mp stack install apache`, `mp stack install|remove memcached|jpegoptim|git|composer|sphinx`, `mp stack memcached --memory-mb --max-conn`
 
-- Apache 2.4 on Debian/Ubuntu: mpm_event + proxy_fcgi, `conf-available/monopanel.conf`.
+- Apache 2.4 on Debian/Ubuntu: every account with sites in apache mode gets an instance of its own, `monopanel-apache@<login>.service`; the root parent listens on `127.<100+uid>>16>.<(uid>>8)&255>.<uid&255>:81` (a privileged port on an address of that account alone), and the children run as the account and read only what it reads. The configuration is `/etc/apache2/monopanel/accounts/<login>/` (`httpd.conf`, `sites/<domain>.conf`, `sites/<domain>.d/*.conf`); mpm_event and a short module list without cgi, include, lua, ext_filter, status and info; `.htaccess` may do anything (`AllowOverride All`) except in shared folders with `--no-php`, where no `.htaccess` is read and no PHP runs. What nginx answers 404 for (dotfiles such as `.env` and `.git/`, `composer.json`, `.user.ini`) the account's Apache refuses too, also to a request that goes past nginx. The panel stops and disables the distribution's `apache2.service` and takes `www-data` out of `monopanel-web`. A site's custom directives (`sites/<domain>.d/`) live as long as the site does: a mode change or a suspension leaves them alone.
 - The "Extensions" page in the web UI: memcached (127.0.0.1 only, memory and connections adjustable, restarted on change), jpegoptim, git, composer (from getcomposer.org with the published checksum, running on the newest PHP branch the panel installed, for the accounts and not for root; installing again updates it).
 - Sphinx for 1C-Bitrix: the distribution's Sphinx 2.2 on Debian/Ubuntu, the sphinxsearch.com build of Sphinx 3 on EL; the `bitrix` index as Bitrix's own settings page documents it, a stale index on disk is recreated, SphinxQL on 127.0.0.1:9306.
 
@@ -232,7 +234,7 @@ Under each heading are that area's `mp` commands.
 `mp status`, `mp metrics`, `mp site logs`, `mp logs <unit>`, `mp service`, `mp job list|show|wait`, `mp doctor`, `mp audit`
 
 - A sampler every 10 s, stored as one point per minute for 30 days; site and journald log tails through the agent.
-- Services — the units of the panel and the stack (the agent, the web servers, the database server, every installed PHP branch) and any unit by name: state, start, stop, restart, `reload-or-restart`, autostart and the journal — `mp service`, `mp logs`, the Services page. The API stops or restarts the panel itself only after it has answered.
+- Services — the units of the panel and the stack (the agent, the web servers, the database server, every installed PHP branch) and any unit by name: state, start, stop, restart, `reload-or-restart`, autostart and the journal — `mp service`, `mp logs`, the Services page. Template instances (but the accounts' Apaches), targets, shells and the power units only report their state. The API stops or restarts the panel itself only after it has answered. Stopping `monopanel-api` leaves the port to its socket, and the next connection starts the API again (and the agent, should it be stopped too); to stop the panel completely: `systemctl stop monopanel-api.socket monopanel-api monopanel-agent`.
 - Long actions are jobs with a log: `mp job list|show|wait`, the Jobs page. An administrator sees every job, other accounts their own; passwords and tokens in a job's parameters are hidden in the answers.
 - Site logs live in `/var/log/monopanel/sites/<login>/`, outside the home (nginx, Apache and php-fpm open them as root), and the account reads them through its group; they rotate weekly or at 100 MB: eight copies, compressed from the second one.
 - `mp doctor` checks services, configs, disk, certificates, DNS, jobs and drift of the generated files.
@@ -279,13 +281,14 @@ Under each heading are that area's `mp` commands.
 
 - The panel finds a new version in this repository's releases, downloads the package for its OS, verifies the ed25519 signature and installs it from a separate systemd unit. If the new version does not answer, the previous binary comes back.
 - Only root on the server changes the key the signature is checked against (`mp update trust`): it never passes through the panel process — neither the API nor the console; the web UI shows it read-only.
+- The panel never installs a version older than the installed one: a downgrade is done by hand as root.
 
 ### Panel settings
 
 `mp config show|set|templates`
 
-- The panel's name and address, the log level and format and the number of jobs that run at once (`web.hostname`, `web.listen`, `log.level`, `log.format`, `jobs.workers`) are changed through the API — `mp config set` or Settings → Panel in the web UI. A change takes effect once monopanel-api restarts, and `--restart` restarts it right away; the panel opens the new address's port in the firewall before anything is written.
-- If the API does not come up (after a bad `web.listen`, say), root on the server edits the file directly: `mp config set --local`.
+- The panel's name and address, the log level and format and the number of jobs that run at once (`web.hostname`, `web.listen`, `log.level`, `log.format`, `jobs.workers`) are changed through the API — `mp config set` or Settings → Panel in the web UI. A change takes effect once monopanel-api restarts, and `--restart` restarts it right away; the panel opens the new address's port in the firewall before anything is written. systemd holds the panel's port (`monopanel-api.socket`), so no other local process can take it while the API restarts; when `web.listen` changes, the socket moves with the restart.
+- If the API does not come up (after a bad `web.listen`, say), root on the server edits the file directly: `mp config set --local`. With `web.listen` it moves the port's socket too, and `--restart` restarts the API with it. Editing `web.listen` in config.yaml by hand does not move the socket: run `mp setup` or `mp config set --local web.listen <address> --restart` afterwards.
 - `mp config templates` and the same page list the built-in configuration templates and which of them files in `templates_dir` override.
 
 ### Tokens, 2FA and webhooks
@@ -304,7 +307,7 @@ Under each heading are that area's `mp` commands.
 
 ### Not there yet
 
-Own PHP builds (Sury/Remi are used instead), tested Apache on EL, phpMyAdmin, disk
+Own PHP builds (Sury/Remi are used instead), apache mode on EL, phpMyAdmin, disk
 quotas, per-site cgroup limits, a DNS server, a WAF, several servers from one panel,
 an apt/yum repository (packages ship as releases and the panel installs them itself).
 Mail runs on all eleven OSes with dovecot 2.3 and 2.4 (Debian 13, Ubuntu 26.04 get a
@@ -326,7 +329,8 @@ One binary, `monopanel` (also `mp`), runs in several roles:
 
 State lives in SQLite. Changing a site is not an edit to a file on disk but a row
 in the database, from which configuration is rendered: template → validation
-(`nginx -t`, `apachectl -t`, `php-fpm -t`) → every file written atomically → reload.
+(`nginx -t`, `apache2 -t -f <the account's httpd.conf>`, `php-fpm -t`) → every file
+written atomically → reload.
 A failure anywhere on that path rolls the whole set back and returns the error text.
 
 The principles, briefly:
@@ -378,6 +382,67 @@ find. The panel does not install the package itself: the agent starts a transien
 the previous binary if the new version fails to answer. An unsigned release will not
 install unless the check is switched off explicitly. A slow link is fine: the package
 download has no overall deadline, only a stalled stream is given up.
+
+### Upgrading to 0.8.20
+
+What an administrator notices after the upgrade from 0.8.19:
+
+- `monopanel-api.socket` holds the panel's port. A stopped `monopanel-api` is started
+  again by the first connection; to stop the panel completely:
+  `systemctl stop monopanel-api.socket monopanel-api monopanel-agent`. Editing
+  `web.listen` in `config.yaml` by hand does not move the socket: run `mp setup` or
+  `mp config set --local web.listen <address> --restart` afterwards. Should the update
+  roll back, or the package be downgraded to 0.8.19, nothing needs doing: before the old
+  version starts, a drop-in of the API's unit stops the socket, and the old API listens
+  on the port itself; after a package downgrade that drop-in can go —
+  `rm /etc/systemd/system/monopanel-api.service.d/socket.conf && systemctl daemon-reload`.
+- The panel never installs a version older than the installed one (nor a release over a
+  later build such as `0.8.19-5-gabc1234`): a downgrade is done by hand as root.
+- Apache mode: every account has an Apache of its own (`monopanel-apache@<login>`). The
+  sites move by themselves, one at a time and without downtime, and then the
+  distribution's `apache2.service` is stopped and disabled — an administrator's own
+  sites in it, if any, stop working — and `www-data` leaves `monopanel-web`. The agent
+  does not take custom Apache directives with an `Include`, a log in another directory
+  or `APACHE_*` variables for an account's Apache: such a site stays on the shared
+  Apache until they are fixed and `mp stack install apache` is run again. Where
+  `net.ipv4.ip_unprivileged_port_start` is 81 or lower, `mp stack install apache`
+  refuses and `mp doctor` warns: any account could take the Apaches' port there.
+- Every php-fpm branch's stock `www` pool goes idle: a virtual host of your own that
+  used its socket (`/run/php/php<version>-fpm.sock`, on EL
+  `/var/opt/remi/phpXY/run/php-fpm/www.sock`; phpMyAdmin from apt, for example) stops
+  working — such PHP needs a site. The output of php-fpm's workers no longer goes into
+  the master's log; PHP's errors still go to `<domain>.php.error.log`.
+- The panel no longer writes custom nginx directives with a `fastcgi_pass` to anything
+  but a site's pool, `fastcgi_param PHP_VALUE` or `PHP_ADMIN_VALUE`, a `uwsgi_modifier1`
+  other than 0, a `proxy_method` that is not a word, or an `include` of
+  `/etc/nginx/default.d` or with a wildcard in a directory name. A `custom.conf` written
+  earlier keeps working, but can only be written again without them.
+- Units: `mp service` and the Services page only show the state of template instances
+  (but the accounts' Apaches), targets, shells such as `debug-shell` and the power units.
+- composer does not run as root: `su -s /bin/sh -c 'composer …' <login>`. The package
+  sources the panel wrote over http (nginx.org, repo.mysql.com) it moves to https at its
+  start, and it writes no others.
+- One's own password changes in the web UI and with an API token only with the current
+  one (`mp user set` — `--current-password`); over the local socket the current one is
+  not needed. A password change ends the account's other browser sessions, and 2FA is set
+  up anew only after turning it off with the password. Migration tokens found with
+  ordinary accounts are revoked at the panel's start.
+- The site logs move from `data/logs` to `/var/log/monopanel/sites/<login>/`; the old files
+  stay with the account. The config history is in `/var/lib/monopanel-agent/confhistory/`.
+- Backups: restic runs in a sandbox. A local repository must be a directory of restic's
+  own — a target whose repository lies right in a directory with other files (such as
+  `/var/backups`) stops working: add a new one, `/var/backups/monopanel` for example.
+  S3, B2 and REST credentials go in the target's variables only; root's key and
+  `known_hosts` for SFTP are set up beforehand. A run in which restic could not read some
+  files is marked `partial`.
+- The shared folders of guests with a shell move to `/var/www/.shares/<guest>/<name>`,
+  with a symlink left in the home; a folder in use moves at the next start or after
+  `mp site fix <domain>`.
+- The web UI's console runs no command that reads or writes files on the server
+  (`files get|put`, `ssl import`, `site nginx --set`, `migrate --key`), nor
+  `mp update trust`: the panel's pages or `mp` over SSH do that.
+
+More in [docs/en/05-roadmap.md](docs/en/05-roadmap.md) and the documents it links to.
 
 ## Moving in
 
@@ -473,7 +538,7 @@ make help             # every target
 | `make test-race` | the race detector (about a minute): job queue, SSE broker, certificate cache |
 | `make cover` | coverage per package; `make cover-html` opens the report |
 | `make web-check` | types and markup of the web UI (`svelte-check`) |
-| `scripts/check-templates.sh` | feeds the generated configuration to a real `nginx -t` and `apachectl -t` |
+| `scripts/check-templates.sh` | feeds the generated configuration to a real `nginx -t` and `apache2 -t` (the whole configuration of an account's Apache with its virtual host) |
 | `make e2e` | a scenario against a live panel: account → site with a preset → database → removal |
 | `make testbed-matrix` | the same scenario on the eleven testbed VMs (one per OS of the matrix) in parallel, each rolled back to a clean snapshot first; `make testbed-migrate SRC= DST=` moves a real account between two of them and checks what arrived |
 
@@ -498,7 +563,7 @@ MONOPANEL_URL=https://panel:8443 MONOPANEL_TOKEN='…' make e2e
 ```
 
 CI on every push: tests with the race detector and coverage, the linter, template
-validation against real nginx and Apache, the web UI build with type checking, and
+validation against a real `nginx -t` and `apache2 -t` (the whole configuration of an account's Apache with its virtual host), the web UI build with type checking, and
 binaries for amd64 and arm64. E2E runs on demand (`workflow_dispatch`) because it
 needs a live host. The OS matrix runs from a workstation against a Proxmox testbed
 ([docs/en/08-testbed.md](docs/en/08-testbed.md)): the scripts live in `scripts/testbed/`, the

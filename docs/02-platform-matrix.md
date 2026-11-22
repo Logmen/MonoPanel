@@ -10,6 +10,8 @@
 
 Архитектуры: amd64 и arm64 — пакеты собираются для обеих, у всех источников ниже есть сборки под arm64; матрица на площадке гоняется на amd64.
 
+Ядро: песочнице restic нужен Landlock (Linux 5.13+, `landlock` в списке `/sys/kernel/security/lsm`); есть ли он на хосте, показывает строка «restic sandbox» в `mp doctor`. Без него restic работает без песочницы, а `mp doctor` предупреждает. Для представления веб-корня без символических ссылок агенту нужно монтирование (своё пространство имён монтирования и `mount_setattr` с `nosymfollow`, Linux 5.14); в контейнере, профиль которого запрещает монтирование, `mp doctor` предупреждает. Подробно — [01 §7](01-architecture.md#7-безопасность).
+
 Минимальные требования: 1 vCPU / 1 ГБ RAM / 10 ГБ диска (панель + nginx + одна версия PHP + СУБД с buffer pool 128 МБ). Рекомендуется 2 vCPU / 2 ГБ.
 
 ## 2. Источники пакетов
@@ -17,7 +19,7 @@
 | Компонент | Debian / Ubuntu | EL9 / EL10 | Комментарий |
 |---|---|---|---|
 | nginx | nginx.org, репозиторий `nginx` (stable) | nginx.org `nginx-stable` | Одинаковая раскладка на всех ОС: `/etc/nginx/nginx.conf` + `conf.d/`, пользователь `nginx`. HTTP/3 (QUIC) в сборках nginx.org. Возможная замена — Angie (форк со встроенными ACME и API), встаёт на то же место |
-| Apache 2.4 | дистрибутив (`apache2`) | дистрибутив (`httpd`) | Только `mpm_event` + `mod_proxy_fcgi`. `mod_php` не устанавливается |
+| Apache 2.4 | дистрибутив (`apache2`) | — | Только Debian/Ubuntu: свой экземпляр на аккаунт (`monopanel-apache@<логин>`), `mpm_event` + `mod_proxy_fcgi`; `mod_php` не устанавливается. На EL режима apache нет |
 | PHP (этап 1) | Debian: `packages.sury.org/php`; Ubuntu: `ppa:ondrej/php` | Remi (`remi-release-9` / `remi-release-10`), SCL-style пакеты `php{56..85}-php-*` | Параллельные версии из коробки. Каждый из этих репозиториев держит один человек — это риск, отсюда этап 2 |
 | PHP (этап 2, планируется) | собственный репозиторий | собственный репозиторий | Сборочная ферма, раскладка `/opt/monopanel/php/<X.Y>`, одинаковая на всех ОС |
 | MySQL 8.4 LTS | MySQL APT repo (`mysql-apt-config`) | MySQL Yum repo (`mysql84-community-release-el9` / `-el10`) | Community Server 8.4.x |
@@ -113,9 +115,9 @@ systemd: monopanel-php-fpm@8.4.service
 |---|---|---|
 | Пакетный менеджер | apt/dpkg, `DEBIAN_FRONTEND=noninteractive` | dnf/rpm |
 | Пользователь nginx | `nginx` (пакет nginx.org) | `nginx` |
-| Пользователь Apache | `www-data` | `apache` |
-| Apache: пакет / сервис / каталог | `apache2` / `apache2.service` / `/etc/apache2/` (`mods-enabled`, `conf-enabled`, `ports.conf`, `a2enmod`) | `httpd` / `httpd.service` / `/etc/httpd/` (`conf.modules.d/`, `conf.d/`) |
-| Apache: проверка | `apache2ctl -t` | `apachectl -t` |
+| Пользователь Apache | `www-data` (панель выводит его из `monopanel-web`; дочерние процессы Apache аккаунта — от имени аккаунта) | `apache` (режима apache нет) |
+| Apache: пакет / сервис / каталог | `apache2` / `monopanel-apache@<логин>.service` (`apache2.service` выключен) / `/etc/apache2/monopanel/accounts/<логин>/` | — |
+| Apache: проверка | `apache2 -t -f /etc/apache2/monopanel/accounts/<логин>/httpd.conf` | — |
 | PHP (этап 1) | `/etc/php/X.Y/fpm/{php.ini,pool.d/}`, бинарь `php-fpmX.Y`, сервис `phpX.Y-fpm.service`, CLI `phpX.Y` | `/etc/opt/remi/phpXY/{php.ini,php-fpm.d/}`, бинарь `/opt/remi/phpXY/root/usr/sbin/php-fpm`, сервис `phpXY-php-fpm.service`, CLI `phpXY` |
 | PHP (этап 2) | `/opt/monopanel/php/X.Y` | `/opt/monopanel/php/X.Y` |
 | Конфиг СУБД панели | `/etc/mysql/mysql.conf.d/zz-monopanel.cnf` (MySQL) / `/etc/mysql/conf.d/zz-monopanel.cnf` (Percona) | `/etc/my.cnf.d/zz-monopanel.cnf`; у Percona на EL `/etc/my.cnf` ничего не включает, и `mysqld` читает только `/etc/my.cnf`, `/etc/mysql/my.cnf`, `/usr/etc/my.cnf` — панель пишет `/etc/mysql/my.cnf` с `!includedir /etc/my.cnf.d/` (найдено площадкой 2026-09-10: до этого настройки панели на EL не применялись) |
@@ -127,6 +129,8 @@ systemd: monopanel-php-fpm@8.4.service
 | fail2ban | дистрибутив | EPEL |
 | Shell клиентов | `/bin/bash`, `/usr/sbin/nologin` | `/bin/bash`, `/sbin/nologin` |
 | Корневые сертификаты | `/etc/ssl/certs/ca-certificates.crt` | `/etc/pki/tls/certs/ca-bundle.crt` |
+
+Штатный пул `www` пакета на обеих раскладках — пустой пул панели (см. [03 §5](03-web-stack.md#5-шаблон-пула-php-fpm)). На EL мастер php-fpm пишет журнал в syslog, а не в `/var/opt/remi/phpXY/log/php-fpm/` (каталог принадлежит apache). PHP из AppStream панель не ставит и не трогает.
 
 Интерфейс в коде:
 
@@ -162,7 +166,7 @@ type Profile interface {
 - Docroot `/var/www(/.*)?` → `httpd_sys_content_t` (уже в базовой политике). Каталоги для записи (`uploads`, `cache`, `tmp`, `logs`) → `httpd_sys_rw_content_t` через `semanage fcontext` + `restorecon` при создании сайта; пользователь может пометить произвольный каталог как «записываемый» из UI.
 - Сокеты FPM `/run/monopanel/php(/.*)?` → `httpd_var_run_t`.
 - Собственные сборки PHP: `/opt/monopanel/php/[^/]+/sbin/php-fpm` → `httpd_exec_t`, библиотеки → `lib_t`, конфиги → `httpd_config_t`, логи → `httpd_log_t`.
-- Apache на `127.0.0.1:8080` — порт уже в `http_port_t`; нестандартные порты — `semanage port -a -t http_port_t -p tcp <port>`.
+- Режима apache на EL нет: Apache аккаунтов (`monopanel-apache@<логин>`) панель ставит и запускает только на Debian и Ubuntu, поэтому правила SELinux для них не нужны.
 - Булевы: `httpd_can_network_connect_db=1`, `httpd_can_sendmail=1`; `httpd_can_network_connect=1` — только если хотя бы один сайт делает исходящие HTTP-запросы (флаг сайта, по умолчанию включён: так делает почти любая CMS); `httpd_execmem=1` — только при включении ionCube/JIT.
 - Панель (`monopaneld`) — в первом релизе unconfined, в v1.0 — собственный домен `monopanel_t` в поставляемом модуле.
 - `mp doctor` показывает AVC-denials из `ausearch` за последние сутки с подсказкой по исправлению.

@@ -51,7 +51,17 @@ it gets fixed.
   or read. The agent treats the API as untrusted: a program, an argument shape,
   a configuration directive, a systemd unit or a path the panel itself never
   sends, accepted by the agent and turned into root, is in scope — so is a path
-  the API could swap between the agent's check and its use.
+  the API could swap between the agent's check and its use. restic, which reads
+  the web root and the panel's trees as root for a backup and writes a snapshot
+  for a restore, runs in a Landlock sandbox: a directory swapped for a symlink
+  while it works makes root neither read nor write outside those trees.
+- **The panel's port.** `monopanel-api.socket` (PID 1) holds the panel's HTTPS
+  port and hands it to the API, so the port is never free while the API
+  restarts, is stopped or has not started yet at boot. A way for a local account
+  to bind that port is in scope, and so is a way for the API to make PID 1 bind
+  a port the API could not bind itself (below
+  `net.ipv4.ip_unprivileged_port_start`) or to write a socket drop-in of its own
+  choosing.
 - **User → user, and user → administrator.** A panel account may only act on its
   own sites, databases, files and cron. Escaping that, or reaching an
   administrator-only endpoint, is in scope. Migration scopes, which read a whole
@@ -71,7 +81,17 @@ it gets fixed.
   scope.
 - **Client → host.** `monopanel helper` drops privileges irreversibly before
   touching client files, and SFTP-only accounts are chrooted. Escaping either is
-  in scope, as is one site's php-fpm pool reading another site's files.
+  in scope, as is one site's php-fpm pool reading another site's files, one
+  account's site in Apache mode reaching another account's files, php-fpm pools
+  or requests (through its .htaccess, a symlink, a status page, a request sent
+  straight to another account's Apache for its dotfiles, or the port of an Apache
+  that restarts), or the guest of a shared folder with `--no-php` running code as
+  the site's owner or reading the owner's files outside the folder. So is a guest
+  that gets its shared folder bound anywhere but its mount point, and making a
+  backup store a file outside the account's home — or another account's — as the
+  account's own (restic's Landlock sandbox, in which a backup follows no symlink
+  in the web root; `mp doctor` warns on a kernel without Landlock or where the
+  agent may not mount).
 - **Authentication.** Session handling (a password change ends the account's
   other browser sessions, a suspension all of them), Bearer tokens, TOTP (setting
   it up anew takes switching it off with the password first), the login rate
@@ -80,7 +100,19 @@ it gets fixed.
   systemd templates and the mail maps come from user input. Anything that escapes
   its context there — a domain name that becomes a directive, a value that starts
   a line of its own in a crontab, a unit or a mail map, a custom snippet that
-  survives validation and rollback — is in scope.
+  survives validation and rollback — is in scope. nginx configurations hand
+  FastCGI requests to the panel's own site pools alone
+  (`fastcgi_pass unix:<run_dir>/php/<domain>.sock`, no
+  `PHP_VALUE`/`PHP_ADMIN_VALUE`, no include of EL's `/etc/nginx/default.d`) and
+  never let a client choose the first bytes nginx sends to a socket
+  (`proxy_method` a plain word, `uwsgi_modifier1` 0, no stream relay to a unix
+  socket by `proxy_pass` or an upstream). Every PHP branch's stock `www` pool is
+  kept idle (nobody, a root-only socket) and no other file may add to it.
+  Include patterns of nginx, php-fpm and dovecot are checked the way glob(3)
+  expands them (a wildcard in the file name only, no backslash or braces), and
+  an account's Apache includes nothing but its own virtual hosts and their
+  directives. Neither the API nor a client can run code as `www-data`, `apache`
+  or `nobody` through php-fpm.
 - **The update chain.** The panel installs packages into itself. Making it accept
   a package the release key did not sign, or one that does not match the signed
   checksums, is in scope. So is anything that lets a panel administrator (not
@@ -119,12 +151,16 @@ with an ed25519 key held as a repository secret; the public half is built into t
 panel (a fork builds in its own, or pins it on each server with `mp update trust`).
 Before an update is installed, the API process verifies the signature and the
 package digest, and the agent — which runs as root — verifies both again itself
-rather than trusting the unprivileged process that downloaded them: it first
-copies the package out of the API's directory into its own, root-only one, and
-checks and installs that copy. A panel with a key, built in or pinned, refuses an
-unsigned release outright, and the agent never installs a release older than the
-running one — an older signed release would bring back what later ones fixed; a
-downgrade is done by hand as root.
+rather than trusting the unprivileged process that downloaded them. The agent
+copies the package into its own root-only directory
+(`/var/lib/monopanel-agent/updates`) without following a symlink, and only a
+copy whose SHA-256 is the one the signed checksum list gives the release's own
+package file takes the name `update-run` installs; a request that does not match
+changes nothing already staged. A panel with a key, built in or pinned, refuses
+an unsigned release outright. The agent also refuses to go back: an older
+release, or the release a later build (`git describe`, e.g. `0.8.19-5-gabc1234`)
+was made from, is a downgrade — an older signed release would bring back what
+later ones fixed — and is installed only by hand as root.
 
 If you believe the signing key or a published release has been tampered with,
 report it the same way as any other vulnerability.

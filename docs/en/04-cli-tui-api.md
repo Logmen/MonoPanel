@@ -13,7 +13,7 @@ The exceptions are deliberate, and there are few of them (`internal/parity/exemp
 - the API reference (`/api/v1/docs`, `openapi.json`, `/schemas`) is a set of pages, not operations; `GET /health` is the clients' own probe (the sign-in screen, `mp setup`), and `mp status` and the TUI header show the version;
 - the server-to-server half of a migration (`GET /migrate/plan`, `state`, `files`, `dump`) — the receiving panel's job calls it with the migration token, never a person;
 - `mp update trust` — root on the server only: the release signing key never passes through the panel process, and the web UI shows its state read-only; `mp config show|set --local` — root's recovery path when the API does not start, while the normal path goes through the API and is in the web UI too;
-- installation and the binary's daemon roles (`mp setup`, `api`, `agent`, `helper`, `fsop`, `update-run`, `demo`) and shell conveniences (`completion`, `help`, `version`);
+- installation and the binary's daemon roles (`mp setup`, `api`, `agent`, `helper`, `fsop`, `update-run`, `app-exec`, `sandbox-exec`, `demo`) and shell conveniences (`completion`, `help`, `version`);
 - three reads the API allows an ordinary account too — `mp php list`, `mp web tls` and `mp dns-provider types` — are not in its TUI menus: the web UI shows them to administrators only (an ordinary account meets the PHP branches as the choices of the site form).
 
 The `mp` flags that set no request field — output (`--json`, `--no-wait`), secret passing (`--…-stdin`) and paths to local files (`--cert`, `--key`, `--chain`, `--set`, `mp files get|put`) — need no counterpart in the web UI: it takes secrets and file contents through its own fields, file pickers and uploads.
@@ -29,7 +29,7 @@ mp                                   # TUI menu (in an interactive terminal; oth
 mp setup [--hostname …] [--listen …] [--admin-login …] [--admin-password …|--password-stdin]
          [--no-start] [--install-units] [--binary …]   # as root; running it again only creates what is missing
 mp status                            # panel, host, services, jobs
-mp doctor                            # diagnostics
+mp doctor                            # diagnostics (restic's sandbox, the accounts' Apaches and the panel port's socket included)
 mp whoami                            # who you are to the panel: account, role, how you are authenticated, token, 2FA
 mp version
 mp update                            # what is installed and what is available
@@ -45,7 +45,7 @@ mp user add <login> [--password …|--password-stdin|--generate] [--email …] [
 mp user set <login> [--password …|--password-stdin|--generate] [--current-password …|--current-password-stdin] [--email …] [--shell|--sftp-only] [--status active|suspended]   # one's own password is changed with the current one (asked on a terminal)
 mp user list | show <login> | totp-reset <login>
 mp user rm <login> [--purge] [--yes]
-mp user share list <login> | add <login> --site <domain> --path <folder> [--name …] [--no-php] [--entry] | entry <login> <name> [--off] | rm <login> <name>   # a folder of another account's site over SFTP; entry — the session starts inside it
+mp user share list <login> | add <login> --site <domain> --path <folder> [--name …] [--no-php] [--entry] | entry <login> <name> [--off] | rm <login> <name>   # a folder of another account's site over SFTP; entry — the session starts inside it; IN HOME — the path in the home, --json adds mount_point
 mp totp status | setup [--qr] | enable <code> | disable [--password-stdin]   # 2FA of your own account; set it up again after disable
 
 mp site add <domain> --user <login> [--php 8.4] [--mode fpm|apache|proxy] [--backend http://127.0.0.1:3000]
@@ -59,7 +59,7 @@ mp site list | show <domain> | presets
 mp site apply | fix | suspend | unsuspend <domain>   # fix — owner, permissions, ACLs and SELinux labels of the site's files
 mp site rm <domain> [--purge]
 mp site logs <domain> [--type access|error|php|slow|apache-access|apache-error] [-n 100]
-mp site nginx <domain> [--set file | --clear | --generated]   # custom directives in server {}, checked with nginx -t, with rollback
+mp site nginx <domain> [--set file | --clear | --generated]   # custom directives in server {}: the agent's check, nginx -t, rollback
 mp site php <domain>                 # effective PHP settings and where each one comes from
 mp site tls <domain> [--dns <provider>] [--staging] [--email …]   # a certificate for the domain and its aliases; the site switches to HTTPS
 mp site move-ip <new-address> [--from <previous>]  # after the host's IP changes: all sites on the vanished addresses at once
@@ -73,7 +73,7 @@ mp php install <version> | remove <version>
 mp php ext list <version> | enable <version> <extension> | disable <version> <extension>
 mp php ini [set key=value … | unset key …]   # PHP settings for all sites
 
-mp stack list
+mp stack list                        # apache shows "N of M running": an Apache per account with sites in that mode
 mp stack install nginx|apache|percona|mysql|fail2ban|memcached|valkey|jpegoptim|git|composer|sphinx
 mp stack remove memcached|valkey|jpegoptim|git|composer|sphinx
 mp stack memcached [--memory-mb 256] [--max-conn 2048]    # without flags — show the settings
@@ -101,7 +101,7 @@ mp backup target add <name> --type local|sftp|s3|b2|rest --repo … [--password 
                    [--schedule daily] [--keep-daily 7] [--keep-weekly 4] [--keep-monthly 3]
 mp backup target list | rm <name>
 mp backup run [--target …] [--scope server|user:<login>|site:<domain>|db:<name>]
-mp backup list [--target …] [-n 50] | snapshots [--target …]
+mp backup list [--target …] [-n 50] | snapshots [--target …]   # status: running, done, partial (a snapshot without some files), failed
 mp backup restore <snapshot> [--target …] [--include path…] [--in-place]
 
 mp cron list | add --schedule "*/5 * * * *" --command "…" [--comment …] [--disabled]
@@ -133,7 +133,9 @@ mp migrate plan | run --from fastpanel|bitrixvm --source root@old.example.com[:2
                       [--scope user:<login>] [--domain …] [--as <login>]   # --domain — the main BitrixVM site
 
 mp service status [unit] | start | stop | reload | restart | reload-or-restart | enable | disable <unit>
-mp logs <unit> [-n 100]              # the unit's journal, through the agent
+                                     # template instances (but monopanel-apache@<login>), targets and shell/power units: status only
+mp service status|stop|start monopanel-apache@<login>   # an account's Apache
+mp logs <unit> [-n 100]              # the unit's journal, through the agent: mp logs monopanel-apache@<login>
 mp metrics [--range 1h|6h|24h|7d|30d]
 mp job list [--status …] [--limit …] | show <id> | wait <id>
 mp audit [-n 50] [--actor <login>] [--action auth.|token.|site.]   # audit log: sign-ins, tokens, changes
@@ -154,6 +156,9 @@ Conventions:
 - For `migrate plan|run` the `--token` and `--insecure` flags belong to the source, and for `update settings` `--token` is the release repository's token; so these commands get your own token for `--server` in `MP_TOKEN`, and `migrate plan|run` also gets `MP_INSECURE=1` instead of `--insecure`.
 - The CLI and the TUI speak the language of the terminal locale, the way the web UI follows the browser: a CIS language in `LC_ALL`, `LC_MESSAGES`, `LANG` or `LANGUAGE` gives Russian, anything else, including `C`/`POSIX`, English; `MP_LANG=ru` or `MP_LANG=en` sets it explicitly. The server's own messages are in English.
 - `mp completion <shell>` prints the completion script; it is not part of the package yet.
+- The agent checks custom nginx directives (`mp site nginx --set`) like generated ones: `fastcgi_pass` only to a site's pool socket, no `fastcgi_param PHP_VALUE/PHP_ADMIN_VALUE`, `proxy_method` a plain word, `uwsgi_modifier1` 0, and `include` never of `/etc/nginx/default.d` and with a wildcard in the file name only (see [03 §3](03-web-stack.md#3-nginx-template-mode-a-abridged)). The API returns such a refusal as a 422 "the panel does not take these directives (nothing was changed)" — before anything is written and without `nginx -t`; "nginx rejected the configuration" means the directives were written, `nginx -t` refused them and the previous version was restored.
+- `mp doctor` warns with `[WARN] api socket` when `monopanel-api.socket` is enabled but the API listens on the port itself: while the API restarts, any local account can take the port. Look for the cause in `journalctl -u monopanel-api -u monopanel-api.socket`; `mp setup` fixes it. For a port below `net.ipv4.ip_unprivileged_port_start` the socket is kept off on purpose, and there is no warning.
+- An action on a unit the agent does not take (template instances, targets, shells and power units only report their state) reaches `mp service` as the API's refusal with the agent's reason and exit code 4, not as an agent failure.
 
 ## 3. TUI menu
 
@@ -207,9 +212,10 @@ Keys:
 - Base path `/api/v1`, specification `/api/v1/openapi.json`, interactive documentation `/api/v1/docs` (Stoplight Elements, embedded in the binary). The documentation, the specification and `/schemas/*` are served only to signed-in callers (a session or an API token; a migration token does not count): `curl -H "Authorization: Bearer $TOKEN" https://host:8443/api/v1/openapi.json`.
 - Authentication: `Authorization: Bearer <token>`, a cookie session for the UI (+ CSRF), unix peer-cred for the CLI on the local socket. A token acts with the rights of its account (`admin` or `user`); the `migrate:user:<login>` scope restricts it to reading what a migration of one account needs, and any other scope is just a label. Only an administrator's token can carry a migration scope (usually issued with `mp migrate grant`); the panel revokes such tokens of ordinary accounts when it starts.
 - Mutations that need work on the server are asynchronous: `202 Accepted` with a `job_id` in the response; `GET /jobs/{id}`, `GET /jobs/{id}/events` (SSE: progress, log lines, completion). Fast operations (a token, a setting, a Valkey instance) are synchronous `200/201/204`. An administrator sees every job, any other account the jobs it started; the secrets in a job's parameters (passwords, tokens, secrets, the encrypted `*_enc` fields) come back as `[redacted]`.
-- Actions that restart the panel itself are carried out after the answer: `PUT /system/config` with `restart: true`, and stopping or restarting `monopanel-api` and `monopanel-agent` with `POST /services/{unit}`. The client reconnects a few seconds later — at the new address when `web.listen` changed.
+- Actions that restart the panel itself are carried out after the answer: `PUT /system/config` with `restart: true`, and stopping or restarting `monopanel-api` and `monopanel-agent` and restarting `monopanel-api.socket` with `POST /services/{unit}`. The client reconnects a few seconds later — at the new address when `web.listen` changed.
+- `monopanel-api.socket` holds the panel's port ([01 §3.1](01-architecture.md#31-monopaneld-api--the-unprivileged-process)). A restart that keeps the address restarts `monopanel-api.service` alone — the socket holds the port throughout. A restart that applies a new `web.listen` (with the change or later, on its own) and a restart of the API on the Services page stop the socket first, and it comes back with the API on the new address. Stopping `monopanel-api` or `monopanel-agent` leaves the socket be: the next connection to the panel's port starts the API again, and through `Requires=` the agent with it. To stop the panel completely: `systemctl stop monopanel-api.socket monopanel-api monopanel-agent`. A restart of `monopanel-api.socket` (`mp service restart monopanel-api.socket`, the Services page) is carried out after the answer as a stop of the socket and a restart of the API; `mp` waits until the panel answers again. `mp config set --local web.listen …` writes the socket's drop-in too; without `--restart`, apply it with `systemctl stop monopanel-api.socket && systemctl restart monopanel-api`. `monopanel api` started by hand gets no port while the socket listens. `GET /system/status` gives where the port comes from in `panel.listen_via`: `socket` or `itself`. The drop-in `/etc/systemd/system/monopanel-api.service.d/socket.conf` asks the binary before every start of the API (`monopanel api-socket-sync --probe`), and a version 0.8.19 or older — after a self-update that rolled back or a package downgrade — takes the port itself, without the socket ([01 §9](01-architecture.md#9-packaging-installation-updates)).
 - `PUT /system/config` changes five keys of `config.yaml` — `web.hostname`, `web.listen`, `log.level`, `log.format`, `jobs.workers`; the agent writes the file, and the release signing key is not among them. A new `web.listen` must be an address the server can listen on, and its port is opened in the firewall before anything is written. Changes take effect once monopanel-api restarts; `restart_pending` in `GET /system/config` says the file no longer matches what the running process loaded.
-- Errors are RFC 9457 `application/problem+json` with an `errors[]` field for per-field validation.
+- Errors are RFC 9457 `application/problem+json` with an `errors[]` field for per-field validation. `/services/{unit}` passes an agent's refusal on with its own status (403, 409, 400, 422) and reason; 502 means the agent is unreachable or the action itself failed.
 - Lists are returned whole; jobs support `?limit` and `?status`, the audit log `?limit`, `?actor` and `?action`, backups `?limit` and `?target`. Cursor pagination, filters, field selection and `Idempotency-Key` are planned.
 - Webhooks: a JSON `POST` to the URL when jobs finish — events `job.done`, `job.failed` and `<job type>.done|failed` (`site.apply.done`, `cert.issue.failed`, `backup.run.*`, `*`), headers `X-MonoPanel-Event` and `X-MonoPanel-Signature: sha256=<HMAC of the body>`, three attempts. Events outside jobs (`service.down`, an expiring certificate) are planned.
 
@@ -223,7 +229,7 @@ GET/POST        /users/{login}/cron               PATCH/DELETE /users/{login}/cr
 GET/POST        /users/{login}/apps               GET/PATCH/DELETE /users/{login}/apps/{name}   GET /apps
 GET             /users/{login}/apps/{name}/logs   POST /users/{login}/apps/{name}/{start|stop|restart}
 GET             /users/{login}/valkey             PUT/DELETE /users/{login}/valkey/{cache|sessions}   GET /valkey
-GET/POST        /users/{login}/shares             PATCH/DELETE /users/{login}/shares/{name}
+GET/POST        /users/{login}/shares             PATCH/DELETE /users/{login}/shares/{name}   (mount_point — where the folder is mounted)
 POST            /users/{login}/valkey/{purpose}/restart
 GET/POST        /sites                            GET/PATCH/DELETE /sites/{domain}   GET /sites/presets
 POST            /sites/{domain}/apply | fix | suspend | unsuspend | cms | tls/issue    POST /sites/move-ip

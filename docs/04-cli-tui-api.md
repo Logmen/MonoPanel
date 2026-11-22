@@ -13,7 +13,7 @@
 - справочник API (`/api/v1/docs`, `openapi.json`, `/schemas`) — страницы, а не операции; `GET /health` — проба самих клиентов (экран входа, `mp setup`), версию показывают `mp status` и шапка TUI;
 - серверная половина переезда (`GET /migrate/plan`, `state`, `files`, `dump`) — её вызывает задача принимающей панели по токену переезда, а не человек;
 - `mp update trust` — только от root на сервере: ключ подписи релизов не проходит через процесс панели, Web UI показывает его состояние только для чтения; `mp config show|set --local` — путь восстановления от root, когда API не запускается, обычный путь идёт через API и есть в Web UI;
-- установка и служебные роли бинарника (`mp setup`, `api`, `agent`, `helper`, `fsop`, `update-run`, `demo`) и удобства оболочки (`completion`, `help`, `version`);
+- установка и служебные роли бинарника (`mp setup`, `api`, `agent`, `helper`, `fsop`, `update-run`, `app-exec`, `sandbox-exec`, `demo`) и удобства оболочки (`completion`, `help`, `version`);
 - три чтения, которые API разрешает и обычному аккаунту, — `mp php list`, `mp web tls` и `mp dns-provider types` — в его меню TUI не входят: Web UI показывает их только администратору (ветки PHP обычный аккаунт видит как варианты в форме сайта).
 
 Флагам `mp`, которые не задают поля запроса, — выводу (`--json`, `--no-wait`), передаче секретов (`--…-stdin`) и путям к локальным файлам (`--cert`, `--key`, `--chain`, `--set`, `mp files get|put`) — пара в Web UI не нужна: секреты и содержимое файлов он принимает своими полями, выбором файла и загрузкой.
@@ -29,7 +29,7 @@ mp                                   # TUI-меню (в интерактивно
 mp setup [--hostname …] [--listen …] [--admin-login …] [--admin-password …|--password-stdin]
          [--no-start] [--install-units] [--binary …]   # от root; повторный запуск создаёт только недостающее
 mp status                            # панель, хост, сервисы, задачи
-mp doctor                            # диагностика
+mp doctor                            # диагностика (в т.ч. песочница restic, Apache аккаунтов, сокет порта панели)
 mp whoami                            # кто вы для панели: аккаунт, роль, способ входа, токен, 2FA
 mp version
 mp update                            # что стоит и что вышло
@@ -45,7 +45,7 @@ mp user add <login> [--password …|--password-stdin|--generate] [--email …] [
 mp user set <login> [--password …|--password-stdin|--generate] [--current-password …|--current-password-stdin] [--email …] [--shell|--sftp-only] [--status active|suspended]   # свой пароль меняют с текущим (спрашивается в терминале)
 mp user list | show <login> | totp-reset <login>
 mp user rm <login> [--purge] [--yes]
-mp user share list <login> | add <login> --site <домен> --path <папка> [--name …] [--no-php] [--entry] | entry <login> <name> [--off] | rm <login> <name>   # папка сайта другого аккаунта по SFTP; entry — сессия начинается в ней
+mp user share list <login> | add <login> --site <домен> --path <папка> [--name …] [--no-php] [--entry] | entry <login> <name> [--off] | rm <login> <name>   # папка сайта другого аккаунта по SFTP; entry — сессия начинается в ней; IN HOME — путь в доме, --json — ещё mount_point
 mp totp status | setup [--qr] | enable <код> | disable [--password-stdin]   # 2FA своего аккаунта; настроить заново — после disable
 
 mp site add <domain> --user <login> [--php 8.4] [--mode fpm|apache|proxy] [--backend http://127.0.0.1:3000]
@@ -59,7 +59,7 @@ mp site list | show <domain> | presets
 mp site apply | fix | suspend | unsuspend <domain>   # fix — владелец, права, ACL и метки SELinux файлов сайта
 mp site rm <domain> [--purge]
 mp site logs <domain> [--type access|error|php|slow|apache-access|apache-error] [-n 100]
-mp site nginx <domain> [--set файл | --clear | --generated]   # свои директивы в server {} с проверкой nginx -t и откатом
+mp site nginx <domain> [--set файл | --clear | --generated]   # свои директивы в server {}: проверка агентом, nginx -t и откат
 mp site php <domain>                 # действующие PHP-параметры и откуда каждый взялся
 mp site tls <domain> [--dns <провайдер>] [--staging] [--email …]   # сертификат на домен с алиасами, сайт переходит на HTTPS
 mp site move-ip <новый-адрес> [--from <прежний>]   # после смены IP хоста: все сайты пропавших адресов разом
@@ -73,7 +73,7 @@ mp php install <версия> | remove <версия>
 mp php ext list <версия> | enable <версия> <расширение> | disable <версия> <расширение>
 mp php ini [set key=value … | unset key …]   # PHP-параметры для всех сайтов
 
-mp stack list
+mp stack list                        # у apache — «запущено N из M»: по Apache на аккаунт с сайтами в этом режиме
 mp stack install nginx|apache|percona|mysql|fail2ban|memcached|valkey|jpegoptim|git|composer|sphinx
 mp stack remove memcached|valkey|jpegoptim|git|composer|sphinx
 mp stack memcached [--memory-mb 256] [--max-conn 2048]    # без флагов — показать
@@ -101,7 +101,7 @@ mp backup target add <имя> --type local|sftp|s3|b2|rest --repo … [--passwor
                    [--schedule daily] [--keep-daily 7] [--keep-weekly 4] [--keep-monthly 3]
 mp backup target list | rm <имя>
 mp backup run [--target …] [--scope server|user:<login>|site:<domain>|db:<name>]
-mp backup list [--target …] [-n 50] | snapshots [--target …]
+mp backup list [--target …] [-n 50] | snapshots [--target …]   # статус: running, done, partial (снимок без части файлов), failed
 mp backup restore <snapshot> [--target …] [--include путь…] [--in-place]
 
 mp cron list | add --schedule "*/5 * * * *" --command "…" [--comment …] [--disabled]
@@ -133,7 +133,9 @@ mp migrate plan | run --from fastpanel|bitrixvm --source root@old.example.com[:2
                       [--scope user:<login>] [--domain …] [--as <login>]   # --domain — основной сайт BitrixVM
 
 mp service status [unit] | start | stop | reload | restart | reload-or-restart | enable | disable <unit>
-mp logs <unit> [-n 100]              # журнал юнита через агент
+                                     # экземпляры шаблонов (кроме monopanel-apache@<логин>), цели и юниты оболочек/питания — только status
+mp service status|stop|start monopanel-apache@<логин>   # Apache аккаунта
+mp logs <unit> [-n 100]              # журнал юнита через агент: mp logs monopanel-apache@<логин>
 mp metrics [--range 1h|6h|24h|7d|30d]
 mp job list [--status …] [--limit …] | show <id> | wait <id>
 mp audit [-n 50] [--actor <login>] [--action auth.|token.|site.]   # журнал действий: входы, токены, изменения
@@ -154,6 +156,9 @@ mp completion bash|zsh|fish|powershell   # скрипт автодополнен
 - У `migrate plan|run` флаги `--token` и `--insecure` относятся к источнику, у `update settings` `--token` — токен репозитория с релизами; поэтому свой токен для `--server` этим командам передают в `MP_TOKEN`, а `migrate plan|run` — и `MP_INSECURE=1` вместо `--insecure`.
 - Язык CLI и TUI — по локали терминала, как язык Web UI по браузеру: язык стран СНГ в `LC_ALL`, `LC_MESSAGES`, `LANG` или `LANGUAGE` — русский, любой другой, в том числе `C`/`POSIX`, — английский; `MP_LANG=ru` или `MP_LANG=en` задаёт язык явно. Сообщения самого сервера — на английском.
 - Автодополнение печатает `mp completion <shell>`; в пакет оно пока не входит.
+- Свои директивы nginx (`mp site nginx --set`) агент проверяет как сгенерированные: `fastcgi_pass` — только на сокет пула сайта, без `fastcgi_param PHP_VALUE/PHP_ADMIN_VALUE`; `proxy_method` — только слово, `uwsgi_modifier1` — только 0, `include` — без `/etc/nginx/default.d` и с шаблоном только в имени файла (подробно — [03 §3](03-web-stack.md#3-шаблон-nginx-режим-a-сокращённо)). Такой отказ API возвращает как 422 «the panel does not take these directives (nothing was changed)» — до записи и без `nginx -t`; «nginx rejected the configuration» значит, что директивы записались, `nginx -t` их не принял, и прежняя версия восстановлена.
+- `mp doctor` предупреждает строкой `[WARN] api socket`, если `monopanel-api.socket` включён, а API слушает порт сам: пока API перезапускается, порт может занять любой локальный аккаунт. Причину ищут в `journalctl -u monopanel-api -u monopanel-api.socket`, исправляет `mp setup`. Для порта ниже `net.ipv4.ip_unprivileged_port_start` сокет нарочно выключен, и предупреждения нет.
+- Действие над юнитом, которое агент не выполняет (у экземпляров шаблонов, целей, оболочек и юнитов питания — только состояние), `mp service` получает как отказ API с причиной агента и кодом выхода 4, а не как ошибку агента.
 
 ## 3. TUI-меню
 
@@ -207,9 +212,10 @@ mp completion bash|zsh|fish|powershell   # скрипт автодополнен
 - Базовый путь `/api/v1`, спецификация `/api/v1/openapi.json`, интерактивная документация `/api/v1/docs` (Stoplight Elements, вшит в бинарник). Документация, спецификация и `/schemas/*` отдаются только вошедшим (сессия или API-токен; токен переезда — нет): `curl -H "Authorization: Bearer $TOKEN" https://host:8443/api/v1/openapi.json`.
 - Аутентификация: `Authorization: Bearer <token>`, cookie-сессия для UI (+ CSRF), unix peer-cred для CLI на локальном сокете. Токен действует с правами своего аккаунта (`admin` или `user`); scope `migrate:user:<login>` ограничивает его чтением переезда одного аккаунта, остальные scope — пометки. Scope переезда бывает только у токена администратора (обычно его выдаёт `mp migrate grant`); такие токены обычных аккаунтов панель отзывает при запуске.
 - Мутации, которым нужна работа на сервере, асинхронны: `202 Accepted` и `job_id` в ответе; `GET /jobs/{id}`, `GET /jobs/{id}/events` (SSE: прогресс, строки лога, завершение). Быстрые операции (токен, настройка, экземпляр Valkey) — синхронные `200/201/204`. Администратор видит все задачи, другой аккаунт — те, что запускал он; секреты из параметров задачи (пароли, токены, секреты, зашифрованные поля `*_enc`) в ответах заменены на `[redacted]`.
-- Действия, которые перезапускают саму панель, выполняются после ответа: `PUT /system/config` с `restart: true`, остановка и перезапуск `monopanel-api` и `monopanel-agent` через `POST /services/{unit}`. Клиенту нужно переподключиться через несколько секунд — по новому адресу, если сменился `web.listen`.
+- Действия, которые перезапускают саму панель, выполняются после ответа: `PUT /system/config` с `restart: true`, остановка и перезапуск `monopanel-api` и `monopanel-agent` и перезапуск `monopanel-api.socket` через `POST /services/{unit}`. Клиенту нужно переподключиться через несколько секунд — по новому адресу, если сменился `web.listen`.
+- Порт панели держит `monopanel-api.socket` ([01 §3.1](01-architecture.md#31-monopaneld-api--непривилегированный-процесс)). Перезапуск, который не меняет адрес, перезапускает только `monopanel-api.service` — порт всё это время держит сокет. Перезапуск, который применяет новый `web.listen` (вместе с изменением или позже отдельным `restart`), и перезапуск API на странице «Службы» сначала останавливают сокет, и он поднимается вместе с API на новом адресе. Остановка `monopanel-api` или `monopanel-agent` сокет не трогает: следующее соединение с портом панели снова запустит API, а вместе с ним, через `Requires=`, и агента. Остановить панель целиком: `systemctl stop monopanel-api.socket monopanel-api monopanel-agent`. Перезапуск `monopanel-api.socket` (`mp service restart monopanel-api.socket`, «Службы») выполняется после ответа как остановка сокета и перезапуск API; `mp` ждёт, пока панель снова ответит. `mp config set --local web.listen …` пишет и drop-in сокета; без `--restart` применить так: `systemctl stop monopanel-api.socket && systemctl restart monopanel-api`. `monopanel api`, запущенный вручную, порт не получит, пока слушает сокет. `GET /system/status` отдаёт источник порта в `panel.listen_via`: `socket` или `itself`. Drop-in `/etc/systemd/system/monopanel-api.service.d/socket.conf` перед каждым стартом API спрашивает бинарник (`monopanel api-socket-sync --probe`), и версия 0.8.19 или старше — после отката самообновления или даунгрейда пакета — получает порт без сокета, сама ([01 §9](01-architecture.md#9-упаковка-установка-обновление)).
 - `PUT /system/config` меняет пять ключей `config.yaml` — `web.hostname`, `web.listen`, `log.level`, `log.format`, `jobs.workers`; файл пишет агент, ключ подписи релизов сюда не входит. Новый `web.listen` должен быть адресом, который сервер может слушать, и его порт открывается в firewall до записи. Изменения действуют после перезапуска monopanel-api, `restart_pending` в `GET /system/config` говорит, что файл уже не совпадает с тем, что загрузил работающий процесс.
-- Ошибки — RFC 9457 `application/problem+json` с полем `errors[]` для валидации по полям.
+- Ошибки — RFC 9457 `application/problem+json` с полем `errors[]` для валидации по полям. `/services/{unit}` передаёт отказ агента с его же статусом (403, 409, 400, 422) и причиной; 502 — только когда агент недоступен или сама операция не удалась.
 - Списки отдаются целиком; у задач есть `?limit` и `?status`, у журнала действий — `?limit`, `?actor` и `?action`, у бэкапов — `?limit` и `?target`. Курсорная пагинация, фильтры, выбор полей и `Idempotency-Key` — планируются.
 - Webhooks: `POST` JSON на URL при завершении задач — события `job.done`, `job.failed` и `<тип задачи>.done|failed` (`site.apply.done`, `cert.issue.failed`, `backup.run.*`, `*`), заголовки `X-MonoPanel-Event` и `X-MonoPanel-Signature: sha256=<HMAC тела>`, три попытки. События вне задач (`service.down`, истекающий сертификат) — планируются.
 
@@ -223,7 +229,7 @@ GET/POST        /users/{login}/cron               PATCH/DELETE /users/{login}/cr
 GET/POST        /users/{login}/apps               GET/PATCH/DELETE /users/{login}/apps/{name}   GET /apps
 GET             /users/{login}/apps/{name}/logs   POST /users/{login}/apps/{name}/{start|stop|restart}
 GET             /users/{login}/valkey             PUT/DELETE /users/{login}/valkey/{cache|sessions}   GET /valkey
-GET/POST        /users/{login}/shares             PATCH/DELETE /users/{login}/shares/{name}
+GET/POST        /users/{login}/shares             PATCH/DELETE /users/{login}/shares/{name}   (mount_point — где папка смонтирована)
 POST            /users/{login}/valkey/{purpose}/restart
 GET/POST        /sites                            GET/PATCH/DELETE /sites/{domain}   GET /sites/presets
 POST            /sites/{domain}/apply | fix | suspend | unsuspend | cms | tls/issue    POST /sites/move-ip

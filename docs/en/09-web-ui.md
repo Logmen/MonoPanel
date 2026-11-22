@@ -78,8 +78,8 @@ redirect, the php-fpm pool, `client_max_body_size`, the IPv4 and IPv6 addresses,
 request limit, access only from the listed IPs and the HTTP/2, HTTP/3, HSTS, static files
 through nginx, exec/system and security header flags. "Save and apply" sends only the
 fields that changed and queues a job: the configs are rendered again, checked with
-`nginx -t`, `apachectl -t` and `php-fpm -t` and written all at once — or not written at
-all if the check fails.
+`nginx -t`, `apache2 -t` (the configuration of the account's Apache) and `php-fpm -t` and
+written all at once — or not written at all if the check fails.
 
 On the "CMS" tab the panel installs WordPress, Joomla, OpenCart or 1C-Bitrix (edition and
 solution) into the site — how that works is in [03](03-web-stack.md#10-cms-installation);
@@ -87,7 +87,11 @@ the CMS administrator's password is shown once. "PHP" lists the effective settin
 the source of each (panel, global, preset, site) and the site's overrides; saving
 restarts the pool. "nginx" holds your own directives inside `server {}`, checked with
 `nginx -t` and rolled back on error (an administrator changes and removes them), and the
-generated server block to read. "Logs" shows access, error, php, slow and the Apache logs,
+generated server block to read. Directives the panel does not take (`fastcgi_pass` to
+anything but the site's pool, `fastcgi_param PHP_VALUE` and others —
+[03 §3](03-web-stack.md#3-nginx-template-mode-a-abridged)) are refused before anything is
+written, and the message says so — "the panel does not take these directives (nothing
+was changed)" — rather than blaming nginx. "Logs" shows access, error, php, slow and the Apache logs,
 from the last 50 to 5000 lines.
 
 ## PHP
@@ -112,7 +116,9 @@ or MySQL, fail2ban, memcached, Valkey, jpegoptim, git, composer and Sphinx for 1
 with the version, the service state and install buttons; the tools can also be removed.
 An installed component can be reinstalled — that is how a broken one is repaired, and how
 composer is updated; a failed installation can be retried, and the reason is shown in its
-row. The PHP branches are listed here too, with the state of their php-fpm, and are
+row. Apache shows "N of M running" instead of one service's state: every account with
+sites in apache mode has an Apache of its own, and the row tells whether all of them run.
+The PHP branches are listed here too, with the state of their php-fpm, and are
 managed on the PHP page. The memory and the number of connections for memcached are set
 here as well.
 
@@ -228,16 +234,25 @@ list is kept even before fail2ban is installed.
 
 ## Services
 
-The systemd units the panel watches — the agent, the web servers, the database server and
-the php-fpm of every installed PHP branch — with their state, autostart and start time;
+The systemd units the panel watches — the agent, nginx, the Apache of every account with
+sites in apache mode (`monopanel-apache@<login>`), the database server and the php-fpm of
+every installed PHP branch — with their state, autostart and start time;
 any other unit of the server opens by name (postfix, dovecot, fail2ban, a timer or a
 socket). A unit has start, stop, restart, reload (re-read the configuration) and "Reload
 or restart", and its autostart is enabled or disabled, like `mp service …`; its systemd
 journal has the number of last lines, a text filter and a refresh every 5 seconds.
 Before a stop the page says what will stop working: for nginx every site, for the
 database server the databases, for `monopanel-api` and the agent the panel itself; the
-page survives a restart of the panel and reconnects by itself. The page is for
-administrators.
+page survives a restart of the panel and reconnects by itself. Stopping `monopanel-api`
+leaves the port to its socket, `monopanel-api.socket`, and the next connection starts the
+panel again; a restart of the socket itself is carried out as a stop of it and a restart
+of the API. Instances of template units (modprobe@…, getty@…), targets, slices, devices
+and scopes, as well as debug-shell, emergency, rescue, console-getty, the power units
+(systemd-halt, -poweroff, -reboot, -kexec, -soft-reboot, -exit, -suspend, -hibernate,
+-hybrid-sleep, -suspend-then-hibernate) and systemd-sysext/confext only report their
+state: the agent takes no action on them; the accounts' Apaches
+(`monopanel-apache@<login>`) are the exception. The page shows an agent's refusal with
+its reason (the API answers 403, not 502). The page is for administrators.
 
 ## Backups
 
@@ -255,6 +270,21 @@ history of runs, for all repositories or one, with their size and number of file
 repository can be forgotten: the panel stops writing to it and forgets its password, and
 the snapshots in it stay — they can be read again by adding the repository back with the
 same password.
+
+restic runs in a sandbox ([01 §7](01-architecture.md#7-security)). A run in which restic
+could not read some files (exit code 3: a file vanished during the backup or the sandbox
+refused it) is marked `partial`: the snapshot is there and restores, and below the status
+are how many paths it lacks and which. For SFTP, root's key and the server's entry in
+`/root/.ssh/known_hosts` are set up beforehand
+(`ssh-keyscan -H <host> >> /root/.ssh/known_hosts`): the agent has `/root` read-only, and
+ssh refuses an unknown host key. S3/B2/REST credentials go in the target's variables, and
+a private CA for a REST server goes into the system store (`update-ca-certificates` /
+`update-ca-trust`): root's own files such as `~/.aws/credentials`, or a `RESTIC_CACERT`
+outside the system directories, are out of the sandbox's reach. A local repository is a
+directory of restic's own (such as `/var/backups/monopanel`): the agent refuses one that
+holds other files too. When `mp doctor` says a backup follows the symlinks in the web
+root, the agent is not allowed to mount (usually a container's profile), and a server
+backup is then guarded by Landlock alone.
 
 ## Migration
 
@@ -286,7 +316,7 @@ and an "Abort" button. Every command gets a one-time token that lives while it r
 minutes at most; it receives the panel's address and the token through the environment,
 and passwords and tokens typed in the line on stdin, not on its command line; the audit
 log and the command's echo hide their values. The binary's service roles (`api`,
-`agent`, `helper`, `fsop`, `update-run`, `app-exec`), `setup`, `update trust` and
+`agent`, `helper`, `fsop`, `update-run`, `app-exec`, `sandbox-exec`), `setup`, `update trust` and
 whatever reads or writes files on the server (`files get|put`, `ssl import`,
 `ssl panel import`, `site nginx --set`, `migrate --key`) are not available in the
 console — the panel's pages do the same.
@@ -310,7 +340,9 @@ databases, cron, app services, Valkey instances and certificates, and with the b
 its home directory with all the files too.
 
 The "folders" button is for shared folders: a folder of another account's site,
-bind-mounted into this account's home. The guest sees it after signing in over SFTP and
+bind-mounted into this account's home (for an account with a shell in
+`/var/www/.shares/<login>`, with a symlink in the home; the "In the home" column shows the
+path in the home). The guest sees it after signing in over SFTP and
 nothing else, both accounts and the web server read and write the files, and the "no
 PHP" box stops the site from executing scripts uploaded there. The "entry point" box (and the
 "entry point" button in the table) makes the SFTP session start right inside the folder
@@ -346,7 +378,9 @@ name, lifetime and labels. An administrator also has the "Panel" card: the panel
 (`jobs.workers`), and the log level and format (`log.level`, `log.format`) from
 `config.yaml`. They take effect when `monopanel-api` restarts, which can be done right
 away; if the panel's address changes, the page shows the new one beforehand, together
-with the command root runs to put the old value back. Below are the panel update (check,
+with the command root runs to put the old value back. When the address changes, the
+restart also moves `monopanel-api.socket`, which holds the panel's port while the API
+restarts. Below are the panel update (check,
 install the new or any other version, repository, channel, token, schedule and automatic
 installation; the release signing key is changed only on the server, `mp update trust`),
 webhooks signed with HMAC-SHA256 with a test delivery, trusted proxies for the visitor's
