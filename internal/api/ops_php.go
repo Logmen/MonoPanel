@@ -394,7 +394,20 @@ func (s *Server) jobPHPInstall(ctx context.Context, jc *jobs.Context) error {
 	if err != nil {
 		return s.phpFail(ctx, p.Version, err)
 	}
-	files := append([]agent.FileSpec{{Path: "/etc/tmpfiles.d/monopanel-php.conf", Content: fmt.Sprintf("d %s 0755 root root -\n", path.Join(s.cfg.RunDir, "php")), Mode: 0o644}}, ini...)
+	// The distribution's own pool goes idle before php-fpm runs it again, on
+	// EL with the master's log in syslog (php_pools.go).
+	idle, err := s.idlePHPPool(layout)
+	if err != nil {
+		return s.phpFail(ctx, p.Version, err)
+	}
+	files := append([]agent.FileSpec{{Path: "/etc/tmpfiles.d/monopanel-php.conf", Content: fmt.Sprintf("d %s 0755 root root -\n", path.Join(s.cfg.RunDir, "php")), Mode: 0o644}, idle}, ini...)
+	jc.Logf("the distribution's pool %s: idle (nobody, a socket of root's alone)", idle.Path)
+	if conf, err := s.fpmSyslogConf(ctx, layout); err != nil {
+		jc.Logf("php-fpm.conf: the master keeps its log file (the panel's next start tries again): %v", err)
+	} else if conf != nil {
+		files = append(files, *conf)
+		jc.Logf("php-fpm master: log to syslog (%s)", layout.FPMConf)
+	}
 	if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Validate: [][]string{layout.FPMCheckArgv}, Reload: []string{layout.FPMService}, Force: true, Origin: "php:" + p.Version}); err != nil {
 		return s.phpFail(ctx, p.Version, err)
 	}

@@ -241,6 +241,18 @@ func hasDotDot(p string) bool {
 	return false
 }
 
+// globPlain reports whether p, an include pattern a root daemon hands to
+// glob(3) (nginx, php-fpm, dovecot), matches nothing outside the directory
+// it names, so that a check of that directory holds for what is read. glob
+// takes a backslash for an escape ("\.\." is ".."), dovecot's braces for
+// alternatives ("{..,x}"), and a wildcard in a directory part matches ".."
+// (".*", ".[.]"): a pattern with none of them in its words may still climb
+// out. Wildcards stay in the last part, the file name, which the callers
+// want to end in .conf or the like — no ".." does.
+func globPlain(p string) bool {
+	return !strings.ContainsAny(p, `\{}`) && !strings.ContainsAny(path.Dir(p), "*?[")
+}
+
 // absPath checks that v is an absolute path without ".." and returns it
 // cleaned.
 func absPath(v string) (string, bool) {

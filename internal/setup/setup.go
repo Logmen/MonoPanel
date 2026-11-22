@@ -493,7 +493,8 @@ func installUnits(ctx context.Context, dir string, cfg config.Config, binary str
 			return wrote, false, nil, err
 		}
 	}
-	if moved, socketErr = (agent.APISocketSync{UnitDir: dir, Reload: reload}).Sync(ctx, cfg); socketErr != nil {
+	// The API unit's drop-in probes the binary the units run.
+	if moved, socketErr = (agent.APISocketSync{UnitDir: dir, Reload: reload, Binary: binary}).Sync(ctx, cfg); socketErr != nil {
 		socketErr = fmt.Errorf("%s: %w", apiSocket, socketErr)
 	}
 	return wrote, moved, socketErr, nil

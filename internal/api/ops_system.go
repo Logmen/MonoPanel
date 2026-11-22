@@ -58,7 +58,7 @@ func (s *Server) registerSystem() {
 		OperationID: "system-status", Method: http.MethodGet, Path: "/system/status", Summary: "Panel, host and service status", Tags: []string{"system"}, Security: secured,
 	}, func(ctx context.Context, _ *struct{}) (*statusOutput, error) {
 		out := &statusOutput{}
-		out.Body.Panel = apitypes.PanelStatus{Version: buildinfo.Version, UptimeSeconds: time.Since(s.started).Seconds()}
+		out.Body.Panel = apitypes.PanelStatus{Version: buildinfo.Version, UptimeSeconds: time.Since(s.started).Seconds(), ListenVia: s.listenViaName()}
 		out.Body.Panel.SchemaVersion, _ = s.db.SchemaVersion(ctx)
 		out.Body.Panel.Jobs, _ = s.db.CountJobs(ctx)
 		out.Body.Panel.Users, _ = s.db.CountUsers(ctx)

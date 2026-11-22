@@ -467,7 +467,8 @@ func composerWrapper(php string) string {
 }
 
 // refreshComposerWrapper rewrites a wrapper written before it refused root
-// (up to 0.8.19), on the PHP CLI it already names.
+// (up to 0.8.19), or with the first guard, which let root through when id
+// was not on root's PATH, on the PHP CLI it already names.
 func (s *Server) refreshComposerWrapper(ctx context.Context) {
 	b, err := os.ReadFile(composerBin)
 	if err != nil {
@@ -483,11 +484,11 @@ func (s *Server) refreshComposerWrapper(ctx context.Context) {
 }
 
 // refreshedComposerWrapper is the wrapper that replaces old, the content of
-// /usr/local/bin/composer, when old is the panel's wrapper without the root
-// guard: one that passes the agent's check already stays, and so does a file
-// that is not the panel's (no exec of its composer.phar). The wrapper of a
-// host the panel knew no PHP CLI path of execs composer.phar directly
-// ("exec  <phar>").
+// /usr/local/bin/composer, when old is the panel's wrapper without the
+// current root guard: one that passes the agent's check already stays, and
+// so does a file that is not the panel's (no exec of its composer.phar).
+// The wrapper of a host the panel knew no PHP CLI path of execs
+// composer.phar directly ("exec  <phar>").
 func refreshedComposerWrapper(old string) (string, bool) {
 	if confcheck.Check(composerBin, []byte(old)) == nil {
 		return "", false

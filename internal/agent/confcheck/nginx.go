@@ -3,6 +3,7 @@ package confcheck
 import (
 	"fmt"
 	"path"
+	"regexp"
 	"strings"
 )
 
@@ -13,6 +14,21 @@ import (
 // told to keep on a binary upgrade. A site's custom directives (mp site
 // nginx --set) land in the same tree and go through the same rules, so the
 // check refuses only what reaches root and leaves ordinary directives alone.
+// One more thing reaches it through another account: the FastCGI servers
+// the workers connect to run code as theirs. The writer of a configuration
+// may hand the panel's pools a request — they run the sites' PHP as the
+// sites' accounts, which the API acts for anyway — and nothing else: no
+// distribution's pool (www-data's, apache's), no FastCGI server of another
+// daemon, no ini lines of its own for a pool to load an extension from, no
+// distribution's location that hands PHP to its own pool (EL's default.d),
+// and no client's bytes at the head of an upstream connection, which would
+// speak FastCGI to any socket nginx's user may open: a FastCGI record opens
+// with its version, 1, and a type, 1 or 5, so the first bytes nginx sends
+// decide it. HTTP's are the method (proxy_method a word, never a variable
+// or empty), uwsgi's its modifier1 (0, never FastCGI's version), and the
+// stream module relays the client's own (no unix socket behind it, by
+// proxy_pass or an upstream's server). SCGI's netstring, gRPC's preface
+// and memcached's command open with bytes no FastCGI record has.
 
 const nginxDir = "/etc/nginx"
 
@@ -55,21 +71,53 @@ func checkNginx(c *checker, p string, content []byte) error {
 	if err != nil {
 		return err
 	}
-	return c.walkNginx(p, stmts, "")
+	return c.walkNginx(p, stmts, "", false)
 }
 
-func (c *checker) walkNginx(p string, stmts []ngxStmt, parent string) error {
+// walkNginx checks stmts, the directives of a block named parent; stream
+// tells that they lie inside a stream block, which the check sees whole:
+// nothing is included there (nginxStream).
+func (c *checker) walkNginx(p string, stmts []ngxStmt, parent string, stream bool) error {
 	for _, s := range stmts {
 		if nginxDataBlocks[parent] && s.name != "include" {
 			continue
 		}
-		if err := atLine(s.line, c.nginxDirective(p, s)); err != nil {
+		err := c.nginxDirective(p, s)
+		if err == nil && stream {
+			err = nginxStream(s, parent)
+		}
+		if err := atLine(s.line, err); err != nil {
 			return err
 		}
 		if s.isBlk {
-			if err := c.walkNginx(p, s.block, s.name); err != nil {
+			// nginx's names are case-sensitive; taking STREAM for stream
+			// refuses more, never less.
+			if err := c.walkNginx(p, s.block, s.name, stream || strings.EqualFold(s.name, "stream")); err != nil {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+// nginxStream refuses, inside a stream block, what would relay a client's
+// bytes to a unix socket: the stream module copies them as they come, and a
+// socket nginx's user may reach where others may not (a php-fpm pool with
+// nginx in its listen.acl_users) would read them as FastCGI requests of
+// that user's — from any local process that connects to the stream server.
+// proxy_pass to unix: and to a variable are refused wherever they stand
+// (nginxDirective); here an upstream's server, which stands in for them,
+// and include: the check reads a file on its own, so a stream server or
+// upstream from an included file would be checked as an HTTP one.
+func nginxStream(s ngxStmt, parent string) error {
+	name := strings.ToLower(s.name)
+	what := fmt.Sprintf("nginx directive %q in a stream block", s.name)
+	switch {
+	case name == "include":
+		return notAllowed(what, "a stream block holds its servers and upstreams itself: the check reads an included file on its own, as HTTP configuration, and the stream module relays raw bytes")
+	case name == "server" && strings.EqualFold(parent, "upstream"):
+		if len(s.args) > 0 && strings.HasPrefix(strings.ToLower(s.args[0]), "unix:") {
+			return notAllowed(fmt.Sprintf("%s %s", what, s.args[0]), "the stream module relays a client's raw bytes to the upstream's servers: behind a unix socket that nginx's user may open and others may not, they would reach a server as that user; stream upstreams are TCP addresses")
 		}
 	}
 	return nil
@@ -97,6 +145,66 @@ func (c *checker) nginxDirective(p string, s ngxStmt) error {
 		return notAllowed(what+" "+strings.Join(s.args, " "), "without a master the workers keep root's privileges")
 	case name == "user":
 		return c.nginxUser(p, s)
+	case name == "fastcgi_pass":
+		return c.nginxFastCGIPass(what, s.args)
+	case name == "fastcgi_param":
+		// php-fpm reads these two parameters of a request as ini lines and
+		// applies them to the worker that serves it, PHP_ADMIN_VALUE with an
+		// administrator's rights: extension= loads any shared object, and
+		// open_basedir, disable_functions and the rest the pool sets give
+		// way. No template sets them; a site's PHP settings are the pool's
+		// php_value lines (mp site set --ini).
+		if len(s.args) > 0 && (strings.EqualFold(s.args[0], "PHP_VALUE") || strings.EqualFold(s.args[0], "PHP_ADMIN_VALUE")) {
+			return notAllowed(fmt.Sprintf("%s %s", what, s.args[0]), "php-fpm applies it to the pool's worker as ini lines (extension= loads any library); a site's PHP settings belong to its pool (mp site set --ini)")
+		}
+		return nil
+	case name == "upstream":
+		// fastcgi_pass unix:<path> looks the path up among the upstreams by
+		// name: a block named like a path could stand in for a socket the
+		// check allows with servers it never saw.
+		if len(s.args) > 0 && strings.Contains(s.args[0], "/") {
+			return notAllowed(fmt.Sprintf("%s %s", what, s.args[0]), "an upstream is named by a word, not a path: nginx would take it for the unix socket of that path")
+		}
+		return nil
+	case name == "proxy_method":
+		// The method opens the request nginx sends upstream, copied as it
+		// is: from a variable ($request_body above all) the client picks the
+		// first bytes on the connection, enough for a FastCGI request to a
+		// php-fpm socket behind proxy_pass http://unix:…, as nginx's user.
+		// An empty method, or one of control bytes, leaves them to what
+		// follows it, the URI — a variable of proxy_pass's. A word of
+		// letters opens no FastCGI record: its version would be a letter.
+		if len(s.args) != 1 || !httpMethodRe.MatchString(s.args[0]) {
+			return notAllowed(fmt.Sprintf("%s %q", what, strings.Join(s.args, " ")), "the method opens the upstream request byte for byte: from a variable the client writes what php-fpm reads as FastCGI, and an empty or odd one hands that to the URI; a method is a word of letters (GET, POST, PROPFIND)")
+		}
+		return nil
+	case name == "uwsgi_modifier1":
+		// The modifier is the first byte of every request nginx sends a
+		// uwsgi server, and the version of a FastCGI record is its first:
+		// from 1 up a FastCGI server at the other end (a distribution's
+		// php-fpm, fcgiwrap) would take the request for records of its own
+		// and run what the client's bytes in it ($request_body as a
+		// parameter) say, as nginx's user. 0 is the WSGI applications' and
+		// nginx's default; FastCGI knows no version 0.
+		if len(s.args) != 1 || s.args[0] == "" || strings.Trim(s.args[0], "0") != "" {
+			return notAllowed(fmt.Sprintf("%s %q", what, strings.Join(s.args, " ")), "the modifier opens every uwsgi request, and from 1 up it is the version byte of a FastCGI record: a FastCGI server behind uwsgi_pass would run what the client sends; it stays 0")
+		}
+		return nil
+	case name == "proxy_pass":
+		// The stream module relays a connection's bytes as they come: to a
+		// unix socket, which nginx's user may reach where other processes
+		// may not (a php-fpm pool), any local process would speak FastCGI
+		// there. unix: without a scheme is the stream module's syntax alone
+		// (HTTP's is http://unix:…), and a target from a variable without a
+		// scheme may be one: neither depends on the block it stands in, so
+		// an included file is checked the same way.
+		if len(s.args) > 0 {
+			a := strings.ToLower(s.args[0])
+			if strings.HasPrefix(a, "unix:") || (strings.Contains(a, "$") && !strings.HasPrefix(a, "http://") && !strings.HasPrefix(a, "https://")) {
+				return notAllowed(fmt.Sprintf("%s %s", what, s.args[0]), "a stream proxy relays raw bytes, and to a unix socket only nginx's user reaches it would hand them to its server as that user; stream proxies go to TCP addresses")
+			}
+		}
+		return nil
 	case name == "include":
 		if len(s.args) != 1 {
 			return notAllowed(what, "include takes one path")
@@ -184,10 +292,52 @@ func (c *checker) nginxUser(p string, s ngxStmt) error {
 	return nil
 }
 
+// panelSocketRe is the name of a site's php-fpm socket, <domain>.sock: the
+// panel names a pool's socket after its site (ops_sites.go layoutFor, the
+// webmail's too), and a site's name is a host name in lower case.
+var panelSocketRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+\.sock$`)
+
+// httpMethodRe is a method proxy_method may set: a word that starts with a
+// letter, so that neither of the first two bytes nginx sends upstream (the
+// method's, or its first and a blank) can be FastCGI's version 1 or one of
+// its request types (1, 5).
+var httpMethodRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`)
+
+// nginxFastCGIPass allows the socket of a site's pool alone:
+// unix:<RunDir>/php/<domain>.sock, written plainly. A pool the panel writes
+// listens there as an account of the panel (fpmPool) — the distributions'
+// idle pools too, on .idle-<branch>.sock, no domain's name and root's
+// alone — and the directory is root's, so no account can put a socket of
+// its own there. Anything else — a TCP address, another unix path, a
+// variable, an upstream's name — may be a distribution's pool running as
+// www-data or apache (Remi lets nginx connect), or a FastCGI server of
+// another daemon: whoever writes the configuration would run code as that
+// account.
+func (c *checker) nginxFastCGIPass(what string, args []string) error {
+	if len(args) == 1 {
+		if v, ok := strings.CutPrefix(args[0], "unix:"); ok && plainPathRe.MatchString(v) {
+			if p, ok := absPath(v); ok && p == v && directChild(p, c.l.phpRunDir()) && panelSocketRe.MatchString(path.Base(p)) {
+				return nil
+			}
+		}
+	}
+	return notAllowed(fmt.Sprintf("%s %s", what, strings.Join(args, " ")), "nginx hands the requests to the panel's pools alone: unix:%s/<domain>.sock, where a site's PHP runs as the site's account", c.l.phpRunDir())
+}
+
+// nginxDefaultD is EL's directory of the distributions' locations for the
+// default server: php-fpm's php.conf and Remi's php<NN>-php.conf hand PHP to
+// the distribution's pools (fastcgi_pass php-fpm, an upstream of conf.d on
+// /run/php-fpm/www.sock, which runs as apache with nginx in its ACL).
+const nginxDefaultD = nginxDir + "/default.d"
+
 // nginxInclude allows includes of the panel's own files in /etc/nginx (every
 // one of them goes through this check when the panel writes it) and of the
 // distribution's parameter files. A relative path is relative to /etc/nginx,
-// the directory of nginx.conf.
+// the directory of nginx.conf. A pattern with a wildcard is glob(3)'s,
+// which takes a backslash for an escape and lets a wildcard in a directory
+// match "..": only the file name may have one (globPlain). EL's default.d
+// is not included: the distributions' locations there pass PHP to their
+// own pools, past the fastcgi_pass rule.
 func nginxInclude(v string) error {
 	what := fmt.Sprintf("nginx include %q", v)
 	if hasDotDot(v) || strings.ContainsAny(v, "\x00\n") {
@@ -198,8 +348,14 @@ func nginxInclude(v string) error {
 		full = nginxDir + "/" + full
 	}
 	full = path.Clean(full)
+	if !globPlain(full) {
+		return notAllowed(what, "glob(3) reads a backslash as an escape and a wildcard in a directory as any one, \"..\" included: only the file name of an include has a wildcard, and no backslash stands anywhere")
+	}
 	if !under(full, nginxDir) {
 		return notAllowed(what, "only files in %s are included: what lies elsewhere has not been checked, and the master reads it as root", nginxDir)
+	}
+	if under(full, nginxDefaultD) {
+		return notAllowed(what, "the distributions' locations in %s hand PHP to their own pools (php-fpm's www pool runs as apache): nginx passes requests to the panel's pools alone", nginxDefaultD)
 	}
 	if b := path.Base(full); !strings.HasSuffix(b, ".conf") && !nginxIncludeNames[b] {
 		return notAllowed(what, "an include names *.conf files or the distribution's parameter files; anything else (READMEs, files kept for review) is not configuration")

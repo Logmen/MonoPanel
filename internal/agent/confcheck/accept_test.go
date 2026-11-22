@@ -136,7 +136,7 @@ set $loggable 1;
 if ($request_uri ~ "^/health") { set $loggable 0; }
 gzip_types text/plain application/json;
 sub_filter 'http://' 'https://';
-fastcgi_param PHP_VALUE "upload_max_filesize=100M";
+location ~ ^/legacy/.+\.php$ { include monopanel/snippets/fastcgi.conf; fastcgi_param APP_ENV production; fastcgi_pass "unix:/run/monopanel/php/example.com.sock"; }
 include /etc/nginx/fastcgi_params;
 include monopanel/snippets/static-cache.conf;
 return 301 "https://example.com$request_uri";
@@ -288,10 +288,67 @@ func TestPHPContentPasses(t *testing.T) {
 	add("remi imagick", "/etc/opt/remi/php84/php.d/40-imagick.ini", "; Enable imagick extension module\nextension = \"imagick.so\"\n\n; Documentation: http://php.net/imagick\n;imagick.locale_fix = 0\nimagick.skip_version_check = 1\n")
 	add("remi apcu", "/etc/opt/remi/php84/php.d/40-apcu.ini", "extension = apcu.so\napc.enabled=1\napc.shm_size=64M\napc.mmap_file_mask=/tmp/apc.XXXXXX\napc.serializer='php'\n")
 	add("debian mods-available", "/etc/php/8.4/mods-available/redis.ini", "; configuration for php redis module\n; priority=20\nextension=redis.so\n")
-	// php-fpm.conf of each family, as the distribution ships it.
+	// php-fpm.conf of each family: Debian's as the distribution ships it,
+	// Remi's with the master's log in syslog (php_pools.go fpmSyslog).
 	add("debian php-fpm.conf", "/etc/php/8.4/fpm/php-fpm.conf", "[global]\npid = /run/php/php8.4-fpm.pid\nerror_log = /var/log/php8.4-fpm.log\n;syslog.facility = daemon\n;log_level = notice\n;emergency_restart_threshold = 0\ninclude=/etc/php/8.4/fpm/pool.d/*.conf\n")
-	add("remi php-fpm.conf", "/etc/opt/remi/php84/php-fpm.conf", "include=/etc/opt/remi/php84/php-fpm.d/*.conf\n[global]\npid = /var/opt/remi/php84/run/php-fpm/php-fpm.pid\nerror_log = /var/opt/remi/php84/log/php-fpm/error.log\ndaemonize = yes\n")
+	add("remi php-fpm.conf", "/etc/opt/remi/php84/php-fpm.conf", "include=/etc/opt/remi/php84/php-fpm.d/*.conf\n[global]\npid = /var/opt/remi/php84/run/php-fpm/php-fpm.pid\nerror_log = syslog\ndaemonize = yes\n")
+	// ops_php.go jobPHPInstall, php_pools.go: the distribution's own pool of
+	// every branch, idle.
+	for _, p := range []string{"/etc/php/8.4/fpm/pool.d/www.conf", "/etc/php/5.6/fpm/pool.d/www.conf", "/etc/opt/remi/php84/php-fpm.d/www.conf", "/etc/opt/remi/php56/php-fpm.d/www.conf"} {
+		content, ok := IdlePool("/run/monopanel", p)
+		if !ok {
+			t.Fatalf("no idle pool for %s", p)
+		}
+		add("idle pool "+p, p, content)
+	}
 	runAcceptances(t, cases)
+}
+
+// The idle pool of a branch is the one shape IdlePool gives: the pool php-fpm
+// needs, as nobody, on a socket of root's alone in the panel's socket
+// directory, with no process until something connects.
+func TestIdlePool(t *testing.T) {
+	for _, c := range []struct{ path, socket, group string }{
+		{"/etc/php/8.4/fpm/pool.d/www.conf", "/run/monopanel/php/.idle-8.4.sock", "nogroup"},
+		{"/etc/php/5.6/fpm/pool.d/www.conf", "/run/monopanel/php/.idle-5.6.sock", "nogroup"},
+		{"/etc/opt/remi/php84/php-fpm.d/www.conf", "/run/monopanel/php/.idle-8.4.sock", "nobody"},
+		{"/etc/opt/remi/php74/php-fpm.d/www.conf", "/run/monopanel/php/.idle-7.4.sock", "nobody"},
+	} {
+		content, ok := IdlePool("/run/monopanel/", c.path)
+		if !ok {
+			t.Fatalf("%s: no idle pool", c.path)
+		}
+		var keys []string
+		for _, line := range strings.Split(strings.TrimSuffix(content, "\n"), "\n") {
+			if line != "" && line[0] != ';' {
+				keys = append(keys, line)
+			}
+		}
+		want := []string{"[www]", "user = nobody", "group = " + c.group, "listen = " + c.socket, "listen.owner = root", "listen.group = root",
+			"listen.mode = 0600", "pm = ondemand", "pm.max_children = 1", "pm.process_idle_timeout = 10s"}
+		if strings.Join(keys, "\n") != strings.Join(want, "\n") {
+			t.Errorf("%s:\n%s", c.path, content)
+		}
+	}
+	// Other pool files, the distributions' others and a run directory that
+	// is no plain path have none.
+	for _, c := range []struct{ runDir, path string }{
+		{"/run/monopanel", "/etc/php/8.4/fpm/pool.d/example.com.conf"},
+		{"/run/monopanel", "/etc/php/8.4/fpm/pool.d/sub/www.conf"},
+		{"/run/monopanel", "/etc/php/8.4/cli/pool.d/www.conf"},
+		{"/run/monopanel", "/etc/php-fpm.d/www.conf"},
+		{"/run/monopanel", "/etc/opt/remi/php810/php-fpm.d/www.conf"},
+		{"/run/monopanel", "/etc/opt/remi/php84/php-fpm.conf"},
+		{"run/monopanel", "/etc/php/8.4/fpm/pool.d/www.conf"},
+		{"", "/etc/php/8.4/fpm/pool.d/www.conf"},
+		{"/run/mono panel", "/etc/php/8.4/fpm/pool.d/www.conf"},
+		{"/run/monopanel\nuser = root", "/etc/php/8.4/fpm/pool.d/www.conf"},
+		{"/run/${X}", "/etc/php/8.4/fpm/pool.d/www.conf"},
+	} {
+		if content, ok := IdlePool(c.runDir, c.path); ok {
+			t.Errorf("%q %s: an idle pool:\n%s", c.runDir, c.path, content)
+		}
+	}
 }
 
 func TestMySQLContentPasses(t *testing.T) {

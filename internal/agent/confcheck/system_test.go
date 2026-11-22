@@ -1,6 +1,11 @@
 package confcheck
 
-import "testing"
+import (
+	"os"
+	"os/exec"
+	"strings"
+	"testing"
+)
 
 const (
 	lr         = "/etc/logrotate.d/monopanel-sites"
@@ -200,4 +205,55 @@ func TestServiceRefusals(t *testing.T) {
 	refuse(t, nft, "add rule inet x y comment \"a\\\" include \"/etc/shadow\"\n", "include")
 	refuse(t, nft, "add rule inet x y comment \"#\"; include \"/etc/shadow\"\n", "include")
 	pass(t, nft, "table inet monopanel { chain input { tcp dport 22 accept; } }\n")
+}
+
+// The composer wrapper's guard fails closed: it lets the wrapper go on for
+// a uid other than 0 and for nothing else — not for root, and not when id
+// prints nothing (missing, broken, not on root's PATH), which the string
+// test it had first took for "not root". Each POSIX shell at hand runs it,
+// id replaced by what it would print.
+func TestComposerRootGuardFailsClosed(t *testing.T) {
+	const id = "/usr/bin/id -u"
+	if strings.Count(ComposerRootGuard, id) != 1 {
+		t.Fatalf("the guard does not ask %s once: %s", id, ComposerRootGuard)
+	}
+	var shells [][]string
+	for _, sh := range [][]string{{"/bin/sh"}, {"/usr/bin/dash"}, {"/bin/dash"}, {"/usr/bin/bash", "--posix"}, {"/bin/busybox", "sh"}, {"/usr/bin/busybox", "sh"}} {
+		if _, err := os.Stat(sh[0]); err == nil {
+			shells = append(shells, sh)
+		}
+	}
+	if len(shells) == 0 {
+		t.Skip("no POSIX shell on this host")
+	}
+	run := func(sh []string, guard string) (string, bool) {
+		cmd := exec.Command(sh[0], append(sh[1:], "-c", guard+"\necho went-on")...)
+		out, err := cmd.CombinedOutput()
+		return string(out), err == nil && strings.Contains(string(out), "went-on")
+	}
+	for _, sh := range shells {
+		for _, c := range []struct {
+			what, id string
+			goesOn   bool
+		}{
+			{"an account", "echo 1000", true},
+			{"root", "echo 0", false},
+			{"id missing", "/nonexistent/id -u", false},
+			{"id printing nothing", "printf ''", false},
+			{"id failing", "false", false},
+			{"id printing words", "echo root", false},
+		} {
+			out, goesOn := run(sh, strings.Replace(ComposerRootGuard, id, c.id, 1))
+			if goesOn != c.goesOn {
+				t.Errorf("%s, %s: went on %v, want %v:\n%s", strings.Join(sh, " "), c.what, goesOn, c.goesOn, out)
+			}
+			if !goesOn && !strings.Contains(out, "not as root") {
+				t.Errorf("%s, %s: the refusal says nothing:\n%s", strings.Join(sh, " "), c.what, out)
+			}
+		}
+		// The guard it replaced let a missing id through.
+		if _, goesOn := run(sh, `[ "$(/nonexistent/id -u)" != 0 ] || { echo "not as root" >&2; exit 1; }`); !goesOn {
+			t.Errorf("%s: the string test refused a missing id after all, unlike what the comment of ComposerRootGuard says", strings.Join(sh, " "))
+		}
+	}
 }

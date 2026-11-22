@@ -43,7 +43,17 @@ type PanelStatus struct {
 	AgentOK       bool           `json:"agent_ok"`
 	AgentVersion  string         `json:"agent_version,omitempty"`
 	AgentError    string         `json:"agent_error,omitempty"`
+	// ListenVia is where the HTTPS listener came from: the socket unit that
+	// keeps the port bound while the API restarts, or the API's own, which
+	// leaves the port free then. Empty before the API listens.
+	ListenVia string `json:"listen_via,omitempty" enum:"socket,itself" doc:"Where the HTTPS port comes from: socket (monopanel-api.socket, bound while the API restarts) or itself (the API's own listener)"`
 }
+
+// The values of PanelStatus.ListenVia.
+const (
+	ListenViaSocket = "socket"
+	ListenViaItself = "itself"
+)
 
 // SystemStatus is the dashboard payload.
 type SystemStatus struct {

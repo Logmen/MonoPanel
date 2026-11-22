@@ -12,6 +12,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"monopanel/internal/agent"
+	"monopanel/internal/apitypes"
 )
 
 // Where the HTTPS listener came from, once Run has it (Server.listenVia).
@@ -20,6 +21,20 @@ const (
 	viaSocket              // the socket systemd passed: monopanel-api.socket
 	viaSelf                // a listener of this process's own
 )
+
+// listenViaName is listenVia as the system status names it: mp doctor warns
+// when the socket is enabled but the API listens on its own (the socket
+// failed, was stopped, or holds another address), as the port is free while
+// the API restarts then.
+func (s *Server) listenViaName() string {
+	switch s.listenVia.Load() {
+	case viaSocket:
+		return apitypes.ListenViaSocket
+	case viaSelf:
+		return apitypes.ListenViaItself
+	}
+	return ""
+}
 
 // httpsListener is where the panel serves HTTPS. A socket systemd passed
 // (monopanel-api.socket, which PID 1 keeps bound while this process

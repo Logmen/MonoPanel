@@ -69,9 +69,114 @@ func TestNginxRefusals(t *testing.T) {
 		{"unix listen in the API's directory", nginxSite, "server { listen unix:/run/monopanel/x.sock; }\n", []string{"unix:/run/monopanel/x.sock"}},
 		{"unix listen in a home", nginxSite, "server { listen unix:/var/www/alex/x.sock; }\n", []string{"unix:/var/www/alex/x.sock"}},
 		{"directory named .conf", "/etc/nginx/monopanel/sites/evil.conf/README", "x\n", []string{"*.conf"}},
+		// FastCGI goes to the sites' pools alone: the distributions' pools run
+		// as www-data or apache.
+		{"fastcgi to Debian's pool", nginxCust, "location ~ \\.php$ { fastcgi_pass unix:/run/php/php8.4-fpm.sock; }\n", []string{"unix:/run/php/php8.4-fpm.sock", "/run/monopanel/php/<domain>.sock"}},
+		{"fastcgi to Debian's default socket", nginxSite, "server { location / { fastcgi_pass unix:/run/php/php-fpm.sock; } }\n", []string{"/run/php/php-fpm.sock"}},
+		{"fastcgi to Remi's pool", nginxCust, "fastcgi_pass unix:/var/opt/remi/php84/run/php-fpm/www.sock;\n", []string{"www.sock"}},
+		{"fastcgi to AppStream's pool", nginxCust, "fastcgi_pass unix:/run/php-fpm/www.sock;\n", []string{"/run/php-fpm/www.sock"}},
+		{"fastcgi over TCP", nginxCust, "fastcgi_pass 127.0.0.1:9000;\n", []string{"127.0.0.1:9000"}},
+		{"fastcgi to a port alone", nginxCust, "fastcgi_pass 9000;\n", []string{"9000"}},
+		{"fastcgi over IPv6", nginxCust, "fastcgi_pass [::1]:9000;\n", []string{"[::1]:9000"}},
+		{"fastcgi to an upstream", nginxCust, "fastcgi_pass php84-php-fpm;\n", []string{"php84-php-fpm"}},
+		{"fastcgi to a variable", nginxCust, "fastcgi_pass $backend;\n", []string{"$backend"}},
+		{"fastcgi to a variable socket", nginxCust, "fastcgi_pass unix:/run/monopanel/php/$host.sock;\n", []string{"$host"}},
+		{"fastcgi to a braced variable", nginxCust, "fastcgi_pass \"unix:/run/monopanel/php/${host}.sock\";\n", []string{"${host}"}},
+		{"fastcgi walking up", nginxCust, "fastcgi_pass unix:/run/monopanel/php/../../php/php8.4-fpm.sock;\n", []string{".."}},
+		{"fastcgi with a doubled slash", nginxCust, "fastcgi_pass unix:/run/monopanel//php/example.com.sock;\n", []string{"//php"}},
+		{"fastcgi below the socket directory", nginxCust, "fastcgi_pass unix:/run/monopanel/php/x/example.com.sock;\n", []string{"/php/x/"}},
+		{"fastcgi to the agent", nginxCust, "fastcgi_pass unix:/run/monopanel/agent.sock;\n", []string{"agent.sock"}},
+		{"fastcgi to an idle pool", nginxCust, "fastcgi_pass unix:/run/monopanel/php/.idle-8.4.sock;\n", []string{".idle-8.4.sock"}},
+		{"fastcgi to a socket of no domain", nginxCust, "fastcgi_pass unix:/run/monopanel/php/localhost.sock;\n", []string{"localhost.sock"}},
+		{"fastcgi to an upper-case socket", nginxCust, "fastcgi_pass unix:/run/monopanel/php/Example.com.sock;\n", []string{"Example.com.sock"}},
+		{"fastcgi in upper case", nginxCust, "fastcgi_pass UNIX:/run/php/php8.4-fpm.sock;\n", []string{"UNIX:"}},
+		{"fastcgi with a path after the socket", nginxCust, "fastcgi_pass unix:/run/monopanel/php/example.com.sock:/x;\n", []string{"sock:/x"}},
+		{"fastcgi twice in one", nginxCust, "fastcgi_pass unix:/run/monopanel/php/example.com.sock unix:/run/php/php8.4-fpm.sock;\n", []string{"php8.4-fpm.sock"}},
+		{"fastcgi without a target", nginxCust, "fastcgi_pass;\n", []string{"fastcgi_pass"}},
+		{"fastcgi deep in a block", nginxSite, "server { location / { if ($a) { fastcgi_pass 10.0.0.1:9000; } } }\n", []string{"10.0.0.1:9000", "line 1"}},
+		// php-fpm takes these as ini lines for the worker: extension= loads
+		// any library into the pool.
+		{"PHP_VALUE", nginxCust, "fastcgi_param PHP_VALUE \"upload_max_filesize=100M\";\n", []string{"PHP_VALUE"}},
+		{"PHP_ADMIN_VALUE", nginxSite, "server { location ~ \\.php$ { fastcgi_param PHP_ADMIN_VALUE \"extension=/var/www/alex/evil.so\"; } }\n", []string{"PHP_ADMIN_VALUE"}},
+		{"PHP_VALUE quoted", nginxCust, "fastcgi_param \"PHP_VALUE\" \"auto_prepend_file=/var/www/alex/x.php\";\n", []string{"PHP_VALUE"}},
+		{"PHP_VALUE in lower case", nginxCust, "fastcgi_param php_admin_value x;\n", []string{"php_admin_value"}},
+		// An upstream named like a path would stand in for a socket.
+		{"upstream named like a socket", nginxHTTP, "upstream /run/monopanel/php/example.com.sock { server unix:/run/php/php8.4-fpm.sock; }\n", []string{"/run/monopanel/php/example.com.sock"}},
+		// Other ways to hand a FastCGI server bytes of the client's: the
+		// method nginx opens the upstream request with, and the stream
+		// module's raw relay to a unix socket.
+		{"method from the body", nginxCust, "location /x { proxy_method $request_body; proxy_pass http://unix:/run/php/php8.4-fpm.sock:/; }\n", []string{"proxy_method", "$request_body"}},
+		{"method from a header", nginxCust, "proxy_method \"${http_x}\";\n", []string{"${http_x}"}},
+		{"stream relay to a socket", nginxMain, "user nginx;\nstream {\n    server {\n        listen 127.0.0.1:19000;\n        proxy_pass unix:/var/opt/remi/php84/run/php-fpm/www.sock;\n    }\n}\n", []string{"unix:/var/opt/remi/php84/run/php-fpm/www.sock", "line 5"}},
+		{"stream relay in an included file", nginxHTTP, "server { listen 127.0.0.1:19000; proxy_pass UNIX:/run/php/php8.4-fpm.sock; }\n", []string{"UNIX:"}},
+		{"stream relay to a variable", nginxMain, "stream { map $remote_addr $to { default unix:/run/php/php8.4-fpm.sock; } server { listen 127.0.0.1:19000; proxy_pass $to; } }\n", []string{"$to"}},
+		// An upstream stands in for proxy_pass's target: in a stream block a
+		// unix server of one is the same relay.
+		{"stream relay through an upstream", nginxMain, "user nginx;\nstream {\n    upstream fpm { server 127.0.0.1:9; server unix:/run/php-fpm/www.sock backup; }\n    server { listen 127.0.0.1:19000; proxy_pass fpm; }\n}\n", []string{"unix:/run/php-fpm/www.sock", "stream", "line 3"}},
+		{"stream relay through an upper-case upstream", nginxMain, "stream { upstream fpm { server UNIX:/run/php-fpm/www.sock; } server { listen 127.0.0.1:19000; proxy_pass fpm; } }\n", []string{"UNIX:/run/php-fpm/www.sock"}},
+		// Whatever a stream block includes would be checked as HTTP's.
+		{"include in a stream block", nginxMain, "stream {\n    include /etc/nginx/monopanel/http.d/*.conf;\n}\n", []string{"include", "stream", "line 2"}},
+		{"include in a stream server", nginxMain, "stream { server { listen 127.0.0.1:19000; include monopanel/snippets/x.conf; } }\n", []string{"stream"}},
+		{"include in a stream map", nginxMain, "stream { map $remote_addr $to { include monopanel/snippets/map.conf; } }\n", []string{"stream"}},
+		// The first bytes of a request to a FastCGI server: an empty method or
+		// one of control bytes leaves them to the URI, a variable of the
+		// target here (an address of the client's choosing with real_ip).
+		{"empty method", nginxCust, "location /x { proxy_method \"\"; proxy_pass http://unix:/run/php-fpm/www.sock:$binary_remote_addr; }\n", []string{"proxy_method", "word of letters"}},
+		{"method of control bytes", nginxCust, "proxy_method \"\x01\x01\";\n", []string{`\x01\x01`}},
+		{"method of a digit", nginxCust, "proxy_method 1GET;\n", []string{"1GET"}},
+		{"method of two words", nginxCust, "proxy_method GET POST;\n", []string{"GET POST"}},
+		{"method with a blank", nginxCust, "proxy_method \"G T\";\n", []string{"G T"}},
+		// uwsgi's first byte is the modifier, FastCGI's the version.
+		{"uwsgi modifier of FastCGI's version", nginxCust, "location /x { uwsgi_pass unix:/run/php-fpm/www.sock; uwsgi_modifier1 1; uwsgi_pass_request_headers off; uwsgi_param \"\" $request_body; }\n", []string{"uwsgi_modifier1", "\"1\""}},
+		{"uwsgi modifier to an upstream", nginxCust, "uwsgi_pass php-fpm; uwsgi_modifier1 14;\n", []string{"14"}},
+		{"uwsgi modifier with a zero first", nginxCust, "uwsgi_modifier1 01;\n", []string{"01"}},
+		{"uwsgi modifier empty", nginxCust, "uwsgi_modifier1 \"\";\n", []string{"uwsgi_modifier1"}},
+		// EL's default.d: the distributions' locations pass PHP to their own
+		// pools (php-fpm's php.conf: fastcgi_pass php-fpm).
+		{"include of AppStream's PHP location", nginxSite, "server { root /var/www/x; include /etc/nginx/default.d/php.conf; }\n", []string{"/etc/nginx/default.d/php.conf", "default.d"}},
+		{"include of Remi's PHP location", nginxCust, "include default.d/php84-php.conf;\n", []string{"default.d"}},
+		{"include of every default location", nginxCust, "include /etc/nginx/default.d/*.conf;\n", []string{"default.d"}},
+		{"include of default.d through a wildcard", nginxCust, "include /etc/nginx/d*/php.conf;\n", []string{"d*", "glob"}},
+		// glob(3) takes a backslash for an escape and lets a wildcard in a
+		// directory match "..": each of these reads the API's own file in
+		// its data directory as root's configuration.
+		{"include through escaped dots", nginxMain, "include /etc/nginx/\\.\\./\\.\\./var/lib/monopanel/e*.conf;\n", []string{"glob"}},
+		{"include through wildcard directories", nginxMain, "include /etc/nginx/monopanel/.*/.*/.*/var/lib/monopanel/e*.conf;\n", []string{".*", "glob"}},
+		{"include through bracket directories", nginxHTTP, "include monopanel/.[.]/.[.]/.[.]/var/lib/monopanel/x*.conf;\n", []string{"glob"}},
+		{"include of an escaped name", nginxCust, "include /etc/nginx/monopanel/x\\*.conf;\n", []string{"glob"}},
 	})
 	// What the master binds right in /run is root's alone.
 	pass(t, nginxSite, "server { listen unix:/run/nginx-example.sock; }\n")
+	// A wildcard in the file name of an include, the distribution's
+	// parameter files and http-level configuration stay; so do a method of
+	// letters and uwsgi's own modifier.
+	pass(t, nginxHTTP, "include /etc/nginx/conf.d/*.conf;\ninclude monopanel/sites/*.conf;\ninclude /etc/nginx/fastcgi_params;\ninclude /etc/nginx/fastcgi.conf;\n")
+	pass(t, nginxCust, "location /dav/ { proxy_method PROPFIND; proxy_pass http://127.0.0.1:8080; }\nlocation /s/ { proxy_method M-SEARCH; proxy_pass http://127.0.0.1:1900; }\nlocation /py/ { include uwsgi_params; uwsgi_pass unix:/run/uwsgi/app.sock; uwsgi_modifier1 0; }\nlocation /py2/ { uwsgi_modifier1 00; uwsgi_pass 127.0.0.1:3031; }\n")
+	pass(t, nginxMain, "user nginx;\nstream {\n    upstream db { server 10.0.0.5:3306; server db2.internal:3306 backup; }\n    server { listen 127.0.0.1:13306; proxy_pass db; }\n}\nhttp { upstream app { server unix:/run/app.sock; } include /etc/nginx/monopanel/http.d/*.conf; }\n")
+	// A site's own pool, however the name is quoted; other parameters, and
+	// upstreams for the proxy, stay as they were.
+	pass(t, nginxCust, "location ~ \\.php$ { fastcgi_pass unix:/run/monopanel/php/shop.example.com.sock; }\nlocation /x/ { fastcgi_pass 'unix:/run/monopanel/php/xn--80ak6aa92e.com.sock'; fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name; fastcgi_param PHP_SELF $uri; }\n")
+	pass(t, nginxHTTP, "upstream app { server 127.0.0.1:3000; server unix:/run/app.sock; keepalive 8; }\n")
+	// Proxies of HTTP keep their targets, variables included, and a fixed
+	// method; the stream module keeps TCP.
+	pass(t, nginxCust, "location /a/ { proxy_pass http://unix:/run/app.sock:/; proxy_method POST; }\nlocation /b/ { proxy_pass http://$backend_host:3000; }\nlocation /c/ { proxy_pass https://203.0.113.7; }\n")
+	pass(t, nginxMain, "user nginx;\nstream { upstream db { server 10.0.0.5:3306; } server { listen 127.0.0.1:13306; proxy_pass db; } server { listen 127.0.0.1:15432; proxy_pass 10.0.0.6:5432; } }\n")
+}
+
+// fastcgi_pass follows the run directory of config.yaml.
+func TestNginxFastCGIFollowsTheRunDir(t *testing.T) {
+	t.Cleanup(func() { Configure(Layout{}) })
+	conf := "fastcgi_pass unix:/srv/run/php/example.com.sock;\n"
+	refuse(t, nginxCust, conf, "/srv/run/php/example.com.sock")
+	Configure(Layout{RunDir: "/srv/run"})
+	pass(t, nginxCust, conf)
+	refuse(t, nginxCust, "fastcgi_pass unix:/run/monopanel/php/example.com.sock;\n", "unix:/srv/run/php/<domain>.sock")
+	// The idle pools follow it as well.
+	p := "/etc/php/8.4/fpm/pool.d/www.conf"
+	moved, _ := IdlePool("/srv/run", p)
+	pass(t, p, moved)
+	def, _ := IdlePool("/run/monopanel", p)
+	refuse(t, p, def, "idle pool")
 }
 
 const (
@@ -155,6 +260,23 @@ const (
 )
 
 const goodPool = "[example.com]\nuser = alex\ngroup = alex\nlisten = /run/monopanel/php/example.com.sock\n"
+
+// The distributions' own pool files.
+const (
+	debianWWW = "/etc/php/8.4/fpm/pool.d/www.conf"
+	remiWWW   = "/etc/opt/remi/php84/php-fpm.d/www.conf"
+)
+
+// idle is the idle pool of the distribution's pool file p, in the default
+// run directory.
+func idle(t *testing.T, p string) string {
+	t.Helper()
+	content, ok := IdlePool("/run/monopanel", p)
+	if !ok {
+		t.Fatalf("no idle pool for %s", p)
+	}
+	return content
+}
 
 func TestPHPRefusals(t *testing.T) {
 	runRefusals(t, []refusal{
@@ -240,7 +362,36 @@ func TestPHPRefusals(t *testing.T) {
 		{"offset with blanks", phpPool, goodPool + "php_admin_value[ extension ] = /tmp/evil.so\n", []string{"/tmp/evil.so"}},
 		{"quoted offset", phpPool, goodPool + "php_admin_value[\"extension\"] = /tmp/evil.so\n", nil},
 		{"blank before the offset", phpPool, goodPool + "php_admin_value [extension] = /tmp/evil.so\n", []string{"/tmp/evil.so"}},
+		// The distributions' pools hold the idle pool and nothing else.
+		{"Debian's stock pool", debianWWW, "[www]\nuser = www-data\ngroup = www-data\nlisten = /run/php/php8.4-fpm.sock\nlisten.owner = www-data\nlisten.group = www-data\npm = dynamic\npm.max_children = 5\n", []string{debianWWW, "idle pool"}},
+		{"Remi's stock pool", remiWWW, "[www]\nuser = apache\ngroup = apache\nlisten = /var/opt/remi/php84/run/php-fpm/www.sock\nlisten.acl_users = apache,nginx\npm = dynamic\npm.max_children = 50\nslowlog = /var/opt/remi/php84/log/php-fpm/www-slow.log\n", []string{"idle pool"}},
+		{"a site's pool in the distribution's place", debianWWW, renderT(t, "php-fpm/pool.conf.tmpl", pool(nil)), []string{"idle pool"}},
+		{"idle pool with a line more", debianWWW, idle(t, debianWWW) + "php_admin_value[extension] = redis\n", []string{"idle pool"}},
+		{"idle pool for everybody", debianWWW, strings.Replace(idle(t, debianWWW), "listen.mode = 0600", "listen.mode = 0666", 1), []string{"idle pool"}},
+		{"idle pool of another branch", debianWWW, idle(t, "/etc/php/8.3/fpm/pool.d/www.conf"), []string{"idle pool"}},
+		{"Debian's idle pool on Remi", remiWWW, idle(t, debianWWW), []string{"idle pool"}},
+		// Elsewhere the idle pool is a pool like any other: nobody is no
+		// account of the panel.
+		{"idle pool as a site's", phpPool, idle(t, debianWWW), []string{"nobody"}},
+		// The root master's log stays out of apache's directories.
+		{"main error log in EL's apache-owned directory", "/etc/opt/remi/php84/php-fpm.conf", "[global]\nerror_log = /var/log/php-fpm/error.log\n", []string{"error_log", "/var/log/php-fpm/error.log"}},
+		{"main error log in Remi's log directory", "/etc/opt/remi/php84/php-fpm.conf", "include=/etc/opt/remi/php84/php-fpm.d/*.conf\n[global]\nerror_log = /var/opt/remi/php84/log/php-fpm/error.log\n", []string{"error_log", "web server's account"}},
+		{"main error log below /var/log", phpMain, "[global]\nerror_log = /var/log/php/fpm.log\n", []string{"error_log"}},
+		// php-fpm merges the sections of one name, case aside, across its
+		// files: [www] elsewhere sets the idle pool of www.conf, which runs
+		// as nobody, here on a socket nginx may open.
+		{"the idle pool merged from a file of its own", phpPool, "[www]\nlisten = /run/monopanel/php/evil.example.com.sock\nlisten.owner = nginx\nlisten.mode = 0660\n", []string{"[www]", "idle pool", "line 2"}},
+		{"the idle pool merged in upper case", "/etc/opt/remi/php84/php-fpm.d/zz.conf", "[WWW]\nlisten.acl_users = nginx\n", []string{"[WWW]"}},
+		{"the idle pool merged under quotes", phpPool, "[\"www\"]\nlisten = 127.0.0.1:9000\n", []string{"plain word"}},
+		{"the idle pool merged with a variable", phpPool, "[w${EMPTY}ww]\nlisten = 127.0.0.1:9000\n", []string{"plain word"}},
+		{"the idle pool merged in php-fpm.conf", phpMain, "[global]\nerror_log = syslog\n[www]\nlisten.acl_groups = nginx\n", []string{"[www]"}},
+		// php-fpm globs its includes: a wildcard in a directory matches "..".
+		{"main include climbing out", phpMain, "[global]\ninclude = /etc/php/8.4/fpm/pool.d/.*/.*/.*/.*/.*/var/lib/monopanel/*.conf\n", []string{"include", "file name alone"}},
+		{"main include of every pool directory", phpMain, "include=/etc/php/8.4/fpm/pool.d/*/*.conf\n", []string{"include"}},
 	})
+	// A site's pool with the name of a site whose first label is www is a
+	// pool of its own.
+	pass(t, phpPool, "[www.example.com]\nlisten.mode = 0660\n")
 	// The distribution's own module directory holds what its packages put
 	// there; a full path into it is as good as the bare name.
 	pass(t, phpRemi, "zend_extension = /opt/remi/php84/root/usr/lib64/php/modules/opcache.so\n")

@@ -69,6 +69,7 @@ func (s *Server) Run(ctx context.Context) error {
 				s.refreshDefaultServers(ctx)
 				s.refreshDBConfig(ctx)
 				s.refreshPHPCLIInis(ctx)
+				s.refreshIdlePHPPools(ctx)
 				s.refreshSiteLogrotate(ctx)
 				// The label rule for the site log tree before anything is
 				// made in it, then the sites switch to it once, before the

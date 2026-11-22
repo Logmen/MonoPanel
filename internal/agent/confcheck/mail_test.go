@@ -131,6 +131,13 @@ func TestDovecotRefusals(t *testing.T) {
 		{"include shadow", dovecot, dcHead + "!include /etc/shadow\n", []string{"/etc/shadow"}},
 		{"include the users file", dovecot, dcHead + "!include_try monopanel/users\n", []string{"monopanel/users"}},
 		{"include dotdot", dovecot, dcHead + "!include ../x.conf\n", []string{".."}},
+		// dovecot globs the path with GLOB_BRACE: each of these reads
+		// /var/lib/monopanel/x.conf, the API's own file, as root's
+		// configuration.
+		{"include through braces", dovecot, dcHead + "!include /etc/dovecot/{..,x}/{..,x}/var/lib/monopanel/x.conf\n", []string{"{..,x}", "glob"}},
+		{"include through escaped dots", dovecot, dcHead + "!include_try /etc/dovecot/\\.\\./\\.\\./var/lib/monopanel/x.conf\n", []string{"glob"}},
+		{"include through quoted escapes", dovecot, dcHead + "!include \"/etc/dovecot/\\\\.\\\\./\\\\.\\\\./var/lib/monopanel/x.conf\"\n", []string{"glob"}},
+		{"include through a wildcard directory", dovecot, dcHead + "!include conf.d/.*/.*/.*/var/lib/monopanel/x.conf\n", []string{".*", "glob"}},
 		{"privileged group", dovecot, dcHead + "mail_privileged_group = shadow\n", []string{"shadow"}},
 		{"internal user root", dovecot, dcHead + "default_internal_user = root\n", []string{"default_internal_user"}},
 		{"value from a file", dovecot, dcHead + "mail_location = </var/lib/monopanel/x\n", []string{"<file"}},
@@ -169,6 +176,8 @@ func TestDovecotRefusals(t *testing.T) {
 		// str_unescape drops every backslash: the check sees what dovecot does.
 		{"escaped dots in a quoted path", dovecot, dcHead + "mail_location = \"maildir:/var/mail/monopanel/\\.\\./\\.\\./etc\"\n", []string{"mail_location"}},
 	})
+	// A wildcard in the file name stays: it matches no "..".
+	pass(t, dovecot, dcHead+"!include_try conf.d/*.conf\n!include /etc/dovecot/monopanel/local.conf\n")
 }
 
 func TestOpenDKIMRefusals(t *testing.T) {

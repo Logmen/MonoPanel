@@ -491,9 +491,19 @@ func configSetLocal(ctx context.Context, key, raw string, restart bool) error {
 // or an upgrade: mp setup and config set --local do the same themselves. It
 // moves no socket that is listening already; that takes a restart of the
 // socket while no API process holds the port.
+//
+// --probe does nothing and exits 0, for any user and whatever config.yaml
+// says: the API unit's drop-in asks it before each start whether its binary
+// takes the socket, and stops the socket when the answer is an error, as
+// from a binary of 0.8.19 or older (agent.apiServiceDropInContent). Every
+// later version must keep answering it so.
 func apiSocketSyncCmd() *cobra.Command {
-	return &cobra.Command{Use: "api-socket-sync", Short: T("адрес сокета HTTPS-порта панели из web.listen (для скриптов пакета)", "the address of the panel's HTTPS port socket from web.listen (for the package scripts)"), Hidden: true, Args: cobra.NoArgs,
+	var probe bool
+	c := &cobra.Command{Use: "api-socket-sync", Short: T("адрес сокета HTTPS-порта панели из web.listen (для скриптов пакета)", "the address of the panel's HTTPS port socket from web.listen (for the package scripts)"), Hidden: true, Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if probe {
+				return nil
+			}
 			if geteuid() != 0 {
 				return &exitError{code: 4, msg: T("api-socket-sync выполняется только от root", "api-socket-sync must run as root")}
 			}
@@ -510,6 +520,9 @@ func apiSocketSyncCmd() *cobra.Command {
 			}
 			return nil
 		}}
+	c.Flags().BoolVar(&probe, "probe", false, T("ничего не делать и выйти с 0: так юнит API узнаёт, что бинарник берёт сокет", "do nothing and exit 0: so the API unit learns that the binary takes the socket"))
+	_ = c.Flags().MarkHidden("probe")
+	return c
 }
 
 // listenNotes says what config set --local does not do for a new web.listen,
@@ -518,12 +531,7 @@ func apiSocketSyncCmd() *cobra.Command {
 func listenNotes(listen string) {
 	_, p, _ := net.SplitHostPort(listen)
 	port, _ := strconv.Atoi(p)
-	start := 1024
-	if b, err := os.ReadFile("/proc/sys/net/ipv4/ip_unprivileged_port_start"); err == nil {
-		if n, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
-			start = n
-		}
-	}
+	start := unprivilegedPortStart()
 	if port < start {
 		fmt.Fprintf(os.Stderr, T("внимание: monopanel-api работает без привилегий и не сможет слушать порт %d (меньше %d), если его юнит не даёт CAP_NET_BIND_SERVICE\n", "warning: monopanel-api runs without privileges and cannot listen on port %d (below %d) unless its unit grants CAP_NET_BIND_SERVICE\n"), port, start)
 	}
@@ -532,6 +540,17 @@ func listenNotes(listen string) {
 	}
 	fmt.Fprintln(os.Stderr, T("--local не трогает firewall: если он включён, после запуска панели выполните mp firewall apply — его правила откроют новый порт панели (firewalld: firewall-cmd --add-port)",
 		"--local leaves the firewall alone: if it is on, run mp firewall apply once the panel is up, and its rules open the panel's new port (firewalld: firewall-cmd --add-port)"))
+}
+
+// unprivilegedPortStart is the first port any process may bind
+// (net.ipv4.ip_unprivileged_port_start); tests set their own.
+var unprivilegedPortStart = func() int {
+	if b, err := os.ReadFile("/proc/sys/net/ipv4/ip_unprivileged_port_start"); err == nil {
+		if n, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
+			return n
+		}
+	}
+	return 1024
 }
 
 // panelValue checks a value for config set --local and returns it the way

@@ -689,6 +689,101 @@ func TestAPISocketSyncCommand(t *testing.T) {
 	}
 }
 
+// api-socket-sync --probe answers the API unit's drop-in before each start:
+// 0 for any user, whatever config.yaml is, and nothing done. A binary that
+// does not know it — 0.8.19 knows no api-socket-sync at all — fails, and
+// the drop-in stops the socket then.
+func TestAPISocketSyncProbe(t *testing.T) {
+	euid, sync := geteuid, syncAPISocket
+	t.Cleanup(func() { geteuid, syncAPISocket = euid, sync })
+	syncAPISocket = func(context.Context, config.Config) (bool, error) {
+		t.Fatal("the probe synced the socket")
+		return false, nil
+	}
+	broken := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(broken, []byte("web: [\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	for _, uid := range []int{0, 990} {
+		geteuid = func() int { return uid }
+		for _, cfg := range []string{broken, filepath.Join(t.TempDir(), "missing.yaml")} {
+			if out, err := mp(t, "", "--config", cfg, "api-socket-sync", "--probe"); err != nil || out != "" {
+				t.Errorf("uid %d, config %s: %v %q", uid, cfg, err, out)
+			}
+		}
+	}
+	if _, err := mp(t, "", "no-such-command", "--probe"); err == nil {
+		t.Error("an unknown command succeeded: the probe would take an old binary for a new one")
+	}
+}
+
+// mp doctor warns when the socket of the panel's port is enabled but the API
+// listens on the port itself: the port is free while the API restarts. Not
+// when the socket holds it, when the socket is off, when the API is too old
+// to say, nor for a port no account may bind, which the socket leaves alone.
+func TestDoctorWarnsOfTheIdleSocket(t *testing.T) {
+	start := unprivilegedPortStart
+	unprivilegedPortStart = func() int { return 1024 }
+	t.Cleanup(func() { unprivilegedPortStart = start })
+	doctor := fakeResp{body: map[string]any{"summary": "2 checks, 0 failed, 0 warnings", "checks": []map[string]any{{"name": "agent", "status": "ok", "detail": "version test"}}}}
+	status := func(via string) fakeResp {
+		panel := map[string]any{"version": "0.8.20", "agent_ok": true}
+		if via != "" {
+			panel["listen_via"] = via
+		}
+		return fakeResp{body: map[string]any{"panel": panel}}
+	}
+	socket := func(state string) fakeResp {
+		return fakeResp{body: map[string]any{"unit": "monopanel-api.socket", "load_state": "loaded", "active_state": "inactive", "sub_state": "dead", "unit_file_state": state}}
+	}
+	dir := t.TempDir()
+	conf := func(listen string) string {
+		p := filepath.Join(dir, strings.NewReplacer(":", "_", ".", "_").Replace(listen)+".yaml")
+		if err := os.WriteFile(p, []byte("web:\n  listen: \""+listen+"\"\n"), 0o640); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	for _, c := range []struct {
+		name, via, state, listen string
+		warn                     bool
+	}{
+		{"listens itself", "itself", "enabled", ":8443", true},
+		{"on the socket", "socket", "enabled", ":8443", false},
+		{"socket disabled", "itself", "disabled", ":8443", false},
+		{"socket masked", "itself", "masked", ":8443", false},
+		{"an older API", "", "enabled", ":8443", false},
+		{"a privileged port", "itself", "enabled", "203.0.113.5:443", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFakeAPI(t, map[string]fakeResp{
+				"GET /system/doctor":                 doctor,
+				"GET /system/status":                 status(c.via),
+				"GET /services/monopanel-api.socket": socket(c.state),
+			})
+			out, err := mp(t, "", "--config", conf(c.listen), "doctor")
+			if err != nil {
+				t.Fatal(err)
+			}
+			warned := strings.Contains(out, "[WARN] api socket") && strings.Contains(out, "monopanel-api.socket is enabled, but monopanel-api listens on the port itself")
+			if warned != c.warn {
+				t.Fatalf("warned %v, want %v:\n%s", warned, c.warn, out)
+			}
+			if !strings.HasSuffix(out, "2 checks, 0 failed, 0 warnings\n") {
+				t.Errorf("the summary is not last:\n%s", out)
+			}
+			if c.via != "itself" {
+				f.none(t, "GET", "/services/monopanel-api.socket")
+			}
+		})
+	}
+	// --json prints the API's checks as they are.
+	newFakeAPI(t, map[string]fakeResp{"GET /system/doctor": doctor, "GET /system/status": status("itself"), "GET /services/monopanel-api.socket": socket("enabled")})
+	if out, err := mp(t, "", "--config", conf(":8443"), "--json", "doctor"); err != nil || strings.Contains(out, "api socket") {
+		t.Fatalf("--json: %v\n%s", err, out)
+	}
+}
+
 // A start of the API that monopanel-api.socket made and that fails lingers
 // for the unit's restart pause before it exits: a connection waiting on the
 // socket would start it again at once, twenty times in two seconds, and the

@@ -529,7 +529,9 @@ func (c *checker) dovecotField(f string) error {
 }
 
 // dovecotInclude allows the configuration files of /etc/dovecot; a
-// relative path is relative to the including file.
+// relative path is relative to the including file. dovecot hands the path
+// to glob(3) with GLOB_BRACE: braces, a backslash and a wildcard in a
+// directory part would climb out of /etc/dovecot ("{..,x}", "\.\.", ".*").
 func dovecotInclude(dir, directive, v string) error {
 	what := fmt.Sprintf("dovecot %s %s", directive, v)
 	if hasDotDot(v) {
@@ -539,6 +541,9 @@ func dovecotInclude(dir, directive, v string) error {
 		v = dir + "/" + v
 	}
 	v = path.Clean(v)
+	if !globPlain(v) {
+		return notAllowed(what, "dovecot globs the path: braces, a backslash or a wildcard in a directory may match \"..\"; only the file name has a wildcard")
+	}
 	if !under(v, dovecotDir) {
 		return notAllowed(what, "only files in %s are included: the root master reads them", dovecotDir)
 	}

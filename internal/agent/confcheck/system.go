@@ -270,8 +270,13 @@ func isComposerWrapper(p string) bool { return p == composerBin }
 // ComposerRootGuard is the line of the composer wrapper that refuses root,
 // before the exec: composer.phar is a download the API made, so the archive
 // itself is the API's word, and root's composer would run it — and with it
-// the project's scripts and plugins — as root.
-const ComposerRootGuard = `[ "$(id -u)" != 0 ] || { echo "composer runs as a site's account, not as root: su -s /bin/sh -c 'composer ...' <login>" >&2; exit 1; }`
+// the project's scripts and plugins — as root. It fails closed: id by its
+// full path, as the PATH root runs composer with may lack /usr/bin, and a
+// numeric test, which is false for uid 0 and an error — the refusal too —
+// when id printed nothing (test(1): -ne takes integers; dash, bash and
+// busybox exit 2 on an empty operand). The string test the guard had
+// first, != 0, let an empty answer through.
+const ComposerRootGuard = `[ "$(/usr/bin/id -u)" -ne 0 ] || { echo "composer runs as a site's account, not as root: su -s /bin/sh -c 'composer ...' <login>" >&2; exit 1; }`
 
 var composerExecRe = regexp.MustCompile(`^exec (?:(/usr/bin/php[0-9]\.[0-9]+|/usr/bin/php|/opt/remi/php[0-9]+/root/usr/bin/php) )? ?` + regexp.QuoteMeta(composerPhar) + ` "\$@"$`)
 

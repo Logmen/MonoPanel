@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"monopanel/internal/termsafe"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -11,6 +13,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"monopanel/internal/apitypes"
+	"monopanel/internal/client"
+	"monopanel/internal/config"
 	"monopanel/internal/store"
 )
 
@@ -383,12 +387,48 @@ func doctorCmd() *cobra.Command {
 			}
 			fmt.Printf("[%s] %-32s %s\n", mark, c.Name, c.Detail)
 		}
+		if w := apiSocketWarning(cmd.Context(), cl); w != "" {
+			fmt.Printf("[WARN] %-32s %s\n", "api socket", w)
+		}
 		fmt.Println(d.Summary)
 		if fails > 0 {
 			return &exitError{code: 3}
 		}
 		return nil
 	}}
+}
+
+// apiSocketWarning is the doctor's word on the socket that keeps the panel's
+// port bound while the API restarts: enabled, yet the API listens on the
+// port itself — the socket failed or was stopped (the API unit stops it
+// before a binary of 0.8.19 or older, as after a self-update that rolled
+// back), or it listens elsewhere than web.listen — so that the port is free
+// for any local account during a restart. Nothing when all is well, when
+// the API does not say where it listens (older than 0.8.20), and for a
+// port below ip_unprivileged_port_start, which the socket leaves to the API
+// on purpose: no account can take it. config.yaml names the port where mp
+// can read it (root on the server), else the default one stands.
+func apiSocketWarning(ctx context.Context, cl *client.Client) string {
+	st, err := cl.Status(ctx)
+	if err != nil || st.Panel.ListenVia != apitypes.ListenViaItself {
+		return ""
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		cfg = config.Default()
+	}
+	if _, p, err := net.SplitHostPort(cfg.Web.Listen); err == nil {
+		if port, err := strconv.Atoi(p); err == nil && port < unprivilegedPortStart() {
+			return ""
+		}
+	}
+	unit := cfg.APISocketUnit()
+	sock, err := cl.Service(ctx, unit)
+	if err != nil || (sock.UnitFileState != "enabled" && sock.UnitFileState != "enabled-runtime") {
+		return ""
+	}
+	return fmt.Sprintf(T("%s включён, но monopanel-api слушает порт сам: пока он перезапускается, порт может занять любой локальный аккаунт. Причина — в journalctl -u monopanel-api -u %s; затем mp setup",
+		"%s is enabled, but monopanel-api listens on the port itself: while it restarts, any local account can take the port. See journalctl -u monopanel-api -u %s for why, then run mp setup"), unit, unit)
 }
 
 func logsCmd() *cobra.Command {
