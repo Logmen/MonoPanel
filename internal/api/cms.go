@@ -344,6 +344,12 @@ func (s *Server) jobSiteCMS(ctx context.Context, jc *jobs.Context) error {
 			if _, rmErr = s.fsop(ctx, owner, nil, args...); rmErr == nil {
 				break
 			}
+			if attempt == 0 {
+				// An unpack that broke off before 0.8.20 left root's files
+				// behind, which the account cannot remove: everything in
+				// its docroot is its own anyway.
+				s.handOverTree(ctx, jc, l.docroot, owner.Login, owner.Login)
+			}
 			time.Sleep(2 * time.Second)
 		}
 		if rmErr != nil {
@@ -445,7 +451,10 @@ func (s *Server) cmsDeliver(ctx context.Context, jc *jobs.Context, def *cmsDef, 
 		return "", fmt.Errorf("download %s: %w", def.Name, err)
 	}
 	defer body.Close()
-	var rd io.Reader = body
+	// The agent sees only the stream break off when the download does: what
+	// went wrong is told by the download, not by the agent's answer.
+	dl := &readTrack{r: body}
+	var rd io.Reader = dl
 	args := []string{"-xzf", "-", "-C", l.docroot, "--no-same-owner", "--warning=no-timestamp"}
 	members := []string{}
 	if def.ID == "opencart" {
@@ -453,7 +462,7 @@ func (s *Server) cmsDeliver(ctx context.Context, jc *jobs.Context, def *cmsDef, 
 	}
 	if isZip {
 		// tar cannot read a zip from a pipe: the zip is transcoded to a tar stream on the fly
-		data, err := io.ReadAll(io.LimitReader(body, 256<<20))
+		data, err := io.ReadAll(io.LimitReader(dl, 256<<20))
 		if err != nil {
 			return "", fmt.Errorf("download %s: %w", def.Name, err)
 		}
@@ -471,11 +480,24 @@ func (s *Server) cmsDeliver(ctx context.Context, jc *jobs.Context, def *cmsDef, 
 	}
 	args = append(args, members...) // only these members, when named
 	res, err := s.agent.StreamIn(ctx, &agent.StreamRequest{Name: "tar", Args: args, TimeoutSeconds: 3600}, rd)
-	if err != nil {
+	if err == nil && res.ExitCode != 0 {
+		err = fmt.Errorf("tar exit %d: %s", res.ExitCode, strings.TrimSpace(res.Output))
+	}
+	if err != nil || dl.err != nil {
+		// A download that broke off is an incomplete distribution, whatever
+		// tar made of the part it got. tar made what it unpacked root's
+		// (--no-same-owner), and only a finished unpack is handed over below:
+		// without this the account could not remove those files, and neither
+		// could the next install with force, which empties the docroot as the
+		// account.
+		s.handOverTree(ctx, jc, l.docroot, login, login)
+		if dl.err != nil {
+			return "", fmt.Errorf("download %s broke off: %w", def.Name, dl.err)
+		}
 		return "", fmt.Errorf("unpack %s: %w", def.Name, err)
 	}
-	if res.ExitCode != 0 {
-		return "", fmt.Errorf("unpack %s: tar exit %d: %s", def.Name, res.ExitCode, strings.TrimSpace(res.Output))
+	if rb, ok := body.(*resumingBody); ok && rb.resumes > 0 {
+		jc.Logf("the download broke off %d times and went on from where it stopped", rb.resumes)
 	}
 	ch, err := s.agent.Chown(ctx, &agent.ChownRequest{Path: l.docroot, Owner: login, Group: login, Recursive: true})
 	if err != nil {

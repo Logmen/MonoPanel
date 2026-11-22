@@ -11,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -238,31 +239,77 @@ func fetchOnce(ctx context.Context, url string, limit int64) (body []byte, retry
 // fetchStream opens a download for streaming (a CMS distribution goes
 // straight into tar on the agent instead of through memory), with the same
 // stall watch as fetchOnce: the body is cut off after fetchIdle without data.
-// Opening the stream is retried like fetchBytes; once bytes flow, a break
-// is the caller's to handle (the half-written tar cannot be resumed).
+// Opening the stream is retried like fetchBytes. Once bytes flow, a break or
+// a stall picks the download up where it stopped, when the server takes byte
+// ranges of the same file (Accept-Ranges, and its ETag or Last-Modified sent
+// back as If-Range): the reader — tar on the agent — never sees the break,
+// which servers behind DDoS filters (1c-bitrix.ru) deal out to long downloads.
+// A server that takes no ranges, or a file that changed meanwhile, ends the
+// stream with the error: the half-written tar cannot be resumed otherwise.
 func fetchStream(ctx context.Context, url string) (io.ReadCloser, error) {
-	return withRetry(ctx, func() (io.ReadCloser, bool, error) { return fetchStreamOnce(ctx, url) })
+	b, err := withRetry(ctx, func() (*stallBody, bool, error) { return fetchStreamFrom(ctx, url, 0, "") })
+	if err != nil {
+		return nil, err
+	}
+	return &resumingBody{ctx: ctx, url: url, cur: b, validator: b.validator}, nil
 }
 
-func fetchStreamOnce(ctx context.Context, url string) (io.ReadCloser, bool, error) {
+// fetchStreamResumes is how often one download is picked up again.
+var fetchStreamResumes = 8
+
+// fetchStreamFrom asks for the file from byte off on (0: all of it); a resumed
+// request sends validator as If-Range, so a changed file comes back whole and
+// is refused rather than spliced.
+func fetchStreamFrom(ctx context.Context, url string, off int64, validator string) (*stallBody, bool, error) {
 	rctx, cancel := context.WithCancel(ctx)
 	req, err := http.NewRequestWithContext(rctx, http.MethodGet, url, nil)
 	if err != nil {
 		cancel()
 		return nil, false, err
 	}
+	want := http.StatusOK
+	if off > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", off))
+		req.Header.Set("If-Range", validator)
+		want = http.StatusPartialContent
+	}
 	res, err := fetchClient.Do(req)
 	if err != nil {
 		cancel()
 		return nil, ctx.Err() == nil, err
 	}
-	if res.StatusCode != http.StatusOK {
+	if res.StatusCode != want {
 		res.Body.Close()
 		cancel()
+		if off > 0 && res.StatusCode == http.StatusOK {
+			return nil, false, fmt.Errorf("GET %s: the server sent the whole file again instead of the rest from byte %d: it changed meanwhile, or takes no ranges", url, off)
+		}
 		return nil, res.StatusCode >= 500, fmt.Errorf("GET %s: %s", url, res.Status)
 	}
-	stall := time.AfterFunc(fetchIdle, cancel)
-	return &stallBody{r: &stallReader{r: res.Body, timer: stall}, body: res.Body, timer: stall, cancel: cancel}, false, nil
+	if off > 0 {
+		var start int64
+		if _, err := fmt.Sscanf(res.Header.Get("Content-Range"), "bytes %d-", &start); err != nil || start != off {
+			res.Body.Close()
+			cancel()
+			return nil, false, fmt.Errorf("GET %s: the server resumed at %q, not at byte %d", url, res.Header.Get("Content-Range"), off)
+		}
+	}
+	b := &stallBody{body: res.Body, cancel: cancel, url: url}
+	if off > 0 || res.Header.Get("Accept-Ranges") == "bytes" {
+		// If-Range takes a strong ETag or a date; a weak ETag would make the
+		// server send the whole file every time.
+		if et := res.Header.Get("ETag"); et != "" && !strings.HasPrefix(et, "W/") {
+			b.validator = et
+		} else {
+			b.validator = res.Header.Get("Last-Modified")
+		}
+		if off > 0 {
+			b.validator = validator
+		}
+	}
+	b.timer = time.AfterFunc(fetchIdle, func() { b.stalled.Store(true); cancel() })
+	b.r = &stallReader{r: res.Body, timer: b.timer}
+	return b, false, nil
 }
 
 type stallBody struct {
@@ -270,15 +317,69 @@ type stallBody struct {
 	body   io.Closer
 	timer  *time.Timer
 	cancel context.CancelFunc
+	url    string
+	// stalled is set when the watch cut the download off: the read then
+	// fails with the context's error, which says nothing about why.
+	stalled atomic.Bool
+	// validator is what a resumed request sends as If-Range; empty when the
+	// server takes no ranges.
+	validator string
 }
 
-func (b *stallBody) Read(p []byte) (int, error) { return b.r.Read(p) }
+func (b *stallBody) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) && b.stalled.Load() {
+		err = fmt.Errorf("GET %s: no data for %s: %w", b.url, fetchIdle, err)
+	}
+	return n, err
+}
 
 func (b *stallBody) Close() error {
 	b.timer.Stop()
 	b.cancel()
 	return b.body.Close()
 }
+
+// resumingBody is a download that picks itself up after a break.
+type resumingBody struct {
+	ctx       context.Context
+	url       string
+	cur       *stallBody
+	off       int64
+	validator string
+	resumes   int
+	// broken holds a break that came with data: the data goes out first.
+	broken error
+}
+
+func (r *resumingBody) Read(p []byte) (int, error) {
+	for {
+		if r.broken == nil {
+			n, err := r.cur.Read(p)
+			r.off += int64(n)
+			switch {
+			case err == nil || errors.Is(err, io.EOF):
+				return n, err
+			case n > 0:
+				r.broken = err
+				return n, nil
+			}
+			r.broken = err
+		}
+		if r.validator == "" || r.resumes >= fetchStreamResumes || r.ctx.Err() != nil {
+			return 0, r.broken
+		}
+		r.resumes++
+		r.cur.Close()
+		next, err := withRetry(r.ctx, func() (*stallBody, bool, error) { return fetchStreamFrom(r.ctx, r.url, r.off, r.validator) })
+		if err != nil {
+			return 0, fmt.Errorf("%w; resuming at byte %d: %v", r.broken, r.off, err)
+		}
+		r.cur, r.broken = next, nil
+	}
+}
+
+func (r *resumingBody) Close() error { return r.cur.Close() }
 
 // githubLatestTag names a public repository's latest release without the
 // API and its anonymous quota: the site redirects /releases/latest to the tag.

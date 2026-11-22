@@ -671,6 +671,15 @@ func (s *Server) migrateFiles(ctx context.Context, jc *jobs.Context, src migrate
 	clean.Close()
 	body.Close()
 	<-done
+	if err == nil && out.ExitCode != 0 {
+		err = fmt.Errorf("tar: %s", toolOutput(out.Output))
+	}
+	if err != nil || st.err != nil && !errors.Is(st.err, io.ErrClosedPipe) {
+		// What tar unpacked before the stream broke off is root's
+		// (--no-same-owner): hand it over as a finished unpack is, or the
+		// account cannot remove or replace it.
+		s.handOverTree(ctx, jc, dest, owner, group)
+	}
 	// The filter's own reason comes first: the agent only sees the stream
 	// break off. A closed pipe is the filter outliving tar, not a cause.
 	if st.err != nil && !errors.Is(st.err, io.ErrClosedPipe) {
@@ -678,9 +687,6 @@ func (s *Server) migrateFiles(ctx context.Context, jc *jobs.Context, src migrate
 	}
 	if err != nil {
 		return err
-	}
-	if out.ExitCode != 0 {
-		return fmt.Errorf("tar: %s", toolOutput(out.Output))
 	}
 	if st.dropped > 0 {
 		jc.Logf("%s: %d members of the source's archive left out (only files, directories and links inside the tree are taken), the first: %s", part, st.dropped, st.first)

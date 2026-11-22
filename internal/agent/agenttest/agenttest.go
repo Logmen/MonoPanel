@@ -250,8 +250,15 @@ func (a *Agent) handle(w http.ResponseWriter, r *http.Request) {
 		a.mu.Lock()
 		a.calls = append(a.calls, Call{Path: r.URL.Path, Body: spec})
 		a.streams = append(a.streams, Stream{Direction: "in", Name: req.Name, Args: req.Args, Bytes: int(n)})
+		// A failing tool answers as the agent does: the stream was read,
+		// the tool's exit code and output come back.
+		msg, failing := a.Fail[r.URL.Path]
 		a.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		if failing {
+			json.NewEncoder(w).Encode(agent.StreamResponse{ExitCode: 2, Output: msg}) //nolint:errcheck // test double
+			return
+		}
 		json.NewEncoder(w).Encode(agent.StreamResponse{}) //nolint:errcheck // test double
 		return
 	}

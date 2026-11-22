@@ -1,10 +1,15 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -102,5 +107,176 @@ func TestFetchRetriesTransientFailures(t *testing.T) {
 	}
 	if _, err := fetchStream(context.Background(), srv.URL+"/gone.tar.gz"); err == nil || goneCalls != 1 {
 		t.Fatalf("404 must fail at once: %v after %d calls", err, goneCalls)
+	}
+}
+
+// A stream cut off by the stall watch says so: the context's own error,
+// which is all the reader sees, names no reason.
+func TestFetchStreamSaysItStalled(t *testing.T) {
+	prev := fetchIdle
+	fetchIdle = 150 * time.Millisecond
+	t.Cleanup(func() { fetchIdle = prev })
+	stalled := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fl, _ := w.(http.Flusher)
+		w.Write([]byte("head\n")) //nolint:errcheck // test server
+		if fl != nil {
+			fl.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer stalled.Close()
+	body, err := fetchStream(context.Background(), stalled.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer body.Close()
+	_, err = io.ReadAll(body)
+	if err == nil || !strings.Contains(err.Error(), "no data for") || !strings.Contains(err.Error(), stalled.URL) {
+		t.Fatalf("a stalled stream must say why it ended: %v", err)
+	}
+}
+
+// rangeServer serves data like a file server that takes byte ranges, and
+// breaks off the first cuts responses after half of what they would send.
+func rangeServer(t *testing.T, data []byte, etag string, cuts int, ranges bool) (*httptest.Server, *[]string) {
+	t.Helper()
+	var mu sync.Mutex
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Header.Get("Range")+"|"+r.Header.Get("If-Range"))
+		cut := len(seen) <= cuts
+		mu.Unlock()
+		body, status := data, http.StatusOK
+		if ranges {
+			w.Header().Set("Accept-Ranges", "bytes")
+		}
+		w.Header().Set("ETag", etag)
+		if rg := r.Header.Get("Range"); rg != "" && ranges && r.Header.Get("If-Range") == etag {
+			var off int
+			fmt.Sscanf(rg, "bytes=%d-", &off) //nolint:errcheck // test server
+			body, status = data[off:], http.StatusPartialContent
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", off, len(data)-1, len(data)))
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(status)
+		if cut {
+			w.Write(body[:len(body)/2]) //nolint:errcheck // test server
+			w.(http.Flusher).Flush()
+			panic(http.ErrAbortHandler) // the connection drops mid-body
+		}
+		w.Write(body) //nolint:errcheck // test server
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &seen
+}
+
+// A download that breaks off resumes where it stopped, as often as it
+// breaks: the reader gets the file, byte for byte, without seeing a break.
+func TestFetchStreamResumesAfterABreak(t *testing.T) {
+	prev := fetchRetryBase
+	fetchRetryBase = time.Millisecond
+	t.Cleanup(func() { fetchRetryBase = prev })
+	data := bytes.Repeat([]byte("0123456789abcdef"), 64<<10) // 1 MiB
+	srv, seen := rangeServer(t, data, `"v1"`, 3, true)
+	body, err := fetchStream(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer body.Close()
+	got, err := io.ReadAll(body)
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("resumed download: %v, %d of %d bytes, equal %v", err, len(got), len(data), bytes.Equal(got, data))
+	}
+	if len(*seen) != 4 || (*seen)[0] != "|" || !strings.HasSuffix((*seen)[1], `|"v1"`) || !strings.HasPrefix((*seen)[1], "bytes=") {
+		t.Fatalf("one request and three resumes with Range and If-Range: %q", *seen)
+	}
+}
+
+// A file that changed between the break and the resume comes back whole
+// (If-Range does not match): the download fails rather than splices two
+// files; so does one from a server that takes no ranges.
+func TestFetchStreamDoesNotSplice(t *testing.T) {
+	prev := fetchRetryBase
+	fetchRetryBase = time.Millisecond
+	t.Cleanup(func() { fetchRetryBase = prev })
+	data := bytes.Repeat([]byte("x"), 1<<20)
+	changed, _ := rangeServer(t, data, `"v1"`, 1, true)
+	body, err := fetchStream(context.Background(), changed.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The server's file is "v2" by the time the download resumes.
+	changedETag(t, body, `"v2"`)
+	if _, err := io.ReadAll(body); err == nil || !strings.Contains(err.Error(), "whole file again") {
+		t.Fatalf("a changed file must fail the download: %v", err)
+	}
+	body.Close()
+
+	plain, seen := rangeServer(t, data, `"v1"`, 1, false)
+	body, err = fetchStream(context.Background(), plain.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer body.Close()
+	if _, err := io.ReadAll(body); err == nil || len(*seen) != 1 {
+		t.Fatalf("without ranges the break is the reader's: %v, %d requests", err, len(*seen))
+	}
+}
+
+// changedETag makes the resume of body ask for another version of the file,
+// as the server's own file would be after a change.
+func changedETag(t *testing.T, body io.ReadCloser, etag string) {
+	t.Helper()
+	r, ok := body.(*resumingBody)
+	if !ok {
+		t.Fatalf("fetchStream returned %T", body)
+	}
+	r.validator = etag
+}
+
+// A stall is a break too: the download is cut off after fetchIdle without
+// data and picked up where it stopped.
+func TestFetchStreamResumesAfterAStall(t *testing.T) {
+	prevIdle, prevBase := fetchIdle, fetchRetryBase
+	fetchIdle, fetchRetryBase = 150*time.Millisecond, time.Millisecond
+	t.Cleanup(func() { fetchIdle, fetchRetryBase = prevIdle, prevBase })
+	data := bytes.Repeat([]byte("stall"), 50<<10)
+	var mu sync.Mutex
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		first := requests == 1
+		mu.Unlock()
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("Last-Modified", "Thu, 02 Apr 2026 08:40:37 GMT")
+		if first {
+			w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+			w.WriteHeader(http.StatusOK)
+			w.Write(data[:1000]) //nolint:errcheck // test server
+			w.(http.Flusher).Flush()
+			<-r.Context().Done() // and then nothing
+			return
+		}
+		var off int
+		fmt.Sscanf(r.Header.Get("Range"), "bytes=%d-", &off) //nolint:errcheck // test server
+		if r.Header.Get("If-Range") != "Thu, 02 Apr 2026 08:40:37 GMT" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", off, len(data)-1, len(data)))
+		w.WriteHeader(http.StatusPartialContent)
+		w.Write(data[off:]) //nolint:errcheck // test server
+	}))
+	defer srv.Close()
+	body, err := fetchStream(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer body.Close()
+	got, err := io.ReadAll(body)
+	if err != nil || !bytes.Equal(got, data) || requests != 2 {
+		t.Fatalf("stalled download resumed: %v, %d of %d bytes, %d requests", err, len(got), len(data), requests)
 	}
 }
