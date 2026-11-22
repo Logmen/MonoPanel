@@ -829,7 +829,7 @@ func (s *Server) registerShares() {
 			if derr := s.forgetShare(cctx, sh); derr != nil {
 				s.db.DeleteShare(cctx, sh.ID) //nolint:errcheck // nothing to keep
 			}
-			return nil, huma.Error502BadGateway(err.Error())
+			return nil, agentStatus(err.Error(), err)
 		}
 		if sh.Entry {
 			if err := s.ensureSSHConfig(ctx); err != nil {
@@ -889,7 +889,7 @@ func (s *Server) registerShares() {
 			return nil, err
 		}
 		if err := s.removeShare(ctx, sh); err != nil {
-			return nil, huma.Error502BadGateway(err.Error())
+			return nil, agentStatus(err.Error(), err)
 		}
 		if sh.Entry {
 			if err := s.ensureSSHConfig(ctx); err != nil {

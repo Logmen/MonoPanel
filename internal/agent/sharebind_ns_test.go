@@ -356,6 +356,31 @@ func shareNSAgent() int {
 	if _, err := s.shareUnbind(ctx, &ShareUnbindRequest{Where: media}); err != nil {
 		fail("crossed", "unbind: %v", err)
 	}
+	// 7c. a folder on a mount deeper in the owner's home — an
+	// administrator's volume for a site's files — is shared as before: only
+	// the directory right below a home can be the mount point of another
+	// shared folder
+	vol := filepath.Join(www, "alex", "data", "www", "shop.example.com", "vol")
+	deep, deepAt := filepath.Join(vol, "x"), filepath.Join(www, "guest", "deep")
+	if err := os.Mkdir(vol, 0o755); err != nil {
+		fail("deeper mount", "%v", err)
+	} else if err := os.Mkdir(deepAt, 0o755); err != nil {
+		fail("deeper mount", "%v", err)
+	} else if err := inHostMountNS(func() error { return unix.Mount("tmpfs", vol, "tmpfs", 0, "size=1m") }); err != nil {
+		fail("deeper mount", "mount: %v", err)
+	} else if err := os.Mkdir(deep, 0o755); err != nil {
+		fail("deeper mount", "%v", err)
+	} else if _, err := bind(deep, deepAt); err != nil {
+		fail("deeper mount", "a folder on a volume in the site: %v", err)
+	} else if got := inode(hostView(deepAt)); got != inode(deep) {
+		fail("deeper mount", "the host sees inode %d at %s, the folder is %d", got, deepAt, inode(deep))
+	} else {
+		fmt.Println("ok deeper mount")
+	}
+	if _, err := s.shareUnbind(ctx, &ShareUnbindRequest{Where: deepAt}); err != nil {
+		fail("deeper mount", "unbind: %v", err)
+	}
+	inHostMountNS(func() error { return unix.Unmount(vol, unix.MNT_DETACH) }) //nolint:errcheck // what the step mounted, taken off again
 	// 8. the goroutine that would join the host's namespace runs on the
 	// process's main thread: Go parks that thread for good once a goroutine
 	// locked to it ends, in the state it left it — the host's namespace,
@@ -433,7 +458,7 @@ func TestShareBindInTheHostsMountNamespace(t *testing.T) {
 	if err != nil || strings.Contains(string(out), "FAIL") {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for _, step := range []string{"bind", "status", "again", "unbind", "race", "symlink", "symlink above", "legacy", "kept", "main thread", "guest's mount", "busy", "crossed"} {
+	for _, step := range []string{"bind", "status", "again", "unbind", "race", "symlink", "symlink above", "legacy", "kept", "main thread", "guest's mount", "busy", "crossed", "deeper mount"} {
 		if !strings.Contains(string(out), "ok "+step+"\n") {
 			t.Errorf("step %s did not run:\n%s", step, out)
 		}

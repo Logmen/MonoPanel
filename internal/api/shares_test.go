@@ -83,6 +83,43 @@ func TestSharedFolderLifecycle(t *testing.T) {
 	}
 }
 
+// The agent's refusals of a change of a shared folder reach the client
+// with their own status: a folder in use stays 409 and the guard an
+// in-place restore holds stays 503 (try again later), where every agent
+// error used to be a bad gateway; the agent down is still 502.
+func TestShareChangesKeepTheAgentsStatus(t *testing.T) {
+	f := newSiteFixture(t)
+	f.createSite(map[string]any{"domain": "shop.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	var created struct {
+		JobID int64 `json:"job_id"`
+	}
+	f.call(http.MethodPost, "/users", map[string]any{"login": "guest", "password": "guest-password-1", "role": "user"}, http.StatusAccepted, &created)
+	f.waitJob(created.JobID)
+	f.call(http.MethodPost, "/users/guest/shares", map[string]any{"site": "shop.example.com", "path": "upload/kaspy"}, http.StatusCreated, nil)
+
+	f.agent.SetBusy("var-www-guest-kaspy.mount", true)
+	f.call(http.MethodDelete, "/users/guest/shares/kaspy", nil, http.StatusConflict, nil)
+	f.agent.SetBusy("var-www-guest-kaspy.mount", false)
+
+	f.agent.FailStatus = map[string]int{}
+	f.agent.Fail["/v1/shares/unbind"] = "a shared folder cannot be bound or unbound now: a restore below the web root is under way; try again when it is done"
+	f.agent.FailStatus["/v1/shares/unbind"] = http.StatusServiceUnavailable
+	f.call(http.MethodDelete, "/users/guest/shares/kaspy", nil, http.StatusServiceUnavailable, nil)
+	f.agent.FailStatus["/v1/shares/unbind"] = http.StatusBadGateway
+	f.call(http.MethodDelete, "/users/guest/shares/kaspy", nil, http.StatusBadGateway, nil)
+	delete(f.agent.Fail, "/v1/shares/unbind")
+	f.call(http.MethodDelete, "/users/guest/shares/kaspy", nil, http.StatusOK, nil)
+
+	f.agent.Fail["/v1/shares/bind"] = "a shared folder cannot be bound or unbound now: a restore below the web root is under way; try again when it is done"
+	f.agent.FailStatus["/v1/shares/bind"] = http.StatusServiceUnavailable
+	f.call(http.MethodPost, "/users/guest/shares", map[string]any{"site": "shop.example.com", "path": "upload/kaspy"}, http.StatusServiceUnavailable, nil)
+	var list []*apitypes.ShareStatus
+	f.call(http.MethodGet, "/users/guest/shares", nil, http.StatusOK, &list)
+	if len(list) != 0 {
+		t.Fatalf("a share the agent did not bind is kept: %+v", list)
+	}
+}
+
 // noMountUnits fails the test when the panel asked for a mount unit.
 func noMountUnits(t *testing.T, f *siteFixture) {
 	t.Helper()
@@ -497,7 +534,8 @@ func TestRefusedGuestLosesItsSharedFolders(t *testing.T) {
 		return &agent.UnitAccount{Login: login, Home: "/var/www/" + login, Group: login}, nil
 	})
 
-	f.call(http.MethodPost, "/users/guest/shares", map[string]any{"site": "shop.example.com", "path": "new"}, http.StatusBadGateway, nil)
+	// the agent's refusal keeps its status: not allowed, not a bad gateway
+	f.call(http.MethodPost, "/users/guest/shares", map[string]any{"site": "shop.example.com", "path": "new"}, http.StatusForbidden, nil)
 	if removed := strings.Join(f.agent.Removed(), " ") + " "; !strings.Contains(removed, "/var/www/guest/new ") {
 		t.Errorf("the mount point of a share the agent refused stayed: %s", removed)
 	}
@@ -686,11 +724,12 @@ func TestRemovingASharedFolderInUse(t *testing.T) {
 	f.agent.SetBusy(sftp, true)
 	f.agent.SetBusy(legacy, true)
 
-	f.call(http.MethodDelete, "/users/guest/shares/kaspy", nil, http.StatusBadGateway, nil)
+	// in use: 409, as the agent says, so a client can tell it from the agent down
+	f.call(http.MethodDelete, "/users/guest/shares/kaspy", nil, http.StatusConflict, nil)
 	if _, ok := f.agent.Share("/var/www/guest/kaspy"); !ok || !f.agent.Mounted(sftp) {
 		t.Fatal("a folder in use in an SFTP-only home was forgotten")
 	}
-	f.call(http.MethodDelete, "/users/dev/shares/upload", nil, http.StatusBadGateway, nil)
+	f.call(http.MethodDelete, "/users/dev/shares/upload", nil, http.StatusConflict, nil)
 	if _, ok := f.agent.File("/etc/systemd/system/" + legacy); ok {
 		t.Fatal("the unit in the home of a guest with a shell stayed")
 	}

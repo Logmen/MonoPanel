@@ -197,8 +197,10 @@ fi
 		echo "  systemctl disable --now monopanel-apache@<login>   # each account's, once its sites are applied"
 	fi
 	if [ -d "$shares" ]; then
-		echo "Shared folders of shell guests stay mounted in $shares and reachable from their homes,"
-		echo "though the older panel shows them unmounted: leave them be until the next upgrade."
+		echo "Shared folders stay mounted until a reboot — the shell guests' in $shares, reachable from"
+		echo "their homes, though the older panel shows them unmounted — and after one none is: the older"
+		echo "panel's mp site fix <domain> mounts the SFTP-only guests' again, the shell guests' it cannot:"
+		echo "leave them be until the next upgrade."
 	fi
 	echo "See \"Going back to an older version\": https://monopanel.app/en/docs/update/"
 } >&2

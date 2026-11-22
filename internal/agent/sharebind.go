@@ -369,13 +369,15 @@ var mountIDOf = func(fd int) (uint64, error) {
 // another account's tree under the name. The descriptor is what gets bound:
 // what the owner renames afterwards changes nothing.
 //
-// The folder also lies on the mount of the home it was reached from. The
-// mount point of a shared folder in the home — its owner an SFTP-only guest
-// of another account — leads into that account's tree, and the records may
-// not tell of it as the walk crosses it (one not written yet as the guard
-// was read, one gone since: shareBind). A folder below a mount of an
-// administrator's in the home is refused too: nothing is to be mounted below
-// an account's directories (docs/10 §4).
+// The directory right below the home lies on the home's mount. That is
+// where the mount point of a shared folder in a home is — its owner an
+// SFTP-only guest of another account's, or a guest with a shell of a panel
+// older than 0.8.20 — and it leads into that account's tree, which the
+// records may not tell of as the walk crosses it (one not written yet as the
+// guard was read, one gone since: shareBind). Mounts deeper in the home are
+// an administrator's (a volume or a dataset for a site's files) or the
+// owner's own FUSE mounts, which show only what the owner may read: a folder
+// on one is shared as before.
 func (s *Server) openShareSource(what string, g *shareGuard) (int, error) {
 	root := filepath.Clean(s.cfg.WWWRoot)
 	rel, ok := strings.CutPrefix(what, root+"/")
@@ -420,10 +422,20 @@ func (s *Server) openShareSource(what string, g *shareGuard) (int, error) {
 			return -1, &Error{Message: "open " + cur, Output: err.Error()}
 		}
 		fd = next
-		if i == 0 {
+		switch i {
+		case 0:
 			if homeMount, err = mountIDOf(fd); err != nil {
 				unix.Close(fd) //nolint:errcheck // a directory opened for reading
 				return -1, &Error{Message: "the mount of " + home, Output: err.Error()}
+			}
+		case 1:
+			switch mnt, err := mountIDOf(fd); {
+			case err != nil:
+				unix.Close(fd) //nolint:errcheck // a directory opened for reading
+				return -1, &Error{Message: "the mount of " + cur, Output: err.Error()}
+			case mnt != homeMount:
+				unix.Close(fd) //nolint:errcheck // a directory opened for reading
+				return -1, shareSourceErr(what, cur+" lies on another mount than its home "+home+": the mount point of another shared folder, which shows that folder's tree")
 			}
 		}
 	}
@@ -435,14 +447,6 @@ func (s *Server) openShareSource(what string, g *shareGuard) (int, error) {
 	if uid := mountOwner(what, &st); uid != acct.UID {
 		unix.Close(fd) //nolint:errcheck // a directory opened for reading
 		return -1, shareSourceErr(what, fmt.Sprintf("it belongs to uid %d, not to %s (uid %d), the owner of the home it lies in", uid, login, acct.UID))
-	}
-	switch mnt, err := mountIDOf(fd); {
-	case err != nil:
-		unix.Close(fd) //nolint:errcheck // a directory opened for reading
-		return -1, &Error{Message: "the mount of " + what, Output: err.Error()}
-	case mnt != homeMount:
-		unix.Close(fd) //nolint:errcheck // a directory opened for reading
-		return -1, shareSourceErr(what, "it lies on another mount than its home "+home+": below the mount point of another shared folder, or below a mount of an administrator's")
 	}
 	return fd, nil
 }
