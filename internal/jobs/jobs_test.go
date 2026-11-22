@@ -248,3 +248,80 @@ func TestHeldWorkersClaimNothing(t *testing.T) {
 		t.Fatal("a held runner does not stop")
 	}
 }
+
+// A job type with a limit of its own runs past the default limit — a
+// backup's restic gets hours —, while a job of another type is still cut at
+// the default, and one with a shorter limit of its own at that. A limit that
+// is not positive leaves the default. The default hour is shortened here.
+func TestTypeLimitOutlastsTheDefault(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "p.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	r := NewRunner(db, 3, nil)
+	if r.Limit("backup.run") != DefaultLimit || DefaultLimit != time.Hour {
+		t.Fatalf("the default: %s, %s", r.Limit("backup.run"), DefaultLimit)
+	}
+	r.timeout = 300 * time.Millisecond
+	release := make(chan struct{})
+	wait := func(ctx context.Context, _ *Context) error {
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	for _, typ := range []string{"backup.run", "backup.restore", "site.apply"} {
+		r.Register(typ, wait)
+	}
+	r.SetLimit("backup.run", time.Minute)
+	r.SetLimit("backup.restore", 600*time.Millisecond)
+	r.SetLimit("site.apply", time.Minute)
+	r.SetLimit("site.apply", 0)
+	if got := r.Limit("site.apply"); got != 300*time.Millisecond {
+		t.Fatalf("site.apply after a limit of 0: %s", got)
+	}
+	r.SetLimit("site.apply", time.Minute)
+	r.SetLimit("site.apply", -time.Minute)
+	if got := r.Limit("site.apply"); got != 300*time.Millisecond {
+		t.Fatalf("site.apply after a negative limit: %s", got)
+	}
+	all, stop := r.Broker().Subscribe(0, 64)
+	defer stop()
+	r.Start(ctx)
+	backup, err := r.Enqueue(ctx, "backup.run", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restore, _ := r.Enqueue(ctx, "backup.restore", nil)
+	apply, _ := r.Enqueue(ctx, "site.apply", nil)
+	cut := map[int64]time.Duration{}
+	for range 2 {
+		e := waitFor(t, all, "failed")
+		got, _ := db.GetJob(ctx, e.JobID)
+		if got.Error != context.DeadlineExceeded.Error() || got.StartedAt == nil || got.FinishedAt == nil {
+			t.Fatalf("job %d %s: %s %q", got.ID, got.Type, got.Status, got.Error)
+		}
+		cut[got.ID] = got.FinishedAt.Sub(*got.StartedAt)
+	}
+	if d, ok := cut[apply.ID]; !ok || d < 300*time.Millisecond {
+		t.Errorf("site.apply cut after %s (%v)", d, ok)
+	}
+	if d, ok := cut[restore.ID]; !ok || d < 600*time.Millisecond {
+		t.Errorf("backup.restore cut after %s (%v)", d, ok)
+	}
+	if got, _ := db.GetJob(ctx, backup.ID); got.Status != store.JobRunning {
+		t.Fatalf("backup.run past the default limit: %s %q", got.Status, got.Error)
+	}
+	close(release)
+	e := waitFor(t, all, "done")
+	if got, _ := db.GetJob(ctx, backup.ID); e.JobID != backup.ID || got.Status != store.JobDone {
+		t.Fatalf("backup.run: %s %q", got.Status, got.Error)
+	}
+	cancel()
+	r.Wait()
+}

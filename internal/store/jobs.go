@@ -89,10 +89,39 @@ func (d *DB) EnqueueJob(ctx context.Context, j *Job) error {
 // jobs queued after it are claimed as before. It returns nil, nil when
 // nothing is runnable.
 func (d *DB) ClaimJob(ctx context.Context, worker string, exclusive ...[]string) (*Job, error) {
+	return d.claimJob(ctx, worker, nil, 0, exclusive)
+}
+
+// ClaimSpareJob is ClaimJob for a spare worker, one kept for the other jobs
+// while jobs of the long types — those that may run for hours — hold every
+// other worker: it claims no job of the long types, and none at all while
+// fewer than busy of them run.
+func (d *DB) ClaimSpareJob(ctx context.Context, worker string, long []string, busy int, exclusive ...[]string) (*Job, error) {
+	if len(long) == 0 {
+		return nil, nil
+	}
+	return d.claimJob(ctx, worker, long, busy, exclusive)
+}
+
+func (d *DB) claimJob(ctx context.Context, worker string, long []string, busy int, exclusive [][]string) (*Job, error) {
 	q := `UPDATE jobs SET status=?, started_at=?, worker=? WHERE id = (
 			SELECT j.id FROM jobs j
 			WHERE j.status=? AND NOT EXISTS (SELECT 1 FROM jobs r WHERE r.status=? AND r.lock_key<>'' AND r.lock_key=j.lock_key)`
 	args := []any{JobRunning, now(), worker, JobQueued, JobRunning}
+	if len(long) > 0 {
+		in := strings.TrimSuffix(strings.Repeat("?,", len(long)), ",")
+		q += `
+			AND j.type NOT IN (` + in + `)
+			AND (SELECT COUNT(*) FROM jobs r WHERE r.status=? AND r.type IN (` + in + `)) >= ?`
+		for _, t := range long {
+			args = append(args, t)
+		}
+		args = append(args, JobRunning)
+		for _, t := range long {
+			args = append(args, t)
+		}
+		args = append(args, busy)
+	}
 	for _, types := range exclusive {
 		if len(types) == 0 {
 			continue

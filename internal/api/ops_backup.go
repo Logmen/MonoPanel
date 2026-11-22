@@ -455,7 +455,7 @@ func (s *Server) jobBackupRun(ctx context.Context, jc *jobs.Context) error {
 	}
 	jc.Progress(30, "restic backup")
 	args := append([]string{"backup", "--json", "--tag", "monopanel", "--tag", "scope=" + scope}, paths...)
-	res, err := s.restic(ctx, env, 6*3600, args...)
+	res, err := s.restic(ctx, env, seconds(resticLimit), args...)
 	if err != nil {
 		return fail(err)
 	}
@@ -485,7 +485,7 @@ func (s *Server) jobBackupRun(ctx context.Context, jc *jobs.Context) error {
 	}
 	jc.Logf("snapshot %s: %d files, %s processed, %s added", summary.SnapshotID[:8], summary.Files, humanBytes(summary.Bytes), humanBytes(summary.Added))
 	jc.Progress(80, "retention")
-	forget, err := s.restic(ctx, env, 3600, "forget", "--prune", "--tag", "monopanel", "--keep-daily", fmt.Sprint(t.KeepDaily), "--keep-weekly", fmt.Sprint(t.KeepWeekly), "--keep-monthly", fmt.Sprint(t.KeepMonthly))
+	forget, err := s.restic(ctx, env, seconds(pruneLimit), "forget", "--prune", "--tag", "monopanel", "--keep-daily", fmt.Sprint(t.KeepDaily), "--keep-weekly", fmt.Sprint(t.KeepWeekly), "--keep-monthly", fmt.Sprint(t.KeepMonthly))
 	if err != nil {
 		jc.Logf("warning: forget: %v", err)
 	} else if forget.ExitCode != 0 {
@@ -600,7 +600,7 @@ func (s *Server) jobBackupRestore(ctx context.Context, jc *jobs.Context) error {
 		args = append(args, "--include", inc)
 	}
 	jc.Progress(10, "restic restore")
-	res, err := s.restic(ctx, env, 6*3600, args...)
+	res, err := s.restic(ctx, env, seconds(resticLimit), args...)
 	if err != nil {
 		return err
 	}

@@ -122,8 +122,14 @@ func (s *Server) jobUserDelete(ctx context.Context, jc *jobs.Context) error {
 	if err != nil {
 		return fail(err)
 	}
+	// The sites' trees stay in the home, which the purge removes below with
+	// the unix user — when there is one.
+	tree := treeKept
+	if p.Purge && u.UnixUID != nil {
+		tree = treeWithHome
+	}
 	for _, site := range sites {
-		if err := s.removeSiteConfig(ctx, jc, site, u, false); err != nil {
+		if err := s.removeSiteConfig(ctx, jc, site, u, tree); err != nil {
 			return fail(fmt.Errorf("site %s: %w", site.Domain, err))
 		}
 		for _, name := range append([]string{site.Domain}, site.Aliases...) {

@@ -357,6 +357,10 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	s.jobs.Register("mail.apply", s.jobMailApply)
 	s.jobs.Register("mail.webmail", s.jobWebmailInstall)
 	s.jobs.Register("migrate.run", s.jobMigrateRun)
+	// A backup, a restore and a migration may run for hours (jobLimits).
+	for typ, d := range jobLimits {
+		s.jobs.SetLimit(typ, d)
+	}
 	// The daily upgrade of nginx, PHP and Apache and the panel's own update
 	// come on their own, by night, and both run the package manager — and
 	// the update ends in restarting the agent and the API. Neither starts

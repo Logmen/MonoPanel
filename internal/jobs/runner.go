@@ -49,15 +49,26 @@ type Runner struct {
 	workers  int
 	handlers map[string]Handler
 	wake     chan struct{}
-	wg       sync.WaitGroup
-	mu       sync.RWMutex
-	timeout  time.Duration
+	// spareWake wakes the spare worker (Start). It has a channel of its
+	// own: one that took a worker's wake with nothing it may claim would
+	// leave the job to the next tick of the worker that may.
+	spareWake chan struct{}
+	wg        sync.WaitGroup
+	mu        sync.RWMutex
+	// timeout is how long a job may run unless its type has a limit of its
+	// own in limits (SetLimit).
+	timeout time.Duration
+	limits  map[string]time.Duration
 	// ready holds the workers back at Start until it returns (Hold).
 	ready func(ctx context.Context)
 	// exclusive are the groups of job types of which no two run at the
 	// same time (Exclusive).
 	exclusive [][]string
 }
+
+// DefaultLimit is how long a job may run, from its start, unless its type
+// has a limit of its own (SetLimit): its context ends then.
+const DefaultLimit = time.Hour
 
 // NewRunner creates a runner with n workers.
 func NewRunner(db *store.DB, n int, log *slog.Logger) *Runner {
@@ -67,7 +78,7 @@ func NewRunner(db *store.DB, n int, log *slog.Logger) *Runner {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Runner{db: db, broker: NewBroker(), log: log, workers: n, handlers: map[string]Handler{}, wake: make(chan struct{}, 1), timeout: time.Hour}
+	return &Runner{db: db, broker: NewBroker(), log: log, workers: n, handlers: map[string]Handler{}, wake: make(chan struct{}, 1), spareWake: make(chan struct{}, 1), timeout: DefaultLimit, limits: map[string]time.Duration{}}
 }
 
 // Register binds a job type to a handler.
@@ -75,6 +86,45 @@ func (r *Runner) Register(typ string, h Handler) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.handlers[typ] = h
+}
+
+// SetLimit gives the jobs of a type a time limit of their own instead of
+// DefaultLimit: a backup or a restore runs restic for hours, a migration
+// copies a whole account. A limit that is not positive leaves the default.
+// A type whose limit is above the default is a long one: Start keeps a
+// spare worker for the others while long jobs hold every worker. Called
+// before Start, as Register.
+func (r *Runner) SetLimit(typ string, d time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if d > 0 {
+		r.limits[typ] = d
+	} else {
+		delete(r.limits, typ)
+	}
+}
+
+// Limit is how long a job of the type may run.
+func (r *Runner) Limit(typ string) time.Duration {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if d, ok := r.limits[typ]; ok {
+		return d
+	}
+	return r.timeout
+}
+
+// longTypes are the job types whose limit is above the default (SetLimit),
+// sorted; under r.mu.
+func (r *Runner) longTypes() []string {
+	var long []string
+	for typ, d := range r.limits {
+		if d > r.timeout {
+			long = append(long, typ)
+		}
+	}
+	slices.Sort(long)
+	return long
 }
 
 // Broker exposes the event broker (for SSE).
@@ -125,9 +175,11 @@ func (r *Runner) Enqueue(ctx context.Context, typ string, payload any, opts ...O
 		return nil, err
 	}
 	r.broker.Publish(Event{JobID: j.ID, Type: "queued"})
-	select {
-	case r.wake <- struct{}{}:
-	default:
+	for _, wake := range []chan struct{}{r.wake, r.spareWake} {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
 	}
 	return j, nil
 }
@@ -145,13 +197,22 @@ func (r *Runner) Hold(ready func(ctx context.Context)) {
 	r.ready = ready
 }
 
-// Start launches workers until ctx is cancelled.
+// Start launches workers until ctx is cancelled: the n of NewRunner and,
+// when some job type has a limit above the default (SetLimit), one more, a
+// spare. A long job — a backup, a restore, a migration — may hold its
+// worker for hours, and once long jobs hold every worker every other job
+// would wait for them: a site's apply, a certificate's renewal, the applies
+// a migration queues for the sites it moved, behind the next migration in
+// the queue. The spare takes none of the long jobs, and none at all until
+// long jobs hold every other worker (store.ClaimSpareJob): the other jobs
+// then run on it one at a time, each within the default limit.
 func (r *Runner) Start(ctx context.Context) {
 	if n, err := r.db.RequeueStaleJobs(ctx); err == nil && n > 0 {
 		r.log.Warn("requeued jobs left running by a previous process", "count", n)
 	}
 	r.mu.RLock()
 	ready := r.ready
+	long := r.longTypes()
 	r.mu.RUnlock()
 	released := make(chan struct{})
 	if ready == nil {
@@ -164,14 +225,24 @@ func (r *Runner) Start(ctx context.Context) {
 	}
 	for i := 0; i < r.workers; i++ {
 		r.wg.Add(1)
-		go r.worker(ctx, fmt.Sprintf("w%d", i+1), released)
+		go r.worker(ctx, fmt.Sprintf("w%d", i+1), released, r.wake, func(ctx context.Context, name string, exclusive ...[]string) (*store.Job, error) {
+			return r.db.ClaimJob(ctx, name, exclusive...)
+		})
+	}
+	if len(long) > 0 {
+		r.wg.Add(1)
+		go r.worker(ctx, fmt.Sprintf("w%d", r.workers+1), released, r.spareWake, func(ctx context.Context, name string, exclusive ...[]string) (*store.Job, error) {
+			return r.db.ClaimSpareJob(ctx, name, long, r.workers, exclusive...)
+		})
 	}
 }
 
 // Wait blocks until all workers exit.
 func (r *Runner) Wait() { r.wg.Wait() }
 
-func (r *Runner) worker(ctx context.Context, name string, start <-chan struct{}) {
+// worker claims jobs with claim and runs them, one at a time, until ctx
+// ends; it looks for one when wake says a job was queued, and every second.
+func (r *Runner) worker(ctx context.Context, name string, start, wake <-chan struct{}, claim func(ctx context.Context, name string, exclusive ...[]string) (*store.Job, error)) {
 	defer r.wg.Done()
 	select {
 	case <-start:
@@ -184,7 +255,7 @@ func (r *Runner) worker(ctx context.Context, name string, start <-chan struct{})
 	exclusive := r.exclusive
 	r.mu.RUnlock()
 	for {
-		job, err := r.db.ClaimJob(ctx, name, exclusive...)
+		job, err := claim(ctx, name, exclusive...)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -198,7 +269,7 @@ func (r *Runner) worker(ctx context.Context, name string, start <-chan struct{})
 		select {
 		case <-ctx.Done():
 			return
-		case <-r.wake:
+		case <-wake:
 		case <-ticker.C:
 		}
 	}
@@ -214,7 +285,7 @@ func (r *Runner) run(ctx context.Context, job *store.Job) {
 	if h == nil {
 		err = fmt.Errorf("no handler for job type %q", job.Type)
 	} else {
-		jctx, cancel := context.WithTimeout(ctx, r.timeout)
+		jctx, cancel := context.WithTimeout(ctx, r.Limit(job.Type))
 		err = safeCall(jctx, h, jc)
 		cancel()
 	}

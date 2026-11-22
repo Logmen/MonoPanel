@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -451,7 +453,11 @@ func (s *Server) updateLoop(ctx context.Context) {
 // install of a newer release found when updates install automatically —
 // but for the release whose install rolled back last time
 // (retryReinstalls), which waits for an administrator (mp update apply) or
-// a later release.
+// a later release. The install restarts the API, and a long job it meets —
+// a backup, a restore, a migration (jobLimits) — runs again from its start
+// after the restart, a migration not at all: it stops on the account its
+// first run made. With the installs automatic, a check that is due waits
+// while such a job is queued or running, and a later round makes it.
 func (s *Server) updateTick(ctx context.Context) {
 	c := s.loadUpdateConfig(ctx)
 	if c.repo() == "" || c.hours() <= 0 {
@@ -459,6 +465,12 @@ func (s *Server) updateTick(ctx context.Context) {
 	}
 	if c.CheckedAt != nil && time.Since(*c.CheckedAt) < time.Duration(c.hours())*time.Hour {
 		return
+	}
+	if c.AutoApply {
+		if j := s.longJobUnderway(ctx); j != nil {
+			s.log.Info("the automatic update waits for a long job", "job", j.ID, "type", j.Type, "status", j.Status)
+			return
+		}
 	}
 	c, rel, err := s.checkForUpdate(ctx, c)
 	if err != nil {
@@ -480,6 +492,19 @@ func (s *Server) updateTick(ctx context.Context) {
 		jobs.WithLockKey("panel:update"), jobs.WithRequestedBy("scheduler")); err != nil {
 		s.log.Error("enqueue update", "err", err)
 	}
+}
+
+// longJobUnderway is a queued or running job of a type that may run for
+// hours (jobLimits), if there is one.
+func (s *Server) longJobUnderway(ctx context.Context) *store.Job {
+	for _, status := range []string{store.JobRunning, store.JobQueued} {
+		for _, typ := range slices.Sorted(maps.Keys(jobLimits)) {
+			if list, err := s.db.ListJobsFiltered(ctx, store.JobFilter{Status: status, Type: typ, Limit: 1}); err == nil && len(list) > 0 {
+				return list[0]
+			}
+		}
+	}
+	return nil
 }
 
 // reportUpdateOutcome records how the update that restarted us went. The job

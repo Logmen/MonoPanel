@@ -1449,7 +1449,7 @@ func (s *Server) jobSiteDelete(ctx context.Context, jc *jobs.Context) error {
 		return err
 	}
 	jc.Progress(20, "removing configuration")
-	if err := s.removeSiteConfig(ctx, jc, site, user, p.Purge); err != nil {
+	if err := s.removeSiteConfig(ctx, jc, site, user, purgeTree(p.Purge)); err != nil {
 		return s.siteFail(ctx, site, err)
 	}
 	if err := s.db.DeleteSite(context.WithoutCancel(ctx), site.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -1460,13 +1460,36 @@ func (s *Server) jobSiteDelete(ctx context.Context, jc *jobs.Context) error {
 	return nil
 }
 
+// siteTree is what the removal of a site does with the site's tree, its
+// files (removeSiteConfig).
+type siteTree int
+
+const (
+	// treeKept: the tree stays where it is.
+	treeKept siteTree = iota
+	// treePurged: the removal takes the tree along (site.delete --purge).
+	treePurged
+	// treeWithHome: the tree goes with the account's home, which the
+	// account's purge removes after the sites (user.delete --purge).
+	treeWithHome
+)
+
+// purgeTree is the site.delete's choice: the tree purged or kept.
+func purgeTree(purge bool) siteTree {
+	if purge {
+		return treePurged
+	}
+	return treeKept
+}
+
 // removeSiteConfig deletes the nginx/Apache/php-fpm configuration of a site
-// (validating and reloading) and, with purge, the site directory. It holds
-// the site's lock (lockSite): an apply under way — the move of the sites to
-// their accounts' Apaches applies them inside a job of its own, beside the
-// removal's — writes its configuration before this removes it, and one after
-// this renders nothing for a site being removed (applySiteLocked).
-func (s *Server) removeSiteConfig(ctx context.Context, jc *jobs.Context, site *store.Site, user *store.User, purge bool) error {
+// (validating and reloading) and, for treePurged, the site directory. It
+// holds the site's lock (lockSite): an apply under way — the move of the
+// sites to their accounts' Apaches applies them inside a job of its own,
+// beside the removal's — writes its configuration before this removes it,
+// and one after this renders nothing for a site being removed
+// (applySiteLocked).
+func (s *Server) removeSiteConfig(ctx context.Context, jc *jobs.Context, site *store.Site, user *store.User, tree siteTree) error {
 	defer s.lockSite(site.ID)()
 	if err := s.removeSiteShares(ctx, jc, site.ID); err != nil {
 		return err
@@ -1489,23 +1512,48 @@ func (s *Server) removeSiteConfig(ctx context.Context, jc *jobs.Context, site *s
 	if err != nil {
 		return err
 	}
-	jc.Logf("%s: removed %s", site.Domain, strings.Join(rr.Removed, ", "))
+	// The agent names what it found to remove. Nothing is left when another
+	// removal of the site came first — its own site.delete before a
+	// user.delete that listed it — or when nothing was ever written: the
+	// site a webmail job made and then gave up on.
+	if len(rr.Removed) > 0 {
+		jc.Logf("%s: removed %s", site.Domain, strings.Join(rr.Removed, ", "))
+	} else {
+		jc.Logf("%s: no configuration left to remove", site.Domain)
+	}
 	// nginx no longer sends the site anywhere: off its account's Apache with
 	// its custom directives; the Apache reloads, or stops with no site left
 	// (an account's removal comes here for every site before the account goes).
 	if err := s.settleApacheInstance(ctx, jc.Logf, user, site, true); err != nil {
 		jc.Logf("warning: %v", err)
 	}
-	if purge {
+	switch {
+	case tree == treePurged:
 		rr, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: []string{l.siteRoot}, Recursive: true})
 		if err != nil {
 			return err
 		}
-		jc.Logf("%s: purged %s", site.Domain, strings.Join(rr.Removed, ", "))
-	} else {
+		if len(rr.Removed) > 0 {
+			jc.Logf("%s: purged %s", site.Domain, strings.Join(rr.Removed, ", "))
+		} else {
+			jc.Logf("%s: nothing to purge, %s does not exist", site.Domain, l.siteRoot)
+		}
+	case s.pathGone(ctx, l.siteRoot):
+		jc.Logf("%s: no files to keep, %s does not exist", site.Domain, l.siteRoot)
+	case tree == treeWithHome:
+		// Not "kept": the account's purge removes the home right after.
+		jc.Logf("%s: files go with the home %s", site.Domain, l.home)
+	default:
 		jc.Logf("%s: files kept in %s", site.Domain, l.siteRoot)
 	}
 	return nil
+}
+
+// pathGone tells that the agent finds nothing at p. Not knowing — the agent
+// did not answer — is not gone.
+func (s *Server) pathGone(ctx context.Context, p string) bool {
+	st, err := s.agent.Stat(ctx, p)
+	return err == nil && len(st.Entries) == 1 && !st.Entries[0].Exists
 }
 
 // removeSitePaths takes a site's configuration away for removeSiteConfig,

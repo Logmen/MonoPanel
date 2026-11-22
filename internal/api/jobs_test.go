@@ -300,3 +300,171 @@ func TestRemovalsOfAGoneSiteAreDone(t *testing.T) {
 		t.Fatalf("user.delete whose site went meanwhile: %s %s", job.Status, job.Error)
 	}
 }
+
+// A mail.webmail runs under the lock key "mail", in a site and for an
+// account. Once a removal took either of them away after the job — queued
+// after it, or over after it started — its failure is history, whatever it
+// failed of: the account's user.delete, the site's site.delete, the
+// user.delete of another account whose site it was. Not for the removal of
+// another account or site, nor for one queued before the job and over
+// before it started (it ran on an account made again under the name
+// meanwhile); nor for the removal of the account it named while the site
+// is there as another account's, which the account it named was never the
+// owner of. A later webmail that went through still fixes it, a webmail
+// that went through fixes no failed removal, and a payload without the
+// domain and the user counts as before.
+func TestDoctorJobsLineForgetsAWebmailWhoseSiteOrAccountWent(t *testing.T) {
+	now := time.Now()
+	ago := func(d time.Duration) *time.Time {
+		at := now.Add(-d)
+		return &at
+	}
+	// Queued an hour ago; a failed job ran from 50 to 49 minutes ago, a
+	// job that went through ended the given time ago.
+	failedJob := func(id int64, typ, lock, payload string) *store.Job {
+		return &store.Job{ID: id, Type: typ, LockKey: lock, Payload: json.RawMessage(payload), Status: store.JobFailed, CreatedAt: store.Time(now.Add(-time.Hour)), StartedAt: ago(50 * time.Minute), FinishedAt: ago(49 * time.Minute)}
+	}
+	doneJob := func(id int64, typ, lock, payload string, ended time.Duration) *store.Job {
+		return &store.Job{ID: id, Type: typ, LockKey: lock, Payload: json.RawMessage(payload), Status: store.JobDone, CreatedAt: store.Time(now.Add(-time.Hour)), StartedAt: ago(ended + time.Minute), FinishedAt: ago(ended)}
+	}
+	webmail := failedJob(5, "mail.webmail", "mail", `{"domain":"webmail.example.com","user":"alex"}`)
+	for _, c := range []struct {
+		name  string
+		done  []*store.Job
+		sites []string // there now
+		want  int
+	}{
+		{"nothing since", nil, nil, 1},
+		{"its account removed", []*store.Job{doneJob(6, "user.delete", "user:alex", `{"user_id":2,"login":"alex","purge":true}`, 10*time.Minute)}, nil, 0},
+		{"its site removed", []*store.Job{doneJob(6, "site.delete", "site:webmail.example.com", `{"site_id":3,"purge":true}`, 10*time.Minute)}, nil, 0},
+		{"its site removed with another account, the site's owner", []*store.Job{doneJob(6, "user.delete", "user:kate", `{"user_id":3,"login":"kate","sites":["webmail.example.com"]}`, 10*time.Minute)}, nil, 0},
+		{"another account removed", []*store.Job{doneJob(6, "user.delete", "user:kate", `{"user_id":3,"login":"kate","sites":["kate.example.com"]}`, 10*time.Minute)}, nil, 1},
+		{"another site removed", []*store.Job{doneJob(6, "site.delete", "site:kate.example.com", `{"site_id":4}`, 10*time.Minute)}, nil, 1},
+		// The removal was asked for first, the webmail meanwhile: it failed
+		// as the account was being removed, under another lock key.
+		{"its account's removal queued before it and over after it started", []*store.Job{doneJob(4, "user.delete", "user:alex", `{"user_id":2,"login":"alex"}`, 10*time.Minute)}, nil, 0},
+		// Queued before the removal, it waited behind another mail job and
+		// started once the removal was over: it failed on an account that
+		// was gone.
+		{"its account removed after it was queued, before it started", []*store.Job{doneJob(6, "user.delete", "user:alex", `{"user_id":2,"login":"alex"}`, 55*time.Minute)}, nil, 0},
+		// Queued after the removal and started after it: on the account
+		// made again under the name.
+		{"its account removed before it was queued", []*store.Job{doneJob(4, "user.delete", "user:alex", `{"user_id":2,"login":"alex"}`, 55*time.Minute)}, nil, 1},
+		// The site is there, another account's: the run went into it, and
+		// the account the request named was none of its business.
+		{"the account it named removed, its site there", []*store.Job{doneJob(6, "user.delete", "user:alex", `{"user_id":2,"login":"alex","sites":["alex.example.com"]}`, 10*time.Minute)}, []string{"kate.example.com", "webmail.example.com"}, 1},
+		{"the account it named removed, other sites there", []*store.Job{doneJob(6, "user.delete", "user:alex", `{"user_id":2,"login":"alex","sites":["alex.example.com"]}`, 10*time.Minute)}, []string{"kate.example.com"}, 0},
+		{"its site removed, though a site of the name is there again", []*store.Job{doneJob(6, "site.delete", "site:webmail.example.com", `{"site_id":3}`, 10*time.Minute)}, []string{"webmail.example.com"}, 0},
+		{"a later webmail went through", []*store.Job{doneJob(7, "mail.webmail", "mail", `{"domain":"other.example.com","user":"kate"}`, 10*time.Minute)}, nil, 0},
+	} {
+		if got := openFailures([]*store.Job{webmail}, c.done, now, c.sites...); got != c.want {
+			t.Errorf("%s: %d open, want %d", c.name, got, c.want)
+		}
+	}
+	removals := []*store.Job{
+		doneJob(6, "user.delete", "user:alex", `{"user_id":2,"login":"alex"}`, 10*time.Minute),
+		doneJob(7, "site.delete", "site:webmail.example.com", `{"site_id":3}`, 10*time.Minute),
+	}
+	if got := openFailures([]*store.Job{failedJob(5, "mail.webmail", "mail", `{}`)}, removals, now); got != 1 {
+		t.Errorf("a payload without the domain and the user: %d open", got)
+	}
+	// Each only one way: a webmail that went through removes nothing.
+	if got := openFailures([]*store.Job{failedJob(5, "site.delete", "site:webmail.example.com", `{"site_id":3}`)}, []*store.Job{doneJob(6, "mail.webmail", "mail", `{"domain":"webmail.example.com","user":"alex"}`, 10*time.Minute)}, now); got != 1 {
+		t.Errorf("a failed removal of the webmail's site after a webmail went through: %d open", got)
+	}
+	// Jobs without the times go by their ids.
+	bare := func(id int64, typ, lock, payload string) *store.Job {
+		return &store.Job{ID: id, Type: typ, LockKey: lock, Payload: json.RawMessage(payload), CreatedAt: store.Time(now.Add(-time.Hour))}
+	}
+	untimed := bare(5, "mail.webmail", "mail", `{"domain":"webmail.example.com","user":"alex"}`)
+	if got := openFailures([]*store.Job{untimed}, []*store.Job{bare(6, "user.delete", "user:alex", `{"user_id":2,"login":"alex"}`)}, now); got != 0 {
+		t.Errorf("an untimed removal queued after: %d open", got)
+	}
+	if got := openFailures([]*store.Job{untimed}, []*store.Job{bare(4, "user.delete", "user:alex", `{"user_id":2,"login":"alex"}`)}, now); got != 1 {
+		t.Errorf("an untimed removal queued before: %d open", got)
+	}
+}
+
+// A backup.run that failed failed on its target — the repository did not
+// answer, its disk was full, its password was wrong — whatever it was to
+// save: the removal of the account or the site it was to save afterwards
+// fixes nothing on the target, and the scope's newest data is gone with it.
+// The failure counts until a later backup to the target goes through.
+func TestDoctorJobsLineKeepsTheBackupOfAGoneScope(t *testing.T) {
+	now := time.Now()
+	ago := func(d time.Duration) *time.Time {
+		at := now.Add(-d)
+		return &at
+	}
+	backup := func(id int64, scope string) *store.Job {
+		return &store.Job{ID: id, Type: "backup.run", LockKey: "backup:local", Payload: json.RawMessage(`{"target_id":1,"scope":"` + scope + `"}`), Status: store.JobFailed, CreatedAt: store.Time(now.Add(-time.Hour)), StartedAt: ago(50 * time.Minute), FinishedAt: ago(49 * time.Minute)}
+	}
+	doneJob := func(id int64, typ, lock, payload string, ended time.Duration) *store.Job {
+		return &store.Job{ID: id, Type: typ, LockKey: lock, Payload: json.RawMessage(payload), Status: store.JobDone, CreatedAt: store.Time(now.Add(-time.Hour)), StartedAt: ago(ended + time.Minute), FinishedAt: ago(ended)}
+	}
+	failed := []*store.Job{backup(1, "user:alex"), backup(2, "site:a.example.com"), backup(3, "server"), backup(4, "db:alex_wp")}
+	for _, c := range []struct {
+		name string
+		done []*store.Job
+		want int
+	}{
+		{"nothing gone", nil, 4},
+		{"the account removed", []*store.Job{doneJob(10, "user.delete", "user:alex", `{"user_id":2,"login":"alex","purge":true}`, 10*time.Minute)}, 4},
+		{"the account removed with the site", []*store.Job{doneJob(10, "user.delete", "user:alex", `{"user_id":2,"login":"alex","purge":true,"sites":["a.example.com"]}`, 10*time.Minute)}, 4},
+		{"the site purged", []*store.Job{doneJob(10, "site.delete", "site:a.example.com", `{"site_id":1,"purge":true}`, 10*time.Minute)}, 4},
+		{"another account removed", []*store.Job{doneJob(10, "user.delete", "user:kate", `{"user_id":3,"login":"kate","sites":["kate.example.com"]}`, 10*time.Minute)}, 4},
+		// What clears it: any backup to the target that went through later.
+		{"a later backup went through", []*store.Job{doneJob(11, "backup.run", "backup:local", `{"target_id":1,"scope":"server"}`, 10*time.Minute)}, 0},
+		{"an earlier backup went through", []*store.Job{doneJob(0, "backup.run", "backup:local", `{"target_id":1,"scope":"server"}`, 55*time.Minute)}, 4},
+		{"a later backup to another target went through", []*store.Job{doneJob(11, "backup.run", "backup:offsite", `{"target_id":2,"scope":"server"}`, 10*time.Minute)}, 4},
+	} {
+		if got := openFailures(failed, c.done, now); got != c.want {
+			t.Errorf("%s: %d open, want %d", c.name, got, c.want)
+		}
+	}
+}
+
+// A webmail asked for once its account's removal was queued fails, the
+// account being removed, and counts in the doctor's jobs line until the
+// removal went through — then it is history, though the removal was queued
+// before it and ran under another lock key.
+func TestJobsLineForgetsAWebmailRefusedForAnAccountBeingRemoved(t *testing.T) {
+	f, _, _ := newWebmailFixture(t)
+	if got := f.doctorCheck("jobs"); !strings.HasPrefix(got, "ok:") {
+		t.Fatalf("jobs line before: %q", got)
+	}
+	atRemove, release := make(chan struct{}), make(chan struct{})
+	var once, released sync.Once
+	letGo := func() { released.Do(func() { close(release) }) }
+	t.Cleanup(letGo)
+	f.agent.SetBefore(func(p string, _ []byte) {
+		if p == "/v1/user/remove" {
+			once.Do(func() {
+				close(atRemove)
+				<-release
+			})
+		}
+	})
+	t.Cleanup(func() { f.agent.SetBefore(nil) })
+	var del apitypes.JobRef
+	f.call(http.MethodDelete, "/users/alex?purge=true", nil, http.StatusAccepted, &del)
+	select {
+	case <-atRemove:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the removal did not get to the unix account")
+	}
+	job := f.webmailJob(map[string]any{"domain": "webmail.example.com", "user": "alex"})
+	if job.Status != store.JobFailed || job.Error != "the account alex is being removed: the webmail is not installed for it" || job.ID < del.JobID {
+		t.Fatalf("the webmail for an account being removed: #%d %s %q (the removal #%d)", job.ID, job.Status, job.Error, del.JobID)
+	}
+	if got := f.doctorCheck("jobs"); !strings.HasPrefix(got, "warn: 1 failed") {
+		t.Fatalf("jobs line with the refused webmail: %q", got)
+	}
+	letGo()
+	if j := f.waitJob(del.JobID); j.Status != store.JobDone {
+		t.Fatalf("user.delete: %s %s", j.Status, j.Error)
+	}
+	if got := f.doctorCheck("jobs"); !strings.HasPrefix(got, "ok:") {
+		t.Fatalf("jobs line after the removal went through: %q", got)
+	}
+}

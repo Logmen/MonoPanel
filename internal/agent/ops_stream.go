@@ -41,6 +41,11 @@ type StreamResponse struct {
 	Output   string `json:"output,omitempty"`
 }
 
+// StreamLimit is how long a stream may run when its request names no limit
+// (TimeoutSeconds): a migration's copy of a home, of a database, of a mail
+// domain's Maildirs. The API's time limit of a migration counts in it.
+const StreamLimit = 6 * time.Hour
+
 // streamPlan vets a streaming request and prepares the command, unless the
 // agent does the work itself (plan.native).
 func (s *Server) streamPlan(ctx context.Context, req *StreamRequest, mode toolMode) (*toolPlan, *exec.Cmd, context.Context, context.CancelFunc, error) {
@@ -48,7 +53,7 @@ func (s *Server) streamPlan(ctx context.Context, req *StreamRequest, mode toolMo
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	timeout := 6 * time.Hour
+	timeout := StreamLimit
 	if req.TimeoutSeconds > 0 {
 		timeout = time.Duration(req.TimeoutSeconds) * time.Second
 	}

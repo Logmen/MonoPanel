@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -539,7 +540,13 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 	}
 	if failed, err := s.db.ListJobs(actx, 200, store.JobFailed); err == nil {
 		done, _ := s.db.ListJobs(actx, 500, store.JobDone)
-		if recent := openFailures(failed, done, time.Now()); recent > 0 {
+		var domains []string
+		if sites, err := s.db.ListSites(actx, 0); err == nil {
+			for _, site := range sites {
+				domains = append(domains, site.Domain)
+			}
+		}
+		if recent := openFailures(failed, done, time.Now(), domains...); recent > 0 {
 			add(check("jobs", "warn", fmt.Sprintf("%d failed in the last 24h (mp job list --status failed)", recent)))
 		} else {
 			add(check("jobs", "ok", "no failures in 24h"))
@@ -656,40 +663,117 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 	return out
 }
 
-// openFailures counts the jobs of the last 24 hours that failed and that no
+// openFailures counts the jobs that failed in the last 24 hours and that no
 // later run of the same work fixed: a failure fixed since is history, not a
 // problem — the site applied fine the next time. The same work is the same
 // type and lock key, and for the stack's jobs, which share one lock to run
 // one after another, the same component as well: an apache.backend that
 // went through says nothing of the apache.migrate before it, nor the
 // nightly upgrade of nginx, PHP and Apache of a failed mp stack install
-// memcached. A failure on a site or an account that a later site.delete or
-// user.delete of the same lock key removed is history too (removesObject):
-// nothing is left to fix. So is one on a site a user.delete removed along
-// with its account, inline and without a site.delete of the site's own: the
-// delete names the account's sites as they were when it was queued
+// memcached. A failure on an object that a removal took away after it is
+// history too (removedAfter): nothing is left to fix. The objects of a job
+// are its lock key's and those its payload names beside it
+// (failureObjects); a site.delete removes its site (site:<domain>), a
+// user.delete its account (user:<login>) and, inline, without a site.delete
+// of their own, the account's sites as they were when it was queued
 // (userDeletePayload.Sites). One queued by an older panel names none, and
-// their failures (site:<domain>) count until they are a day old. A job
-// without a lock key stays a failure.
-func openFailures(failed, done []*store.Job, now time.Time) int {
-	fixed := map[string]int64{}
+// their failures count until they are a day old. A job without a lock key
+// stays a failure. The day counts from the failure, not from the queueing:
+// a job may run for hours (jobLimits). sites are the domains of the sites
+// there now (failureObjects).
+func openFailures(failed, done []*store.Job, now time.Time, sites ...string) int {
+	// did are the jobs that went through, by the works they did (jobFixes).
+	did := map[string][]*store.Job{}
 	for _, j := range done {
 		if j.LockKey == "" {
 			continue
 		}
 		for _, k := range jobFixes(j) {
-			if j.ID > fixed[k] {
-				fixed[k] = j.ID
-			}
+			did[k] = append(did[k], j)
 		}
+	}
+	there := map[string]bool{}
+	for _, d := range sites {
+		there[d] = true
 	}
 	n := 0
 	for _, j := range failed {
-		if now.Sub(j.CreatedAt.Std()) < 24*time.Hour && (j.LockKey == "" || (fixed[jobWork(j)] < j.ID && fixed[lockWork(j.LockKey)] < j.ID)) {
+		if now.Sub(failedAt(j)) >= 24*time.Hour {
+			continue
+		}
+		if j.LockKey == "" {
+			n++
+			continue
+		}
+		later := func(r *store.Job) bool { return r.ID > j.ID }
+		removed := func(o string) bool {
+			return slices.ContainsFunc(did[lockWork(o)], func(r *store.Job) bool { return removedAfter(j, r) })
+		}
+		if !slices.ContainsFunc(did[jobWork(j)], later) && !slices.ContainsFunc(failureObjects(j, there), removed) {
 			n++
 		}
 	}
 	return n
+}
+
+// failedAt is when a job failed: when it ended, or, should the time be
+// missing, when it was queued.
+func failedAt(j *store.Job) time.Time {
+	if j.FinishedAt != nil {
+		return *j.FinishedAt
+	}
+	return j.CreatedAt.Std()
+}
+
+// failureObjects are the objects a failed job worked on, by their lock keys
+// (site:<domain>, user:<login>): its own lock key's, and those its payload
+// names beside it. A mail.webmail runs under "mail" in a site, its domain,
+// for an account: the one the request named, for which the run makes the
+// site when none of the name is there. Once the site, or that account, is
+// gone the same request cannot go through any more. A site that is there
+// (sites) keeps its owner, whichever account the request named, and its
+// owner's removal takes it along (userDeletePayload.Sites): the requested
+// account is then none of the job's objects, and a webmail into another
+// account's site still counts after the account it named went. A payload
+// without these fields names nothing more. Other job types may add theirs
+// here. A backup.run does not: what fails there is the target, which the
+// removal of the account or the site it saved fixes nothing of — a later
+// backup to the target that goes through does (the same work).
+func failureObjects(j *store.Job, sites map[string]bool) []string {
+	objects := []string{j.LockKey}
+	if j.Type == "mail.webmail" {
+		var p webmailPayload
+		_ = json.Unmarshal(j.Payload, &p)
+		domain := strings.ToLower(p.Domain)
+		if domain != "" {
+			objects = append(objects, "site:"+domain)
+		}
+		if p.User != "" && !sites[domain] {
+			objects = append(objects, "user:"+p.User)
+		}
+	}
+	return objects
+}
+
+// removedAfter tells that r, a removal that went through, took an object of
+// the failed job j away after j. Either r was queued after j: the jobs of
+// one lock key run in the order they were queued, so a removal of j's own
+// key queued later ran later, whatever the clock said meanwhile (a host
+// that booted with its clock ahead, set right later); one of another key
+// that ran while j waited — a webmail behind another mail job — left j an
+// object that was going or gone, and only rarely one made again under the
+// name meanwhile. Or r, run beside j under another lock key, ended after j
+// had started: a webmail asked for once the removal of its account was
+// queued fails as the account is being removed, with nothing left to fix
+// once the removal ended. A removal queued before j and over before j
+// started is not j's: j ran on a site or an account made again under the
+// name. Nor is one of j's own key queued before j, whatever the clock says:
+// it ran before j.
+func removedAfter(j, r *store.Job) bool {
+	if r.ID > j.ID {
+		return true
+	}
+	return r.LockKey != j.LockKey && r.FinishedAt != nil && j.StartedAt != nil && r.FinishedAt.After(*j.StartedAt)
 }
 
 // jobFixes are the works a job that went through has done: its own, and
