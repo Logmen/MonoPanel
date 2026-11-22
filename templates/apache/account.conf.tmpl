@@ -82,9 +82,13 @@ RemoteIPHeader X-Real-IP
 RemoteIPInternalProxy 127.0.0.1
 
 AccessFileName .htaccess
+# RewriteEngine Off: the virtual hosts switch mod_rewrite on for the check of
+# nginx's secret (backend.conf, below); the directories, and so .htaccess,
+# start with it off, as they always did, until they switch it on.
 <Directory />
     Options FollowSymLinks
     AllowOverride None
+    RewriteEngine Off
     Require all denied
 </Directory>
 <FilesMatch "^\.ht">
@@ -92,8 +96,8 @@ AccessFileName .htaccess
 </FilesMatch>
 # What nginx answers 404 for (snippets/deny-dotfiles.conf): dotfiles and dot
 # directories but .well-known and Bitrix's .default (.env, .git/config), the
-# package managers' files. nginx never sends them here, but any local
-# process can ask this address straight, another account's too.
+# package managers' files. nginx never sends them here; they stay denied
+# for a request that comes past nginx all the same, the secret below or not.
 <LocationMatch "/\.(?!well-known/|default/)">
     Require all denied
 </LocationMatch>
@@ -110,5 +114,17 @@ AccessFileName .htaccess
     AllowOverride All
     Require all granted
 </Directory>
+
+# nginx alone talks to this Apache: what it sends carries the account's
+# secret (/etc/nginx/monopanel/apache/{{ .Login }}.conf), and backend.conf, root's,
+# refuses every other request. Otherwise any local process could ask this
+# address straight, past the site's allow list and rate limit, and name the
+# client address itself (X-Real-IP from 127.0.0.1). The refusal is a rewrite
+# rule of the server's, which every virtual host inherits ahead of its own
+# and which runs before any .htaccess is read: neither Satisfy Any nor a
+# nested <If> of a site's .htaccess undoes it. The account's own .htaccess
+# can learn the secret — it opens this Apache alone, which the account's
+# .htaccess governs anyway.
+Include {{ .Backend }}
 
 IncludeOptional {{ .SitesDir }}/*.conf

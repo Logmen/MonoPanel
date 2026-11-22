@@ -93,13 +93,17 @@ server {
 {{- template "tlsheaders" . }}
     }
 {{- end }}
+{{- /* The account's secret, which its Apache demands, goes next to the snippet's
+        headers: a level that sets one proxy_set_header drops every inherited one. */}}
 
     location / {
         include monopanel/snippets/proxy-apache.conf;
+        include {{ .ApacheBackendConf }};
         proxy_pass http://{{ .ApacheBackend }};
     }
     location @apache {
         include monopanel/snippets/proxy-apache.conf;
+        include {{ .ApacheBackendConf }};
         proxy_pass http://{{ .ApacheBackend }};
     }
 {{- else if eq .Mode "proxy" }}

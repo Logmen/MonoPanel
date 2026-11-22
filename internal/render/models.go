@@ -38,6 +38,7 @@ type Site struct {
 	ClientMaxBodySize string
 	StaticByNginx     bool
 	ApacheBackend     string
+	ApacheBackendConf string // the header nginx proves itself to the owner's Apache with: monopanel/apache/<login>.conf, root's
 	FPMSocket         string
 	ProxyTimeout      int
 	Backend           string
@@ -92,6 +93,7 @@ type ApacheAccount struct {
 	Home     string // the account's home, where .htaccess may set anything
 	ErrorLog string // the Apache's own log in the account's directory of the site log tree
 	SitesDir string // sites/<domain>.conf, one virtual host per site
+	Backend  string // backend.conf: what nginx does not send is refused (root's, 0600)
 }
 
 // PHPIni feeds php/monopanel.ini.tmpl.

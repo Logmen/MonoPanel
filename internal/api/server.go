@@ -74,8 +74,10 @@ type Server struct {
 	poolSocketWait time.Duration
 	nginxWait      time.Duration
 	// apacheWait is how long an account's Apache that has just started may
-	// take to answer on its address before nginx is sent there.
+	// take to answer on its address before nginx is sent there; apacheDial
+	// connects to it (tests answer elsewhere).
 	apacheWait time.Duration
+	apacheDial func(ctx context.Context, network, addr string) (net.Conn, error)
 	// apacheLocks holds a *sync.Mutex per login (lockApache): the jobs of
 	// two sites of one account run side by side.
 	apacheLocks sync.Map
@@ -164,6 +166,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 		db.SetAuditSink(s.auditFile(cfg.Log.AuditFile))
 	}
 	s.poolSocketWait, s.nginxWait, s.apacheWait = 10*time.Second, 15*time.Second, apacheWaitDefault
+	s.apacheDial = (&net.Dialer{Timeout: time.Second}).DialContext
 	s.apacheLegacy = path.Join(profile.Web().ApacheConfDir, "monopanel")
 	s.portStart = unprivilegedPortStart
 	s.restartDelay = 500 * time.Millisecond
@@ -256,6 +259,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	s.jobs.Register("user.delete", s.jobUserDelete)
 	s.jobs.Register("stack.install", s.jobStackInstall)
 	s.jobs.Register("apache.migrate", s.jobApacheMigrate)
+	s.jobs.Register("apache.backend", s.jobApacheBackend)
 	s.jobs.Register("stack.remove", s.jobStackRemove)
 	s.jobs.Register("cert.issue", s.jobCertIssue)
 	s.jobs.Register("php.install", s.jobPHPInstall)

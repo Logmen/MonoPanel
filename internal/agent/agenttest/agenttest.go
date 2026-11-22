@@ -88,6 +88,10 @@ type Agent struct {
 	// Stat answers agent.Stat for these paths as existing files; a path with
 	// a trailing "/" is reported as a directory. Unknown paths do not exist.
 	Stat map[string]bool
+	// StatWritten makes agent.Stat also find what config/apply wrote and
+	// paths/remove has not taken away since, as the real agent finds it on
+	// disk: code that asks whether it wrote a file before.
+	StatWritten bool
 	// ReadFile answers agent.ReadFile for these paths.
 	ReadFile map[string]string
 	// ToolOutput answers agent.Tool by tool name.
@@ -133,6 +137,11 @@ type Agent struct {
 	// LoadState answers the load state of these units ("not-found": a unit
 	// the host does not have); every other unit is "loaded".
 	LoadState map[string]string
+	// ActiveState and UnitFileState answer the status of these units (not a
+	// template's instances, whose state the fake keeps); every other unit
+	// is active and enabled.
+	ActiveState   map[string]string
+	UnitFileState map[string]string
 
 	srv *httptest.Server
 }
@@ -555,11 +564,18 @@ func (a *Agent) respond(path string, body []byte) any {
 		if req.Action == "stop" || req.Action == "disable" {
 			state = "inactive"
 		}
+		if v, ok := a.ActiveState[unit]; ok && (req.Action == "" || req.Action == "status") {
+			state = v
+		}
+		fileState := "enabled"
+		if v, ok := a.UnitFileState[unit]; ok {
+			fileState = v
+		}
 		load := "loaded"
 		if l, ok := a.LoadState[unit]; ok {
 			load = l
 		}
-		return agent.ServiceResponse{Status: systemd.Status{Unit: unit, LoadState: load, ActiveState: state, SubState: "running", UnitFileState: "enabled"}}
+		return agent.ServiceResponse{Status: systemd.Status{Unit: unit, LoadState: load, ActiveState: state, SubState: "running", UnitFileState: fileState}}
 
 	case "/v1/pkg":
 		var req agent.PkgRequest
@@ -653,6 +669,9 @@ func (a *Agent) respond(path string, body []byte) any {
 			isDir, exists := a.Stat[p]
 			if !exists {
 				isDir, exists = a.Stat[p+"/"]
+			}
+			if _, wrote := a.files[filepath.Clean(p)]; !exists && wrote && a.StatWritten {
+				exists = true
 			}
 			e := agent.StatEntry{Path: p, Exists: exists, IsDir: isDir, Mode: "0644"}
 			// What the fake made below the web root itself: a directory is

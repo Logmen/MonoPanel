@@ -23,8 +23,12 @@ fi
 echo "nginx $version"
 
 # A minimal tree that mirrors what the panel creates on a host.
-mkdir -p "$work"/{conf,snippets,sites,logs,docroot,certs,run/php}
+mkdir -p "$work"/{conf,snippets,sites,logs,docroot,certs,run/php,backend}
 cp templates/nginx/snippets/*.conf "$work/snippets/"
+# The backend secret of alex's Apache, in the one form the agent writes
+# (confcheck.NginxApacheBackendConf, ApacheBackendConf).
+secret=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+printf 'proxy_set_header X-MonoPanel-Backend "%s";\n' "$secret" > "$work/backend/alex.conf"
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=example.com \
 	-keyout "$work/certs/privkey.pem" -out "$work/certs/fullchain.pem" >/dev/null 2>&1
 : > "$work/run/php/example.com.sock"
@@ -70,6 +74,7 @@ for f in "$golden"/nginx-site-*.golden; do
 		-e "s#/var/www/alex/data/www/example.com#$work/docroot#" \
 		-e "s#/var/log/monopanel/sites/alex#$work/logs#" \
 		-e "s#include monopanel/snippets/#include $work/snippets/#" \
+		-e "s#include monopanel/apache/alex.conf;#include $work/backend/alex.conf;#" \
 		-e "s#include monopanel/sites/example.com.d/\*.conf;##" \
 		-e "s#listen 203.0.113.10:80#listen 127.0.0.1:18080#g" \
 		-e "s#listen 203.0.113.10:443#listen 127.0.0.1:18443#g" \
@@ -102,11 +107,15 @@ if [ -n "$apachectl" ] && [ -f "$main" ] && [ -f "$vhost" ] && [ -d /usr/lib/apa
 			-e "s#/var/log/monopanel/sites/alex#$work/logs#" \
 			-e "s#/run/monopanel-apache/alex#$work/apache/run#" \
 			-e "s#/etc/apache2/monopanel/accounts/alex/sites#$work/apache/sites#" \
+			-e "s#/etc/apache2/monopanel/accounts/alex/backend.conf#$work/apache/backend.conf#" \
 			-e "s#^User alex\$#User $(id -un)#" \
 			-e "s#^Group alex\$#Group $(id -gn)#" \
 			"$1"
 	}
 	apache_paths "$main" > "$work/apache/httpd.conf"
+	# backend.conf in the one form the agent writes, with the secret above
+	# (confcheck.ApacheBackendConf; TestApacheBackendGolden keeps them equal).
+	cp "$golden/apache-backend.conf.golden" "$work/apache/backend.conf"
 	apache_paths "$vhost" > "$work/apache/sites/example.com.conf"
 	if out=$($apachectl -t -f "$work/apache/httpd.conf" 2>&1); then
 		echo "ok   apache-account (with apache-site)"

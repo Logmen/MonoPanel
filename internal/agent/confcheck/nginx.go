@@ -61,6 +61,11 @@ func checkNginx(c *checker, p string, content []byte) error {
 	if confDirBelow(p, nginxDir) {
 		return notAllowed("writing "+p, "a directory named *.conf matches the panel's include patterns; configurations are files")
 	}
+	// The backend secrets of the accounts' Apaches, one form each
+	// (apache_backend.go); nothing else, a README neither, lies there.
+	if under(p, NginxApacheBackendDir) {
+		return c.checkNginxApacheBackend(p, content)
+	}
 	if inertName(p) {
 		return nil
 	}
@@ -82,7 +87,17 @@ func (c *checker) walkNginx(p string, stmts []ngxStmt, parent string, stream boo
 		if nginxDataBlocks[parent] && s.name != "include" {
 			continue
 		}
-		err := c.nginxDirective(p, s)
+		var err error
+		if _, secret := nginxBackendTarget(s); secret {
+			// An account's backend secret: allowed by the block it stands in.
+			err = c.nginxBackendInclude(stmts, parent, s)
+		} else {
+			err = c.nginxDirective(p, s)
+		}
+		if err == nil && !stream && strings.EqualFold(s.name, "proxy_pass") {
+			// To an account's Apache with the account's secret alone.
+			err = c.nginxApacheProxy(stmts, s)
+		}
 		if err == nil && stream {
 			err = nginxStream(s, parent)
 		}
@@ -126,6 +141,15 @@ func nginxStream(s ngxStmt, parent string) error {
 func (c *checker) nginxDirective(p string, s ngxStmt) error {
 	name := strings.ToLower(s.name)
 	what := fmt.Sprintf("nginx directive %q", s.name)
+	// The header nginx proves itself to an account's Apache with is set by
+	// the account's file alone (apache_backend.go): written anywhere else it
+	// would be a secret in a world-readable file, or one sent where it does
+	// not belong.
+	for _, a := range append([]string{s.name}, s.args...) {
+		if namesBackendHeader(a) {
+			return notAllowed(fmt.Sprintf("%s %s", what, strings.Join(s.args, " ")), "only %s/<login>.conf names %s, the secret nginx sends the account's Apache", NginxApacheBackendDir, ApacheBackendHeader)
+		}
+	}
 	switch {
 	case name == "load_module":
 		return notAllowed(what, "the master process loads the module as root")

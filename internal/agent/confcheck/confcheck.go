@@ -374,6 +374,12 @@ func CheckOwnership(p, owner, group string, mode uint32) error {
 		return notAllowed(fmt.Sprintf("mode %04o for %s", mode, p), "files root reads are writable by root alone, with no special bits")
 	}
 	ownerOK, groupOK := owner == "" || owner == "root", group == "" || group == "root"
+	// The backend secret of an account's Apache: anybody who reads it can
+	// talk to that Apache past nginx. Root alone reads it (nginx's master,
+	// apache2's parent), so it is 0600 and root's, never the default 0644.
+	if isApacheBackendFile(p) && (mode != 0o600 || !ownerOK || !groupOK) {
+		return notAllowed(fmt.Sprintf("owner %q, group %q, mode %04o for %s", owner, group, mode, p), "the backend secret of an account's Apache is root's alone, 0600: an account that reads it talks to that Apache past nginx")
+	}
 	switch {
 	case under(p, dkimDir+"/keys"):
 		ownerOK = ownerOK || owner == "opendkim"

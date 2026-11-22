@@ -105,6 +105,10 @@ func checkApache(c *checker, p string, content []byte) error {
 	if err != nil {
 		return err
 	}
+	// The account's backend secret has one form (apache_backend.go).
+	if inst != nil && inst.kind == instBackend {
+		return checkApacheBackend(p, content)
+	}
 	// A README of an account's Apache is included by nothing; were it, it
 	// would be read as custom directives, and is checked as those.
 	if inst != nil && inst.kind == instReadme {
@@ -118,6 +122,18 @@ func checkApache(c *checker, p string, content []byte) error {
 		if err := atLine(l.n, c.apacheLine(root, inst, l.text)); err != nil {
 			return err
 		}
+	}
+	if inst == nil {
+		return nil
+	}
+	if err := apacheLateIf(inst, lines); err != nil {
+		return err
+	}
+	if err := apacheRewriteGuard(inst, lines); err != nil {
+		return err
+	}
+	if inst.kind == instMain {
+		return apacheMainBackend(inst, lines)
 	}
 	return nil
 }
@@ -151,6 +167,13 @@ func apacheLines(content []byte) ([]apLine, error) {
 }
 
 func (c *checker) apacheLine(root string, inst *apacheInst, line string) error {
+	// Only an account's backend.conf tests the header nginx proves itself
+	// with: set early, an <If> would find it there; unset early, every
+	// request would be denied; copied into a log or a variable, the secret
+	// would go where the account reads it.
+	if namesBackendHeader(line) {
+		return notAllowed("Apache line naming "+ApacheBackendHeader, "only the backend.conf of an account's Apache names it, which checks the secret nginx sends")
+	}
 	if inst != nil && strings.Contains(line, "${") {
 		// apache2 -f reads no envvars: ${APACHE_LOG_DIR} would stay as it is
 		// written, and a variable that is defined could only be one a
@@ -344,6 +367,11 @@ func apacheInclude(root, v string) error {
 	e = path.Clean(e)
 	if !underAny(e, apacheDirs...) {
 		return notAllowed(what, "only files in %s are included: what lies elsewhere has not been checked, and the root parent reads it", strings.Join(apacheDirs, " or "))
+	}
+	// The files of an account's Apache are checked as that Apache's, which
+	// reads them alone: its httpd.conf, its sites, its backend secret.
+	if apacheIncludeReaches(e, ApacheInstanceRoot) {
+		return notAllowed(what, "the files in %s are the accounts' own Apaches', and each reads its own alone", ApacheInstanceRoot)
 	}
 	if !strings.HasSuffix(path.Base(e), ".conf") {
 		return notAllowed(what, "an Include names *.conf files: a directory or another name pulls in files that are not configuration")

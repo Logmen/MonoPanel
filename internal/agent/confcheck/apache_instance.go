@@ -19,6 +19,8 @@ import (
 //	httpd.conf              the whole configuration apache2 starts with (no
 //	                        apache2.conf, no envvars): who the children run as,
 //	                        what the parent binds, loads and writes, its sites
+//	backend.conf            the check that lets in only what nginx sends, root's
+//	                        and 0600 (apache_backend.go)
 //	sites/<domain>.conf     a site's virtual host
 //	sites/<domain>.d/*.conf the site's custom directives, inside the virtual host
 //	sites/README, sites/<domain>.d/README  notes the panel leaves, included by nothing
@@ -27,12 +29,13 @@ import (
 // (the login's own address), the pid file, the lock files and the runtime
 // files (the unit's runtime directory), ServerRoot (/etc/apache2), the
 // modules (an allow-list, from Debian's module directory) and what it
-// includes (its own sites/*.conf). A virtual host includes its own custom
-// directives and nothing else, they include nothing, and neither may set the
-// directives above. The directory is a hosting account's: an Apache whose
-// children run as root, as a system account or as the API's own user is
-// never written. Everything else is checked as in the rest of /etc/apache2,
-// and the logs go to the account's own directory of the site log tree.
+// includes (its own sites/*.conf and, required, its backend.conf). A
+// virtual host includes its own custom directives and nothing else, they
+// include nothing, and neither may set the directives above. The directory
+// is a hosting account's: an Apache whose children run as root, as a system
+// account or as the API's own user is never written. Everything else is
+// checked as in the rest of /etc/apache2, and the logs go to the account's
+// own directory of the site log tree.
 
 const (
 	// ApacheInstanceRoot holds the accounts' Apache configurations.
@@ -152,10 +155,11 @@ func ApacheInstanceCheckLogin(argv []string) (string, bool) {
 type apacheInstFile int
 
 const (
-	instMain   apacheInstFile = iota + 1 // httpd.conf
-	instVhost                            // sites/<domain>.conf
-	instCustom                           // sites/<domain>.d/*.conf
-	instReadme                           // a README the panel leaves
+	instMain    apacheInstFile = iota + 1 // httpd.conf
+	instVhost                             // sites/<domain>.conf
+	instCustom                            // sites/<domain>.d/*.conf
+	instReadme                            // a README the panel leaves
+	instBackend                           // backend.conf, the check of nginx's secret
 )
 
 // apacheInst is the account an Apache file belongs to.
@@ -183,7 +187,7 @@ func (c *checker) apacheInstance(p string) (*apacheInst, error) {
 	parts := strings.Split(rel, "/")
 	inst := &apacheInst{path: p, login: parts[0]}
 	shape := func() error {
-		return notAllowed("writing "+p, "an account's Apache reads %s/<login>/httpd.conf, sites/<domain>.conf and sites/<domain>.d/*.conf; nothing else belongs there", ApacheInstanceRoot)
+		return notAllowed("writing "+p, "an account's Apache reads %s/<login>/httpd.conf, backend.conf, sites/<domain>.conf and sites/<domain>.d/*.conf; nothing else belongs there", ApacheInstanceRoot)
 	}
 	if len(parts) < 2 || !apacheInstanceLoginRe.MatchString(inst.login) {
 		return nil, shape()
@@ -196,6 +200,8 @@ func (c *checker) apacheInstance(p string) (*apacheInst, error) {
 	switch {
 	case len(parts) == 2 && parts[1] == "httpd.conf":
 		inst.kind = instMain
+	case len(parts) == 2 && parts[1] == apacheBackendName:
+		inst.kind = instBackend
 	case len(parts) == 3 && parts[1] == "sites" && parts[2] == "README":
 		inst.kind = instReadme
 	case len(parts) == 3 && parts[1] == "sites" && site(parts[2], ".conf"):
@@ -279,6 +285,10 @@ func (c *checker) apacheInstanceLine(inst *apacheInst, name, lname string, args 
 		want := ""
 		switch inst.kind {
 		case instMain:
+			// Its backend.conf, where apacheMainBackend wants it.
+			if len(args) == 1 && args[0] == ApacheBackendFile(inst.login) {
+				return true, nil
+			}
 			want = ApacheInstanceSites(inst.login) + "/*.conf"
 		case instVhost:
 			want = ApacheInstanceSites(inst.login) + "/" + inst.domain + ".d/*.conf"
@@ -286,6 +296,9 @@ func (c *checker) apacheInstanceLine(inst *apacheInst, name, lname string, args 
 		if want == "" || len(args) != 1 || args[0] != want {
 			if want == "" {
 				return true, notAllowed(what, "custom directives of a site include nothing: what they would pull in has not been checked as the Apache of %s", inst.login)
+			}
+			if inst.kind == instMain {
+				return true, notAllowed(what, "the httpd.conf of the Apache of %s includes only %s and %s", inst.login, want, ApacheBackendFile(inst.login))
 			}
 			return true, notAllowed(what, "this file of the Apache of %s includes only %s", inst.login, want)
 		}

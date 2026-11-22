@@ -30,7 +30,9 @@ var alexApacheCheck = []string{"/usr/sbin/apache2", "-t", "-f", alexApacheConf}
 func newApacheFixture(t *testing.T) *siteFixture {
 	t.Helper()
 	f := newSiteFixture(t)
-	for k, v := range map[string]string{settingApache: "installed", settingApacheInstances: "yes"} {
+	// An Apache's check is the file the panel wrote (apacheDemands).
+	f.agent.StatWritten = true
+	for k, v := range map[string]string{settingApache: "installed", settingApacheInstances: "yes", settingApacheBackends: "yes"} {
 		if err := f.db.SetSetting(f.ctx, k, v); err != nil {
 			t.Fatal(err)
 		}

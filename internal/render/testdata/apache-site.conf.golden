@@ -2,6 +2,10 @@
 <VirtualHost 127.100.3.233:81>
     ServerName example.com
     ServerAlias www.example.com
+    # A virtual host inherits the rewrite rule of httpd.conf's that refuses
+    # what nginx did not send only with mod_rewrite switched on at its own
+    # level; httpd.conf switches it off again for the directories.
+    RewriteEngine On
     DocumentRoot /var/www/alex/data/www/example.com
     <Directory /var/www/alex/data/www/example.com>
         AllowOverride All

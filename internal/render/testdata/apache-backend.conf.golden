@@ -1,0 +1,17 @@
+RewriteEngine On
+RewriteOptions InheritDownBefore
+RewriteCond %{HTTP:X-MonoPanel-Backend} !=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef [NV]
+RewriteRule ^ - [F]
+<Location "/">
+    <If "req_novary('X-MonoPanel-Backend') != '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'">
+        Require all denied
+        <IfModule access_compat_module>
+            Satisfy All
+        </IfModule>
+    </If>
+    ProxyFCGISetEnvIf "true" !HTTP_X_MONOPANEL_BACKEND
+    ProxyFCGISetEnvIf "true" !SCRIPT_URI
+    ProxyFCGISetEnvIf "true" !SCRIPT_URL
+    ProxyFCGISetEnvIf "true" !REDIRECT_SCRIPT_URI
+    ProxyFCGISetEnvIf "true" !REDIRECT_SCRIPT_URL
+</Location>

@@ -58,10 +58,12 @@ server {
 
     location / {
         include monopanel/snippets/proxy-apache.conf;
+        include monopanel/apache/alex.conf;
         proxy_pass http://127.100.3.233:81;
     }
     location @apache {
         include monopanel/snippets/proxy-apache.conf;
+        include monopanel/apache/alex.conf;
         proxy_pass http://127.100.3.233:81;
     }
 }

@@ -220,6 +220,11 @@ func (s *Server) jobUserDelete(ctx context.Context, jc *jobs.Context) error {
 	if err := s.db.DeleteUser(context.WithoutCancel(ctx), u.ID); err != nil {
 		return fail(err)
 	}
+	// Its Apache's backend secret, should retiring it have kept the secret
+	// (retireApacheInstance): a later account must not find it by its id.
+	if err := s.db.DeleteSetting(context.WithoutCancel(ctx), apacheBackendSetting(u)); err != nil {
+		jc.Logf("warning: the backend secret of the Apache of %s stays in the database: %v", u.Login, err)
+	}
 	// The account's sites are gone: their logs leave the fail2ban jails.
 	s.refreshFail2ban(ctx)
 	jc.Progress(100, fmt.Sprintf("user %s deleted (%d sites, %d databases, %d apps)", u.Login, len(sites), len(dbs), len(apps)))

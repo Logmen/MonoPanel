@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"path"
 	"slices"
@@ -40,7 +39,9 @@ import (
 // nginx sends it there (applyApacheSite, then the nginx reload), and drops it
 // after nginx stopped (settleApacheInstance): a site moves without a moment
 // of 502. An Apache with no site left stops, is disabled and its directory
-// goes; an account goes only after its Apache did.
+// goes; an account goes only after its Apache did. The Apache answers what
+// nginx sends alone, which carries the account's backend secret
+// (apache_backend.go).
 
 const (
 	// settingApacheInstances is "yes" once no site is served by the shared
@@ -60,19 +61,23 @@ const (
 
 // apacheInstance is an account's Apache: its unit, its files, its address.
 type apacheInstance struct {
-	login  string
-	addr   string // empty when the account's uid has no address
-	unit   string
-	conf   string
-	sites  string
-	runDir string
-	check  []string
+	login   string
+	addr    string // empty when the account's uid has no address
+	unit    string
+	conf    string
+	backend string // backend.conf, the check of nginx's secret
+	sites   string
+	runDir  string
+	check   []string
+	// secret is the account's backend secret, once applyApacheSite (or
+	// demandApacheBackend) read it.
+	secret string
 }
 
 // apacheInstanceOf is the Apache of login (paths and unit, no address).
 func apacheInstanceOf(login string) *apacheInstance {
 	return &apacheInstance{
-		login: login, unit: confcheck.ApacheInstanceUnit(login), conf: confcheck.ApacheInstanceConf(login),
+		login: login, unit: confcheck.ApacheInstanceUnit(login), conf: confcheck.ApacheInstanceConf(login), backend: confcheck.ApacheBackendFile(login),
 		sites: confcheck.ApacheInstanceSites(login), runDir: confcheck.ApacheInstanceRunDir(login), check: confcheck.ApacheInstanceCheckArgv(login),
 	}
 }
@@ -189,7 +194,7 @@ func (s *Server) apacheInstancesStatus(ctx context.Context) *apitypes.StackInsta
 func (s *Server) apacheMainFiles(inst *apacheInstance, u *store.User) ([]agent.FileSpec, error) {
 	main, err := s.render.Render("apache/account.conf.tmpl", render.ApacheAccount{
 		Login: u.Login, Listen: inst.addr, RunDir: inst.runDir, Home: s.homeOf(u),
-		ErrorLog: path.Join(s.siteLogDir(u.Login), apacheInstanceLog), SitesDir: inst.sites,
+		ErrorLog: path.Join(s.siteLogDir(u.Login), apacheInstanceLog), SitesDir: inst.sites, Backend: inst.backend,
 	})
 	if err != nil {
 		return nil, err
@@ -226,10 +231,12 @@ func (s *Server) ensureApacheRunDir(ctx context.Context, inst *apacheInstance) e
 }
 
 // applyApacheSite gives a site to its account's Apache, before nginx sends
-// the site there: httpd.conf and the virtual host, checked with apache2 -t,
-// the Apache reloaded (graceful) or started and enabled. A started one is
-// waited for until it answers on its address, so that nginx's reload, which
-// follows, never sends a request where nothing listens yet.
+// the site there: httpd.conf, its check of nginx's secret and the virtual
+// host, checked with apache2 -t, the Apache reloaded (graceful) or started
+// and enabled. A started one is waited for until it answers on its address,
+// so that nginx's reload, which follows, never sends a request where nothing
+// listens yet. inst.secret is the account's backend secret afterwards, for
+// nginx to send.
 func (s *Server) applyApacheSite(ctx context.Context, jc *jobs.Context, inst *apacheInstance, site *store.Site, u *store.User, rs render.Site) error {
 	defer s.lockApache(u.Login)()
 	rs.IncludeDir = inst.customDir(site.Domain)
@@ -237,13 +244,10 @@ func (s *Server) applyApacheSite(ctx context.Context, jc *jobs.Context, inst *ap
 	if err != nil {
 		return err
 	}
-	files, err := s.apacheMainFiles(inst, u)
-	if err != nil {
-		return err
+	files := []agent.FileSpec{
+		{Path: inst.vhost(site.Domain), Content: vhost, Mode: 0o644},
+		{Path: path.Join(rs.IncludeDir, "README"), Content: "Custom Apache directives for " + site.Domain + " (inside <VirtualHost>).\n", Mode: 0o644},
 	}
-	files = append(files,
-		agent.FileSpec{Path: inst.vhost(site.Domain), Content: vhost, Mode: 0o644},
-		agent.FileSpec{Path: path.Join(rs.IncludeDir, "README"), Content: "Custom Apache directives for " + site.Domain + " (inside <VirtualHost>).\n", Mode: 0o644})
 	// The custom directives a site had with the shared Apache of 0.8.19 come
 	// along in the same checked set: the site never runs without them on its
 	// account's Apache, whichever job moves it.
@@ -260,6 +264,31 @@ func (s *Server) applyApacheSite(ctx context.Context, jc *jobs.Context, inst *ap
 		return fmt.Errorf("%s is not a unit of this host (%s): the template monopanel-apache@.service comes with the panel's package (or run mp setup)", inst.unit, st.Status.LoadState)
 	}
 	running := st.Status.ActiveState == "active" || st.Status.ActiveState == "reloading"
+	if inst.secret, err = s.apacheSecret(ctx, u, true); err != nil {
+		return err
+	}
+	demands, err := s.apacheDemands(ctx, inst)
+	if err != nil {
+		return err
+	}
+	// Once the upgrade gave every Apache its check (settingApacheBackends),
+	// one without it lost its backend.conf: its httpd.conf includes the
+	// file, so apache2 -t fails until the check is written again, and nginx
+	// sends the secret for every site of the account already.
+	if v, _ := s.db.GetSetting(ctx, settingApacheBackends); running && !demands && v != "yes" {
+		// It ran before the backend secret: it gets the site's virtual host
+		// alone, its old httpd.conf takes that in, and nginx sends the secret
+		// from this apply on. It demands the secret once every site of the
+		// account does (demandApacheBackends) — before, it would refuse the
+		// sites whose nginx does not send it yet.
+		jc.Logf("Apache of %s: does not demand the backend secret yet; nginx sends it from now on, and the Apache demands it once every site of %s does", u.Login, u.Login)
+	} else {
+		main, err := s.apacheMainFiles(inst, u)
+		if err != nil {
+			return err
+		}
+		files = append(append(main, apacheBackendFile(inst)), files...)
+	}
 	if err := s.ensureApacheRunDir(ctx, inst); err != nil {
 		return err
 	}
@@ -292,18 +321,16 @@ func (s *Server) applyApacheSite(ctx context.Context, jc *jobs.Context, inst *ap
 	return nil
 }
 
-// waitApache waits until a started Apache accepts connections on its
-// address (systemd's start of Type=simple returns before apache2 binds).
+// waitApache waits until a started Apache answers on its address
+// (systemd's start of Type=simple returns before apache2 binds).
 func (s *Server) waitApache(ctx context.Context, inst *apacheInstance) error {
 	if s.apacheWait <= 0 {
 		return nil
 	}
 	deadline := time.Now().Add(s.apacheWait)
-	d := &net.Dialer{Timeout: time.Second}
 	for {
-		c, err := d.DialContext(ctx, "tcp", inst.addr)
+		err := s.probeApache(ctx, inst)
 		if err == nil {
-			_ = c.Close() // the connection only had to be accepted
 			return nil
 		}
 		if time.Now().After(deadline) || ctx.Err() != nil {
@@ -358,10 +385,12 @@ func (s *Server) settleApacheInstance(ctx context.Context, logf func(string, ...
 }
 
 // retireApacheInstance stops and disables an account's Apache, which no site
-// needs (any more), and removes its configuration: httpd.conf and the
-// virtual hosts, without which it cannot start, and the custom directives of
-// the sites that go; the whole directory once the account has no site left.
-// except is a site being removed, which counts as gone already.
+// needs (any more), and removes its configuration: httpd.conf, its check of
+// nginx's secret and the virtual hosts, without which it cannot start, and
+// the custom directives of the sites that go; the whole directory once the
+// account has no site left. nginx's side of the secret and the secret itself
+// go too (dropApacheBackend). except is a site being removed, which counts
+// as gone already.
 func (s *Server) retireApacheInstance(ctx context.Context, logf func(string, ...any), u *store.User, except int64) error {
 	defer s.lockApache(u.Login)()
 	return s.retireApacheInstanceLocked(ctx, logf, u, except)
@@ -401,7 +430,7 @@ func (s *Server) retireApacheInstanceLocked(ctx context.Context, logf func(strin
 	gone := func(site *store.Site) bool { return site.ID == except || site.Status == store.SiteDeleting }
 	paths := []string{confcheck.ApacheInstanceDir(u.Login)}
 	if slices.ContainsFunc(sites, func(site *store.Site) bool { return !gone(site) }) {
-		paths = []string{inst.conf, path.Join(inst.sites, "README")}
+		paths = []string{inst.conf, inst.backend, path.Join(inst.sites, "README")}
 		for _, site := range sites {
 			paths = append(paths, inst.vhost(site.Domain))
 			if gone(site) {
@@ -416,26 +445,36 @@ func (s *Server) retireApacheInstanceLocked(ctx context.Context, logf func(strin
 	if len(rr.Removed) > 0 {
 		logf("Apache of %s: removed %s", u.Login, strings.Join(rr.Removed, ", "))
 	}
+	// Its backend secret goes with it: no site of the account sends a
+	// request to an Apache any more.
+	s.dropApacheBackend(ctx, logf, u)
 	return nil
 }
 
 // apacheDoctor checks what keeps the accounts' Apaches apart: the shared
 // Apache of 0.8.19 must not run (its children ran as www-data for every
-// account), and no account may bind the Apaches' port.
+// account), nor start at boot, no account may bind the Apaches' port, and
+// each Apache answers what nginx sends alone.
 func (s *Server) apacheDoctor(ctx context.Context) []apitypes.Check {
 	var out []apitypes.Check
 	web := s.profile.Web()
 	if st, err := s.agent.Service(ctx, web.ApacheService, "status"); err == nil && st.Status.LoadState == "loaded" {
-		if st.Status.ActiveState == "active" {
+		switch {
+		case st.Status.ActiveState == "active":
 			out = append(out, check("service "+web.ApacheService, "warn", "the shared Apache of 0.8.19 and older still runs, its children as "+web.ApacheUser+" for every account: mp stack install apache moves the sites still on it to their accounts' own Apaches and stops it"))
-		} else {
-			out = append(out, check("service "+web.ApacheService, "ok", "off: the sites in Apache mode run on their accounts' own Apaches"))
+		case st.Status.UnitFileState == "enabled":
+			// Off now, it would start at the next boot with whatever
+			// configuration it has: the shared one, its children as www-data
+			// for every account.
+			out = append(out, check("service "+web.ApacheService, "warn", "off, but enabled: it starts at the next boot with the shared configuration of 0.8.19, its children as "+web.ApacheUser+" for every account; systemctl disable "+web.ApacheService+" (mp stack install apache does it too)"))
+		default:
+			out = append(out, check("service "+web.ApacheService, "ok", "off and disabled: the sites in Apache mode run on their accounts' own Apaches"))
 		}
 	}
 	if err := s.apachePortHeld(); err != nil {
 		out = append(out, check("apache port", "warn", err.Error()))
 	}
-	return out
+	return append(out, s.apacheBackendDoctor(ctx)...)
 }
 
 // ---------------------------------------------------------- upgrade ----
@@ -509,7 +548,7 @@ func (s *Server) moveToApacheInstances(ctx context.Context, jc *jobs.Context) er
 	// keep are custom directives of the shared Apache that stay where they
 	// are: those of sites in another mode now that could not move.
 	keep := map[string]bool{}
-	moved := 0
+	moved := map[int64]bool{}
 	for _, site := range sites {
 		u := owners[site.UserID]
 		// A site of an account that has no unix user (or is going) cannot
@@ -540,13 +579,13 @@ func (s *Server) moveToApacheInstances(ctx context.Context, jc *jobs.Context) er
 			failed = append(failed, site.Domain+": "+err.Error())
 			continue
 		}
-		moved++
+		moved[site.ID] = true
 	}
 	if len(failed) > 0 {
 		return fmt.Errorf("sites that did not move to their account's Apache, which the shared apache2.service keeps serving: %s; fix them, then run mp stack install apache", strings.Join(failed, "; "))
 	}
-	if moved > 0 {
-		jc.Logf("%d sites run on their accounts' Apaches", moved)
+	if len(moved) > 0 {
+		jc.Logf("%d sites run on their accounts' Apaches", len(moved))
 	}
 	if err := s.retireSharedApache(ctx, jc.Logf, keep); err != nil {
 		return err
@@ -558,7 +597,12 @@ func (s *Server) moveToApacheInstances(ctx context.Context, jc *jobs.Context) er
 	if err := s.applySiteLogrotate(ctx); err != nil {
 		jc.Logf("warning: site log rotation: %v", err)
 	}
-	return nil
+	// An Apache that ran before the backend secret demands it now: nginx
+	// sends it for each of the account's sites applied above.
+	if err := s.demandApacheBackends(ctx, jc, moved); err != nil {
+		return err
+	}
+	return s.db.SetSetting(context.WithoutCancel(ctx), settingApacheBackends, "yes")
 }
 
 // legacyApacheCustom reads the custom directives an administrator left for

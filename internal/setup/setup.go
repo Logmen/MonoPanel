@@ -152,7 +152,10 @@ WantedBy=sockets.target
 // hand them the lock files (chown), and pass the account's 0750 home to
 // check each DocumentRoot as it reads the configuration (CAP_SETUID gives it
 // that much already). The runtime directory, the pid file in it, goes when
-// the unit stops: logrotate signals no stale pid.
+// the unit stops: logrotate signals no stale pid. A stop is graceful
+// (SIGWINCH): when the account's last site leaves the Apache, the requests
+// nginx's old workers still have in flight there finish — within a minute,
+// so that neither the job nor the host's shutdown waits longer.
 const apacheUnit = `[Unit]
 Description=Apache for the sites of %i in Apache mode (MonoPanel)
 After=network.target remote-fs.target nss-lookup.target
@@ -164,7 +167,14 @@ ConditionPathExists=/etc/apache2/monopanel/accounts/%i/httpd.conf
 Type=simple
 ExecStart=/usr/sbin/apache2 -f /etc/apache2/monopanel/accounts/%i/httpd.conf -DFOREGROUND
 ExecReload=/bin/kill -USR1 $MAINPID
+# A stop is Apache's graceful-stop: the parent stops listening, lets every
+# child finish the request in hand (those of nginx's old workers, after a
+# reload sent the site elsewhere) and exits; mixed: the signal goes to the
+# parent alone, and what is left after it exited, or after the timeout, is
+# killed.
 KillMode=mixed
+KillSignal=SIGWINCH
+TimeoutStopSec=60
 Restart=on-failure
 RestartSec=2
 RuntimeDirectory=monopanel-apache/%i

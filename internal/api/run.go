@@ -77,8 +77,11 @@ func (s *Server) Run(ctx context.Context) error {
 				s.refreshSELinuxSiteLogs(ctx)
 				s.moveSiteLogs(ctx)
 				// Sites of 0.8.19 in Apache mode move off the shared Apache
-				// to their accounts' own, once.
+				// to their accounts' own, once; an account's Apache that ran
+				// before its backend secret demands it, once (queued after
+				// the move, the same lock).
 				s.refreshApacheInstances(ctx)
+				s.refreshApacheBackends(ctx)
 				s.refreshFail2ban(ctx)
 				s.refreshSELinuxModule(ctx)
 				s.refreshSELinuxSSH(ctx)

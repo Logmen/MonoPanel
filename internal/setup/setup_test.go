@@ -105,6 +105,13 @@ func TestUnitsAreThePackages(t *testing.T) {
 	if !strings.Contains(string(nfpm), "src: ./packaging/systemd/monopanel-apache@.service\n    dst: /usr/lib/systemd/system/monopanel-apache@.service\n") {
 		t.Error("the package does not ship monopanel-apache@.service")
 	}
+	// An account's Apache stops gracefully: SIGWINCH to the parent alone,
+	// which lets the requests in flight finish, bounded by the timeout.
+	for _, line := range []string{"\nKillMode=mixed\n", "\nKillSignal=SIGWINCH\n", "\nTimeoutStopSec=60\n", "\nExecReload=/bin/kill -USR1 $MAINPID\n"} {
+		if !strings.Contains(apacheUnit, line) {
+			t.Errorf("the Apache unit lacks %q", line)
+		}
+	}
 	// The API wants its socket and does not require it; the socket listens
 	// where :8443 would, on every address and both families.
 	for _, line := range []string{"\nWants=monopanel-api.socket\n", "\nAfter=monopanel-api.socket\n", "\nStartLimitIntervalSec=0\n"} {

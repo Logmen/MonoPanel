@@ -24,6 +24,12 @@ func (d *DB) SetSetting(ctx context.Context, key, value string) error {
 	return err
 }
 
+// DeleteSetting removes a setting; one that is not there is no error.
+func (d *DB) DeleteSetting(ctx context.Context, key string) error {
+	_, err := d.sql.ExecContext(ctx, `DELETE FROM settings WHERE key=?`, key)
+	return err
+}
+
 // AuditEntry is one line of the audit log.
 type AuditEntry struct {
 	ID      int64          `json:"id"`

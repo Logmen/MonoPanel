@@ -17,14 +17,14 @@ func exampleSite(mode string) Site {
 		CertPath: "/var/lib/monopanel/certs/example.com/fullchain.pem", KeyPath: "/var/lib/monopanel/certs/example.com/privkey.pem",
 		Docroot: "/var/www/alex/data/www/example.com", LogDir: "/var/log/monopanel/sites/alex",
 		IncludeDir: "monopanel/sites/example.com.d", ClientMaxBodySize: "64m", StaticByNginx: true,
-		ApacheBackend: "127.100.3.233:81", FPMSocket: "/run/monopanel/php/example.com.sock", ProxyTimeout: 150,
+		ApacheBackend: "127.100.3.233:81", ApacheBackendConf: "monopanel/apache/alex.conf", FPMSocket: "/run/monopanel/php/example.com.sock", ProxyTimeout: 150,
 	}
 }
 
 // exampleAccount is the Apache of alex (uid 1001) as apache.go hands it over.
 func exampleAccount() ApacheAccount {
 	return ApacheAccount{Login: "alex", Listen: "127.100.3.233:81", RunDir: "/run/monopanel-apache/alex", Home: "/var/www/alex",
-		ErrorLog: "/var/log/monopanel/sites/alex/apache.error.log", SitesDir: "/etc/apache2/monopanel/accounts/alex/sites"}
+		ErrorLog: "/var/log/monopanel/sites/alex/apache.error.log", SitesDir: "/etc/apache2/monopanel/accounts/alex/sites", Backend: "/etc/apache2/monopanel/accounts/alex/backend.conf"}
 }
 
 func examplePool() Pool {
@@ -49,7 +49,11 @@ func TestGolden(t *testing.T) {
 		{"nginx-ip-default.conf", "nginx/ip-default.conf.tmpl", IPDefault{IP: "203.0.113.10", TLS: true, HTTP3: true, CertPath: "/c.pem", KeyPath: "/k.pem", PanelHost: "panel.example.com", PanelPort: 8443}, []string{"quic reuseport", "default_server"}},
 		{"nginx-site-fpm.conf", "nginx/site.conf.tmpl", exampleSite("fpm"), []string{"location ~ ^/[^/]+\\.php(?:/|$) {", "location ~ ^/upload/exchange/.*\\.(?:php|phtml|phar)(?:/|$) { return 403; }", "fastcgi_pass unix:/run/monopanel/php/example.com.sock;", "return 301 https://$host$request_uri;", "listen 203.0.113.10:443 quic;", "listen [2001:db8::10]:443 ssl;", "listen [2001:db8::10]:443 quic;", "if ($host = www.example.com)", "add_header Strict-Transport-Security \"max-age=31536000\" always;", "add_header X-Frame-Options SAMEORIGIN always;", "map $uri $mp_example_com_key", "limit_req_zone $mp_example_com_key zone=mp_example_com:2m rate=10r/s;", "limit_req zone=mp_example_com burst=20 nodelay;", "limit_req_status 429;", "access_log /var/log/monopanel/sites/alex/example.com.access.log main;", "error_log  /var/log/monopanel/sites/alex/example.com.error.log;"}},
 		{"nginx-site-proxy.conf", "nginx/site.conf.tmpl", func() Site { s := exampleSite("proxy"); s.Backend = "http://127.0.0.1:3000"; return s }(), []string{"proxy_pass http://127.0.0.1:3000;", "proxy-app.conf"}},
-		{"nginx-site-apache.conf", "nginx/site.conf.tmpl", exampleSite("apache"), []string{"proxy_pass http://127.100.3.233:81;", "try_files $uri @apache;", "proxy-apache.conf"}},
+		{"nginx-site-apache.conf", "nginx/site.conf.tmpl", exampleSite("apache"), []string{"proxy_pass http://127.100.3.233:81;", "try_files $uri @apache;", "proxy-apache.conf",
+			// The account's secret in both locations that proxy to its Apache,
+			// at the level of the snippet's headers.
+			"    location / {\n        include monopanel/snippets/proxy-apache.conf;\n        include monopanel/apache/alex.conf;\n        proxy_pass http://127.100.3.233:81;\n    }\n",
+			"    location @apache {\n        include monopanel/snippets/proxy-apache.conf;\n        include monopanel/apache/alex.conf;\n        proxy_pass http://127.100.3.233:81;\n    }\n"}},
 		{"apache-site.conf", "apache/site.conf.tmpl", func() Site {
 			s := exampleSite("apache")
 			s.IncludeDir = "/etc/apache2/monopanel/accounts/alex/sites/example.com.d"
@@ -57,11 +61,16 @@ func TestGolden(t *testing.T) {
 		}(), []string{"<VirtualHost 127.100.3.233:81>", "ServerAlias www.example.com", "proxy:unix:/run/monopanel/php/example.com.sock|fcgi://localhost", "ProxyTimeout 150", "ErrorLog  /var/log/monopanel/sites/alex/example.com.apache.error.log", "CustomLog /var/log/monopanel/sites/alex/example.com.apache.access.log combined",
 			"        AllowOverride All\n", "IncludeOptional /etc/apache2/monopanel/accounts/alex/sites/example.com.d/*.conf",
 			// The shared folder: no .htaccess of the guest's read, no PHP from it.
-			"    <Directory /var/www/alex/data/www/example.com/upload/exchange>\n        AllowOverride None\n        Options +SymLinksIfOwnerMatch\n        <FilesMatch \"\\.(?:php|phtml|phar)$\">\n            Require all denied\n"}},
+			"    <Directory /var/www/alex/data/www/example.com/upload/exchange>\n        AllowOverride None\n        Options +SymLinksIfOwnerMatch\n        <FilesMatch \"\\.(?:php|phtml|phar)$\">\n            Require all denied\n",
+			// Inherits the rewrite rule that refuses what nginx did not send.
+			"\n    RewriteEngine On\n    DocumentRoot /var/www/alex/data/www/example.com\n"}},
 		{"apache-account.conf", "apache/account.conf.tmpl", exampleAccount(), []string{"ServerRoot /etc/apache2\n", "PidFile /run/monopanel-apache/alex/httpd.pid\n", "DefaultRuntimeDir /run/monopanel-apache/alex\n",
 			"Mutex file:/run/monopanel-apache/alex default\n", "User alex\nGroup alex\n", "Listen 127.100.3.233:81\n", "LoadModule mpm_event_module /usr/lib/apache2/modules/mod_mpm_event.so\n",
 			"LoadModule proxy_fcgi_module /usr/lib/apache2/modules/mod_proxy_fcgi.so\n", "ThreadsPerChild 16\n", "MaxRequestWorkers 64\n", "ErrorLog /var/log/monopanel/sites/alex/apache.error.log\n",
-			"TypesConfig /etc/mime.types\n", "RemoteIPInternalProxy 127.0.0.1\n", "<Directory /var/www/alex>\n", "    AllowOverride All\n", "IncludeOptional /etc/apache2/monopanel/accounts/alex/sites/*.conf\n"}},
+			"TypesConfig /etc/mime.types\n", "RemoteIPInternalProxy 127.0.0.1\n", "<Directory /var/www/alex>\n", "    AllowOverride All\n", "IncludeOptional /etc/apache2/monopanel/accounts/alex/sites/*.conf\n",
+			// The check of nginx's secret at the top level, and the directories
+			// with mod_rewrite off, which the virtual hosts switch on.
+			"\nInclude /etc/apache2/monopanel/accounts/alex/backend.conf\n", "<Directory />\n    Options FollowSymLinks\n    AllowOverride None\n    RewriteEngine Off\n"}},
 		{"mysql.cnf", "mysql/monopanel.cnf.tmpl", MySQLConf{RAMMB: 4096, NativePassword: true, Settings: []MySQLSetting{{Key: "bind-address", Value: "127.0.0.1"}, {Key: "innodb_buffer_pool_size", Value: "1024M"}, {Key: "innodb_strict_mode", Value: "OFF", Comment: []string{"Strict mode refuses oversized rows."}}, {Key: "disable_log_bin", Flag: true}, {Key: "sql_mode", Value: "''", Comment: []string{"set in the panel; the panel's value: NO_ENGINE_SUBSTITUTION"}}}}, []string{"innodb_buffer_pool_size = 1024M", "# Strict mode refuses oversized rows.\ninnodb_strict_mode = OFF", "\ndisable_log_bin\n", "sql_mode = ''", "mysql_native_password = ON"}},
 		{"firewall.nft", "nftables/monopanel.nft.tmpl", Firewall{Policy: "drop", Except: []string{"ip saddr 198.51.100.4 tcp dport 8443 accept"}, Deny: []string{"ip saddr 203.0.113.7 drop", "tcp dport 8443 drop"}, Allow: []string{"tcp dport { 22, 80, 443, 8443 } accept"}}, []string{"policy drop;", "tcp dport { 22, 80, 443, 8443 } accept", "ip saddr 203.0.113.7 drop", "ip saddr 198.51.100.4 tcp dport 8443 accept"}},
 		{"fail2ban-jail.local", "fail2ban/jail.local.tmpl", Fail2ban{BanTime: "1h", FindTime: "10m", MaxRetry: 5, PanelPort: "8443", Nginx: true, IgnoreIPs: []string{"198.51.100.7", "203.0.113.0/24"}, AccessLogs: []string{"/var/log/monopanel/sites/alex/shop.example.com.access.log"}, ErrorLogs: []string{"/var/log/monopanel/sites/alex/shop.example.com.error.log"}}, []string{"[monopanel]", "port = 8443", "enabled = true", "ignoreip = 127.0.0.1/8 ::1 198.51.100.7 203.0.113.0/24", "          /var/log/monopanel/sites/alex/shop.example.com.access.log"}},

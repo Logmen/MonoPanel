@@ -890,7 +890,7 @@ func (s *Server) applySite(ctx context.Context, jc *jobs.Context, p sitePayload)
 		NoPHPPaths: s.siteNoPHPPaths(ctx, site.ID),
 	}
 	if apache != nil {
-		rs.ApacheBackend = apache.addr
+		rs.ApacheBackend, rs.ApacheBackendConf = apache.addr, s.nginxBackendInclude(login)
 	}
 	for _, p := range rs.NoPHPPaths {
 		jc.Logf("shared folder %s: PHP execution denied", p)
@@ -996,10 +996,12 @@ func (s *Server) applySite(ctx context.Context, jc *jobs.Context, p sitePayload)
 	if apacheMode {
 		// The account's Apache gets the site, and answers, before nginx is
 		// sent there: until nginx's reload below the site is served where it
-		// was.
+		// was. nginx sends the account's backend secret, which the Apache
+		// demands, from the same checked set as the site's server block.
 		if err := s.applyApacheSite(ctx, jc, apache, site, user, rs); err != nil {
 			return s.siteFail(ctx, site, err)
 		}
+		files = append(files, nginxBackendFile(login, apache.secret))
 	}
 	apply, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Validate: validate, Reload: reload, Force: true, Origin: "site:" + site.Domain})
 	if err != nil {

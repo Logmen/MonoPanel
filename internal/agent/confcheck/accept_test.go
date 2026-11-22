@@ -32,7 +32,7 @@ func site(mode string, edit func(*render.Site)) render.Site {
 		Domain: "example.com", Aliases: []string{"www.example.com"}, Mode: mode, IP: "203.0.113.10",
 		RedirectWWW: "none", Docroot: "/var/www/alex/data/www/example.com", LogDir: "/var/log/monopanel/sites/alex",
 		IncludeDir: "monopanel/sites/example.com.d", ClientMaxBodySize: "64m", ApacheBackend: "127.100.3.233:81",
-		FPMSocket: "/run/monopanel/php/example.com.sock", ProxyTimeout: 150,
+		ApacheBackendConf: "monopanel/apache/alex.conf", FPMSocket: "/run/monopanel/php/example.com.sock", ProxyTimeout: 150,
 	}
 	if edit != nil {
 		edit(&s)
@@ -99,6 +99,12 @@ func TestNginxContentPasses(t *testing.T) {
 		s.RedirectWWW, s.Backend = "to_www", "http://unix:/run/app.sock:"
 	})))
 	add("site README", "/etc/nginx/monopanel/sites/example.com.d/README", "Custom nginx directives for example.com (inside server {}): *.conf files here are included by the panel and never overwritten.\n")
+	// apache_backend.go: the secret nginx sends the Apache of alex (uid 1001,
+	// 127.100.3.233:81), and the site of shop's on its own Apache.
+	add("apache backend alex", "/etc/nginx/monopanel/apache/alex.conf", NginxApacheBackendConf(testBackendSecret))
+	add("site of shop in apache mode", conf, renderT(t, "nginx/site.conf.tmpl", site("apache", func(s *render.Site) {
+		s.ApacheBackend, s.ApacheBackendConf, s.StaticByNginx = "127.100.3.234:81", "monopanel/apache/shop.conf", true
+	})))
 	// ops_mail.go applyWebmailPort
 	for _, ip := range []string{"127.0.0.1", "203.0.113.10"} {
 		add("webmail "+ip, "/etc/nginx/monopanel/http.d/monopanel-webmail.conf", renderT(t, "mail/webmail.conf.tmpl", render.Webmail{
@@ -163,8 +169,9 @@ func TestApacheContentPasses(t *testing.T) {
 		dir := "/etc/apache2/monopanel/accounts/" + a.login
 		add("httpd.conf "+a.login, dir+"/httpd.conf", renderT(t, "apache/account.conf.tmpl", render.ApacheAccount{
 			Login: a.login, Listen: a.addr, RunDir: "/run/monopanel-apache/" + a.login, Home: "/var/www/" + a.login,
-			ErrorLog: "/var/log/monopanel/sites/" + a.login + "/apache.error.log", SitesDir: dir + "/sites",
+			ErrorLog: "/var/log/monopanel/sites/" + a.login + "/apache.error.log", SitesDir: dir + "/sites", Backend: dir + "/backend.conf",
 		}))
+		add("backend.conf "+a.login, dir+"/backend.conf", ApacheBackendConf(testBackendSecret))
 		add("sites README "+a.login, dir+"/sites/README", "Generated virtual hosts of the sites of "+a.login+" in Apache mode. Custom directives go to sites/<domain>.d/*.conf.\n")
 		for _, withTLS := range []bool{false, true} {
 			s := site("apache", func(s *render.Site) {
@@ -214,7 +221,8 @@ ProxyPass /api/ http://127.0.0.1:3000/
 // of the list in the template, from Debian's module directory.
 func TestApacheInstanceModulesAreTheTemplates(t *testing.T) {
 	conf := renderT(t, "apache/account.conf.tmpl", render.ApacheAccount{Login: "alex", Listen: "127.100.3.233:81", RunDir: "/run/monopanel-apache/alex",
-		Home: "/var/www/alex", ErrorLog: "/var/log/monopanel/sites/alex/apache.error.log", SitesDir: "/etc/apache2/monopanel/accounts/alex/sites"})
+		Home: "/var/www/alex", ErrorLog: "/var/log/monopanel/sites/alex/apache.error.log", SitesDir: "/etc/apache2/monopanel/accounts/alex/sites",
+		Backend: "/etc/apache2/monopanel/accounts/alex/backend.conf"})
 	var loaded []string
 	for _, line := range strings.Split(conf, "\n") {
 		if f := strings.Fields(line); len(f) == 3 && f[0] == "LoadModule" {
@@ -535,7 +543,9 @@ func TestSiteApplySetPasses(t *testing.T) {
 		"/etc/nginx/monopanel/sites/example.com.d/README": "Custom nginx directives for example.com (inside server {}): *.conf files here are included by the panel and never overwritten.\n",
 		"/etc/php/8.4/fpm/pool.d/example.com.conf":        renderT(t, "php-fpm/pool.conf.tmpl", pool(nil)),
 		inst + "/httpd.conf": renderT(t, "apache/account.conf.tmpl", render.ApacheAccount{Login: "alex", Listen: "127.100.3.233:81", RunDir: "/run/monopanel-apache/alex",
-			Home: "/var/www/alex", ErrorLog: "/var/log/monopanel/sites/alex/apache.error.log", SitesDir: inst + "/sites"}),
+			Home: "/var/www/alex", ErrorLog: "/var/log/monopanel/sites/alex/apache.error.log", SitesDir: inst + "/sites", Backend: inst + "/backend.conf"}),
+		inst + "/backend.conf":                                   ApacheBackendConf(testBackendSecret),
+		"/etc/nginx/monopanel/apache/alex.conf":                  NginxApacheBackendConf(testBackendSecret),
 		inst + "/sites/README":                                   "Generated virtual hosts of the sites of alex in Apache mode. Custom directives go to sites/<domain>.d/*.conf.\n",
 		inst + "/sites/example.com.conf":                         renderT(t, "apache/site.conf.tmpl", site("apache", func(s *render.Site) { s.IncludeDir = inst + "/sites/example.com.d" })),
 		inst + "/sites/example.com.d/README":                     "Custom Apache directives for example.com (inside <VirtualHost>).\n",
