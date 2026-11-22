@@ -134,7 +134,7 @@ func (s *Server) updateStatus(ctx context.Context, c updateConfig) apitypes.Upda
 		out.Available = updater.Newer(buildinfo.Version, c.Latest.Version)
 	}
 	if st, err := updater.ReadState(s.cfg.UpdatesDir()); err == nil && st != nil {
-		a := &apitypes.UpdateAttempt{Status: st.Status, From: st.From, To: st.To, Error: st.Error, Log: st.Log}
+		a := &apitypes.UpdateAttempt{Status: st.Status, From: st.From, To: st.To, Error: st.Error, Log: st.Log, Reinstall: retryReinstalls(st)}
 		if !st.Started.IsZero() {
 			t := st.Started
 			a.Started = &t
@@ -147,6 +147,18 @@ func (s *Server) updateStatus(ctx context.Context, c updateConfig) apitypes.Upda
 	}
 	_ = ctx
 	return out
+}
+
+// retryReinstalls tells an update attempt that rolled back after the
+// package manager had installed st.To, a version that does not run now: the
+// rollback put the previous binary back, while the package database keeps
+// st.To, whose package scripts ran. Installing st.To again installs it once
+// more (update-run reinstalls a version the package database holds), and
+// the automatic update leaves that to an administrator (updateTick): the
+// new version did not come up, and every round would restart the panel
+// twice to roll back again.
+func retryReinstalls(st *updater.State) bool {
+	return st != nil && st.Status == updater.StatusRolledBack && updater.Newer(buildinfo.Version, st.To)
 }
 
 // check asks the repository for the newest release and caches the answer.
@@ -431,29 +443,42 @@ func (s *Server) updateLoop(ctx context.Context) {
 			return
 		case <-t.C:
 		}
-		c := s.loadUpdateConfig(ctx)
-		if c.repo() == "" || c.hours() <= 0 {
-			continue
-		}
-		if c.CheckedAt != nil && time.Since(*c.CheckedAt) < time.Duration(c.hours())*time.Hour {
-			continue
-		}
-		c, rel, err := s.checkForUpdate(ctx, c)
-		if err != nil {
-			s.log.Warn("update check", "err", err)
-			continue
-		}
-		if !updater.Newer(buildinfo.Version, rel.Version) {
-			continue
-		}
-		s.log.Info("new panel version available", "current", buildinfo.Version, "latest", rel.Version, "auto", c.AutoApply)
-		if !c.AutoApply {
-			continue
-		}
-		if _, err := s.jobs.Enqueue(ctx, "panel.update", panelUpdatePayload{},
-			jobs.WithLockKey("panel:update"), jobs.WithRequestedBy("scheduler")); err != nil {
-			s.log.Error("enqueue update", "err", err)
-		}
+		s.updateTick(ctx)
+	}
+}
+
+// updateTick is one round of updateLoop: a check when one is due, and the
+// install of a newer release found when updates install automatically —
+// but for the release whose install rolled back last time
+// (retryReinstalls), which waits for an administrator (mp update apply) or
+// a later release.
+func (s *Server) updateTick(ctx context.Context) {
+	c := s.loadUpdateConfig(ctx)
+	if c.repo() == "" || c.hours() <= 0 {
+		return
+	}
+	if c.CheckedAt != nil && time.Since(*c.CheckedAt) < time.Duration(c.hours())*time.Hour {
+		return
+	}
+	c, rel, err := s.checkForUpdate(ctx, c)
+	if err != nil {
+		s.log.Warn("update check", "err", err)
+		return
+	}
+	if !updater.Newer(buildinfo.Version, rel.Version) {
+		return
+	}
+	s.log.Info("new panel version available", "current", buildinfo.Version, "latest", rel.Version, "auto", c.AutoApply)
+	if !c.AutoApply {
+		return
+	}
+	if st, err := updater.ReadState(s.cfg.UpdatesDir()); err == nil && retryReinstalls(st) && updater.Version(st.To) == updater.Version(rel.Version) {
+		s.log.Warn("the automatic update leaves this version alone: its last install rolled back (mp update apply installs it again)", "version", rel.Version, "err", st.Error)
+		return
+	}
+	if _, err := s.jobs.Enqueue(ctx, "panel.update", panelUpdatePayload{},
+		jobs.WithLockKey("panel:update"), jobs.WithRequestedBy("scheduler")); err != nil {
+		s.log.Error("enqueue update", "err", err)
 	}
 }
 

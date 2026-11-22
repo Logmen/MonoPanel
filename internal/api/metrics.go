@@ -450,8 +450,14 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 			add(check("update", "ok", "version "+buildinfo.Version))
 		}
 	}
-	if st, err := updater.ReadState(s.cfg.UpdatesDir()); err == nil && st != nil && (st.Status == updater.StatusFailed || st.Status == updater.StatusRolledBack) {
-		add(check("update attempt", "warn", "install of "+st.To+": "+st.Status+", "+st.Error))
+	// An attempt whose version runs now, or an older one, is history: the
+	// package came in some other way.
+	if st, err := updater.ReadState(s.cfg.UpdatesDir()); err == nil && st != nil && (st.Status == updater.StatusFailed || st.Status == updater.StatusRolledBack) && updater.Newer(buildinfo.Version, st.To) {
+		detail := "install of " + st.To + ": " + st.Status + ", " + st.Error
+		if retryReinstalls(st) {
+			detail += "; the package database lists " + st.To + " already, its package scripts ran, while the previous binary runs: mp update apply installs it again, which the automatic update does not do"
+		}
+		add(check("update attempt", "warn", detail))
 	}
 	if jobs, err := s.db.ListJobs(actx, 200, store.JobFailed); err == nil {
 		// A failure a later run of the same work (same lock key) has fixed

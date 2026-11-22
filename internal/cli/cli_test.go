@@ -690,29 +690,47 @@ func TestAPISocketSyncCommand(t *testing.T) {
 }
 
 // monopanel prune-unit-copies, for the package's postinstall: as root only,
-// it names each copy it removed, and an error is the command's (the script
-// goes on regardless).
+// it names each copy it removed — of the units, of the modprobe rule — says
+// that a rule the administrator changed stays, and an error is the
+// command's (the script goes on regardless).
 func TestPruneUnitCopiesCommand(t *testing.T) {
-	euid, prune := geteuid, pruneUnitCopies
-	t.Cleanup(func() { geteuid, pruneUnitCopies = euid, prune })
-	calls := 0
-	var fail error
+	euid, prune, pruneRule := geteuid, pruneUnitCopies, pruneModprobeCopy
+	t.Cleanup(func() { geteuid, pruneUnitCopies, pruneModprobeCopy = euid, prune, pruneRule })
+	calls, ruleCalls := 0, 0
+	var fail, ruleFail error
 	pruneUnitCopies = func(context.Context) ([]string, error) {
 		calls++
 		return []string{"/etc/systemd/system/monopanel-agent.service", "/etc/systemd/system/monopanel-api.service"}, fail
 	}
+	ruleGone, ruleKept := false, false
+	pruneModprobeCopy = func() (bool, bool, error) {
+		ruleCalls++
+		return ruleGone, ruleKept, ruleFail
+	}
 	geteuid = func() int { return 1000 }
-	if _, err := mp(t, "", "prune-unit-copies"); exitCode(err) != 4 || calls != 0 {
+	if _, err := mp(t, "", "prune-unit-copies"); exitCode(err) != 4 || calls != 0 || ruleCalls != 0 {
 		t.Fatalf("not root: %v, %d calls", err, calls)
 	}
 	geteuid = func() int { return 0 }
 	out, err := mp(t, "", "prune-unit-copies")
-	if err != nil || calls != 1 || strings.Count(out, "removed /etc/systemd/system/monopanel-") != 2 {
+	if err != nil || calls != 1 || ruleCalls != 1 || strings.Count(out, "removed /etc/systemd/system/monopanel-") != 2 || strings.Contains(out, "modprobe") {
 		t.Fatalf("%v %q, %d calls", err, out, calls)
 	}
 	fail = errors.New("daemon-reload: no systemd")
-	if out, err := mp(t, "", "prune-unit-copies"); err == nil || !strings.Contains(err.Error(), "no systemd") || !strings.Contains(out, "monopanel-api.service") {
+	if out, err := mp(t, "", "prune-unit-copies"); err == nil || !strings.Contains(err.Error(), "no systemd") || !strings.Contains(out, "monopanel-api.service") || ruleCalls != 2 {
 		t.Fatalf("a failed reload: %v %q", err, out)
+	}
+	fail, ruleGone = nil, true
+	if out, err := mp(t, "", "prune-unit-copies"); err != nil || !strings.Contains(out, "removed /etc/modprobe.d/monopanel.conf, a copy of the package's rule: /usr/lib/modprobe.d/monopanel.conf applies\n") {
+		t.Fatalf("the rule's copy: %v %q", err, out)
+	}
+	ruleGone, ruleKept = false, true
+	if out, err := mp(t, "", "prune-unit-copies"); err != nil || !strings.Contains(out, "warning: /etc/modprobe.d/monopanel.conf replaces the package's rule /usr/lib/modprobe.d/monopanel.conf") {
+		t.Fatalf("the administrator's rule: %v %q", err, out)
+	}
+	ruleKept, ruleFail = false, errors.New("remove /etc/modprobe.d/monopanel.conf: read-only file system")
+	if out, err := mp(t, "", "prune-unit-copies"); err == nil || !strings.Contains(err.Error(), "read-only file system") || !strings.Contains(out, "monopanel-api.service") {
+		t.Fatalf("a rule that cannot go: %v %q", err, out)
 	}
 }
 

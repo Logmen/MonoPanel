@@ -435,6 +435,7 @@
         {@const a = upd.last_attempt}
         <div class="text-sm mb-3 {a.status === 'done' ? 'text-muted' : 'text-danger'}">
           <span class="tag {attemptTag(a.status)}">{a.status}</span> {[t('settings.updateLastAttempt', { from: a.from ?? '', to: a.to ?? '' }), a.finished || a.started ? when(a.finished ?? a.started) : ''].filter(Boolean).join(' · ')}{a.error ? ': ' + a.error : ''}
+          {#if a.reinstall}<p class="text-xs mt-1">{t('settings.updateReinstall', { version: a.to ?? '' })}</p>{/if}
           {#if a.log}<details class="mt-1"><summary class="text-xs text-muted cursor-pointer">{t('settings.updateAttemptLog')}</summary><pre class="code mt-1 max-h-48">{a.log}</pre></details>{/if}
         </div>
       {/if}

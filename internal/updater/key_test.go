@@ -35,3 +35,23 @@ func TestInstallScriptCarriesTheBuiltinKey(t *testing.T) {
 		t.Fatalf("packaging/install.sh does not carry the built-in release key %s", BuiltinKey())
 	}
 }
+
+// The install script runs apt as the panel does (defaultEnv, osprofile's
+// Env): noninteractive, and needrestart listing the services on old
+// libraries instead of restarting them all.
+func TestInstallScriptKeepsNeedrestartToAList(t *testing.T) {
+	script, err := os.ReadFile("../../packaging/install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(script), "\n") {
+		if strings.Contains(line, "apt-get") && strings.Contains(line, " install ") && !strings.Contains(line, "DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get ") {
+			t.Errorf("packaging/install.sh installs without NEEDRESTART_MODE=l: %s", strings.TrimSpace(line))
+		}
+	}
+	for _, kv := range []string{"DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=l"} {
+		if !strings.Contains(strings.Join(defaultEnv, " "), kv) {
+			t.Errorf("update-run's default environment lacks %s", kv)
+		}
+	}
+}

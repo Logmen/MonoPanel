@@ -1122,8 +1122,10 @@ func (s *Server) applySiteLocked(ctx context.Context, jc *jobs.Context, p sitePa
 			s.orderSiteCertificate(ctx, jc, site, true)
 		}
 	}
-	// fail2ban reads the sites' own logs: a new site joins its nginx jails.
-	s.refreshFail2ban(ctx)
+	// fail2ban reads the sites' own logs: a new site joins its nginx jails,
+	// and a log they listed before this apply made it is read once fail2ban
+	// restarts (refreshFail2banAfter).
+	s.refreshFail2banAfter(ctx, logs.Created)
 	if suspended {
 		jc.Progress(100, fmt.Sprintf("%s is suspended (503 stub, pool stopped)", site.Domain))
 		return nil

@@ -106,6 +106,45 @@ func (s *Server) fail2banSiteLogs(ctx context.Context) (access, errs []string) {
 	return access, errs
 }
 
+// refreshFail2banAfter is refreshFail2ban once ensureSiteLogs has made the
+// files made. fail2ban opens the files its jails list when it starts and
+// leaves out one that is not there then until it starts again, which jails
+// that stay as they were do not bring about: so a log the jails listed
+// before it existed has a running fail2ban restarted — the logs of a site
+// suspended under 0.8.19, which the log move leaves alone and the jails
+// list all the same, made when the site is unsuspended. One that does not
+// run reads them when it starts. The log move makes the logs of its sites
+// before it applies them, and their applies make nothing.
+func (s *Server) refreshFail2banAfter(ctx context.Context, made []string) {
+	if v, _ := s.db.GetSetting(ctx, settingFail2ban); v == "installed" && s.fail2banLists(ctx, made) {
+		if res, err := s.agent.Service(ctx, fail2banService, "status"); err == nil && res.Status.ActiveState == "active" {
+			if err := s.applyFail2ban(ctx, true); err != nil {
+				s.log.Warn("fail2ban jails", "err", err)
+			}
+			return
+		}
+	}
+	s.refreshFail2ban(ctx)
+}
+
+// fail2banLists tells whether the jails list any of the files.
+func (s *Server) fail2banLists(ctx context.Context, files []string) bool {
+	if len(files) == 0 {
+		return false
+	}
+	access, errs := s.fail2banSiteLogs(ctx)
+	listed := map[string]bool{}
+	for _, f := range append(access, errs...) {
+		listed[f] = true
+	}
+	for _, f := range files {
+		if listed[f] {
+			return true
+		}
+	}
+	return false
+}
+
 // applyFail2ban writes the jails from the panel's state: the sites' logs and
 // the trusted addresses. fail2ban is restarted only when the file changed
 // (restart forces it: the package has just been installed, or fail2ban is

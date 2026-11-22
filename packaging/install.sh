@@ -142,7 +142,9 @@ fi
 
 if [ "$KIND" = deb ]; then
 	apt-get -q update
-	DEBIAN_FRONTEND=noninteractive apt-get -q -y install "$tmp/$package"
+	# As the panel runs apt: Ubuntu's needrestart only lists the services
+	# left on old libraries, which noninteractive apt would have it restart.
+	DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -q -y install "$tmp/$package"
 else
 	dnf -q -y install "$tmp/$package"
 fi

@@ -284,6 +284,11 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 	if err := os.WriteFile("/etc/tmpfiles.d/monopanel.conf", []byte(tmpfilesConf(cfg)), 0o644); err != nil {
 		return nil, err
 	}
+	if wrote, err := keepPHPTmpfiles(phpTmpfilesFile, packageTmpfilesFile, cfg); err != nil {
+		step(T("предупреждение: %s: %v", "warning: %s: %v"), phpTmpfilesFile, err)
+	} else if wrote {
+		step(T("tmpfiles: %s — каталог сокетов php-fpm при загрузке и для версии старше 0.8.20", "tmpfiles: %s: the php-fpm socket directory at boot, for a version older than 0.8.20 too"), phpTmpfilesFile)
+	}
 
 	if _, err := os.Stat(cfg.Path()); errors.Is(err, os.ErrNotExist) {
 		step(T("конфигурация: %s", "configuration: %s"), cfg.Path())
@@ -633,7 +638,57 @@ func chownName(path, owner, group string, mode os.FileMode) error {
 // directory, and php/ in it root's from boot — the php-fpm masters make the
 // pools' sockets there as root, and the API may write to the run directory.
 func tmpfilesConf(cfg config.Config) string {
-	return fmt.Sprintf("d %s 1771 root %s -\nd %s 0755 root root -\n", cfg.RunDir, cfg.ServiceGroup, filepath.Join(cfg.RunDir, "php"))
+	return fmt.Sprintf("d %s 1771 root %s -\n", cfg.RunDir, cfg.ServiceGroup) + phpTmpfilesLine(cfg)
+}
+
+// phpTmpfilesLine is the line of php/ in the run directory, root's. Hosts
+// keep it in monopanel-php.conf as well, for good (phpTmpfilesFile; the
+// package's scripts write it word for word), and systemd-tmpfiles reads
+// that file before monopanel.conf: the same line twice is silent, but a
+// line here that differs from it loses to it, with a notice at every boot.
+// A change of the line has to bring that file along.
+func phpTmpfilesLine(cfg config.Config) string {
+	return fmt.Sprintf("d %s 0755 root root -\n", filepath.Join(cfg.RunDir, "php"))
+}
+
+// The package's tmpfiles file, and the one the API of 0.8.19 wrote for
+// php/ alone.
+const (
+	packageTmpfilesFile = "/usr/lib/tmpfiles.d/monopanel.conf"
+	phpTmpfilesFile     = "/etc/tmpfiles.d/monopanel-php.conf"
+)
+
+// keepPHPTmpfiles writes phpFile with php/'s line (phpTmpfilesLine) where it
+// is missing on an install without the package (no packageFile). Going back
+// below 0.8.20 there runs no preremove, which writes the file for the
+// package (packaging/scripts/preremove.sh), and the older version's mp
+// setup writes monopanel.conf without the line: nothing would make php/ at
+// boot, and every php-fpm master would fail to start after a reboot. One
+// line for one path in two files is no warning to systemd-tmpfiles. A file
+// there already stays as it is, whatever it holds — the postinstall warns of
+// more than the panel's line — and a symlink is not written through.
+func keepPHPTmpfiles(phpFile, packageFile string, cfg config.Config) (bool, error) {
+	for _, p := range []string{packageFile, phpFile} {
+		if _, err := os.Lstat(p); err == nil {
+			return false, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return false, err
+		}
+	}
+	f, err := os.OpenFile(phpFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return false, err
+	}
+	if _, err := f.WriteString(phpTmpfilesLine(cfg)); err != nil {
+		f.Close()          //nolint:errcheck // the write failed already
+		os.Remove(phpFile) //nolint:errcheck // a half-written line is no line
+		return false, err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(phpFile) //nolint:errcheck // a half-written line is no line
+		return false, err
+	}
+	return true, nil
 }
 
 // chownTree hands the data directory back to the service user after setup

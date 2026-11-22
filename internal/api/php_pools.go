@@ -159,7 +159,8 @@ func settingPHPDistroIdle(version string) string { return "php.distro_idle." + v
 // that has not been made so yet: one an older panel installed, or one whose
 // first attempt failed. A branch made so before keeps what the administrator
 // did with the files since; a change is logged here and named by the doctor
-// (phpDistroChecks), and only a pool file that is missing is written again.
+// (phpDistroChecks), and only a pool file that is missing is written again —
+// or one in an earlier build's words, which gets today's (rewordIdlePool).
 // Only the two files of a branch are written, and only when they differ;
 // php-fpm -t checks them, and the branch's php-fpm is reloaded then.
 func (s *Server) refreshIdlePHPPools(ctx context.Context) {
@@ -198,8 +199,13 @@ func (s *Server) markPHPDistroIdle(ctx context.Context, version string) {
 // phpDistro is what a branch's distribution files are now (phpDistroState).
 type phpDistro struct {
 	// pool is "idle", "changed" or "missing"; "" without the pool
-	// directory (the packages removed by hand).
-	pool string
+	// directory (the packages removed by hand). The idle pool is the
+	// panel's whatever its comments say: its directives are what php-fpm
+	// runs (idlePoolDirectives). earlier: the file is an earlier build's
+	// text of it word for word (confcheck.EarlierIdlePools), whose comment
+	// recheckPHPDistro brings up to date.
+	pool    string
+	earlier bool
 	// syslog: the master logs to syslog (always so off EL); confErr says
 	// why php-fpm.conf could not be read.
 	syslog  bool
@@ -230,19 +236,38 @@ func (s *Server) phpDistroState(ctx context.Context, l *osprofile.PHPLayout) (ph
 		return phpDistro{}, err
 	case cur.Content == "" && !cur.Truncated:
 		d.pool = "missing"
-	case cur.Truncated || cur.Content != idle.Content:
+	case cur.Truncated || !slices.Equal(idlePoolDirectives(cur.Content), idlePoolDirectives(idle.Content)):
 		d.pool = "changed"
 	default:
 		d.pool = "idle"
+		d.earlier = slices.Contains(confcheck.EarlierIdlePools(s.cfg.RunDir, idle.Path), cur.Content)
 	}
 	conf, err := s.fpmSyslogConf(ctx, l)
 	d.syslog, d.confErr = err == nil && conf == nil, err
 	return d, nil
 }
 
+// idlePoolDirectives are the lines of a pool file php-fpm acts on: all but
+// the blank ones and the comments (";" first), each as written. A pool that
+// differs from the idle pool in its comments alone — an earlier build's
+// wording, a note an administrator added — is the idle pool all the same;
+// one that differs in anything else is not, spacing included, and so is a
+// line with "#" first, which php-fpm since PHP 7 reads as a name rather
+// than a comment.
+func idlePoolDirectives(content string) []string {
+	var out []string
+	for _, line := range strings.Split(content, "\n") {
+		if s := strings.Trim(line, " \t"); s != "" && s[0] != ';' {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
 // recheckPHPDistro looks at the distribution's files of a branch the panel
 // made idle before: a missing pool is written again, a changed one is the
-// administrator's and only logged.
+// administrator's and only logged, and an earlier build's text of the idle
+// pool gets today's.
 func (s *Server) recheckPHPDistro(ctx context.Context, l *osprofile.PHPLayout) {
 	d, err := s.phpDistroState(ctx, l)
 	if err != nil {
@@ -255,11 +280,37 @@ func (s *Server) recheckPHPDistro(ctx context.Context, l *osprofile.PHPLayout) {
 		if _, err := s.idlePHPDistro(ctx, l, false); err != nil {
 			s.log.Warn("php: the distribution's pool is missing and cannot be written", "version", l.Version, "err", err)
 		}
+	case "idle":
+		if d.earlier {
+			s.rewordIdlePool(ctx, l)
+		}
 	case "changed":
 		s.log.Warn("php: the distribution's pool is not the panel's idle pool any more; left as it is (mp doctor)", "version", l.Version, "pool", phpDistroPool(l))
 	}
 	if !d.syslog && d.confErr == nil {
 		s.log.Warn("php: the php-fpm master logs into a file again; left as it is (mp doctor)", "version", l.Version, "conf", l.FPMConf)
+	}
+}
+
+// rewordIdlePool writes today's text of the idle pool over an earlier
+// build's (phpDistro.earlier), once: the comment of 0.8.20's development
+// builds tells an administrator their changes are reverted at every start,
+// which the panel no longer does. The pool stays what it was, so php-fpm -t
+// checks the file and nothing is reloaded.
+func (s *Server) rewordIdlePool(ctx context.Context, l *osprofile.PHPLayout) {
+	pool, err := s.idlePHPPool(l)
+	if err != nil {
+		return
+	}
+	res, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{
+		Files: []agent.FileSpec{pool}, Validate: [][]string{l.FPMCheckArgv}, Origin: "php:" + l.Version,
+	})
+	if err != nil {
+		s.log.Warn("php: the idle pool keeps its earlier comment; the next start tries again", "version", l.Version, "err", err)
+		return
+	}
+	if len(res.Written) > 0 {
+		s.log.Info("php: the idle pool's comment brought up to date", "version", l.Version, "pool", pool.Path)
 	}
 }
 

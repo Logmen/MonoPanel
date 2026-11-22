@@ -72,6 +72,13 @@ type PackageManager interface {
 	Env() []string
 	UpdateIndexArgv() []string
 	InstallArgv(pkgs []string) []string
+	// ReinstallArgv installs packages once more over the same version,
+	// which InstallArgv leaves as it is ("already the newest version",
+	// "Nothing to do"); package files among them too. PackageFileArgv
+	// prints a package file's name and version, "<name> <version>", the
+	// version as ParseQuery gives the installed one (packagefile.go).
+	ReinstallArgv(pkgs []string) []string
+	PackageFileArgv(file string) []string
 	RemoveArgv(pkgs []string) []string
 	QueryInstalledArgv(pkgs []string) []string
 	// ParseQuery turns QueryInstalledArgv output into package -> version.

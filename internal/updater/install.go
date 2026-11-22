@@ -86,6 +86,28 @@ func (i *Installer) backupDir() string {
 	return i.Dir
 }
 
+// Packages is what the installer needs of the host's package manager; the
+// panel's (osprofile.PackageManager) has it all.
+type Packages interface {
+	// Env is the package manager's environment: apt's noninteractive
+	// frontend, and NEEDRESTART_MODE=l, without which Ubuntu's needrestart
+	// restarts every service an upgrade left on an old library — the
+	// database server too, and none after the configuration check the panel
+	// runs before restarts of its own.
+	Env() []string
+	InstallArgv(pkgs []string) []string
+	// ReinstallArgv installs the package again over its own version, and
+	// PackageFileArgv prints a package file's "<name> <version>" in the form
+	// QueryInstalledArgv and ParseQuery give the installed version.
+	ReinstallArgv(pkgs []string) []string
+	PackageFileArgv(file string) []string
+	QueryInstalledArgv(pkgs []string) []string
+	ParseQuery(out string) map[string]string
+}
+
+// defaultEnv is the package manager's environment when Packages gives none.
+var defaultEnv = []string{"DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=l", "LC_ALL=C.UTF-8"}
+
 // Installer replaces the running panel with a staged package. It runs as root
 // in a transient unit of its own, because installing the package restarts both
 // the API and the agent — whoever asked for the update is gone by step three.
@@ -103,7 +125,7 @@ type Installer struct {
 	// API left there.
 	WriteState func(dir string, data []byte) error
 	Binary     string   // /usr/bin/monopanel
-	Argv       []string // package manager command installing Package
+	Packages   Packages // the package manager that installs Package
 	Units      []string // units to restart, the API last
 	// Ready reports the version the panel answers with, and is polled until it
 	// matches To. Without it an update is called done as soon as it installs.
@@ -157,8 +179,7 @@ func (i *Installer) Run(ctx context.Context) (err error) {
 		return finish(StatusFailed, err, "")
 	}
 
-	i.log().Info("installing panel package", "package", i.Package, "version", i.To)
-	out, err := i.run(ctx, i.Timeout, i.Argv...)
+	out, err := i.install(ctx)
 	if err != nil {
 		i.restore(ctx, backup)
 		return finish(StatusFailed, fmt.Errorf("package install failed: %w", err), out)
@@ -182,6 +203,73 @@ func (i *Installer) Run(ctx context.Context) (err error) {
 	i.log().Info("panel updated", "from", i.From, "to", i.To)
 	i.pruneBackups(backup)
 	return finish(StatusDone, nil, out)
+}
+
+// install has the package manager install Package — again, when the package
+// database holds its version already: an update that rolled back put the
+// previous binary back, while the package database kept the version it
+// rolled back from, its scripts having run, so that an install of the same
+// file would change nothing ("already the newest version", "Nothing to do")
+// and the retry would roll back once more. The output says so at its end,
+// which the state keeps. What keeps that from being told — the file's query
+// fails — leaves the install as it was.
+func (i *Installer) install(ctx context.Context) (string, error) {
+	if i.Packages == nil {
+		return "", errors.New("no install command for this system")
+	}
+	argv, note := i.Packages.InstallArgv([]string{i.Package}), ""
+	version, err := i.installedAlready(ctx)
+	switch {
+	case err != nil:
+		i.log().Warn("cannot tell whether the package database holds this version already; installing as usual", "package", i.Package, "err", err)
+	case version != "":
+		if again := i.Packages.ReinstallArgv([]string{i.Package}); len(again) > 0 {
+			argv = again
+			note = "the package database held " + version + " already, so it was installed again"
+		}
+	}
+	i.log().Info("installing panel package", "package", i.Package, "version", i.To, "reinstall", note != "")
+	out, err := i.run(ctx, i.Timeout, argv...)
+	if note != "" {
+		out = strings.TrimSpace(out + "\n" + note)
+	}
+	return out, err
+}
+
+// installedAlready is Package's version when the package database holds
+// that very version of it, "" when it holds another one or none. A package
+// not installed at all — a panel set up from the binary alone taking the
+// package now — fails the query (dpkg-query, rpm -q), which says just that.
+func (i *Installer) installedAlready(ctx context.Context) (string, error) {
+	q := i.Packages.PackageFileArgv(i.Package)
+	if len(q) == 0 {
+		return "", nil
+	}
+	out, err := i.run(ctx, time.Minute, q...)
+	if err != nil {
+		return "", err
+	}
+	name, version, ok := nameVersion(out)
+	if !ok {
+		return "", fmt.Errorf("%s: no package name and version in %q", i.Package, tail(out, 200))
+	}
+	installed, _ := i.run(ctx, time.Minute, i.Packages.QueryInstalledArgv([]string{name})...)
+	if v := i.Packages.ParseQuery(installed)[name]; v != version {
+		return "", nil
+	}
+	return version, nil
+}
+
+// nameVersion reads the first "<name> <version>" line of a package file's
+// query; a warning the tool prints on the way (rpm's about a signature key)
+// is none.
+func nameVersion(out string) (name, version string, ok bool) {
+	for _, line := range strings.Split(out, "\n") {
+		if f := strings.Fields(line); len(f) == 2 && !strings.HasSuffix(f[0], ":") {
+			return f[0], f[1], true
+		}
+	}
+	return "", "", false
 }
 
 // backupBinary keeps the running executable so a bad release can be undone
@@ -305,7 +393,11 @@ func (i *Installer) run(ctx context.Context, timeout time.Duration, argv ...stri
 	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(rctx, argv[0], argv[1:]...)
-	cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive", "LC_ALL=C.UTF-8")
+	env := defaultEnv
+	if i.Packages != nil && len(i.Packages.Env()) > 0 {
+		env = i.Packages.Env()
+	}
+	cmd.Env = append(os.Environ(), env...)
 	b, err := cmd.CombinedOutput()
 	out := strings.TrimSpace(string(b))
 	if err != nil {

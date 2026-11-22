@@ -15,9 +15,9 @@ import (
 	"monopanel/internal/store"
 )
 
-// jailChanges counts the writes of the jails at or after call from whose
-// content differs from the one before (prev, then each write): the agent
-// restarts fail2ban for every one.
+// jailChanges counts the writes of the jails at or after call from that
+// restart fail2ban: the agent does so for every one whose content differs
+// from the one before (prev, then each write), and for one that forces it.
 func (f *siteFixture) jailChanges(from int, prev string) int {
 	f.t.Helper()
 	n := 0
@@ -27,9 +27,13 @@ func (f *siteFixture) jailChanges(from int, prev string) int {
 			continue
 		}
 		for _, file := range req.Files {
-			if file.Path == fail2banJailPath && file.Content != prev {
-				n, prev = n+1, file.Content
+			if file.Path != fail2banJailPath {
+				continue
 			}
+			if req.Force || file.Content != prev {
+				n++
+			}
+			prev = file.Content
 		}
 	}
 	return n

@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
 
+	"monopanel/internal/osprofile"
 	"monopanel/internal/setup"
 )
 
@@ -67,18 +69,27 @@ The command can be run again: what exists is left alone, what is missing is crea
 }
 
 // pruneUnitCopies removes the panel's own copies of the package's units
-// from /etc/systemd/system; tests replace it.
-var pruneUnitCopies = setup.PruneUnitCopies
+// from /etc/systemd/system, pruneModprobeCopy its copy of the package's
+// modprobe rule from /etc/modprobe.d; tests replace them.
+var (
+	pruneUnitCopies   = setup.PruneUnitCopies
+	pruneModprobeCopy = setup.PruneModprobeCopy
+)
 
 // pruneUnitCopiesCmd is monopanel prune-unit-copies, for the package's
 // postinstall: mp setup up to 0.8.19 copied the panel's units into
-// /etc/systemd/system on every host it set up, and a downgrade below 0.8.20
-// keeps Apache's template there (preremove.sh). Such a copy overrides the
-// package's unit for good; the upgrade removes the ones that are provably
-// the panel's own and no newer than the package's (setup.PruneUnitCopies),
-// so the package's units, and what later releases change in them, apply.
+// /etc/systemd/system on every host it set up, and a removal or a downgrade
+// below 0.8.20 keeps Apache's template there (preremove.sh); mp setup of an
+// install without the package writes the modprobe rule into /etc/modprobe.d.
+// Such a copy overrides the package's file for good once the package is
+// there; the upgrade removes the ones that are provably the panel's own and
+// no newer than the package's (setup.PruneUnitCopies,
+// setup.PruneModprobeCopy), so the package's files, and what later releases
+// change in them, apply. A modprobe rule the administrator changed stays,
+// and the command says so: it is how a module may load again, and it keeps
+// out what a later release adds to the rule.
 func pruneUnitCopiesCmd() *cobra.Command {
-	return &cobra.Command{Use: "prune-unit-copies", Short: T("удалить копии юнитов пакета, которые панель оставила в /etc/systemd/system (для скриптов пакета)", "remove the copies of the package's units the panel left in /etc/systemd/system (for the package scripts)"), Hidden: true, Args: cobra.NoArgs,
+	return &cobra.Command{Use: "prune-unit-copies", Short: T("удалить копии юнитов и правила modprobe пакета, которые панель оставила в /etc (для скриптов пакета)", "remove the copies of the package's units and modprobe rule the panel left in /etc (for the package scripts)"), Hidden: true, Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if geteuid() != 0 {
 				return &exitError{code: 4, msg: T("prune-unit-copies выполняется только от root", "prune-unit-copies must run as root")}
@@ -87,6 +98,14 @@ func pruneUnitCopiesCmd() *cobra.Command {
 			for _, p := range removed {
 				fmt.Printf(T("удалён %s — копия юнита пакета; действует юнит пакета\n", "removed %s, a copy of the package's unit: the package's unit applies\n"), p)
 			}
-			return err
+			gone, kept, merr := pruneModprobeCopy()
+			switch {
+			case gone:
+				fmt.Printf(T("удалён %s — копия правила пакета; действует %s\n", "removed %s, a copy of the package's rule: %s applies\n"), osprofile.ModprobeLocalFile, osprofile.ModprobePackageFile)
+			case kept:
+				fmt.Printf(T("предупреждение: %s заменяет правило пакета %s, и его изменения в следующих версиях сюда не доходят; если файл не нужен, удалите его\n",
+					"warning: %s replaces the package's rule %s, and what later releases change in it does not reach this host; unless you keep it on purpose, remove it\n"), osprofile.ModprobeLocalFile, osprofile.ModprobePackageFile)
+			}
+			return errors.Join(err, merr)
 		}}
 }

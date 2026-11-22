@@ -149,6 +149,11 @@ exit 0
 `,
 }
 
+// tmpfilesDir holds mp setup's tmpfiles copy of the run directory
+// (tmpfilesConf) and the API's monopanel-php.conf of 0.8.19, which the
+// package's scripts look after.
+const tmpfilesDir = "/etc/tmpfiles.d"
+
 // removalMark is where the preremove marks that a removal turned the panel
 // off, for the postinstall of a later install over what it left: in the
 // agent's own directory, which only root writes — the API must not make an
@@ -162,7 +167,7 @@ type scriptRun struct {
 	root, bin, log string
 	env            []string
 	// Where the script's paths point.
-	units, packaged, accounts, shares, dropin, config, removed string
+	units, packaged, accounts, shares, dropin, config, removed, tmpfiles string
 	// What the last run printed and called.
 	stdout, stderr string
 	calls          []string
@@ -177,10 +182,11 @@ func newScriptRun(t *testing.T) *scriptRun {
 	r := &scriptRun{t: t, root: root, log: filepath.Join(root, "calls.log"),
 		units: filepath.Join(root, "etc/systemd/system"), packaged: filepath.Join(root, "usr/lib/systemd/system"),
 		accounts: filepath.Join(root, "etc/apache2/monopanel/accounts"), shares: filepath.Join(root, "var/www/.shares"),
-		config: filepath.Join(root, "etc/monopanel/config.yaml"), removed: filepath.Join(root, "var/lib/monopanel-agent/package-removed")}
+		config: filepath.Join(root, "etc/monopanel/config.yaml"), removed: filepath.Join(root, "var/lib/monopanel-agent/package-removed"),
+		tmpfiles: filepath.Join(root, "etc/tmpfiles.d")}
 	r.dropin = filepath.Join(r.units, "monopanel-api.socket.d", "listen.conf")
 	stubDir := filepath.Join(root, "stubs")
-	for _, d := range []string{stubDir, r.units, r.packaged, filepath.Dir(r.dropin), filepath.Dir(r.config), filepath.Dir(r.removed)} {
+	for _, d := range []string{stubDir, r.units, r.packaged, filepath.Dir(r.dropin), filepath.Dir(r.config), filepath.Dir(r.removed), r.tmpfiles} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -234,6 +240,7 @@ func (r *scriptRun) preremove() string {
 		"\nremoved=" + removalMark + "\n":              "\nremoved=" + r.removed + "\n",
 		"\naccounts=/etc/apache2/monopanel/accounts\n": "\naccounts=" + r.accounts + "\n",
 		"\nshares=/var/www/.shares\n":                  "\nshares=" + r.shares + "\n",
+		"\ntmpfiles=" + tmpfilesDir + "\n":             "\ntmpfiles=" + r.tmpfiles + "\n",
 	} {
 		if !strings.Contains(s, from) {
 			r.t.Fatalf("preremove.sh lacks %q", from)
@@ -265,6 +272,22 @@ func (r *scriptRun) postinstall() string {
 		}
 		s = strings.ReplaceAll(s, from, to)
 	}
+	r.noSystemPaths("postinstall.sh", s)
+	return s
+}
+
+// postinstallTmpfiles is the part of postinstall.sh that brings the run
+// directory's boot-time files up to date, with its paths in the temporary
+// root.
+func (r *scriptRun) postinstallTmpfiles() string {
+	r.t.Helper()
+	s := packageScript(r.t, "postinstall.sh")
+	from, to := "\ntmpfiles="+tmpfilesDir+"\n", "\nsystemd-tmpfiles --create "
+	i, j := strings.Index(s, from), strings.Index(s, to)
+	if i < 0 || j < i {
+		r.t.Fatalf("postinstall.sh: no %q before %q", from, to)
+	}
+	s = "#!/bin/sh\nset -e\ntmpfiles=" + r.tmpfiles + "\n" + s[i+len(from):j+1]
 	r.noSystemPaths("postinstall.sh", s)
 	return s
 }
@@ -387,9 +410,10 @@ func TestPostinstallKeepsAStoppedPanelStopped(t *testing.T) {
 
 // A downgrade below 0.8.20 is no failure of the package's transaction: the
 // preremove of 0.8.20 and later keeps the accounts' Apaches (their unit
-// template), and says what the older version breaks and how to mend it.
-// dpkg names the version, rpm's is asked whether it takes the probe. An
-// upgrade, a removal, a downgrade within 0.8.20 and later do none of it.
+// template) and the php-fpm socket directory at boot (monopanel-php.conf),
+// and says what the older version breaks and how to mend it. dpkg names the
+// version, rpm's is asked whether it takes the probe. An upgrade and a
+// downgrade within 0.8.20 and later do none of it.
 func TestPreremoveOnADowngrade(t *testing.T) {
 	const tmpl = "monopanel-apache@.service"
 	setupHost := func(r *scriptRun, apache bool) {
@@ -414,7 +438,12 @@ func TestPreremoveOnADowngrade(t *testing.T) {
 		if b, err := os.ReadFile(filepath.Join(r.units, tmpl)); err != nil || string(b) != apacheUnit {
 			t.Fatalf("the template was not kept: %v\n%s", err, b)
 		}
+		php := filepath.Join(r.tmpfiles, "monopanel-php.conf")
+		if b, err := os.ReadFile(php); err != nil || string(b) != "d /run/monopanel/php 0755 root root -\n" {
+			t.Fatalf("the php-fpm socket directory is not made at boot: %v %q", err, b)
+		}
 		for _, s := range []string{"(0.8.19) is older than 0.8.20", "/var/log/monopanel/sites", "monopanel-apache@<login>", "their unit template is in " + filepath.Join(r.units, tmpl) + ", so they keep running",
+			"  - php-fpm makes the pools' sockets in /run/monopanel/php, which its mp setup leaves out of\n    " + filepath.Join(r.tmpfiles, "monopanel.conf") + ": " + php + " makes it at boot, keep that file;\n",
 			"at their next start: alex/bot\n", "mp stack install apache", "mp site apply <domain>", "mp mail apply", "mp app set <name> --user <login>",
 			"systemctl disable --now monopanel-apache@<login>", "/var/www/.shares", `"Going back to an older version": https://monopanel.app/en/docs/update/`} {
 			if !strings.Contains(r.stderr, s) {
@@ -424,8 +453,10 @@ func TestPreremoveOnADowngrade(t *testing.T) {
 		if strings.Contains(r.stderr, "kate/web") {
 			t.Errorf("an app without an env file is named:\n%s", r.stderr)
 		}
-		if left, _ := filepath.Glob(filepath.Join(r.units, ".*")); len(left) != 0 {
-			t.Errorf("left behind: %v", left)
+		for _, dir := range []string{r.units, r.tmpfiles} {
+			if left, _ := filepath.Glob(filepath.Join(dir, ".*")); len(left) != 0 {
+				t.Errorf("left behind: %v", left)
+			}
 		}
 	})
 	t.Run("rpm to 0.8.19", func(t *testing.T) {
@@ -438,6 +469,30 @@ func TestPreremoveOnADowngrade(t *testing.T) {
 		// No Apache here (EL): no template kept, no word of it.
 		if _, err := os.Lstat(filepath.Join(r.units, tmpl)); err == nil || strings.Contains(r.stderr, "monopanel-apache@") || strings.Contains(r.stderr, "mp stack install apache") {
 			t.Fatalf("Apache on a host without the accounts' Apaches:\n%s", r.stderr)
+		}
+	})
+	t.Run("the run directory of mp setup's copy", func(t *testing.T) {
+		r := newScriptRun(t)
+		setupHost(r, false)
+		writeFiles(t, r.tmpfiles, map[string]string{"monopanel.conf": tmpfilesConf(config.Config{RunDir: "/srv/run", ServiceGroup: "panel"})})
+		r.run(r.preremove(), []string{"OLDER=0.8.19"}, "upgrade", "0.8.19")
+		if b, _ := os.ReadFile(filepath.Join(r.tmpfiles, "monopanel-php.conf")); string(b) != "d /srv/run/php 0755 root root -\n" || !strings.Contains(r.stderr, " sockets in /srv/run/php, which its mp setup leaves out of") || !strings.Contains(r.stderr, "monopanel-php.conf makes it at boot, keep that file;") {
+			t.Fatalf("monopanel-php.conf: %q\n%s", b, r.stderr)
+		}
+	})
+	t.Run("monopanel-php.conf of 0.8.19 there already", func(t *testing.T) {
+		r := newScriptRun(t)
+		setupHost(r, false)
+		for _, text := range []string{"d /run/monopanel/php 0755 root root -\n", "# the administrator's\n"} {
+			writeFiles(t, r.tmpfiles, map[string]string{"monopanel-php.conf": text})
+			r.run(r.preremove(), []string{"OLDER=0.8.19"}, "upgrade", "0.8.19")
+			if b, _ := os.ReadFile(filepath.Join(r.tmpfiles, "monopanel-php.conf")); string(b) != text {
+				t.Fatalf("the file there was rewritten: %q", b)
+			}
+		}
+		// It does not hold the line: the notice says to put it there.
+		if !strings.Contains(r.stderr, "monopanel.conf, and every php-fpm fails to start after a reboot: put\n") || !strings.Contains(r.stderr, `    "d /run/monopanel/php 0755 root root -" into `+filepath.Join(r.tmpfiles, "monopanel-php.conf")+";\n") {
+			t.Fatalf("%s", r.stderr)
 		}
 	})
 	t.Run("a template there already", func(t *testing.T) {
@@ -465,17 +520,14 @@ func TestPreremoveOnADowngrade(t *testing.T) {
 		}
 	})
 	for _, c := range []struct {
-		what    string
-		env     []string
-		args    []string
-		want    []string
-		removal bool // the panel is turned off, and the mark of it left
+		what string
+		env  []string
+		args []string
+		want []string
 	}{
-		{"dpkg to 0.8.21", nil, []string{"upgrade", "0.8.21"}, []string{"dpkg --compare-versions 0.8.21 lt 0.8.20~"}, false},
-		{"rpm to 0.8.21", nil, []string{"1"}, []string{"monopanel api-socket-sync --probe"}, false},
-		{"dpkg removal", nil, []string{"remove"}, []string{"systemctl disable --now monopanel-api.socket monopanel-api.service monopanel-agent.service"}, true},
-		{"rpm removal", []string{"PROBE=1"}, []string{"0"}, []string{"systemctl disable --now monopanel-api.socket monopanel-api.service monopanel-agent.service"}, true},
-		{"a failed upgrade", []string{"OLDER=0.8.19"}, []string{"failed-upgrade", "0.8.20", "0.8.19"}, nil, false},
+		{"dpkg to 0.8.21", nil, []string{"upgrade", "0.8.21"}, []string{"dpkg --compare-versions 0.8.21 lt 0.8.20~"}},
+		{"rpm to 0.8.21", nil, []string{"1"}, []string{"monopanel api-socket-sync --probe"}},
+		{"a failed upgrade", []string{"OLDER=0.8.19"}, []string{"failed-upgrade", "0.8.20", "0.8.19"}, nil},
 	} {
 		t.Run(c.what, func(t *testing.T) {
 			r := newScriptRun(t)
@@ -484,14 +536,208 @@ func TestPreremoveOnADowngrade(t *testing.T) {
 			if r.stderr != "" || r.stdout != "" || !slices.Equal(r.calls, c.want) {
 				t.Fatalf("%v, stderr:\n%s", r.calls, r.stderr)
 			}
-			if _, err := os.Lstat(filepath.Join(r.units, tmpl)); err == nil {
-				t.Fatal("the template was kept")
-			}
-			if _, err := os.Lstat(r.removed); (err == nil) != c.removal {
-				t.Fatalf("the removal's mark: %v", err)
+			for _, p := range []string{filepath.Join(r.units, tmpl), filepath.Join(r.tmpfiles, "monopanel-php.conf"), r.removed} {
+				if _, err := os.Lstat(p); err == nil {
+					t.Fatalf("%s was made", p)
+				}
 			}
 		})
 	}
+}
+
+// A removal turns the panel off and leaves the mark of it; what the panel
+// set up keeps running, and the preremove says what does not. The accounts'
+// Apaches keep their unit template, as on a downgrade, and php/ of the run
+// directory is made at boot, where the sites' pools listen: an older version
+// installed next (dnf remove, then dnf install), whose mp setup writes the
+// tmpfiles copy without that line, needs it, and so do the pools without a
+// panel; where the line cannot be kept, the notice says where it goes. A
+// host mp setup never set up runs no pools, and is left nothing. Apps that
+// read an env file stop at their next start, and are named. A host with
+// none of it hears nothing.
+func TestPreremoveOnARemoval(t *testing.T) {
+	const tmpl = "monopanel-apache@.service"
+	const disable = "systemctl disable --now monopanel-api.socket monopanel-api.service monopanel-agent.service"
+	for _, c := range []struct {
+		what string
+		env  []string
+		args []string
+	}{
+		{"dpkg", nil, []string{"remove"}},
+		{"dpkg purge", nil, []string{"purge"}},
+		{"rpm", []string{"PROBE=1"}, []string{"0"}},
+	} {
+		t.Run(c.what, func(t *testing.T) {
+			r := newScriptRun(t)
+			writeFiles(t, r.packaged, map[string]string{tmpl: apacheUnit})
+			writeFiles(t, r.accounts, map[string]string{"alex/httpd.conf": "ServerRoot /etc/apache2\n"})
+			writeFiles(t, r.units, map[string]string{
+				"monopanel-app-alex-bot.service": "[Unit]\nDescription=MonoPanel app alex/bot — the shop's bot\n\n[Service]\nExecStart=" + r.bin + " app-exec --env-file /var/www/alex/data/.env -- /var/www/alex/data/bot\n",
+				"monopanel-app-kate-web.service": "[Unit]\nDescription=MonoPanel app kate/web\n\n[Service]\nExecStart=/var/www/kate/data/web\n",
+			})
+			writeFiles(t, r.tmpfiles, map[string]string{"monopanel.conf": tmpfilesConf(config.Default())})
+			r.run(r.preremove(), c.env, c.args...)
+			if !slices.Equal(r.calls, []string{disable, "systemctl daemon-reload"}) || r.stdout != "" {
+				t.Fatalf("%v, stdout %q", r.calls, r.stdout)
+			}
+			if _, err := os.Lstat(r.removed); err != nil {
+				t.Fatalf("the removal's mark: %v", err)
+			}
+			if b, err := os.ReadFile(filepath.Join(r.units, tmpl)); err != nil || string(b) != apacheUnit {
+				t.Fatalf("the template was not kept: %v\n%s", err, b)
+			}
+			// mp setup's line word for word: the two are silent together
+			// at boot (phpTmpfilesLine).
+			php := filepath.Join(r.tmpfiles, "monopanel-php.conf")
+			if b, err := os.ReadFile(php); err != nil || string(b) != phpTmpfilesLine(config.Default()) {
+				t.Fatalf("monopanel-php.conf: %v %q", err, b)
+			}
+			for _, s := range []string{"MonoPanel: the package goes; what the panel set up on this host keeps running, but:\n",
+				"'monopanel app-exec', which goes with the\n    package, and fail at their next start: alex/bot\n", "installing the panel again brings them back",
+				"their unit template is in " + filepath.Join(r.units, tmpl) + ", so they keep running", "systemctl disable --now monopanel-apache@<login> stops one for good",
+				php + " makes /run/monopanel/php at boot, where the sites'\n    php-fpm pools listen.\n", `"Going back to an older version":`} {
+				if !strings.Contains(r.stderr, s) {
+					t.Errorf("the notice lacks %q:\n%s", s, r.stderr)
+				}
+			}
+			if strings.Contains(r.stderr, "kate/web") || strings.Contains(r.stderr, "older than 0.8.20") || strings.Contains(r.stderr, "mp site apply") {
+				t.Errorf("the removal speaks of a downgrade, or names an app without an env file:\n%s", r.stderr)
+			}
+		})
+	}
+	t.Run("a host with nothing to say", func(t *testing.T) {
+		r := newScriptRun(t)
+		writeFiles(t, r.tmpfiles, map[string]string{"monopanel-php.conf": "d /run/monopanel/php 0755 root root -\n"})
+		r.run(r.preremove(), nil, "remove")
+		if r.stderr != "" || r.stdout != "" || !slices.Equal(r.calls, []string{disable}) {
+			t.Fatalf("%v, stderr:\n%s", r.calls, r.stderr)
+		}
+	})
+	t.Run("php/ alone", func(t *testing.T) {
+		r := newScriptRun(t)
+		writeFiles(t, r.tmpfiles, map[string]string{"monopanel.conf": tmpfilesConf(config.Default())})
+		r.run(r.preremove(), nil, "remove")
+		if !strings.Contains(r.stderr, "monopanel-php.conf makes /run/monopanel/php at boot") || strings.Contains(r.stderr, "Apache") || strings.Contains(r.stderr, "app-exec") {
+			t.Fatalf("%s", r.stderr)
+		}
+	})
+	// mp setup never ran: no run directory of the panel's, no pools — the
+	// package goes without a word and leaves nothing in /etc/tmpfiles.d.
+	t.Run("a host mp setup never set up", func(t *testing.T) {
+		r := newScriptRun(t)
+		r.run(r.preremove(), nil, "remove")
+		if r.stderr != "" || r.stdout != "" || !slices.Equal(r.calls, []string{disable}) {
+			t.Fatalf("%v, stderr:\n%s", r.calls, r.stderr)
+		}
+		if left, _ := filepath.Glob(filepath.Join(r.tmpfiles, "*")); len(left) != 0 {
+			t.Fatalf("left in tmpfiles.d: %v", left)
+		}
+	})
+	// The file is there without the panel's line, or cannot be written: the
+	// notice says where the line goes, as on a downgrade.
+	t.Run("monopanel-php.conf without the line", func(t *testing.T) {
+		r := newScriptRun(t)
+		writeFiles(t, r.tmpfiles, map[string]string{"monopanel.conf": tmpfilesConf(config.Config{RunDir: "/srv/run", ServiceGroup: "panel"}), "monopanel-php.conf": "# the administrator's\n"})
+		r.run(r.preremove(), nil, "remove")
+		if b, _ := os.ReadFile(filepath.Join(r.tmpfiles, "monopanel-php.conf")); string(b) != "# the administrator's\n" {
+			t.Fatalf("the file there was rewritten: %q", b)
+		}
+		if !strings.Contains(r.stderr, "MonoPanel: the package goes;") || !strings.Contains(r.stderr, `"d /srv/run/php 0755 root root -" into `+filepath.Join(r.tmpfiles, "monopanel-php.conf")) {
+			t.Fatalf("the notice does not say where the line goes:\n%s", r.stderr)
+		}
+	})
+}
+
+// Going back below 0.8.20 and running that version's mp setup, which writes
+// /etc/tmpfiles.d/monopanel.conf without the php-fpm socket directory, leaves
+// a line that makes it at boot: monopanel-php.conf, which 0.8.19's API wrote
+// and the upgrade keeps — the same line in two files is no warning to
+// systemd-tmpfiles — or which the preremove writes where PHP came with
+// 0.8.20. The upgrade after that puts the line back into the copy and keeps
+// the file again. A file that holds more than the panel's line is worth a
+// warning, and stays.
+func TestGoingBackKeepsThePHPSocketDirectory(t *testing.T) {
+	// mp setup of 0.8.19 (setup.go of v0.8.19) and the API's file of 0.8.19
+	// (ops_php.go of v0.8.19).
+	setup0819 := func(runDir, group string) string { return "d " + runDir + " 0771 root " + group + " -\n" }
+	api0819 := func(runDir string) string { return "d " + runDir + "/php 0755 root root -\n" }
+	// The copy as the upgrade leaves it: the php line added, and the sticky
+	// bit on the default line (postinstall.sh leaves another layout's mode
+	// to mp setup).
+	upgraded := func(runDir, group string) string {
+		if runDir == "/run/monopanel" && group == "monopanel" {
+			return tmpfilesConf(config.Config{RunDir: runDir, ServiceGroup: group})
+		}
+		return setup0819(runDir, group) + api0819(runDir)
+	}
+	phpAtBoot := func(r *scriptRun, runDir string) bool {
+		t.Helper()
+		files, _ := filepath.Glob(filepath.Join(r.tmpfiles, "*.conf"))
+		for _, f := range files {
+			b, _ := os.ReadFile(f)
+			if slices.Contains(strings.Split(string(b), "\n"), "d "+runDir+"/php 0755 root root -") {
+				return true
+			}
+		}
+		return false
+	}
+	for _, c := range []struct {
+		what, runDir, group string
+		php0819             bool // PHP came with 0.8.19, whose API wrote monopanel-php.conf
+		env, args           []string
+	}{
+		{"dpkg, PHP of 0.8.19", "/run/monopanel", "monopanel", true, []string{"OLDER=0.8.19"}, []string{"upgrade", "0.8.19"}},
+		{"dpkg, PHP of 0.8.20", "/run/monopanel", "monopanel", false, []string{"OLDER=0.8.19"}, []string{"upgrade", "0.8.19"}},
+		{"rpm, PHP of 0.8.20, another run directory", "/srv/run", "panel", false, []string{"PROBE=1"}, []string{"1"}},
+		{"dnf remove, then the older install", "/run/monopanel", "monopanel", false, []string{"PROBE=1"}, []string{"0"}},
+	} {
+		t.Run(c.what, func(t *testing.T) {
+			r := newScriptRun(t)
+			copyPath, phpPath := filepath.Join(r.tmpfiles, "monopanel.conf"), filepath.Join(r.tmpfiles, "monopanel-php.conf")
+			writeFiles(t, r.tmpfiles, map[string]string{"monopanel.conf": setup0819(c.runDir, c.group)})
+			if c.php0819 {
+				writeFiles(t, r.tmpfiles, map[string]string{"monopanel-php.conf": api0819(c.runDir)})
+			}
+			// The upgrade to this version: the line goes into the copy, the
+			// API's file stays.
+			r.run(r.postinstallTmpfiles(), nil, "configure", "0.8.19")
+			if b, _ := os.ReadFile(copyPath); string(b) != upgraded(c.runDir, c.group) {
+				t.Fatalf("the copy after the upgrade:\n%s", b)
+			}
+			if b, err := os.ReadFile(phpPath); c.php0819 != (err == nil) || c.php0819 && string(b) != api0819(c.runDir) {
+				t.Fatalf("monopanel-php.conf after the upgrade: %v %q", err, b)
+			}
+			if r.stderr != "" {
+				t.Fatalf("the upgrade warns: %s", r.stderr)
+			}
+			// Back to 0.8.19, whose mp setup writes the copy anew.
+			r.run(r.preremove(), c.env, c.args...)
+			writeFiles(t, r.tmpfiles, map[string]string{"monopanel.conf": setup0819(c.runDir, c.group)})
+			if !phpAtBoot(r, c.runDir) {
+				t.Fatal("nothing makes the php-fpm socket directory at boot")
+			}
+			if b, _ := os.ReadFile(phpPath); string(b) != api0819(c.runDir) {
+				t.Fatalf("monopanel-php.conf: %q", b)
+			}
+			// Up again: the copy has its line back, the file stays, no word.
+			r.run(r.postinstallTmpfiles(), nil, "configure", "0.8.19")
+			if b, _ := os.ReadFile(copyPath); string(b) != upgraded(c.runDir, c.group) || !phpAtBoot(r, c.runDir) || r.stderr != "" {
+				t.Fatalf("the copy after the next upgrade:\n%s\n%s", b, r.stderr)
+			}
+		})
+	}
+	t.Run("more than the panel's line", func(t *testing.T) {
+		r := newScriptRun(t)
+		const more = "d /run/monopanel/php 0755 root root -\nL+ /etc/cron.d/x - - - - /var/www/alex/x\n"
+		writeFiles(t, r.tmpfiles, map[string]string{"monopanel.conf": setup0819("/run/monopanel", "monopanel"), "monopanel-php.conf": more})
+		r.run(r.postinstallTmpfiles(), nil, "configure", "0.8.19")
+		if b, _ := os.ReadFile(filepath.Join(r.tmpfiles, "monopanel-php.conf")); string(b) != more {
+			t.Fatalf("the file was changed: %q", b)
+		}
+		if !strings.Contains(r.stderr, "monopanel-php.conf holds more than the line the panel wrote there: check what it makes as root at boot, and leave the panel's line alone in it (d /run/monopanel/php 0755 root root -), which a version older than 0.8.20 needs") {
+			t.Fatalf("no warning: %q", r.stderr)
+		}
+	})
 }
 
 // A removal disables the panel, and the package installed again over what

@@ -147,6 +147,10 @@ func updateLines(st *apitypes.UpdateStatus) []string {
 			line += ": " + a.Error
 		}
 		out = append(out, line)
+		if a.Reinstall {
+			out = append(out, styleWarn.Render(fmt.Sprintf(T("%s уже числится в базе пакетов, а работает прежний бинарник: a (mp update apply) установит её ещё раз, сама панель её не повторит",
+				"The package database lists %s already while the previous binary runs: a (mp update apply) installs it once more, the panel does not retry it on its own"), a.To)))
+		}
 	}
 	return out
 }

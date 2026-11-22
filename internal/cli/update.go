@@ -251,6 +251,10 @@ func printUpdate(st *apitypes.UpdateStatus) {
 			line += ": " + a.Error
 		}
 		fmt.Println(line)
+		if a.Reinstall {
+			fmt.Printf(T("  %s уже числится в базе пакетов, а работает прежний бинарник: mp update apply установит её ещё раз, сама панель её не повторит\n",
+				"  the package database lists %s already while the previous binary runs: mp update apply installs it once more, the panel does not retry it on its own\n"), a.To)
+		}
 	}
 }
 
@@ -271,28 +275,7 @@ func updateRunCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		inst := &updater.Installer{
-			Package: pkg,
-			SHA256:  sha,
-			To:      version,
-			From:    from,
-			Dir:     cfg.UpdatesDir(),
-			// root's alone: a rollback copies this back as the panel binary
-			BackupDir: cfg.AgentUpdatesDir(),
-			// the state goes into the API's data directory without following
-			// a symlink the API may have left there, and without giving
-			// whatever directory it put under the name another mode
-			WriteState: writeUpdateState,
-			Binary:     panelBinary(),
-			Argv:       profile.Packages().InstallArgv([]string{pkg}),
-			// Not the socket of the panel's port: the package's postinstall
-			// has it listening, it keeps the port while both restart, and
-			// systemd refuses to restart a socket whose service runs. Should
-			// it not listen, the API's restart starts it (the unit wants it).
-			Units: []string{cfg.Update.AgentUnit, cfg.Update.APIUnit},
-			Ready: panelVersionProbe(cfg),
-		}
-		return inst.Run(cmd.Context())
+		return updateInstaller(cfg, profile, pkg, sha, version, from).Run(cmd.Context())
 	}}
 	c.Flags().StringVar(&pkg, "package", "", T("путь к .deb или .rpm", "path to the .deb or .rpm"))
 	c.Flags().StringVar(&sha, "sha256", "", T("ожидаемая контрольная сумма пакета", "expected checksum of the package"))
@@ -302,6 +285,36 @@ func updateRunCmd() *cobra.Command {
 	c.MarkFlagRequired("sha256")
 	c.MarkFlagRequired("version")
 	return c
+}
+
+// updateInstaller is update-run's installer of the package pkg, version to
+// over from.
+func updateInstaller(cfg config.Config, profile osprofile.Profile, pkg, sha, to, from string) *updater.Installer {
+	return &updater.Installer{
+		Package: pkg,
+		SHA256:  sha,
+		To:      to,
+		From:    from,
+		Dir:     cfg.UpdatesDir(),
+		// root's alone: a rollback copies this back as the panel binary
+		BackupDir: cfg.AgentUpdatesDir(),
+		// the state goes into the API's data directory without following
+		// a symlink the API may have left there, and without giving
+		// whatever directory it put under the name another mode
+		WriteState: writeUpdateState,
+		Binary:     panelBinary(),
+		// The host's package manager as the agent runs it, its environment
+		// included: with apt's alone Ubuntu's needrestart would restart
+		// every service the update leaves on an old library, the database
+		// server too, unchecked (updater.Packages).
+		Packages: profile.Packages(),
+		// Not the socket of the panel's port: the package's postinstall
+		// has it listening, it keeps the port while both restart, and
+		// systemd refuses to restart a socket whose service runs. Should
+		// it not listen, the API's restart starts it (the unit wants it).
+		Units: []string{cfg.Update.AgentUnit, cfg.Update.APIUnit},
+		Ready: panelVersionProbe(cfg),
+	}
 }
 
 // writeUpdateState writes update-run's state.json into dir, the API's

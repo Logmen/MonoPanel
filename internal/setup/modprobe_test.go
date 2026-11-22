@@ -1,6 +1,8 @@
 package setup
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -99,5 +101,117 @@ func TestModprobeOnlyOnBinaryInstalls(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(victim); string(b) != "keep\n" {
 		t.Fatal("written through the symlink")
+	}
+}
+
+// mp setup's copy of the rule in /etc/modprobe.d goes once the package's own
+// is there and the copy is a text of the panel's, no newer than the
+// package's: a host set up from the binary alone that took the package
+// later (mp update apply). Without the package the copy is the rule. A file
+// the administrator wrote stays, and is said to stay; so does one newer than
+// the package's rule, or one beside a rule this version does not know. A
+// symlink is no copy and is left alone without a word.
+func TestPruneModprobeCopy(t *testing.T) {
+	dir := t.TempDir()
+	pkg := filepath.Join(dir, "usr/lib/modprobe.d/monopanel.conf")
+	local := filepath.Join(dir, "etc/modprobe.d/monopanel.conf")
+	write := func(p, content string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prune := func(want modprobeCopy, history ...string) {
+		t.Helper()
+		if len(history) == 0 {
+			history = modprobeHistory()
+		}
+		got, err := pruneModprobeCopy(local, pkg, history)
+		if err != nil || got != want {
+			t.Fatalf("pruneModprobeCopy: %+v %v, want %+v", got, err, want)
+		}
+	}
+	there := func(p string) bool {
+		_, err := os.Lstat(p)
+		return err == nil
+	}
+
+	prune(modprobeCopy{})
+	// From the binary alone: the copy is the rule, and stays.
+	if wrote, err := ensureModprobe(pkg, local); err != nil || !wrote {
+		t.Fatalf("binary install: %v %v", wrote, err)
+	}
+	prune(modprobeCopy{})
+	if !there(local) {
+		t.Fatal("the rule of an install without the package went")
+	}
+	// The package arrives: the copy goes, and the next run finds nothing.
+	write(pkg, osprofile.ModprobeConf)
+	prune(modprobeCopy{Removed: true})
+	if there(local) || !there(pkg) {
+		t.Fatalf("after the prune: copy %v, package %v", there(local), there(pkg))
+	}
+	prune(modprobeCopy{})
+
+	// The administrator's: a module let load again, all four, a note added.
+	for _, edited := range []string{
+		strings.Replace(osprofile.ModprobeConf, "install sctp /bin/false\n", "", 1),
+		"",
+		osprofile.ModprobeConf + "# kept on purpose\n",
+	} {
+		write(local, edited)
+		prune(modprobeCopy{Kept: true})
+		if b, _ := os.ReadFile(local); string(b) != edited {
+			t.Fatalf("the administrator's file was changed:\n%s", b)
+		}
+	}
+	// A later release's copy over an older package's rule, and a copy
+	// beside a package rule this version does not know: they stay.
+	const older, later = "install sctp /bin/false\n", "install sctp /bin/false\ninstall dccp /bin/false\n"
+	write(pkg, older)
+	write(local, later)
+	prune(modprobeCopy{Kept: true}, older, later)
+	write(pkg, "install everything /bin/false\n")
+	prune(modprobeCopy{Kept: true}, older, later)
+	// An older release's copy under a later package's rule goes.
+	write(pkg, later)
+	write(local, older)
+	prune(modprobeCopy{Removed: true}, older, later)
+
+	// A symlink: no word, nothing removed.
+	if err := os.Symlink("/dev/null", local); err != nil {
+		t.Fatal(err)
+	}
+	prune(modprobeCopy{})
+	if st, err := os.Lstat(local); err != nil || st.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the symlink: %v %v", st, err)
+	}
+}
+
+// The rule's every released text stays in modprobeHistory, word for word,
+// and today's is the last of them: a copy some release's mp setup wrote is
+// told for the panel's own by it.
+func TestModprobeHistoryKeepsEveryRelease(t *testing.T) {
+	for text, want := range map[string]string{
+		// 0.8.20's, today's.
+		osprofile.ModprobeConf: "e5e245a1c6f042d5d9c0a2ff42bfe400a496480f0852eab0561e1d50f9ba4fab",
+	} {
+		if got := fmt.Sprintf("%x", sha256.Sum256([]byte(text))); got != want {
+			t.Errorf("the rule's text changed (sha256 %s, pinned %s): keep the former one in modprobeHistory and pin the new one\n%s", got, want, text)
+		}
+	}
+	h := modprobeHistory()
+	if len(h) == 0 || h[len(h)-1] != osprofile.ModprobeConf {
+		t.Error("today's rule is not the last text of modprobeHistory")
+	}
+	seen := map[string]bool{}
+	for _, text := range h {
+		if seen[text] {
+			t.Errorf("one text twice in modprobeHistory:\n%s", text)
+		}
+		seen[text] = true
 	}
 }

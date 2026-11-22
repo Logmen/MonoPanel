@@ -781,6 +781,9 @@ type UpdateAttempt struct {
 	Finished *time.Time `json:"finished,omitempty"`
 	Error    string     `json:"error,omitempty"`
 	Log      string     `json:"log,omitempty"`
+	// Reinstall: the rollback put the previous binary back, while the
+	// package database keeps To, whose package scripts ran.
+	Reinstall bool `json:"reinstall,omitempty" doc:"The install rolled back after the package manager had installed To, which the package database still lists while the previous version runs: installing To again (update-apply) installs it once more, and the automatic update does not retry it"`
 }
 
 // UpdateStatus is what the panel knows about its own version.

@@ -6,25 +6,24 @@ systemd-sysusers /usr/lib/sysusers.d/monopanel.conf >/dev/null 2>&1 || true
 # make php/ in it, where the php-fpm masters make the pools' sockets as root:
 # the API had the agent write monopanel-php.conf for that, which it no longer
 # can. The line goes into the copy, for the run directory it names, so that
-# php/ is root's from boot, before the API runs; the API's file, holding just
-# that line, goes (two lines for one path are a warning at every boot).
-tmpfiles=/etc/tmpfiles.d/monopanel.conf
-if [ -f "$tmpfiles" ]; then
-	sed -i 's#^d /run/monopanel 0771 root monopanel -$#d /run/monopanel 1771 root monopanel -#' "$tmpfiles" || true
-	rundir=$(sed -n 's#^d \(/[^ ]*\) [0-7]* root [^ ]* -$#\1#p' "$tmpfiles" | grep -v '/php$' | head -n 1)
-	if [ -n "$rundir" ] && ! grep -q "^d $rundir/php " "$tmpfiles"; then
-		[ -z "$(tail -c 1 "$tmpfiles")" ] || echo >>"$tmpfiles" || true
-		echo "d $rundir/php 0755 root root -" >>"$tmpfiles" || true
-	fi
-	if [ -n "$rundir" ] && grep -q "^d $rundir/php 0755 root root -$" "$tmpfiles" &&
-		[ "$(cat /etc/tmpfiles.d/monopanel-php.conf 2>/dev/null)" = "d $rundir/php 0755 root root -" ]; then
-		rm -f /etc/tmpfiles.d/monopanel-php.conf || true
+# php/ is root's from boot, before the API runs. monopanel-php.conf stays:
+# going back below 0.8.20, whose mp setup writes the copy without the line,
+# php/ is made at boot by that file alone — the preremove writes it then
+# where it is missing — and one line for one path in two files is no warning
+# to systemd-tmpfiles (only lines that differ are).
+tmpfiles=/etc/tmpfiles.d
+if [ -f "$tmpfiles/monopanel.conf" ]; then
+	sed -i 's#^d /run/monopanel 0771 root monopanel -$#d /run/monopanel 1771 root monopanel -#' "$tmpfiles/monopanel.conf" || true
+	rundir=$(sed -n 's#^d \(/[^ ]*\) [0-7]* root [^ ]* -$#\1#p' "$tmpfiles/monopanel.conf" | grep -v '/php$' | head -n 1)
+	if [ -n "$rundir" ] && ! grep -q "^d $rundir/php " "$tmpfiles/monopanel.conf"; then
+		[ -z "$(tail -c 1 "$tmpfiles/monopanel.conf")" ] || echo >>"$tmpfiles/monopanel.conf" || true
+		echo "d $rundir/php 0755 root root -" >>"$tmpfiles/monopanel.conf" || true
 	fi
 fi
 # The API could rewrite that file up to 0.8.19, and systemd-tmpfiles applies
 # it as root at every boot: anything but the panel's line is worth a look.
-if [ -f /etc/tmpfiles.d/monopanel-php.conf ] && grep -Ev '^(#|$)' /etc/tmpfiles.d/monopanel-php.conf | grep -qv "^d ${rundir:-/run/monopanel}/php 0755 root root -\$"; then
-	echo "warning: /etc/tmpfiles.d/monopanel-php.conf holds more than the line the panel wrote there, and the panel no longer uses it: check what it makes as root at boot, then remove it" >&2
+if [ -f "$tmpfiles/monopanel-php.conf" ] && grep -Ev '^(#|$)' "$tmpfiles/monopanel-php.conf" | grep -qv "^d ${rundir:-/run/monopanel}/php 0755 root root -\$"; then
+	echo "warning: $tmpfiles/monopanel-php.conf holds more than the line the panel wrote there: check what it makes as root at boot, and leave the panel's line alone in it (d ${rundir:-/run/monopanel}/php 0755 root root -), which a version older than 0.8.20 needs" >&2
 fi
 systemd-tmpfiles --create /usr/lib/tmpfiles.d/monopanel.conf >/dev/null 2>&1 || true
 install -d -m 0750 -o root -g monopanel /etc/monopanel /etc/monopanel/templates
@@ -62,12 +61,14 @@ reinstall=0
 [ -e "$removed" ] && reinstall=1
 
 # mp setup up to 0.8.19 copied the panel's units into /etc/systemd/system on
-# every host it set up, and a downgrade below 0.8.20 keeps Apache's template
-# there (preremove.sh): such a copy overrides the package's unit for good,
-# and what a release changes in it never arrives. The copies that are
-# provably the panel's own and no newer than the package's units go; units
-# that run take the package's at their restart below. Never fatal.
-/usr/bin/monopanel prune-unit-copies || echo "warning: monopanel prune-unit-copies failed; copies of the panel's units in /etc/systemd/system may still override the package's" >&2
+# every host it set up, a removal or a downgrade below 0.8.20 keeps Apache's
+# template there (preremove.sh), and mp setup of an install without the
+# package writes the modprobe rule into /etc/modprobe.d: such a copy
+# overrides the package's file for good, and what a release changes in it
+# never arrives. The copies that are provably the panel's own and no newer
+# than the package's go; units that run take the package's at their restart
+# below. Never fatal.
+/usr/bin/monopanel prune-unit-copies || echo "warning: monopanel prune-unit-copies failed; copies of the panel's units in /etc/systemd/system, or of its modprobe rule in /etc/modprobe.d, may still override the package's" >&2
 systemctl daemon-reload >/dev/null 2>&1 || true
 
 # A fresh install enables the panel, which mp setup starts, and so does an

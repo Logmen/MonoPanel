@@ -335,6 +335,31 @@ func TestIdlePool(t *testing.T) {
 		if strings.Join(keys, "\n") != strings.Join(want, "\n") {
 			t.Errorf("%s:\n%s", c.path, content)
 		}
+		// The earlier builds' texts hold the same pool under another
+		// comment, and the agent writes today's text alone.
+		earlier := EarlierIdlePools("/run/monopanel/", c.path)
+		if len(earlier) == 0 {
+			t.Fatalf("%s: no earlier texts", c.path)
+		}
+		at := strings.Index(content, "[www]\n")
+		for _, e := range earlier {
+			ea := strings.Index(e, "[www]\n")
+			if ea < 0 || e[ea:] != content[at:] || e[:ea] == content[:at] {
+				t.Errorf("%s: an earlier text is not today's pool under another comment:\n%s", c.path, e)
+				continue
+			}
+			for _, line := range strings.Split(strings.TrimSuffix(e[:ea], "\n"), "\n") {
+				if !strings.HasPrefix(line, "; ") {
+					t.Errorf("%s: an earlier text's head holds more than comments: %q", c.path, line)
+				}
+			}
+			if err := Check(c.path, []byte(e)); err == nil {
+				t.Errorf("%s: the agent takes an earlier text of the idle pool", c.path)
+			}
+		}
+		if err := Check(c.path, []byte(content)); err != nil {
+			t.Errorf("%s: %v", c.path, err)
+		}
 	}
 	// Other pool files, the distributions' others and a run directory that
 	// is no plain path have none.

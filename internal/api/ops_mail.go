@@ -561,7 +561,8 @@ func (s *Server) applyWebmailPort(ctx context.Context, logf func(string, ...any)
 		return err
 	}
 	// Next to the logs of the site it lives in, made before nginx opens them.
-	if _, err := s.ensureSiteLogs(ctx, owner.Login, webmailLogNames...); err != nil {
+	logs, err := s.ensureSiteLogs(ctx, owner.Login, webmailLogNames...)
+	if err != nil {
 		return fmt.Errorf("webmail logs: %w", err)
 	}
 	res, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{
@@ -572,9 +573,11 @@ func (s *Server) applyWebmailPort(ctx context.Context, logf func(string, ...any)
 		return err
 	}
 	// Its logs are in the tree now, an older panel's went into data/logs:
-	// the jails read them from here on.
-	if s.webmailMoved(ctx) {
-		s.refreshFail2ban(ctx)
+	// the jails read them from here on. Logs made only now (a port just
+	// given to the webmail, files that went) the jails list from here on
+	// too, and fail2ban reads them once it restarts (refreshFail2banAfter).
+	if moved := s.webmailMoved(ctx); moved || len(logs.Created) > 0 {
+		s.refreshFail2banAfter(ctx, logs.Created)
 	}
 	if len(res.Written) > 0 {
 		logf("webmail at https://%s:%d/", c.Hostname, c.WebmailPort)

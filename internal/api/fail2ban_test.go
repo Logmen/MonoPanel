@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -175,5 +176,84 @@ func TestDoctorNamesLeftovers(t *testing.T) {
 	}
 	if a, b := find("fail2ban packages"), find("repositories"); a != "" || b != "" {
 		t.Errorf("hints stay after the cleanup: %q %q", a, b)
+	}
+}
+
+// fail2ban opens the files its jails list when it starts, and one that is
+// not there then it leaves out until it starts again. A site suspended under
+// 0.8.19 has no logs in the tree — the log move leaves suspended sites
+// alone — yet the jails list them; its unsuspend makes them, and a running
+// fail2ban is restarted to read them, though the jails stay as they were.
+// One that does not run is not started for it: it reads them when it
+// starts. An apply that makes nothing the jails list restarts nothing.
+func TestFail2banReadsLogsMadeAfterItStarted(t *testing.T) {
+	f := newSiteFixture(t)
+	f.createSite(map[string]any{"domain": "shop.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	f.installFail2ban(t)
+	owner, err := f.db.GetUserByLogin(f.ctx, "alex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A suspended site as 0.8.19 left it: in the database, nothing in the
+	// log tree.
+	suspended := func(domain string) {
+		t.Helper()
+		if err := f.db.CreateSite(f.ctx, &store.Site{Domain: domain, UserID: owner.ID, PHPVersion: "8.4", SSL: "none", Status: store.SiteSuspended}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	suspended("old.example.com")
+	// The first start of this version on a host of 0.8.19's.
+	if err := f.db.DeleteSetting(f.ctx, settingSiteMoves); err != nil {
+		t.Fatal(err)
+	}
+	f.s.moveSiteLogs(f.ctx)
+	f.s.refreshFail2ban(f.ctx)
+	f.settle()
+	const logs = "/var/log/monopanel/sites/alex/"
+	prev, _ := f.agent.File(fail2banJailPath)
+	if !strings.Contains(prev, logs+"old.example.com.access.log") || !strings.Contains(prev, logs+"old.example.com.error.log") {
+		t.Fatalf("the jails do not list the suspended site:\n%s", prev)
+	}
+	if slices.Contains(f.agent.SiteLogs("alex"), "old.example.com.access.log") {
+		t.Fatal("the move made the logs of a suspended site")
+	}
+
+	from := len(f.agent.Calls())
+	f.siteAction("old.example.com", "unsuspend")
+	if !slices.Contains(f.agent.SiteLogs("alex"), "old.example.com.access.log") {
+		t.Fatal("the unsuspend made no logs")
+	}
+	if jail, _ := f.agent.File(fail2banJailPath); jail != prev {
+		t.Fatalf("the jails changed:\n%s", jail)
+	}
+	if n := f.jailChanges(from, prev); n != 1 {
+		t.Fatalf("fail2ban restarted %d times for the logs made after its start, want once", n)
+	}
+
+	// Nothing made the jails list: no restart.
+	from = len(f.agent.Calls())
+	f.siteAction("old.example.com", "apply")
+	if n := f.jailChanges(from, prev); n != 0 {
+		t.Fatalf("an apply that made nothing restarted fail2ban %d times", n)
+	}
+
+	// fail2ban the administrator stopped and disabled: it is not started
+	// for the logs.
+	suspended("older.example.com")
+	f.s.refreshFail2ban(f.ctx)
+	prev, _ = f.agent.File(fail2banJailPath)
+	if !strings.Contains(prev, logs+"older.example.com.access.log") {
+		t.Fatalf("the jails do not list the second suspended site:\n%s", prev)
+	}
+	f.agent.ActiveState = map[string]string{fail2banService: "inactive"}
+	f.agent.UnitFileState = map[string]string{fail2banService: "disabled"}
+	from = len(f.agent.Calls())
+	f.siteAction("older.example.com", "unsuspend")
+	if !slices.Contains(f.agent.SiteLogs("alex"), "older.example.com.access.log") {
+		t.Fatal("the unsuspend made no logs")
+	}
+	if n := f.jailChanges(from, prev); n != 0 {
+		t.Fatalf("a stopped fail2ban was restarted %d times for logs made since it stopped", n)
 	}
 }
