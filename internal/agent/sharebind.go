@@ -47,7 +47,9 @@ import (
 //   - nothing mounts a shared folder at boot. The agent keeps a record of
 //     every folder it bound (shareRecordDir): the guard keeps the way to the
 //     mount point root's by it (loadShareGuard), and the API binds the
-//     folders again through the agent at its start (refreshShareMounts).
+//     folders again through the agent at its start (refreshShareMounts) —
+//     and unbinds those no share of its database names any more
+//     (listShareRecords).
 //     The units of the panels up to 0.8.20 are taken over as the agent
 //     starts (retireUnsafeShareUnits): recorded, disabled and removed, and what
 //     they mounted checked against the folder.
@@ -105,6 +107,14 @@ func (s *Server) recordedMountPoints(root string) ([]string, error) {
 // shareRecords reads the records; one whose content does not name the mount
 // point of its name is left out (and still guards that mount point).
 func (s *Server) shareRecords() ([]shareRecord, error) {
+	return s.readShareRecords(func(where string, err error) {
+		s.log.Warn("a record of a shared folder that cannot be read: the way to its mount point stays root's, and the panel binds the folder again at its start", "dir", s.shareRecordDir(), "mount_point", where, "err", err)
+	})
+}
+
+// readShareRecords is shareRecords that tells unreadable of each record it
+// leaves out, instead of the log.
+func (s *Server) readShareRecords(unreadable func(where string, err error)) ([]shareRecord, error) {
 	dir := s.shareRecordDir()
 	points, err := s.recordedMountPoints(filepath.Clean(s.cfg.WWWRoot))
 	if err != nil || len(points) == 0 {
@@ -120,12 +130,61 @@ func (s *Server) shareRecords() ([]shareRecord, error) {
 		data, _, _, err := readFileAt(fd, shareRecordName(where))
 		var rec shareRecord
 		if err != nil || json.Unmarshal(data, &rec) != nil || rec.Where != where {
-			s.log.Warn("a record of a shared folder that cannot be read: the way to its mount point stays root's, and the panel binds the folder again at its start", "dir", dir, "mount_point", where, "err", err)
+			unreadable(where, err)
 			continue
 		}
 		out = append(out, rec)
 	}
 	return out, nil
+}
+
+// shareRecordAt is the agent's record of the shared folder at where; nil
+// without one, or one that cannot be read.
+func (s *Server) shareRecordAt(where string) *shareRecord {
+	recs, err := s.readShareRecords(func(string, error) {})
+	if err != nil {
+		return nil
+	}
+	for _, r := range recs {
+		if r.Where == where {
+			return &r
+		}
+	}
+	return nil
+}
+
+// listShareRecords lists the agent's records of the shared folders
+// (/v1/shares/records), each with whether something is mounted at its mount
+// point in the host's mount namespace. A record guards the way to its mount
+// point for as long as it stays (shareGuard), and only an unbind removes it:
+// the API unbinds, at its start, each one whose mount point no share of its
+// database names any more — one a restore of the database lost, say — which
+// nothing in the panel would otherwise ever remove.
+func (s *Server) listShareRecords(_ context.Context, _ *struct{}) (*ShareRecordsResponse, error) {
+	resp := &ShareRecordsResponse{Records: []ShareRecordState{}}
+	recs, err := s.readShareRecords(func(where string, _ error) {
+		resp.Records = append(resp.Records, ShareRecordState{Where: where})
+	})
+	if err != nil {
+		return nil, &Error{Message: "reading the agent's records of the shared folders", Output: err.Error()}
+	}
+	for _, r := range recs {
+		resp.Records = append(resp.Records, ShareRecordState{Where: r.Where, What: r.What})
+	}
+	slices.SortFunc(resp.Records, func(a, b ShareRecordState) int { return strings.Compare(a.Where, b.Where) })
+	err = inHostMountNS(func() error {
+		for i := range resp.Records {
+			if fd, err := s.openShareMount(resp.Records[i].Where); err == nil {
+				resp.Records[i].Mounted = mountedOn(fd)
+				unix.Close(fd) //nolint:errcheck // a directory opened for a look
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 // writeShareRecord records a shared folder before the agent binds it —
@@ -287,6 +346,20 @@ func shareSourceErr(what, why string) *Error {
 	return &Error{Status: http.StatusForbidden, Message: fmt.Sprintf("the shared folder %s is refused: %s. A shared folder is a directory of its site owner's in the owner's home, reached from the web root without a symlink; mp site fix <its site> makes it one again", what, why)}
 }
 
+// mountIDOf is the mount the directory fd lies on (statx STATX_MNT_ID, Linux
+// 5.8): it stays the mount the descriptor was opened on, whatever is
+// unmounted or detached since. Tests replace it.
+var mountIDOf = func(fd int) (uint64, error) {
+	var stx unix.Statx_t
+	if err := unix.Statx(fd, "", unix.AT_EMPTY_PATH, unix.STATX_MNT_ID, &stx); err != nil {
+		return 0, err
+	}
+	if stx.Mask&unix.STATX_MNT_ID == 0 {
+		return 0, errors.New("the kernel does not tell the mount (statx STATX_MNT_ID)")
+	}
+	return stx.Mnt_id, nil
+}
+
 // openShareSource opens the folder a shared folder shows, as the panel lays
 // it out: a directory below the home <www_root>/<login> of a panel account —
 // never in .restore or .shares, which are the agent's — reached from the web
@@ -295,6 +368,14 @@ func shareSourceErr(what, why string) *Error {
 // not at or below the mount point of another shared folder, which shows
 // another account's tree under the name. The descriptor is what gets bound:
 // what the owner renames afterwards changes nothing.
+//
+// The folder also lies on the mount of the home it was reached from. The
+// mount point of a shared folder in the home — its owner an SFTP-only guest
+// of another account — leads into that account's tree, and the records may
+// not tell of it as the walk crosses it (one not written yet as the guard
+// was read, one gone since: shareBind). A folder below a mount of an
+// administrator's in the home is refused too: nothing is to be mounted below
+// an account's directories (docs/10 §4).
 func (s *Server) openShareSource(what string, g *shareGuard) (int, error) {
 	root := filepath.Clean(s.cfg.WWWRoot)
 	rel, ok := strings.CutPrefix(what, root+"/")
@@ -323,8 +404,10 @@ func (s *Server) openShareSource(what string, g *shareGuard) (int, error) {
 	if err != nil {
 		return -1, walkErr("open "+root, err)
 	}
+	home := filepath.Join(root, login)
+	var homeMount uint64
 	cur := root
-	for _, name := range parts {
+	for i, name := range parts {
 		cur = filepath.Join(cur, name)
 		next, err := unix.Openat(fd, name, dirFlags, 0)
 		unix.Close(fd) //nolint:errcheck // a directory opened for reading
@@ -337,6 +420,12 @@ func (s *Server) openShareSource(what string, g *shareGuard) (int, error) {
 			return -1, &Error{Message: "open " + cur, Output: err.Error()}
 		}
 		fd = next
+		if i == 0 {
+			if homeMount, err = mountIDOf(fd); err != nil {
+				unix.Close(fd) //nolint:errcheck // a directory opened for reading
+				return -1, &Error{Message: "the mount of " + home, Output: err.Error()}
+			}
+		}
 	}
 	var st unix.Stat_t
 	if err := unix.Fstat(fd, &st); err != nil {
@@ -346,6 +435,14 @@ func (s *Server) openShareSource(what string, g *shareGuard) (int, error) {
 	if uid := mountOwner(what, &st); uid != acct.UID {
 		unix.Close(fd) //nolint:errcheck // a directory opened for reading
 		return -1, shareSourceErr(what, fmt.Sprintf("it belongs to uid %d, not to %s (uid %d), the owner of the home it lies in", uid, login, acct.UID))
+	}
+	switch mnt, err := mountIDOf(fd); {
+	case err != nil:
+		unix.Close(fd) //nolint:errcheck // a directory opened for reading
+		return -1, &Error{Message: "the mount of " + what, Output: err.Error()}
+	case mnt != homeMount:
+		unix.Close(fd) //nolint:errcheck // a directory opened for reading
+		return -1, shareSourceErr(what, "it lies on another mount than its home "+home+": below the mount point of another shared folder, or below a mount of an administrator's")
 	}
 	return fd, nil
 }
@@ -467,6 +564,19 @@ func (s *Server) unbindShareHere(where string) (bool, error) {
 // shareMu is taken: the walk goes through the owner's tree, which may hold
 // a FUSE mount of the owner's that keeps a lookup waiting, and the calls
 // under a guard must not wait with it.
+//
+// The guard the walk gets may not know of a shared folder bound since on
+// the way to the folder, and the walk would cross its mount. The records
+// read again under the lock do not always tell of it either. An unbind
+// cannot take the mount away meanwhile: it unmounts without MNT_DETACH, and
+// the kernel refuses (EBUSY, 409 "in use") while the walk's descriptor below
+// the mount is open, until the bind ends. But a bind of another folder at
+// that mount point detaches the mount, in use or not (bindShareHere), and an
+// unbind then takes that folder and the record away. So the walk refuses a
+// folder on another mount than the home it was reached from
+// (openShareSource): a descriptor stays on the mount it was opened on,
+// whatever goes before the lock. (open_tree would not clone a directory of
+// a detached mount either: EINVAL.)
 func (s *Server) shareBind(ctx context.Context, req *ShareBindRequest) (*ShareBindResponse, error) {
 	if err := CheckShareBind(req.What, req.Where, s.unitHost()); err != nil {
 		return nil, &Error{Status: http.StatusForbidden, Message: "binding " + req.What + " at " + req.Where + " is not allowed: " + err.Error()}
@@ -501,6 +611,13 @@ func (s *Server) shareBind(ctx context.Context, req *ShareBindRequest) (*ShareBi
 		return nil, &Error{Message: "reading the agent's records of the shared folders", Output: err.Error()}
 	}
 	recorded := slices.Contains(points, req.Where)
+	// The record as it was goes back should the bind fail: it names the
+	// folder still bound there, and the directory bound, which the records
+	// listing tells the API and the agent's start checks the mount by.
+	var prev *shareRecord
+	if recorded {
+		prev = s.shareRecordAt(req.Where)
+	}
 	if err := s.writeShareRecord(shareRecord{What: req.What, Where: req.Where}); err != nil {
 		return nil, err
 	}
@@ -511,10 +628,15 @@ func (s *Server) shareBind(ctx context.Context, req *ShareBindRequest) (*ShareBi
 		return err
 	})
 	if err != nil {
-		if !recorded {
+		switch {
+		case !recorded:
 			// nothing of it is mounted: forgotten again
 			if rerr := s.removeShareRecord(req.Where); rerr != nil {
 				s.log.Warn("shared folder: the record of a folder not bound stays", "mount_point", req.Where, "err", rerr)
+			}
+		case prev != nil:
+			if rerr := s.writeShareRecord(*prev); rerr != nil {
+				s.log.Warn("shared folder: the record names the folder that was not bound; the agent checks the mount by that folder's path as it starts", "mount_point", req.Where, "folder", req.What, "err", rerr)
 			}
 		}
 		return nil, err
@@ -538,7 +660,7 @@ func (s *Server) shareBind(ctx context.Context, req *ShareBindRequest) (*ShareBi
 // while it is.
 func (s *Server) shareUnbind(ctx context.Context, req *ShareUnbindRequest) (*ShareUnbindResponse, error) {
 	where := req.Where
-	if err := errors.Join(unitPath("Where", where), mountPointOf(where, s.unitHost())); err != nil {
+	if err := s.unbindAllowed(where); err != nil {
 		return nil, &Error{Status: http.StatusForbidden, Message: "unbinding " + where + " is not allowed: " + err.Error()}
 	}
 	unlock, err := s.lockShareUnits(ctx)
@@ -578,6 +700,51 @@ func (s *Server) shareUnbind(ctx context.Context, req *ShareUnbindRequest) (*Sha
 		s.log.Info("shared folder unbound", "mount_point", where)
 	}
 	return resp, nil
+}
+
+// unbindAllowed tells why the agent must not unbind the mount point where.
+// It must look like one of the panel's by its text — a clean path,
+// <www_root>/<login>/<name> or <www_root>/.shares/<login>/<name> — and,
+// unless the agent knows a shared folder at exactly that mount point (its
+// record of one, or a unit of an older panel's in the panel's form), lie
+// where a panel account has its shared folders (mountPointOf, the account
+// checks of a bind). An unmount only ever takes something away from what a
+// guest sees; with the account checks, the folders of a guest the agent no
+// longer counts as a panel account — one added to a group of the system's,
+// or a privileged one, since its folders were bound — would stay bound and
+// recorded for good, and mp user rm of that guest would fail at them. The
+// look is taken before shareMu, as the account checks always were: a record
+// gone meanwhile leaves an unbind of a mount point of the panel's shape,
+// which takes nothing but what is mounted there.
+func (s *Server) unbindAllowed(where string) error {
+	h := s.unitHost()
+	// the text alone first: records and units are looked up only for a
+	// mount point of the panel's shape
+	if err := CheckShareUnbind(where, true, h); err != nil {
+		return err
+	}
+	return CheckShareUnbind(where, s.knowsShareAt(where), h)
+}
+
+// knowsShareAt tells whether the agent knows a shared folder at exactly the
+// mount point where: its record of one, or the mount unit an older panel
+// wrote for it, in the panel's form (legacyShareUnit) — an administrator's
+// own unit there is not one.
+func (s *Server) knowsShareAt(where string) bool {
+	if points, err := s.recordedMountPoints(filepath.Clean(s.cfg.WWWRoot)); err == nil && slices.Contains(points, where) {
+		return true
+	}
+	name := mountUnitName(where)
+	p := s.unitPath(name)
+	if st, err := os.Lstat(p); err != nil || !st.Mode().IsRegular() {
+		return false
+	}
+	content, err := os.ReadFile(p)
+	if err != nil {
+		return false
+	}
+	_, w, err := legacyShareUnit(name, content, s.unitHost())
+	return err == nil && w == where
 }
 
 // shareStatus tells what lies at the mount points (/v1/shares/status): a

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -75,9 +76,10 @@ func shareNSHost() int {
 	return 0
 }
 
-// shareNSAgent is the agent: it binds, binds again, unbinds, is raced and
-// refuses, takes an older panel's unit over — and prints "ok <step>" for
-// each step that went as it must, "FAIL <step>: …" for one that did not.
+// shareNSAgent is the agent: it binds, binds again, is held, unbinds, is
+// raced and refuses, takes an older panel's unit over — and prints "ok
+// <step>" for each step that went as it must, "FAIL <step>: …" for one that
+// did not.
 func shareNSAgent() int {
 	failed := false
 	fail := func(step, format string, args ...any) {
@@ -190,6 +192,33 @@ func shareNSAgent() int {
 		unix.Unmount(sub, unix.MNT_DETACH)                         //nolint:errcheck // there, should it have shown
 		return nil
 	})
+	// 2c. a descriptor below the folder, opened in the host's namespace — the
+	// walk of a bind that crossed the mount holds one until the bind ends —
+	// keeps the unbind from taking the mount away: it unmounts without
+	// MNT_DETACH, and the kernel refuses (409 "in use"); the folder stays
+	// bound, and recorded
+	held := -1
+	if err := inHostMountNS(func() error {
+		var err error
+		held, err = unix.Open(filepath.Join(mount, "sub"), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		return err
+	}); err != nil {
+		fail("busy", "open below the mount: %v", err)
+	} else {
+		_, err := s.shareUnbind(ctx, &ShareUnbindRequest{Where: mount})
+		points, _ := s.recordedMountPoints(www)
+		switch {
+		case agentStatus(err) != 409 || !strings.Contains(err.Error(), "in use"):
+			fail("busy", "the unbind with a descriptor below the mount: %v, want 409", err)
+		case !slices.Contains(points, mount):
+			fail("busy", "the record went: %v", points)
+		case inode(hostView(mount)) != folder:
+			fail("busy", "the host sees inode %d at the mount point, the folder is %d", inode(hostView(mount)), folder)
+		default:
+			fmt.Println("ok busy")
+		}
+		unix.Close(held) //nolint:errcheck // a directory opened for the step
+	}
 	// 3. the agent unmounts it too, in the host's namespace, and the
 	// unmount reaches the agent's own as well
 	if res, err := s.shareUnbind(ctx, &ShareUnbindRequest{Where: mount}); err != nil || !res.Unmounted {
@@ -298,6 +327,35 @@ func shareNSAgent() int {
 	} else {
 		fmt.Println("ok kept")
 	}
+	// 7b. alex is an SFTP-only guest of bob's: bob's folder is bound in
+	// alex's home, and a folder below that mount point is bob's tree under
+	// alex's name — refused by the record of the mount point, and, where no
+	// record tells of the mount (one bound after the walk's guard was read,
+	// one whose record went before the lock), by the mount the walk crossed
+	media := filepath.Join(www, "alex", "media")
+	inBob := filepath.Join(bob, "x")
+	crossed, target := filepath.Join(media, "x"), filepath.Join(www, "guest", "crossed")
+	for _, d := range []string{media, inBob, target} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			fail("crossed", "%v", err)
+		}
+	}
+	if _, err := bind(bob, media); err != nil {
+		fail("crossed", "bob's folder in alex's home: %v", err)
+	} else if _, err := bind(crossed, target); agentStatus(err) != 403 || !strings.Contains(err.Error(), "the mount point of another shared folder") {
+		fail("crossed", "a folder below another shared folder's mount point: %v", err)
+	} else if err := s.removeShareRecord(media); err != nil {
+		fail("crossed", "%v", err)
+	} else if _, err := bind(crossed, target); agentStatus(err) != 403 || !strings.Contains(err.Error(), "another mount than its home") {
+		fail("crossed", "a folder below a mount no record tells of: %v", err)
+	} else if got := inode(hostView(target)); got == inode(inBob) {
+		fail("crossed", "bob's directory was bound at %s", target)
+	} else {
+		fmt.Println("ok crossed")
+	}
+	if _, err := s.shareUnbind(ctx, &ShareUnbindRequest{Where: media}); err != nil {
+		fail("crossed", "unbind: %v", err)
+	}
 	// 8. the goroutine that would join the host's namespace runs on the
 	// process's main thread: Go parks that thread for good once a goroutine
 	// locked to it ends, in the state it left it — the host's namespace,
@@ -339,13 +397,15 @@ func shareNSAgent() int {
 // host's mount namespace — not its own, a slave copy, where a mount reaches
 // nobody — from the descriptors it checked: the host sees the folder at the
 // mount point and the agent's namespace receives it from there; applied
-// again nothing is stacked; the agent unmounts it there too; an owner who
-// swaps the folder for a symlink to another home during the bind still has
-// the guest see the folder that was checked; a symlinked folder or one with
-// a symlink above it is refused; and as the agent starts it takes off what
-// a unit of an older panel mounted by path through a symlink, leaves the
-// folder another one mounted, and leaves a bind of its own though the owner
-// swapped the folder's path since.
+// again nothing is stacked; a descriptor below the folder keeps the unbind
+// from taking it away (409), and the agent unmounts it there once it is
+// gone; an owner who swaps the folder for a symlink to another home during
+// the bind still has the guest see the folder that was checked; a symlinked
+// folder or one with a symlink above it is refused; as the agent starts it
+// takes off what a unit of an older panel mounted by path through a symlink,
+// leaves the folder another one mounted, and leaves a bind of its own though
+// the owner swapped the folder's path since; and a folder below another
+// shared folder's mount is refused, its record gone or not.
 func TestShareBindInTheHostsMountNamespace(t *testing.T) {
 	attr := userNS(t)
 	attr.Cloneflags |= syscall.CLONE_NEWNS
@@ -373,7 +433,7 @@ func TestShareBindInTheHostsMountNamespace(t *testing.T) {
 	if err != nil || strings.Contains(string(out), "FAIL") {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for _, step := range []string{"bind", "status", "again", "unbind", "race", "symlink", "symlink above", "legacy", "kept", "main thread", "guest's mount"} {
+	for _, step := range []string{"bind", "status", "again", "unbind", "race", "symlink", "symlink above", "legacy", "kept", "main thread", "guest's mount", "busy", "crossed"} {
 		if !strings.Contains(string(out), "ok "+step+"\n") {
 			t.Errorf("step %s did not run:\n%s", step, out)
 		}

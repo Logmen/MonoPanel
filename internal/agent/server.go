@@ -140,6 +140,7 @@ func (s *Server) Handler() http.Handler {
 	r.Post("/v1/shares/bind", handle(s.shareBind))
 	r.Post("/v1/shares/unbind", handle(s.shareUnbind))
 	r.Post("/v1/shares/status", handle(s.shareStatus))
+	r.Post("/v1/shares/records", handle(s.listShareRecords))
 	// Потоки идут мимо handle(): у них тело — это данные, а не JSON.
 	r.Post("/v1/stream/out", s.streamOut)
 	r.Post("/v1/stream/in", s.streamIn)

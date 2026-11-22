@@ -93,6 +93,10 @@ type Server struct {
 	// the site log tree (selinuxSiteLogsRule): the start-up refresh, the
 	// hourly retry and every site.apply on a host where it is missing.
 	siteLogsRuleMu sync.Mutex
+	// strayShares holds why the start-up refresh could not unbind a shared
+	// folder the agent keeps that no share names (an error by mount point,
+	// unbindStrayShares), for the doctor.
+	strayShares sync.Map
 	// apacheLegacy is the directory of the shared Apache's configuration of
 	// 0.8.19 and older (/etc/apache2/monopanel), whose files the upgrade
 	// carries over and removes (the agent reads them); tests point it

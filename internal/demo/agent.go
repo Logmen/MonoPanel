@@ -187,6 +187,7 @@ func (a *Agent) Handler() http.Handler {
 	r.Post("/v1/shares/bind", handle(a.shareBind))
 	r.Post("/v1/shares/unbind", handle(a.shareUnbind))
 	r.Post("/v1/shares/status", handle(a.shareStatus))
+	r.Post("/v1/shares/records", handle(a.shareRecords))
 	r.Post("/v1/stream/out", a.streamOut)
 	r.Post("/v1/stream/in", notInDemo)
 	return r
@@ -513,6 +514,22 @@ func (a *Agent) shareStatus(_ context.Context, req *agent.ShareStatusRequest) (*
 		u, known := a.st.Units[agent.MountUnitName(p)]
 		out.Entries = append(out.Entries, agent.ShareMountState{Where: p, Mounted: known && u.Active, Recorded: known})
 	}
+	return out, nil
+}
+
+// shareRecords lists the binds the demo pretends as the agent lists its
+// records of the shared folders, by the mount points their names give; the
+// demo keeps no folder, so none is named.
+func (a *Agent) shareRecords(context.Context, *struct{}) (*agent.ShareRecordsResponse, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := &agent.ShareRecordsResponse{Records: []agent.ShareRecordState{}}
+	for name, u := range a.st.Units {
+		if where, ok := agent.MountUnitWhere(name, a.cfg.WWWRoot); ok {
+			out.Records = append(out.Records, agent.ShareRecordState{Where: where, Mounted: u.Active})
+		}
+	}
+	sort.Slice(out.Records, func(i, j int) bool { return out.Records[i].Where < out.Records[j].Where })
 	return out, nil
 }
 

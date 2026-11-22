@@ -1,7 +1,10 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -388,9 +391,162 @@ func TestRefreshShareMountsMovesFoldersOutOfShellHomes(t *testing.T) {
 	n := len(f.agent.Calls())
 	f.s.refreshShareMounts(f.ctx)
 	for _, c := range f.agent.Calls()[n:] {
-		if c.Path != "/v1/shares/status" {
+		if c.Path != "/v1/shares/status" && c.Path != "/v1/shares/records" {
 			t.Fatalf("the second start changed something: %s %s", c.Path, c.Body)
 		}
+	}
+}
+
+// A shared folder the agent keeps that no share names any more — a restore
+// of the panel's database lost its row, say — would keep the way to its
+// mount point root's for good, and nothing else in the panel removes it: the
+// panel's start unbinds it, its empty mount point goes, and the log says so.
+// One in use stays bound and recorded: the doctor names it, as in use, and
+// the next start unbinds it once it is free — the guest's directory in
+// .shares going with its last folder. The folders the shares name stay, and
+// before the start's sweep the doctor names the strays as not unbound yet.
+func TestStraySharesAreUnboundAtStart(t *testing.T) {
+	f := newSiteFixture(t)
+	f.createSite(map[string]any{"domain": "shop.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	var created struct {
+		JobID int64 `json:"job_id"`
+	}
+	f.call(http.MethodPost, "/users", map[string]any{"login": "guest", "password": "guest-password-1", "role": "user"}, http.StatusAccepted, &created)
+	f.waitJob(created.JobID)
+	shares := func() apitypes.Check {
+		t.Helper()
+		for _, c := range f.s.doctor(f.ctx).Checks {
+			if c.Name == "shared folders" {
+				return c
+			}
+		}
+		t.Fatal("the doctor has no line on the shared folders")
+		return apitypes.Check{}
+	}
+	const lost, busy = "/var/www/guest/old", "/var/www/.shares/dev/gone"
+	f.agent.SetShare(lost, "/var/www/alex/data/www/shop.example.com/old", true)
+	f.agent.SetShare(busy, "/var/www/alex/data/www/shop.example.com/gone", true)
+	f.agent.SetBusy(store.MountUnit(busy), true)
+	if c := shares(); c.Status != "warn" || !strings.HasPrefix(c.Detail, "2 kept by the agent that no shared folder of the panel names") || !strings.Contains(c.Detail, lost+": not unbound yet") || !strings.Contains(c.Detail, busy+": not unbound yet") {
+		t.Fatalf("doctor before the start: %+v", c)
+	}
+	f.call(http.MethodPost, "/users/guest/shares", map[string]any{"site": "shop.example.com", "path": "kaspy"}, http.StatusCreated, nil)
+	var logs bytes.Buffer
+	f.s.log = slog.New(slog.NewTextHandler(&logs, nil))
+
+	f.s.refreshShareMounts(f.ctx)
+	if _, ok := f.agent.Share(lost); ok || f.agent.Mounted(store.MountUnit(lost)) {
+		t.Fatal("a folder no share names stayed bound")
+	}
+	if removed := strings.Join(f.agent.Removed(), " ") + " "; !strings.Contains(removed, lost+" ") {
+		t.Errorf("its mount point stayed: %s", removed)
+	}
+	if out := logs.String(); !strings.Contains(out, `msg="a shared folder the panel no longer knows was unbound" mount_point=`+lost) || !strings.Contains(out, `msg="a shared folder the panel no longer knows was not unbound: the panel tries again at its next start" mount_point=`+busy) {
+		t.Errorf("log:\n%s", out)
+	}
+	if _, ok := f.agent.Share(busy); !ok || !f.agent.Mounted(store.MountUnit(busy)) {
+		t.Fatal("a folder in use was unbound or forgotten")
+	}
+	if what, ok := f.agent.Share("/var/www/guest/kaspy"); !ok || what != "/var/www/alex/data/www/shop.example.com/kaspy" || !f.agent.Mounted("var-www-guest-kaspy.mount") {
+		t.Fatal("the folder of a share went")
+	}
+	if c := shares(); c.Status != "warn" || !strings.HasPrefix(c.Detail, "1 mounted; 1 kept by the agent") || !strings.Contains(c.Detail, busy+": in use") || strings.Contains(c.Detail, lost) {
+		t.Fatalf("doctor after the start: %+v", c)
+	}
+
+	f.agent.SetBusy(store.MountUnit(busy), false)
+	f.s.refreshShareMounts(f.ctx)
+	if _, ok := f.agent.Share(busy); ok || f.agent.Mounted(store.MountUnit(busy)) {
+		t.Fatal("a folder no share names stayed bound once free")
+	}
+	if removed := strings.Join(f.agent.Removed(), " ") + " "; !strings.Contains(removed, busy+" ") || !strings.Contains(removed, "/var/www/.shares/dev ") {
+		t.Errorf("its mount point or the guest's directory in .shares stayed: %s", removed)
+	}
+	if c := shares(); c.Status != "ok" || c.Detail != "1 mounted" {
+		t.Fatalf("doctor once the strays are gone: %+v", c)
+	}
+}
+
+// A guest the agent no longer counts as a panel account — one added to a
+// group of the system's since its folders were given — can still lose every
+// one of them, and go itself: a folder the agent keeps a record of is
+// unbound by it, and a share the agent keeps nothing of — a restore of the
+// panel's database brought back one deleted since, whose bind the agent now
+// refuses; a removal that stopped half way unbound it already — is not
+// unbound at all: the agent, which unbinds for such a guest only where it
+// knows a folder, is not asked where it has nothing. A share given to such a
+// guest fails, and leaves no mount point behind.
+func TestRefusedGuestLosesItsSharedFolders(t *testing.T) {
+	f := newSiteFixture(t)
+	f.createSite(map[string]any{"domain": "shop.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	var created struct {
+		JobID int64 `json:"job_id"`
+	}
+	f.call(http.MethodPost, "/users", map[string]any{"login": "guest", "password": "guest-password-1", "role": "user"}, http.StatusAccepted, &created)
+	f.waitJob(created.JobID)
+	for _, p := range []string{"kaspy", "gone"} {
+		f.call(http.MethodPost, "/users/guest/shares", map[string]any{"site": "shop.example.com", "path": p}, http.StatusCreated, nil)
+	}
+	if _, err := f.s.agent.ShareUnbind(f.ctx, &agent.ShareUnbindRequest{Where: "/var/www/guest/gone"}); err != nil {
+		t.Fatal(err)
+	}
+	f.agent.SetAccount(func(login string) (*agent.UnitAccount, error) {
+		if login == "guest" {
+			return nil, errors.New("a member of the group users (gid 100): the panel runs services only for its own accounts")
+		}
+		return &agent.UnitAccount{Login: login, Home: "/var/www/" + login, Group: login}, nil
+	})
+
+	f.call(http.MethodPost, "/users/guest/shares", map[string]any{"site": "shop.example.com", "path": "new"}, http.StatusBadGateway, nil)
+	if removed := strings.Join(f.agent.Removed(), " ") + " "; !strings.Contains(removed, "/var/www/guest/new ") {
+		t.Errorf("the mount point of a share the agent refused stayed: %s", removed)
+	}
+	f.call(http.MethodDelete, "/users/guest/shares/gone", nil, http.StatusOK, nil)
+	f.call(http.MethodDelete, "/users/guest", nil, http.StatusAccepted, &created)
+	if job := f.waitJob(created.JobID); job.Status != store.JobDone || !strings.Contains(job.Log, "shared folder kaspy (shop.example.com/kaspy) removed") {
+		t.Fatalf("removing the guest: %s %s\n%s", job.Status, job.Error, job.Log)
+	}
+	if _, ok := f.agent.Share("/var/www/guest/kaspy"); ok || f.agent.Mounted("var-www-guest-kaspy.mount") {
+		t.Fatal("the guest's folder stayed bound")
+	}
+}
+
+// A restore of the panel's database may bring back a share whose name its
+// guest has since been given again, for another folder: the agent keeps that
+// other folder at the mount point the share names, and the guest goes on
+// seeing it. The doctor says so, and the panel's start binds the share's own
+// folder there.
+func TestShareShowingAnotherFolderIsBoundAgainAtStart(t *testing.T) {
+	f := newSiteFixture(t)
+	f.createSite(map[string]any{"domain": "shop.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	var created struct {
+		JobID int64 `json:"job_id"`
+	}
+	f.call(http.MethodPost, "/users", map[string]any{"login": "guest", "password": "guest-password-1", "role": "user"}, http.StatusAccepted, &created)
+	f.waitJob(created.JobID)
+	f.call(http.MethodPost, "/users/guest/shares", map[string]any{"site": "shop.example.com", "path": "kaspy"}, http.StatusCreated, nil)
+	const mount, own, other = "/var/www/guest/kaspy", "/var/www/alex/data/www/shop.example.com/kaspy", "/var/www/alex/data/www/shop.example.com/private"
+	f.agent.SetShare(mount, other, true)
+	shares := func() apitypes.Check {
+		t.Helper()
+		for _, c := range f.s.doctor(f.ctx).Checks {
+			if c.Name == "shared folders" {
+				return c
+			}
+		}
+		t.Fatal("the doctor has no line on the shared folders")
+		return apitypes.Check{}
+	}
+	if c := shares(); c.Status != "warn" || !strings.Contains(c.Detail, "kaspy of guest (shop.example.com/kaspy): another folder is mounted there, "+other) {
+		t.Fatalf("doctor before the start: %+v", c)
+	}
+
+	f.s.refreshShareMounts(f.ctx)
+	if what, ok := f.agent.Share(mount); !ok || what != own || !f.agent.Mounted(store.MountUnit(mount)) {
+		t.Fatalf("the agent keeps %q at %s, the share's folder is %s", what, mount, own)
+	}
+	if c := shares(); c.Status != "ok" || c.Detail != "1 mounted" {
+		t.Fatalf("doctor after the start: %+v", c)
 	}
 }
 

@@ -694,6 +694,30 @@ func shareBindShape(what, where, wwwRoot string) error {
 	case pathBelow(what, where) || pathBelow(where, what):
 		return fmt.Errorf("the folder %s and its mount point %s lie one inside the other", what, where)
 	}
+	return shareMountPointShape(where, wwwRoot)
+}
+
+// CheckShareUnbind tells why the agent must not unbind the mount point where
+// (/v1/shares/unbind; the agent's doubles): a plain clean path of the shape
+// of a shared folder's mount point (shareMountPointShape) and — unless the
+// agent knows a shared folder at exactly that mount point (known: its
+// record of one, or an older panel's unit in the panel's form) — one where
+// a panel account has its shared folders (mountPointOf).
+func CheckShareUnbind(where string, known bool, h *UnitHost) error {
+	if err := errors.Join(unitPath("Where", where), shareMountPointShape(where, h.WWWRoot)); err != nil {
+		return err
+	}
+	if known {
+		return nil
+	}
+	return mountPointOf(where, h)
+}
+
+// shareMountPointShape tells why where, a clean path (unitPath), is no mount
+// point of a shared folder by its text alone: <www_root>/<login>/<name> or
+// <www_root>/.shares/<login>/<name>, the login without a leading dot.
+func shareMountPointShape(where, wwwRoot string) error {
+	root := filepath.Clean(wwwRoot)
 	wrel, ok := strings.CutPrefix(where, root+"/")
 	switch parts := strings.Split(wrel, "/"); {
 	case ok && len(parts) == 2 && !strings.HasPrefix(parts[0], "."):
@@ -769,6 +793,14 @@ func legacyShareUnit(name string, content []byte, h *UnitHost) (what, where stri
 // agent's doubles, which keep the state of a shared folder by it as systemd
 // shows a mount by it.
 func MountUnitName(where string) string { return mountUnitName(where) }
+
+// MountUnitWhere is the path below the web root wwwRoot the mount unit name
+// stands for — MountUnitName the other way round — for the agent's doubles,
+// which list the shared folders they keep by those names.
+func MountUnitWhere(name, wwwRoot string) (string, bool) {
+	where, _, ok := isShareMountUnit(name, filepath.Clean(wwwRoot))
+	return where, ok
+}
 
 func checkSphinxUnit(entries []unitEntry, h *UnitHost) error {
 	v, err := collectUnit(entries, withInstall(map[string][]string{

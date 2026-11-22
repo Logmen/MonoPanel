@@ -468,11 +468,17 @@ func (a *Agent) respond(path string, body []byte) any {
 		return agent.ShareBindResponse{Mounted: true, Changed: changed}
 
 	case "/v1/shares/unbind":
-		// A unit an older panel wrote goes first, then the mount — not one
-		// in use — and the record.
+		// Checked with the real agent's rules — the account checks only
+		// where it knows no folder (a record, a unit of an older panel's) —
+		// then a unit an older panel wrote goes first, then the mount — not
+		// one in use — and the record.
 		var req agent.ShareUnbindRequest
 		json.Unmarshal(body, &req) //nolint:errcheck // test double
 		unit := agent.MountUnitName(req.Where)
+		_, recorded := a.shares[req.Where]
+		if err := agent.CheckShareUnbind(req.Where, recorded || a.hasFile(filepath.Join(unitDir, unit)), a.UnitHost); err != nil {
+			return &agent.Error{Status: http.StatusForbidden, Message: "unbinding " + req.Where + " is not allowed: " + err.Error()}
+		}
 		var resp agent.ShareUnbindResponse
 		if p := filepath.Join(unitDir, unit); a.hasFile(p) {
 			delete(a.files, p)
@@ -498,6 +504,16 @@ func (a *Agent) respond(path string, body []byte) any {
 			_, recorded := a.shares[p]
 			resp.Entries = append(resp.Entries, agent.ShareMountState{Where: p, Mounted: a.mounted[unit] && a.mountedAt[unit] == p, Recorded: recorded, Unit: a.hasFile(filepath.Join(unitDir, unit))})
 		}
+		return resp
+
+	case "/v1/shares/records":
+		// The records, by mount point, as the agent lists them.
+		resp := agent.ShareRecordsResponse{Records: []agent.ShareRecordState{}}
+		for where, what := range a.shares {
+			unit := agent.MountUnitName(where)
+			resp.Records = append(resp.Records, agent.ShareRecordState{Where: where, What: what, Mounted: a.mounted[unit] && a.mountedAt[unit] == where})
+		}
+		sort.Slice(resp.Records, func(i, j int) bool { return resp.Records[i].Where < resp.Records[j].Where })
 		return resp
 
 	case "/v1/units/remove":
@@ -1240,6 +1256,16 @@ func (a *Agent) Share(where string) (string, bool) {
 	defer a.mu.Unlock()
 	what, ok := a.shares[where]
 	return what, ok
+}
+
+// SetAccount replaces the lookup of the panel accounts the fake checks units
+// and shared folders against (UnitHost.Account): a login it refuses is one
+// the real agent no longer counts as a panel account (a member of a group
+// of the system's, say).
+func (a *Agent) SetAccount(account func(login string) (*agent.UnitAccount, error)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.UnitHost.Account = account
 }
 
 // SetBusy marks the folder mounted by the name unit as in use (a session

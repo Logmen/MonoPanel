@@ -83,6 +83,21 @@ func TestShareSourceMustBeTheOwnersFolder(t *testing.T) {
 			h.placeShare(t, mount)
 			return filepath.Join(mount, "x")
 		}, "the mount point of another shared folder"},
+		{"on another mount than its home", func(t *testing.T, h *shareHost) string {
+			// a mount on the way that no record tells of — one bound after
+			// the walk's guard was read, or unbound since: below it lies
+			// whatever it shows
+			folder := ino(t, h.site)
+			old := mountIDOf
+			mountIDOf = func(fd int) (uint64, error) {
+				if fdIno(fd) == folder {
+					return 2, nil
+				}
+				return 1, nil
+			}
+			t.Cleanup(func() { mountIDOf = old })
+			return h.site
+		}, "another mount than its home"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			h := newShareHost(t)
@@ -183,6 +198,33 @@ func TestShareBindTakesOffAnotherMount(t *testing.T) {
 	}
 }
 
+// A bind of another folder at a mount point the agent has a record of —
+// the panel binds a share's own folder where the agent keeps another, after
+// a restore of its database — that fails leaves the record as it was: it
+// goes on naming the folder still bound there, and the directory bound
+// (the records listing tells the panel which folder is mounted where, and
+// the agent's start checks the mount by that directory).
+func TestAFailedBindLeavesTheRecordAsItWas(t *testing.T) {
+	h := newShareHost(t)
+	where := filepath.Join(h.home, "kaspy")
+	other := filepath.Join(filepath.Dir(h.site), "other")
+	mkdirs(t, where, other)
+	if _, err := h.bind(where); err != nil {
+		t.Fatal(err)
+	}
+	before, err := h.s.shareRecords()
+	if err != nil || len(before) != 1 || before[0].Ino == 0 {
+		t.Fatalf("records %+v %v", before, err)
+	}
+	h.bindErr = errors.New("move_mount: invalid argument")
+	if _, err := h.s.shareBind(context.Background(), &ShareBindRequest{What: other, Where: where}); err == nil {
+		t.Fatal("the failing bind succeeded")
+	}
+	if after, err := h.s.shareRecords(); err != nil || !slices.Equal(after, before) {
+		t.Fatalf("records after a failed bind %+v %v, want them as they were: %+v", after, err, before)
+	}
+}
+
 // Unbinding takes a unit an older panel wrote for the mount point away first
 // — systemd forgets it — then the mount, then the record. A folder in use
 // stays mounted and recorded (409), its unit gone all the same; the agent
@@ -252,6 +294,121 @@ func TestShareUnbindAndStatus(t *testing.T) {
 	}
 	if _, err := h.s.shareStatus(ctx, &ShareStatusRequest{Paths: []string{"/etc"}}); agentStatus(err) != http.StatusBadRequest {
 		t.Errorf("status of /etc: %v", err)
+	}
+}
+
+// A guest added to a group of the system's, or to a privileged one, after
+// its folders were bound is no panel account to the agent any more: nothing
+// is bound for it (the share fails, with why). Its folders still go — mp
+// user rm of the guest takes them first — where the agent knows a shared
+// folder at exactly that mount point: its record, or an older panel's unit
+// in the panel's form, record and unit going too. A mount point with
+// neither, an administrator's unit there included, takes the account checks
+// (403); one whose text is no mount point of the panel's is refused, record
+// or not.
+func TestShareUnbindOfAGuestTheAgentRefuses(t *testing.T) {
+	ctx := context.Background()
+	h := newShareHost(t)
+	oldDisable, oldReload := disableUnit, reloadSystemd
+	disableUnit = func(context.Context, string) error { return nil }
+	reloadSystemd = func(context.Context) error { return nil }
+	t.Cleanup(func() { disableUnit, reloadSystemd = oldDisable, oldReload })
+	old := lookupUnitAccount
+	lookupUnitAccount = func(s *Server, login string) (*UnitAccount, error) {
+		if login == "carl" {
+			return nil, errors.New("a member of the group sudo (gid 27): the panel runs services only for its own accounts")
+		}
+		return old(s, login)
+	}
+	sftp := filepath.Join(h.www, "carl", "kaspy")     // in an SFTP-only guest's home
+	shell := filepath.Join(h.shares, "carl", "kaspy") // a guest with a shell's
+	legacy := filepath.Join(h.www, "carl", "media")   // an older panel's unit, not recorded
+	mkdirs(t, sftp, shell, legacy)
+	h.placeShare(t, sftp)
+	h.placeShare(t, shell)
+	unit := h.placeUnit(t, legacy)
+
+	if _, err := h.s.shareBind(ctx, &ShareBindRequest{What: h.site, Where: filepath.Join(h.www, "carl", "new")}); agentStatus(err) != http.StatusForbidden || !strings.Contains(err.Error(), "a member of the group sudo") {
+		t.Fatalf("a bind for a guest the agent refuses: %v, want 403", err)
+	}
+	mounted := map[string]bool{ino(t, sftp): true, ino(t, shell): true, ino(t, legacy): true}
+	oldMounted := mountedOn
+	mountedOn = func(fd int) bool { return mounted[fdIno(fd)] }
+	t.Cleanup(func() { mountedOn = oldMounted })
+	unmountAt = func(dir int, name string, flags int) error {
+		delete(mounted, entryIno(dir, name))
+		h.unmounts = append(h.unmounts, entryIno(dir, name)+" "+strconv.Itoa(flags))
+		return nil
+	}
+	for _, where := range []string{sftp, shell, legacy} {
+		res, err := h.s.shareUnbind(ctx, &ShareUnbindRequest{Where: where})
+		if err != nil || !res.Unmounted {
+			t.Fatalf("unbind %s: %+v %v", where, res, err)
+		}
+		if _, recorded := h.s.recordedOK(t, where); recorded {
+			t.Errorf("%s is still recorded", where)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(h.s.unitDir, unit)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the older panel's unit stayed: %v", err)
+	}
+	if len(mounted) != 0 || len(h.unmounts) != 3 {
+		t.Fatalf("still mounted %v, unmounts %v", mounted, h.unmounts)
+	}
+
+	admin := filepath.Join(h.www, "carl", "admin")
+	mkdirs(t, admin)
+	aname, acontent := h.mountUnit(admin)
+	if err := os.WriteFile(filepath.Join(h.s.unitDir, aname), []byte(acontent[strings.Index(acontent, "\n")+1:]), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, where := range []string{filepath.Join(h.www, "carl", "other"), filepath.Join(h.shares, "carl", "other"), admin} {
+		if _, err := h.s.shareUnbind(ctx, &ShareUnbindRequest{Where: where}); agentStatus(err) != http.StatusForbidden || !strings.Contains(err.Error(), "a member of the group sudo") {
+			t.Errorf("unbind %s, known to the agent as no shared folder: %v, want 403", where, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(h.s.unitDir, aname)); err != nil {
+		t.Errorf("an administrator's unit went: %v", err)
+	}
+	deep := filepath.Join(h.www, "carl", "a", "b")
+	mkdirs(t, deep)
+	h.placeShare(t, deep)
+	if _, err := h.s.shareUnbind(ctx, &ShareUnbindRequest{Where: deep}); agentStatus(err) != http.StatusForbidden {
+		t.Errorf("unbind of %s, recorded: %v, want 403", deep, err)
+	}
+	if len(h.unmounts) != 3 {
+		t.Fatalf("unmounts %v", h.unmounts)
+	}
+}
+
+// The agent lists its records — the panel unbinds, at its start, those no
+// share names any more: each mount point with its folder and whether
+// something is mounted there; a record that cannot be read by its mount
+// point alone, which it guards all the same.
+func TestListShareRecords(t *testing.T) {
+	ctx := context.Background()
+	h := newShareHost(t)
+	if res, err := h.s.listShareRecords(ctx, nil); err != nil || res.Records == nil || len(res.Records) != 0 {
+		t.Fatalf("no records: %+v %v", res, err)
+	}
+	mounted := filepath.Join(h.www, "bob", "kaspy")
+	idle := filepath.Join(h.shares, "guest", "kaspy")
+	broken := filepath.Join(h.home, "media")
+	mkdirs(t, mounted, idle, broken)
+	for _, where := range []string{mounted, idle, broken} {
+		h.placeShare(t, where)
+	}
+	if err := os.WriteFile(filepath.Join(h.s.shareRecordDir(), shareRecordName(broken)), []byte("{broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mountedIno := ino(t, mounted)
+	old := mountedOn
+	mountedOn = func(fd int) bool { return fdIno(fd) == mountedIno }
+	t.Cleanup(func() { mountedOn = old })
+	want := []ShareRecordState{{Where: idle, What: h.site}, {Where: mounted, What: h.site, Mounted: true}, {Where: broken}}
+	slices.SortFunc(want, func(a, b ShareRecordState) int { return strings.Compare(a.Where, b.Where) })
+	if res, err := h.s.listShareRecords(ctx, nil); err != nil || !slices.Equal(res.Records, want) {
+		t.Fatalf("records %+v %v, want %+v", res, err, want)
 	}
 }
 

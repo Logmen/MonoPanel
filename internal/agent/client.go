@@ -378,3 +378,9 @@ func (c *Client) ShareStatus(ctx context.Context, paths ...string) (*ShareStatus
 	var r ShareStatusResponse
 	return &r, c.call(ctx, "/v1/shares/status", &ShareStatusRequest{Paths: paths}, &r)
 }
+
+// ShareRecords lists the agent's records of the shared folders it bound.
+func (c *Client) ShareRecords(ctx context.Context) (*ShareRecordsResponse, error) {
+	var r ShareRecordsResponse
+	return &r, c.call(ctx, "/v1/shares/records", struct{}{}, &r)
+}

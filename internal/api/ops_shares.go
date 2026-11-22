@@ -283,12 +283,23 @@ func (s *Server) shareMounted(ctx context.Context, b shareBind) bool {
 // the error says that nothing mounts it there again and that it stays
 // mounted until it is no longer in use (the next start of the panel tries
 // again: the share is marked failed).
+//
+// Where the agent has nothing of a folder — nothing mounted, no record, no
+// unit of an older panel's — it is not asked: the unbind would change
+// nothing, and the agent refuses one where it knows no folder for a guest
+// it no longer counts as a panel account (a member of a group of the
+// system's, its system account gone), so that such a guest could never
+// lose a share whose bind the agent refused — one a restore of the database
+// brought back, a new one being cleaned up — nor one a removal that stopped
+// half way unbound already, nor be removed itself.
 func (s *Server) unbindShare(ctx context.Context, b shareBind, link, unsafe bool) error {
-	if _, err := s.agent.ShareUnbind(ctx, &agent.ShareUnbindRequest{Where: b.mount}); err != nil {
-		if unsafe {
-			return fmt.Errorf("unmount %s: %w; nothing mounts it there again — no unit does, and the agent binds a folder only below directories of root's — and the folder stays mounted there until it is no longer in use: try again then (the panel tries again at its next start)", b.mount, err)
+	if st, ok := s.shareState(ctx, b); !ok || st.Mounted || st.Recorded || st.Unit {
+		if _, err := s.agent.ShareUnbind(ctx, &agent.ShareUnbindRequest{Where: b.mount}); err != nil {
+			if unsafe {
+				return fmt.Errorf("unmount %s: %w; nothing mounts it there again — no unit does, and the agent binds a folder only below directories of root's — and the folder stays mounted there until it is no longer in use: try again then (the panel tries again at its next start)", b.mount, err)
+			}
+			return fmt.Errorf("unmount %s: %w", b.mount, err)
 		}
-		return fmt.Errorf("unmount %s: %w", b.mount, err)
 	}
 	// The mount point is an empty root-owned directory once unmounted; a
 	// leftover is only untidy, so it does not stop the removal.
@@ -400,11 +411,27 @@ func (s *Server) moveUserShares(ctx context.Context, userID int64, shell bool, l
 // shell and SFTP-only that stopped half way leaves one behind too; the agent,
 // which starts first, has taken the units of the older panels over
 // (retireUnsafeShareUnits). A folder mounted where it belongs, with nothing
-// at the other place and its last apply not failed, is left as it is.
+// at the other place and its last apply not failed, is left as it is —
+// unless the agent's record there names another folder than the share's:
+// a restore of the database brought back a share whose name the guest was
+// given again since, for another folder, say; the share's own is bound
+// there instead. A folder the agent keeps that no share names any more goes
+// first (unbindStrayShares).
 func (s *Server) refreshShareMounts(ctx context.Context) {
+	// The agent's records before the shares: a share made meanwhile is in
+	// the database before its folder is bound and recorded, so the record
+	// of none is taken for a stray.
+	recs, rerr := s.agent.ShareRecords(ctx)
 	shares, err := s.db.ListShares(ctx, 0)
 	if err != nil {
 		return
+	}
+	var kept map[string]string
+	if rerr != nil {
+		s.log.Warn("the agent does not list its records of the shared folders: a folder no share names any more stays bound", "err", rerr)
+	} else {
+		s.unbindStrayShares(ctx, shares, recs.Records)
+		kept = keptFolders(recs.Records)
 	}
 	for _, sh := range shares {
 		pl, err := s.sharePlace(ctx, sh)
@@ -414,12 +441,17 @@ func (s *Server) refreshShareMounts(ctx context.Context) {
 		here := s.shareBindFor(pl.guest, sh.Name, pl.guest.Shell)
 		elsewhere := s.shareBound(ctx, s.shareBindFor(pl.guest, sh.Name, !pl.guest.Shell))
 		if sh.Status != "failed" && !elsewhere {
-			if s.shareMounted(ctx, here) {
+			other, another := keptOther(kept, here.mount, pl.target)
+			if !another && s.shareMounted(ctx, here) {
 				continue
 			}
 			if err := s.bindShare(ctx, sh, pl.target, here); err == nil {
 				s.shareActive(ctx, sh)
-				s.log.Info("shared folder mounted", "guest", sh.Login, "name", sh.Name, "mount_point", here.mount)
+				if another {
+					s.log.Warn("a shared folder showed another folder than its share's: the share's own is bound there now", "guest", sh.Login, "name", sh.Name, "mount_point", here.mount, "folder", pl.target, "was", other)
+				} else {
+					s.log.Info("shared folder mounted", "guest", sh.Login, "name", sh.Name, "mount_point", here.mount)
+				}
 				continue
 			}
 			// whatever stood in the way, the whole apply finds it and says so
@@ -433,51 +465,201 @@ func (s *Server) refreshShareMounts(ctx context.Context) {
 	}
 }
 
+// keptFolders maps the mount points of the agent's records to the folders
+// they name (a record that cannot be read names none).
+func keptFolders(recs []agent.ShareRecordState) map[string]string {
+	kept := map[string]string{}
+	for _, r := range recs {
+		if r.What != "" {
+			kept[r.Where] = r.What
+		}
+	}
+	return kept
+}
+
+// keptOther returns the folder the agent's record at mount names (kept,
+// keptFolders) when it is not target, the folder of the share that names the
+// mount point: what the agent bound there is not the share's. A rename of
+// the same directory since reads as another too; binding the share's folder
+// changes nothing then but the record.
+func keptOther(kept map[string]string, mount, target string) (string, bool) {
+	what, ok := kept[mount]
+	return what, ok && what != target
+}
+
+// nameShare adds to named the mount points of guest's shared folder name:
+// in the guest's home and in .shares, whichever the guest has it at now — a
+// folder left at the other place is the start-up refresh's to move.
+func (s *Server) nameShare(named map[string]bool, guest *store.User, name string) {
+	for _, shell := range []bool{false, true} {
+		named[s.shareBindFor(guest, name, shell).mount] = true
+	}
+}
+
+// namedMountPoints are the mount points the shares name (nameShare); an
+// error when the place of a share cannot be told: then no record may pass
+// for a stray.
+func (s *Server) namedMountPoints(ctx context.Context, shares []*store.Share) (map[string]bool, error) {
+	named := map[string]bool{}
+	for _, sh := range shares {
+		pl, err := s.sharePlace(ctx, sh)
+		if err != nil {
+			return nil, fmt.Errorf("shared folder %s of %s: %w", sh.Name, sh.Login, err)
+		}
+		s.nameShare(named, pl.guest, sh.Name)
+	}
+	return named, nil
+}
+
+// unbindStrayShares unbinds, at the panel's start, every shared folder the
+// agent keeps a record of whose mount point no share of the database names:
+// one a restore of the database lost, say. Such a record keeps the way to
+// its mount point root's (409 "remove or move the shared folders of <login>
+// first"), and nothing else in the panel would ever remove it. A folder in
+// use stays bound and recorded: the next start tries again, and the doctor
+// names it meanwhile (shareDoctorCheck).
+func (s *Server) unbindStrayShares(ctx context.Context, shares []*store.Share, recs []agent.ShareRecordState) {
+	named, err := s.namedMountPoints(ctx, shares)
+	if err != nil {
+		s.log.Warn("the shared folders no share names any more are not looked for: the panel does not know where a share's folder is mounted", "err", err)
+		return
+	}
+	for _, r := range recs {
+		if named[r.Where] {
+			s.strayShares.Delete(r.Where)
+			continue
+		}
+		if err := s.unbindStray(ctx, r.Where); err != nil {
+			s.strayShares.Store(r.Where, err)
+			s.log.Warn("a shared folder the panel no longer knows was not unbound: the panel tries again at its next start", "mount_point", r.Where, "folder", r.What, "err", err)
+			continue
+		}
+		s.strayShares.Delete(r.Where)
+		s.log.Info("a shared folder the panel no longer knows was unbound", "mount_point", r.Where, "folder", r.What)
+	}
+}
+
+// unbindStray takes away the shared folder at the mount point where that no
+// share names: the agent unmounts it and forgets it, the empty mount point
+// goes and, in .shares, the guest's directory with its last folder. A
+// symlink in the home of a guest with a shell that led to it stays — no
+// share tells the panel it put one there — and leads nowhere now.
+func (s *Server) unbindStray(ctx context.Context, where string) error {
+	if err := s.unbindShare(ctx, shareBind{mount: where}, false, false); err != nil {
+		return err
+	}
+	if dir := path.Dir(where); path.Dir(dir) == path.Join(s.cfg.WWWRoot, sharesDir) {
+		s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: []string{dir}}) //nolint:errcheck // it still holds the guest's other folders
+	}
+	return nil
+}
+
+// strayShareNotes names the shared folders the agent still keeps that no
+// share names — recs are its records, named the mount points of the shares
+// (nameShare) — with why the start-up refresh left them (unbindStrayShares):
+// in use, mostly.
+func (s *Server) strayShareNotes(recs []agent.ShareRecordState, named map[string]bool) []string {
+	var out []string
+	for _, r := range recs {
+		if named[r.Where] {
+			continue
+		}
+		why := "not unbound yet"
+		if v, ok := s.strayShares.Load(r.Where); ok {
+			var ae *agent.Error
+			if err, _ := v.(error); errors.As(err, &ae) && ae.Status == http.StatusConflict {
+				why = "in use"
+			} else if err != nil {
+				why = err.Error()
+			}
+		}
+		out = append(out, r.Where+": "+why)
+	}
+	return out
+}
+
 // shareDoctorCheck is the doctor's line on the shared folders: is each one
 // mounted where its guest has it? Nothing mounts them at boot — the panel
 // binds them at its start — and a folder the agent refuses to bind (its
 // owner swapped it for a symlink, say) stays unmounted: the line says which,
-// and why. nil without shared folders.
+// and why — as it does one where the agent keeps another folder than the
+// share's (refreshShareMounts binds the share's own there). It also names a
+// folder the agent still keeps that no share names any more: the panel's
+// start unbinds those, all but one in use, say. nil without either.
 func (s *Server) shareDoctorCheck(ctx context.Context) *apitypes.Check {
+	// The records before the shares, as at the start (refreshShareMounts).
+	var recs []agent.ShareRecordState
+	if res, err := s.agent.ShareRecords(ctx); err == nil {
+		recs = res.Records
+	}
 	shares, err := s.db.ListShares(ctx, 0)
-	if err != nil || len(shares) == 0 {
+	if err != nil {
 		return nil
 	}
-	var points []string
+	kept := keptFolders(recs)
+	var points, targets []string
 	var listed []*store.Share
+	named, placed := map[string]bool{}, true
 	for _, sh := range shares {
 		pl, err := s.sharePlace(ctx, sh)
-		if err != nil || pl.guest.UnixUID == nil {
+		if err != nil {
+			placed = false
+			continue
+		}
+		s.nameShare(named, pl.guest, sh.Name)
+		if pl.guest.UnixUID == nil {
 			continue
 		}
 		points = append(points, s.shareBindFor(pl.guest, sh.Name, pl.guest.Shell).mount)
+		targets = append(targets, pl.target)
 		listed = append(listed, sh)
 	}
-	if len(points) == 0 {
+	var strays []string
+	if placed {
+		strays = s.strayShareNotes(recs, named)
+	}
+	if len(points) == 0 && len(strays) == 0 {
 		return nil
 	}
-	res, err := s.agent.ShareStatus(ctx, points...)
-	if err != nil || len(res.Entries) != len(points) {
-		c := check("shared folders", "warn", fmt.Sprintf("the agent does not say whether they are mounted: %v", err))
-		return &c
-	}
-	var missing []string
-	for i, e := range res.Entries {
-		if e.Mounted {
-			continue
+	status, parts := "ok", []string{}
+	if len(points) > 0 {
+		res, err := s.agent.ShareStatus(ctx, points...)
+		if err != nil || len(res.Entries) != len(points) {
+			c := check("shared folders", "warn", fmt.Sprintf("the agent does not say whether they are mounted: %v", err))
+			return &c
 		}
-		sh := listed[i]
-		why := "not mounted"
-		if sh.LastError != "" {
-			why = sh.LastError
+		var missing []string
+		for i, e := range res.Entries {
+			sh := listed[i]
+			var why string
+			switch other, another := keptOther(kept, points[i], targets[i]); {
+			case !e.Mounted:
+				why = "not mounted"
+				if sh.LastError != "" {
+					why = sh.LastError
+				}
+			case another:
+				why = "another folder is mounted there, " + other
+				if sh.LastError != "" {
+					why += " (" + sh.LastError + ")"
+				}
+			default:
+				continue
+			}
+			missing = append(missing, fmt.Sprintf("%s of %s (%s/%s): %s", sh.Name, sh.Login, sh.Domain, sh.Path, why))
 		}
-		missing = append(missing, fmt.Sprintf("%s of %s (%s/%s): %s", sh.Name, sh.Login, sh.Domain, sh.Path, why))
+		if len(missing) == 0 {
+			parts = append(parts, fmt.Sprintf("%d mounted", len(points)))
+		} else {
+			status = "warn"
+			parts = append(parts, fmt.Sprintf("%d of %d not mounted — %s; mp site fix <the site's domain> mounts a site's folders again", len(missing), len(points), strings.Join(missing, "; ")))
+		}
 	}
-	if len(missing) == 0 {
-		c := check("shared folders", "ok", fmt.Sprintf("%d mounted", len(points)))
-		return &c
+	if len(strays) > 0 {
+		status = "warn"
+		parts = append(parts, fmt.Sprintf("%d kept by the agent that no shared folder of the panel names — %s; the panel unbinds such a folder at its start once nothing uses it (systemctl restart monopanel-api)", len(strays), strings.Join(strays, "; ")))
 	}
-	c := check("shared folders", "warn", fmt.Sprintf("%d of %d not mounted — %s; mp site fix <the site's domain> mounts a site's folders again", len(missing), len(points), strings.Join(missing, "; ")))
+	c := check("shared folders", status, strings.Join(parts, "; "))
 	return &c
 }
 

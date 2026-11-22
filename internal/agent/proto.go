@@ -596,3 +596,20 @@ type ShareMountState struct {
 	Recorded bool   `json:"recorded,omitempty"`
 	Unit     bool   `json:"unit,omitempty"`
 }
+
+// ShareRecordsResponse lists the agent's records of the shared folders
+// (/v1/shares/records): one per folder it bound, or took over from a unit
+// of an older panel's, by mount point.
+type ShareRecordsResponse struct {
+	Records []ShareRecordState `json:"records"`
+}
+
+// ShareRecordState is one record: its mount point, the folder — empty for a
+// record whose content cannot be read, which guards its mount point all the
+// same — and whether something is mounted there (in the host's mount
+// namespace).
+type ShareRecordState struct {
+	Where   string `json:"where"`
+	What    string `json:"what,omitempty"`
+	Mounted bool   `json:"mounted"`
+}
