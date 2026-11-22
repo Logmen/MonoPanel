@@ -1,0 +1,6 @@
+php-common:
+  Installed: (none)
+  Candidate: 2:92ubuntu1
+  Version table:
+     2:92ubuntu1 500
+        500 http://archive.ubuntu.com/ubuntu jammy/main amd64 Packages

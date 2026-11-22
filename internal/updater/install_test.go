@@ -32,7 +32,7 @@ func newFakePackages(t *testing.T, file, installed string, env []string) *fakePa
 	}
 	f := &fakePackages{dir: t.TempDir(), env: env}
 	f.log = filepath.Join(f.dir, "calls.log")
-	logEnv := `env | grep -E '^(DEBIAN_FRONTEND|NEEDRESTART_MODE|LANG|LC_ALL)=' | sort | sed 's/^/  /' >> "` + f.log + `"`
+	logEnv := `env | grep -E '^(DEBIAN_FRONTEND|NEEDRESTART_MODE|LANG|LANGUAGE|LC_ALL)=' | sort | sed 's/^/  /' >> "` + f.log + `"`
 	fileQuery := "echo 'warning: a signature key the host does not know'\necho '" + file + "'"
 	if file == "" {
 		fileQuery = "echo 'cannot read the package' >&2\nexit 2"

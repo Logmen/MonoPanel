@@ -1,0 +1,12 @@
+Ign:1 https://packages.sury.org/php jammy InRelease
+Hit:2 http://archive.ubuntu.com/ubuntu jammy InRelease
+Hit:3 http://archive.ubuntu.com/ubuntu jammy-updates InRelease
+Ign:1 https://packages.sury.org/php jammy InRelease
+Hit:4 http://archive.ubuntu.com/ubuntu jammy-backports InRelease
+Hit:5 http://security.ubuntu.com/ubuntu jammy-security InRelease
+Ign:1 https://packages.sury.org/php jammy InRelease
+Err:1 https://packages.sury.org/php jammy InRelease
+  Could not connect to packages.sury.org:443 (127.0.0.2). - connect (111: Connection refused)
+Reading package lists...
+W: Failed to fetch https://packages.sury.org/php/dists/jammy/InRelease  Could not connect to packages.sury.org:443 (127.0.0.2). - connect (111: Connection refused)
+W: Some index files failed to download. They have been ignored, or old ones used instead.

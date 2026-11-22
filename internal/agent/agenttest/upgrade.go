@@ -138,43 +138,18 @@ func (a *Agent) candidates(pkgs []string) any {
 
 // aptPolicy is what apt-cache policy prints of the packages the repositories
 // have (versions), the answer of "available" unless PkgOutput gives one:
-// each one's candidate, offered by every source config/apply wrote under
-// /etc/apt/sources.list.d in the one-line format, in lines like
+// each one's candidate, offered by every source under /etc/apt/sources.list.d
+// that an index update read (aptUpdated), in lines like
 // "500 https://packages.sury.org/php trixie/main amd64 Packages". The API
 // reads in them whether apt has a repository's index. The fake does not
-// know which source carries what: every one offers every package. A line
-// without a suite and a component is left out, as apt refuses it. The
+// know which source carries what: every one offers every package. The
 // caller holds mu.
 func (a *Agent) aptPolicy(pkgs []string, versions map[string]string) string {
-	var lists []string
-	for p := range a.files {
-		if path.Dir(p) == "/etc/apt/sources.list.d" && strings.HasSuffix(p, ".list") {
-			lists = append(lists, p)
-		}
-	}
-	slices.Sort(lists)
 	var origins []string
-	for _, p := range lists {
-		for _, line := range strings.Split(a.files[p].Content, "\n") {
-			f := strings.Fields(line)
-			if len(f) == 0 || f[0] != "deb" {
-				continue
-			}
-			f = f[1:]
-			if len(f) > 0 && strings.HasPrefix(f[0], "[") {
-				// The options, up to the word that closes them.
-				for len(f) > 0 && !strings.HasSuffix(f[0], "]") {
-					f = f[1:]
-				}
-				if len(f) > 0 {
-					f = f[1:]
-				}
-			}
-			if len(f) < 3 {
-				continue
-			}
-			for _, component := range f[2:] {
-				origins = append(origins, fmt.Sprintf("500 %s %s/%s amd64 Packages", strings.TrimSuffix(f[0], "/"), f[1], component))
+	for _, src := range a.aptSources() {
+		for _, o := range src.origins() {
+			if a.aptRead[o] {
+				origins = append(origins, "500 "+o+" amd64 Packages")
 			}
 		}
 	}
@@ -190,6 +165,177 @@ func (a *Agent) aptPolicy(pkgs []string, versions map[string]string) string {
 		}
 	}
 	return b.String()
+}
+
+// aptUpdated is what an index update that printed out did to the lists of
+// the sources: apt read every source it said nothing against (no "Err:",
+// "W:" or "E:" line names it) and kept the lists it had of the others; an
+// update that failed nowhere (clean, and no such line at all) drops the
+// lists of the sources gone since, as apt cleans them up then. An update
+// that stopped before it read anything — a list of sources apt could not
+// read, the lock of the lists another apt-get update holds — changes
+// nothing. The caller holds mu.
+func (a *Agent) aptUpdated(out string, clean bool) {
+	if strings.Contains(out, "The list of sources could not be read") || strings.Contains(out, "Could not get lock /var/lib/apt/lists/lock") {
+		return
+	}
+	var said []string
+	for _, line := range strings.Split(out, "\n") {
+		if l := strings.TrimSpace(line); strings.HasPrefix(l, "Err:") || strings.HasPrefix(l, "W:") || strings.HasPrefix(l, "E:") {
+			said = append(said, l)
+		}
+	}
+	current := map[string]bool{}
+	for _, src := range a.aptSources() {
+		against := slices.ContainsFunc(said, func(l string) bool { return strings.Contains(l, src.uri) })
+		for _, o := range src.origins() {
+			current[o] = true
+			if !against {
+				a.aptRead[o] = true
+			}
+		}
+	}
+	if clean && len(said) == 0 {
+		for o := range a.aptRead {
+			if !current[o] {
+				delete(a.aptRead, o)
+			}
+		}
+	}
+}
+
+// aptConflict is what apt says of two sources of one repository (URI and
+// suite) whose Signed-By differ, as apt 2 has it: the first of them that
+// names a keyring sets it, and a later one that names another, or none,
+// conflicts. apt reads no source at all then, and apt-get update and
+// apt-cache policy fail alike. "" when apt takes the sources. The caller
+// holds mu.
+func (a *Agent) aptConflict() string {
+	signedBy := map[string]string{}
+	for _, src := range a.aptSources() {
+		for _, suite := range src.suites {
+			repo := src.uri + "/ " + suite
+			prev, seen := signedBy[repo]
+			switch {
+			case !seen || prev == "":
+				signedBy[repo] = src.signedBy
+			case prev != src.signedBy:
+				return fmt.Sprintf("E: Conflicting values set for option Signed-By regarding source %s: %s != %s\nE: The list of sources could not be read.", repo, prev, src.signedBy)
+			}
+		}
+	}
+	return ""
+}
+
+// pkgFailed is the agent's message for a run of the package manager that
+// failed: how it ended and its unit (internal/agent pkg); the package
+// manager's own text is the error's output.
+func pkgFailed(action string) string {
+	return "apt " + action + " failed: exit status 100 (monopanel-pkg-test.service)"
+}
+
+// aptSource is a source of apt's: a line of a .list file, or a stanza of a
+// .sources file, of type deb.
+type aptSource struct {
+	uri        string // without its trailing slash, as apt prints it
+	suites     []string
+	components []string
+	signedBy   string // "" when it names no keyring
+}
+
+// origins are the lines apt-cache policy prints for the source's indexes:
+// "<uri> <suite>/<component>".
+func (s aptSource) origins() []string {
+	var out []string
+	for _, suite := range s.suites {
+		for _, c := range s.components {
+			out = append(out, s.uri+" "+suite+"/"+c)
+		}
+	}
+	return out
+}
+
+// aptSources are the sources of the files config/apply wrote under
+// /etc/apt/sources.list.d, in the order apt reads them: by file name, .list
+// and .sources alike. A line without a suite and a component is left out,
+// as apt refuses it. The caller holds mu.
+func (a *Agent) aptSources() []aptSource {
+	var files []string
+	for p := range a.files {
+		if path.Dir(p) == "/etc/apt/sources.list.d" && (strings.HasSuffix(p, ".list") || strings.HasSuffix(p, ".sources")) {
+			files = append(files, p)
+		}
+	}
+	slices.Sort(files)
+	var out []aptSource
+	for _, p := range files {
+		if strings.HasSuffix(p, ".sources") {
+			out = append(out, deb822Sources(a.files[p].Content)...)
+			continue
+		}
+		for _, line := range strings.Split(a.files[p].Content, "\n") {
+			f := strings.Fields(line)
+			if len(f) == 0 || f[0] != "deb" {
+				continue
+			}
+			f = f[1:]
+			src := aptSource{}
+			if len(f) > 0 && strings.HasPrefix(f[0], "[") {
+				// The options, up to the word that closes them.
+				for ; len(f) > 0; f = f[1:] {
+					opt := strings.Trim(f[0], "[]")
+					if v, ok := strings.CutPrefix(opt, "signed-by="); ok {
+						src.signedBy = v
+					}
+					if strings.HasSuffix(f[0], "]") {
+						f = f[1:]
+						break
+					}
+				}
+			}
+			if len(f) < 3 {
+				continue
+			}
+			src.uri, src.suites, src.components = strings.TrimSuffix(f[0], "/"), f[1:2], f[2:]
+			out = append(out, src)
+		}
+	}
+	return out
+}
+
+// deb822Sources are the deb sources of a .sources file: stanzas of fields
+// apart by empty lines, a value going on in the lines that start with a
+// space (an inline key in Signed-By).
+func deb822Sources(content string) []aptSource {
+	var out []aptSource
+	for _, stanza := range strings.Split(content, "\n\n") {
+		fields := map[string]string{}
+		key := ""
+		for _, line := range strings.Split(stanza, "\n") {
+			switch {
+			case strings.TrimSpace(line) == "" || strings.HasPrefix(line, "#"):
+			case line[0] == ' ' || line[0] == '\t':
+				if key != "" {
+					fields[key] += "\n   " + strings.TrimSpace(line)
+				}
+			default:
+				k, v, _ := strings.Cut(line, ":")
+				key = strings.ToLower(strings.TrimSpace(k))
+				fields[key] = strings.TrimSpace(v)
+			}
+		}
+		if !slices.Contains(strings.Fields(fields["types"]), "deb") || strings.EqualFold(fields["enabled"], "no") {
+			continue
+		}
+		suites, components := strings.Fields(fields["suites"]), strings.Fields(fields["components"])
+		if len(suites) == 0 || len(components) == 0 {
+			continue
+		}
+		for _, uri := range strings.Fields(fields["uris"]) {
+			out = append(out, aptSource{uri: strings.TrimSuffix(uri, "/"), suites: suites, components: components, signedBy: strings.TrimPrefix(fields["signed-by"], "\n   ")})
+		}
+	}
+	return out
 }
 
 // upgrade installs what Upgrades offers. Like the agent it takes the panel's

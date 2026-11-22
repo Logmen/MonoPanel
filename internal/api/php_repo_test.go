@@ -28,9 +28,10 @@ const (
 	// adminSury is where Sury's README has an administrator put its source,
 	// signed by the keyring its debsuryorg-archive-keyring package installs.
 	adminSury = "/etc/apt/sources.list.d/php.list"
-	// signedByConflict is what apt says of the panel's source of Sury beside
-	// an administrator's: it reads no source at all then.
-	signedByConflict = "E: Conflicting values set for option Signed-By regarding source https://packages.sury.org/php/ noble: /usr/share/keyrings/deb.sury.org-php.gpg != /etc/apt/keyrings/sury-php.gpg\nE: The list of sources could not be read."
+	// suryConflict is what apt says of the panel's source of Sury beside an
+	// administrator's, which it reads first (php.list): it reads no source
+	// at all then. The fake agent says the same (aptConflict).
+	suryConflict = "E: Conflicting values set for option Signed-By regarding source https://packages.sury.org/php/ noble: /usr/share/keyrings/deb.sury.org-php.gpg != /etc/apt/keyrings/sury-php.gpg"
 )
 
 // adminSuryList is the administrator's own source of Sury for a codename.
@@ -256,8 +257,8 @@ func TestPHPRepoSourceGoesWhenAptCannotReadIt(t *testing.T) {
 	stubSury(t, true)
 	f := newSiteFixture(t)
 	f.agent.Fail["/v1/pkg"] = "E: The repository 'https://packages.sury.org/php resolute InRelease' is not signed."
-	if job := phpInstallJob(t, f, "8.3"); job.Status != store.JobFailed {
-		t.Fatalf("the install must fail: %s %s", job.Status, job.Error)
+	if job := phpInstallJob(t, f, "8.3"); job.Status != store.JobFailed || !strings.Contains(job.Error, "is not signed") {
+		t.Fatalf("the install must fail with apt's word: %s %s", job.Status, job.Error)
 	}
 	if removed := f.agent.Removed(); !slices.Contains(removed, surySource) {
 		t.Fatalf("the unreadable source must go again (removed: %v)", removed)
@@ -270,23 +271,31 @@ func TestPHPRepoSourceGoesWhenAptCannotReadIt(t *testing.T) {
 // install fails with apt's warning, the source goes again, and the next
 // install writes it once more.
 func TestPHPRepoNeedsSurysIndex(t *testing.T) {
-	for _, c := range []struct{ name, release, codename string }{
-		{"debian", "ID=debian\nVERSION_ID=13\nVERSION_CODENAME=trixie\n", "trixie"},
-		{"ubuntu", ubuntuNoble, "noble"},
+	for _, c := range []struct{ name, release, codename, update, want string }{
+		{"debian", "ID=debian\nVERSION_ID=13\nVERSION_CODENAME=trixie\n", "trixie", "", "apt could not read packages.sury.org/php: W: Failed to fetch https://packages.sury.org/php/dists/trixie/InRelease Temporary failure resolving"},
+		{"ubuntu", ubuntuNoble, "noble", "", "apt could not read packages.sury.org/php: W: Failed to fetch https://packages.sury.org/php/dists/noble/InRelease Temporary failure resolving"},
+		// Not a word of Sury in apt's output, and no index of it either.
+		{"silent", ubuntuNoble, "noble", "Hit:1 http://deb.example.org/os noble InRelease\nReading package lists...\n", "apt could not read packages.sury.org/php: the index update ended without it"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			withOSRelease(t, c.release)
 			stubSury(t, true)
 			f := newSiteFixture(t)
-			f.agent.PkgOutput = map[string]string{
-				"update-index": "Err:3 https://packages.sury.org/php " + c.codename + " InRelease\n  Temporary failure resolving 'packages.sury.org'\n" +
+			update := c.update
+			if update == "" {
+				update = "Err:3 https://packages.sury.org/php " + c.codename + " InRelease\n  Temporary failure resolving 'packages.sury.org'\n" +
 					"Reading package lists...\n" +
 					"W: Failed to fetch https://packages.sury.org/php/dists/" + c.codename + "/InRelease  Temporary failure resolving 'packages.sury.org'\n" +
-					"W: Some index files failed to download. They have been ignored, or old ones used instead.\n",
-				"available": "php-common:\n  Installed: (none)\n  Candidate: 2:93\n  Version table:\n     2:93 500\n        500 http://deb.example.org/os " + c.codename + "/main amd64 Packages\n",
+					"W: Some index files failed to download. They have been ignored, or old ones used instead.\n"
+			}
+			f.agent.PkgOutput = map[string]string{"update-index": update}
+			if c.update != "" {
+				// The fake reads a source apt said nothing against; here apt
+				// has none of Sury all the same.
+				f.agent.PkgOutput["available"] = "php-common:\n  Installed: (none)\n  Candidate: 2:93\n  Version table:\n     2:93 500\n        500 http://deb.example.org/os " + c.codename + "/main amd64 Packages\n"
 			}
 			job := phpInstallJob(t, f, "8.3")
-			if job.Status != store.JobFailed || !strings.Contains(job.Error, "apt could not read packages.sury.org/php: W: Failed to fetch https://packages.sury.org/php/dists/"+c.codename+"/InRelease Temporary failure resolving") {
+			if job.Status != store.JobFailed || !strings.Contains(job.Error, c.want) {
 				t.Fatalf("install without Sury's index: %s %q", job.Status, job.Error)
 			}
 			if v, _ := f.db.GetSetting(f.ctx, settingPHPRepo+".debian"); v == "ready" {
@@ -311,8 +320,8 @@ func TestPHPRepoNeedsSurysIndex(t *testing.T) {
 }
 
 // An administrator who set Sury up himself, as its README says, keeps his
-// source: apt reads Sury from it, and the panel's source beside it, signed
-// by another keyring, would make apt refuse both and every other source.
+// source once apt has read it: the panel's source beside it, signed by
+// another keyring, would make apt refuse both and every other source.
 func TestPHPRepoKeepsAnAdministratorsSury(t *testing.T) {
 	for _, c := range []struct{ name, release, codename string }{
 		{"debian", "ID=debian\nVERSION_ID=13\nVERSION_CODENAME=trixie\n", "trixie"},
@@ -323,6 +332,7 @@ func TestPHPRepoKeepsAnAdministratorsSury(t *testing.T) {
 			stubSury(t, true)
 			f := newSiteFixture(t)
 			seedFiles(t, f, map[string]string{adminSury: adminSuryList(c.codename)})
+			aptUpdate(t, f)
 			from := len(f.agent.Calls())
 			if job := phpInstallJob(t, f, "8.3"); job.Status != store.JobDone {
 				t.Fatalf("install: %s %s", job.Status, job.Error)
@@ -351,8 +361,8 @@ func TestPHPRepoKeepsAnAdministratorsSury(t *testing.T) {
 func TestSwitchPHPRepoToSury(t *testing.T) {
 	// apt-cache policy is asked before the write as well: an administrator's
 	// own source of Sury makes the panel's needless, and apt refuses the two
-	// together. The fake's answer names the sources written (aptPolicy), so
-	// it has Sury after the write and not before.
+	// together. The fake's answer names the sources an index update read
+	// (aptPolicy), so it has Sury after the write and the update, not before.
 	moved := []string{
 		"pkg available php-common",
 		"apply " + suryKeyring + " " + surySource,
@@ -368,6 +378,17 @@ func TestSwitchPHPRepoToSury(t *testing.T) {
 		"pkg available php-common",
 		"remove " + surySource + " " + suryKeyring,
 	}
+	// The host's own source of Sury, which apt has read: read anew, the PPA
+	// still there, and then the PPA alone goes.
+	hosts := []string{
+		"pkg available php-common",
+		"pkg update-index",
+		"pkg available php-common",
+		"remove " + ondrejSource + " " + ondrejKeyring,
+		"pkg update-index",
+	}
+	// The advice for a Signed-By conflict is the conflict's alone.
+	const suryAdvice = "another source of packages.sury.org names another keyring"
 	t.Run("moves", func(t *testing.T) {
 		withOSRelease(t, ubuntuNoble)
 		stubSury(t, true)
@@ -415,7 +436,6 @@ func TestSwitchPHPRepoToSury(t *testing.T) {
 		f := newSiteFixture(t)
 		seedPPA(t, f)
 		f.agent.PkgFails = map[string]string{"update-index": "E: The repository 'https://packages.sury.org/php noble InRelease' is not signed."}
-		f.agent.PkgOutput = map[string]string{"available": policyWithoutSury}
 		from := len(f.agent.Calls())
 		f.s.switchPHPRepoToSury(f.ctx)
 		if got := repoCalls(f, from); !slices.Equal(got, unread) {
@@ -431,7 +451,7 @@ func TestSwitchPHPRepoToSury(t *testing.T) {
 		if _, ok := f.agent.File(surySource); ok {
 			t.Fatal("Sury's source stayed")
 		}
-		if why, _ := f.db.GetSetting(f.ctx, settingPHPRepoSwitch); !strings.Contains(why, "apt could not read packages.sury.org/php") || !strings.Contains(why, "is not signed") {
+		if why, _ := f.db.GetSetting(f.ctx, settingPHPRepoSwitch); !strings.Contains(why, "apt could not read packages.sury.org/php: apt update-index failed: exit status 100") || !strings.Contains(why, "is not signed") || strings.Contains(why, suryAdvice) {
 			t.Fatalf("reason: %q", why)
 		}
 		line := repoLine(f)
@@ -441,7 +461,6 @@ func TestSwitchPHPRepoToSury(t *testing.T) {
 		// The next start, with Sury readable, moves the host, and the reason
 		// goes with the PPA.
 		f.agent.PkgFails = nil
-		f.agent.PkgOutput = nil
 		from = len(f.agent.Calls())
 		f.s.switchPHPRepoToSury(f.ctx)
 		if got := repoCalls(f, from); !slices.Equal(got, moved) {
@@ -468,7 +487,6 @@ func TestSwitchPHPRepoToSury(t *testing.T) {
 				"Reading package lists...\n" +
 				"W: Failed to fetch https://packages.sury.org/php/dists/noble/InRelease  Temporary failure resolving 'packages.sury.org'\n" +
 				"W: Some index files failed to download. They have been ignored, or old ones used instead.\n",
-			"available": policyWithoutSury,
 		}
 		from := len(f.agent.Calls())
 		f.s.switchPHPRepoToSury(f.ctx)
@@ -481,8 +499,87 @@ func TestSwitchPHPRepoToSury(t *testing.T) {
 		if key, _ := f.agent.File(ondrejKeyring); key != ppaKey {
 			t.Fatalf("the PPA's keyring: %q", key)
 		}
-		if why, _ := f.db.GetSetting(f.ctx, settingPHPRepoSwitch); !strings.Contains(why, "apt could not read packages.sury.org/php: W: Failed to fetch https://packages.sury.org/php/dists/noble/InRelease Temporary failure resolving") {
+		if why, _ := f.db.GetSetting(f.ctx, settingPHPRepoSwitch); !strings.Contains(why, "apt could not read packages.sury.org/php: W: Failed to fetch https://packages.sury.org/php/dists/noble/InRelease Temporary failure resolving") || strings.Contains(why, suryAdvice) {
 			t.Fatalf("reason: %q", why)
+		}
+	})
+	t.Run("an index of Sury apt did not refresh", func(t *testing.T) {
+		// Lists of Sury from an earlier fetch, a move an API restart cut
+		// short: apt lists Sury, but this update could not fetch it. The
+		// PPA stays until an update reads Sury.
+		withOSRelease(t, ubuntuNoble)
+		stubSury(t, true)
+		f := newSiteFixture(t)
+		seedPPA(t, f)
+		seedFiles(t, f, map[string]string{surySource: "deb [signed-by=/etc/apt/keyrings/sury-php.gpg] https://packages.sury.org/php/ noble main\n"})
+		aptUpdate(t, f)
+		f.agent.PkgOutput = map[string]string{"update-index": "Err:2 https://packages.sury.org/php noble InRelease\n  Could not connect to packages.sury.org:443 (203.0.113.5), connection timed out\n" +
+			"Reading package lists...\n" +
+			"W: Failed to fetch https://packages.sury.org/php/dists/noble/InRelease  Could not connect to packages.sury.org:443 (203.0.113.5), connection timed out\n" +
+			"W: Some index files failed to download. They have been ignored, or old ones used instead.\n"}
+		from := len(f.agent.Calls())
+		f.s.switchPHPRepoToSury(f.ctx)
+		// The panel's own source is written again, no look for another.
+		if got := repoCalls(f, from); !slices.Equal(got, unread[1:]) {
+			t.Fatalf("calls:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(unread[1:], "\n"))
+		}
+		if src, _ := f.agent.File(ondrejSource); src != ppaSource {
+			t.Fatalf("the PPA's source: %q", src)
+		}
+		if why, _ := f.db.GetSetting(f.ctx, settingPHPRepoSwitch); !strings.Contains(why, "apt could not read packages.sury.org/php: W: Failed to fetch https://packages.sury.org/php/dists/noble/InRelease Could not connect") {
+			t.Fatalf("reason: %q", why)
+		}
+	})
+	t.Run("the index update cannot run", func(t *testing.T) {
+		// apt-get update stops at once on the lock of the lists another one
+		// holds (the agent waits ten minutes for it first): apt fetched
+		// nothing, and lists of Sury from before do not make it read.
+		const locked = "E: Could not get lock /var/lib/apt/lists/lock. It is held by process 4242 (apt-get)\nE: Unable to lock directory /var/lib/apt/lists/"
+		for _, c := range []struct {
+			name, source, content string
+			calls                 []string
+		}{
+			{"the host's own source", adminSury, adminSuryList("noble"), hosts[:3]},
+			{"the panel's own source", surySource, "deb [signed-by=/etc/apt/keyrings/sury-php.gpg] https://packages.sury.org/php/ noble main\n", unread[1:]},
+		} {
+			withOSRelease(t, ubuntuNoble)
+			stubSury(t, true)
+			f := newSiteFixture(t)
+			seedPPA(t, f)
+			seedFiles(t, f, map[string]string{c.source: c.content})
+			aptUpdate(t, f)
+			f.agent.PkgFails = map[string]string{"update-index": locked}
+			from := len(f.agent.Calls())
+			f.s.switchPHPRepoToSury(f.ctx)
+			if got := repoCalls(f, from); !slices.Equal(got, c.calls) {
+				t.Fatalf("%s: calls:\n%s\nwant:\n%s", c.name, strings.Join(got, "\n"), strings.Join(c.calls, "\n"))
+			}
+			if src, _ := f.agent.File(ondrejSource); src != ppaSource {
+				t.Fatalf("%s: the PPA's source: %q", c.name, src)
+			}
+			if why, _ := f.db.GetSetting(f.ctx, settingPHPRepoSwitch); !strings.Contains(why, "apt update-index failed: exit status 100 (monopanel-pkg-test.service): E: Could not get lock /var/lib/apt/lists/lock") {
+				t.Fatalf("%s: reason: %q", c.name, why)
+			}
+		}
+	})
+	t.Run("the PPA's files cannot be removed", func(t *testing.T) {
+		withOSRelease(t, ubuntuNoble)
+		stubSury(t, true)
+		f := newSiteFixture(t)
+		seedPPA(t, f)
+		f.agent.Fail["/v1/paths/remove"] = "remove /etc/apt/sources.list.d/ondrej-php.list: read-only file system"
+		f.s.switchPHPRepoToSury(f.ctx)
+		for _, p := range []string{ondrejSource, ondrejKeyring} {
+			if _, ok := f.agent.File(p); !ok {
+				t.Errorf("%s went", p)
+			}
+		}
+		const why = "packages.sury.org/php is in place, but the source of the PPA could not be removed: remove /etc/apt/sources.list.d/ondrej-php.list: read-only file system"
+		if got, _ := f.db.GetSetting(f.ctx, settingPHPRepoSwitch); !strings.HasPrefix(got, why) {
+			t.Fatalf("reason: %q", got)
+		}
+		if line := repoLine(f); line == nil || line.Status != "warn" || !strings.Contains(line.Detail, why) {
+			t.Fatalf("doctor: %+v", line)
 		}
 	})
 	t.Run("the index update fails elsewhere", func(t *testing.T) {
@@ -492,7 +589,8 @@ func TestSwitchPHPRepoToSury(t *testing.T) {
 		stubSury(t, true)
 		f := newSiteFixture(t)
 		seedPPA(t, f)
-		f.agent.PkgFails = map[string]string{"update-index": "E: Repository 'https://ppa.launchpadcontent.net/ondrej/php/ubuntu noble InRelease' changed its 'Label' value"}
+		f.agent.PkgFails = map[string]string{"update-index": "Get:2 https://packages.sury.org/php noble InRelease [6063 B]\nGet:3 https://ppa.launchpadcontent.net/ondrej/php/ubuntu noble InRelease [24.6 kB]\nGet:5 https://packages.sury.org/php noble/main amd64 Packages [218 kB]\nReading package lists...\n" +
+			"E: Repository 'https://ppa.launchpadcontent.net/ondrej/php/ubuntu noble InRelease' changed its 'Label' value from '***** The main PPA for supported PHP versions with many PECL extensions *****' to 'PPA for PHP (deprecated)'"}
 		from := len(f.agent.Calls())
 		f.s.switchPHPRepoToSury(f.ctx)
 		if got := repoCalls(f, from); !slices.Equal(got, moved) {
@@ -514,11 +612,11 @@ func TestSwitchPHPRepoToSury(t *testing.T) {
 		f := newSiteFixture(t)
 		seedPPA(t, f)
 		seedFiles(t, f, map[string]string{adminSury: adminSuryList("noble")})
+		aptUpdate(t, f)
 		from := len(f.agent.Calls())
 		f.s.switchPHPRepoToSury(f.ctx)
-		want := []string{"pkg available php-common", "remove " + ondrejSource + " " + ondrejKeyring, "pkg update-index"}
-		if got := repoCalls(f, from); !slices.Equal(got, want) {
-			t.Fatalf("calls:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		if got := repoCalls(f, from); !slices.Equal(got, hosts) {
+			t.Fatalf("calls:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(hosts, "\n"))
 		}
 		if _, ok := f.agent.File(surySource); ok {
 			t.Fatal("the panel's source of Sury was written beside the administrator's")
@@ -552,8 +650,6 @@ func TestSwitchPHPRepoToSury(t *testing.T) {
 		f := newSiteFixture(t)
 		seedPPA(t, f)
 		seedFiles(t, f, map[string]string{adminSury: adminSuryList("noble")})
-		f.agent.PkgFails = map[string]string{"update-index": signedByConflict}
-		f.agent.PkgOutput = map[string]string{"available": policyWithoutSury}
 		from := len(f.agent.Calls())
 		f.s.switchPHPRepoToSury(f.ctx)
 		if got := repoCalls(f, from); !slices.Equal(got, unread) {
@@ -565,20 +661,22 @@ func TestSwitchPHPRepoToSury(t *testing.T) {
 		if src, _ := f.agent.File(adminSury); src != adminSuryList("noble") || slices.Contains(f.agent.Removed(), adminSury) {
 			t.Fatalf("the administrator's source: %q (removed: %v)", src, f.agent.Removed())
 		}
-		const advice = "another source of packages.sury.org names another keyring (yours?): remove it, and the next start of the API puts the panel's in its place, or remove " + ondrejSource + " to keep yours"
-		if why, _ := f.db.GetSetting(f.ctx, settingPHPRepoSwitch); !strings.Contains(why, "Conflicting values set for option Signed-By") || !strings.Contains(why, advice) {
+		const advice = "another source of packages.sury.org names another keyring (yours?): apt-get update has apt read it, and the next start of the API keeps it, removing the PPA alone; or remove it, and the next start puts the panel's in its place"
+		if why, _ := f.db.GetSetting(f.ctx, settingPHPRepoSwitch); !strings.Contains(why, "apt update-index failed: exit status 100 (monopanel-pkg-test.service): "+suryConflict) || !strings.Contains(why, advice) {
 			t.Fatalf("reason: %q", why)
 		}
 		if line := repoLine(f); line == nil || line.Status != "warn" || !strings.Contains(line.Detail, advice) {
 			t.Fatalf("doctor: %+v", line)
 		}
 		// Once apt has read it, the next start keeps it and drops the PPA.
-		f.agent.PkgFails = nil
-		f.agent.PkgOutput = nil
+		aptUpdate(t, f)
 		from = len(f.agent.Calls())
 		f.s.switchPHPRepoToSury(f.ctx)
-		if got := repoCalls(f, from); !slices.Equal(got, []string{"pkg available php-common", "remove " + ondrejSource + " " + ondrejKeyring, "pkg update-index"}) {
+		if got := repoCalls(f, from); !slices.Equal(got, hosts) {
 			t.Fatalf("calls at the next start:\n%s", strings.Join(got, "\n"))
+		}
+		if _, ok := f.agent.File(surySource); ok {
+			t.Fatal("the panel's source of Sury was written beside the administrator's")
 		}
 		if line := repoLine(f); line != nil {
 			t.Fatalf("doctor after the move: %+v", line)
@@ -640,8 +738,12 @@ func TestSwitchPHPRepoToSury(t *testing.T) {
 		withOSRelease(t, ubuntuNoble)
 		stubSury(t, true)
 		f := newSiteFixture(t)
-		const admin = "Types: deb\nURIs: https://ppa.launchpadcontent.net/ondrej/php/ubuntu/\nSuites: noble\nComponents: main\n"
-		seedFiles(t, f, map[string]string{adminPPA: admin})
+		// add-apt-repository of the years before 2022 (Ubuntu 20.04 and the
+		// hosts upgraded from it): the PPA's old address, its key in
+		// trusted.gpg.d. Another URI than the panel's: apt takes both.
+		const old = "/etc/apt/sources.list.d/ondrej-ubuntu-php-noble.list"
+		const oldPPA = "deb http://ppa.launchpad.net/ondrej/php/ubuntu noble main\n"
+		seedFiles(t, f, map[string]string{old: oldPPA})
 		from := len(f.agent.Calls())
 		f.s.switchPHPRepoToSury(f.ctx)
 		if got := repoCalls(f, from); len(got) > 0 {
@@ -657,11 +759,47 @@ func TestSwitchPHPRepoToSury(t *testing.T) {
 		if got := repoCalls(f, from); !slices.Equal(got, moved) {
 			t.Fatalf("calls:\n%s", strings.Join(got, "\n"))
 		}
-		if src, ok := f.agent.File(adminPPA); !ok || src != admin {
+		if src, ok := f.agent.File(old); !ok || src != oldPPA || slices.Contains(f.agent.Removed(), old) {
 			t.Fatalf("the administrator's source: %q (there %v)", src, ok)
 		}
-		if slices.Contains(f.agent.Removed(), adminPPA) {
-			t.Fatal("the administrator's source was removed")
+	})
+	t.Run("an administrator's PPA apt refuses beside the panel's", func(t *testing.T) {
+		// add-apt-repository of today: the PPA's address of the panel's
+		// source, the key inline. apt refuses the two together, and with them
+		// every source, since the panel 0.8.19 wrote its own beside it: the
+		// move cannot happen, and the reason says why and what to do.
+		withOSRelease(t, ubuntuNoble)
+		stubSury(t, true)
+		f := newSiteFixture(t)
+		const admin = "Types: deb\nURIs: https://ppa.launchpadcontent.net/ondrej/php/ubuntu/\nSuites: noble\nComponents: main\nSigned-By:\n -----BEGIN PGP PUBLIC KEY BLOCK-----\n .\n xo0ESX35nAEEALKDCUDVXvmW9n+T\n -----END PGP PUBLIC KEY BLOCK-----\n"
+		seedFiles(t, f, map[string]string{adminPPA: admin})
+		seedPPA(t, f)
+		from := len(f.agent.Calls())
+		f.s.switchPHPRepoToSury(f.ctx)
+		if got := repoCalls(f, from); !slices.Equal(got, unread) {
+			t.Fatalf("calls:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(unread, "\n"))
+		}
+		why, _ := f.db.GetSetting(f.ctx, settingPHPRepoSwitch)
+		if !strings.Contains(why, "Conflicting values set for option Signed-By regarding source https://ppa.launchpadcontent.net/ondrej/php/ubuntu/ noble: /etc/apt/keyrings/ondrej-php.asc != -----BEGIN PGP PUBLIC KEY BLOCK-----") ||
+			!strings.Contains(why, "another source of ppa:ondrej/php names another keyring (yours, from add-apt-repository?)") || strings.Contains(why, suryAdvice) {
+			t.Fatalf("reason: %q", why)
+		}
+		for _, p := range []string{ondrejSource, ondrejKeyring, adminPPA} {
+			if _, ok := f.agent.File(p); !ok {
+				t.Errorf("%s went", p)
+			}
+		}
+		if line := repoLine(f); line == nil || !strings.Contains(line.Detail, "another source of ppa:ondrej/php") {
+			t.Fatalf("doctor: %+v", line)
+		}
+		// The administrator removes his: the next start moves the host.
+		if _, err := f.agent.Client().RemovePaths(f.ctx, &agent.RemovePathsRequest{Paths: []string{adminPPA}}); err != nil {
+			t.Fatal(err)
+		}
+		from = len(f.agent.Calls())
+		f.s.switchPHPRepoToSury(f.ctx)
+		if got := repoCalls(f, from); !slices.Equal(got, moved) {
+			t.Fatalf("calls at the next start:\n%s", strings.Join(got, "\n"))
 		}
 	})
 	t.Run("a keyring without its source", func(t *testing.T) {

@@ -18,6 +18,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"monopanel/internal/osprofile"
 	"monopanel/internal/systemd"
 )
 
@@ -403,6 +404,35 @@ func (s *Server) waitPkgRuns(ctx context.Context, patterns ...string) {
 		case <-time.After(pkgWaitPoll):
 		}
 	}
+}
+
+// indexLockWait bounds the wait for another index update: as long as apt
+// waits for dpkg's lock (DPkg::Lock::Timeout). Tests shorten it.
+var indexLockWait = 10 * time.Minute
+
+// waitIndexLock runs an index update again, in the same unit, while it
+// failed only on the lock another one holds (PackageManager.IndexLocked):
+// apt-get update gives up at once on the lock of the lists — apt-daily's
+// apt-get update has it, which its timer starts at boot when it missed its
+// time, and the start of the API moving the host's PHP repository then would
+// fail on it, to try again at the next start only. It gives up after
+// indexLockWait, and when the request has ended: nobody waits for the run
+// then. out and err are the run's; the last run's are returned. The caller
+// holds pkgMu.
+func (s *Server) waitIndexLock(ctx, rctx context.Context, pm osprofile.PackageManager, run string, argv []string, out string, err error) (string, error) {
+	until := time.Now().Add(indexLockWait)
+	for waited := false; err != nil && pm.IndexLocked(out) && time.Now().Before(until); waited = true {
+		if !waited {
+			s.log.Info("the index update waits for another one, which holds the lock of the index", "unit", pkgUnit(run), "limit", indexLockWait)
+		}
+		select {
+		case <-ctx.Done():
+			return out, err
+		case <-time.After(pkgWaitPoll):
+		}
+		out, err = runPackageManager(s, rctx, run, pm.Env(), argv...)
+	}
+	return out, err
 }
 
 // reapPkgOutputs removes the output files of the runs that are over, all but

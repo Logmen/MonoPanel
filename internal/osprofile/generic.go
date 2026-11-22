@@ -30,6 +30,7 @@ type noPackages struct{}
 func (noPackages) Name() string                         { return "none" }
 func (noPackages) Env() []string                        { return nil }
 func (noPackages) UpdateIndexArgv() []string            { return nil }
+func (noPackages) IndexLocked(string) bool              { return false }
 func (noPackages) InstallArgv([]string) []string        { return nil }
 func (noPackages) RemoveArgv([]string) []string         { return nil }
 func (noPackages) QueryInstalledArgv([]string) []string { return nil }

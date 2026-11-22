@@ -71,6 +71,10 @@ type PackageManager interface {
 	Name() string
 	Env() []string
 	UpdateIndexArgv() []string
+	// IndexLocked tells an index update that failed only because another
+	// one held the lock of the index, which the agent waits out: apt-get
+	// update does not wait for it.
+	IndexLocked(output string) bool
 	InstallArgv(pkgs []string) []string
 	// ReinstallArgv installs packages once more over the same version,
 	// which InstallArgv leaves as it is ("already the newest version",

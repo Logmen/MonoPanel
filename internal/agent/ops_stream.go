@@ -66,7 +66,9 @@ func (s *Server) streamPlan(ctx context.Context, req *StreamRequest, mode toolMo
 		return nil, nil, nil, nil, &Error{Status: http.StatusBadRequest, Message: err.Error()}
 	}
 	cmd := exec.CommandContext(rctx, bin, plan.args...)
-	cmd.Env = append(os.Environ(), "LANG=C.UTF-8", "LC_ALL=C.UTF-8")
+	// English, whatever LANGUAGE the host gives its units (osprofile's
+	// aptManager.Env).
+	cmd.Env = append(os.Environ(), "LANG=C.UTF-8", "LC_ALL=C.UTF-8", "LANGUAGE=")
 	cmd.ExtraFiles = plan.files
 	cmd.WaitDelay = 5 * time.Second
 	return plan, cmd, rctx, cancel, nil

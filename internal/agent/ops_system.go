@@ -229,6 +229,9 @@ func (s *Server) pkg(ctx context.Context, req *PkgRequest) (*PkgResponse, error)
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pkgRunLimit)
 	defer cancel()
 	out, err := runPackageManager(s, rctx, run, pm.Env(), argv...)
+	if req.Action == "update-index" {
+		out, err = s.waitIndexLock(ctx, rctx, pm, run, argv, out, err)
+	}
 	if err != nil {
 		var ae *Error
 		if errors.As(err, &ae) {

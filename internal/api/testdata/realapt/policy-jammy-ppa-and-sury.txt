@@ -1,0 +1,10 @@
+php-common:
+  Installed: (none)
+  Candidate: 2:102+debsuryorg22.04.1+3
+  Version table:
+     2:102+debsuryorg22.04.1+3 500
+        500 https://packages.sury.org/php jammy/main amd64 Packages
+     2:101~+ubuntu22.04.1+deb.sury.org+1 500
+        500 https://ppa.launchpadcontent.net/ondrej/php/ubuntu jammy/main amd64 Packages
+     2:92ubuntu1 500
+        500 http://archive.ubuntu.com/ubuntu jammy/main amd64 Packages

@@ -192,17 +192,37 @@ func (s *Server) ensurePHPRepo(ctx context.Context, jc *jobs.Context) error {
 				return s.db.SetSetting(ctx, key, phpRepoDistro)
 			}
 		}
-		if s.suryIndexed(ctx, rel.Codename) {
+		own, err := s.agent.Stat(ctx, surySource)
+		if err != nil {
+			return err
+		}
+		if len(own.Entries) != 1 || !own.Entries[0].Exists {
 			// An administrator who set Sury up himself, as its README says,
 			// has a source of his own signed by a keyring of his own
 			// (/etc/apt/sources.list.d/php.list,
-			// /usr/share/keyrings/deb.sury.org-php.gpg), and apt reads Sury
-			// from it. The panel's source beside it would make apt refuse
-			// both ("Conflicting values set for option Signed-By"), and with
-			// them every other source: no index update would work on the
-			// host, nor this install.
-			jc.Logf("repository: packages.sury.org/php (%s), which apt reads already from a source on the host: the panel adds none", rel.Codename)
-			return s.db.SetSetting(ctx, key, "ready")
+			// /usr/share/keyrings/deb.sury.org-php.gpg), and a host may take
+			// Sury from a mirror of it. When apt reads Sury from such a
+			// source, the panel adds none: its source beside an
+			// administrator's would make apt refuse both ("Conflicting
+			// values set for option Signed-By"), and with them every other
+			// source — no index update would work on the host, nor this
+			// install. The panel's own sury-php.list left from before (the
+			// panel installed again, its database new) is no such source: it
+			// is written again below, with its keyring.
+			if hosts := s.suryOrigins(ctx, rel.Codename); len(hosts) > 0 {
+				jc.Logf("repository: packages.sury.org/php (%s), which apt reads already from a source on the host (%s): the panel adds none", rel.Codename, strings.Join(hosts, ", "))
+				// What apt has of it may be as old as the host's last index
+				// update, and Sury drops superseded builds from its pool: it
+				// is read once more. Should that fail, the install goes on
+				// with the index apt has.
+				res, err := s.agent.Pkg(ctx, "update-index")
+				if said := aptSaidOf(res, err, hosts...); said != "" {
+					jc.Logf("warning: apt did not refresh it, the install goes on with the index apt had: %s", said)
+				} else if err != nil {
+					jc.Logf("warning: the index update failed, the install goes on with the index apt had: %s", pkgFailure(err))
+				}
+				return s.db.SetSetting(ctx, key, "ready")
+			}
 		}
 		files, err := suryRepoFiles(ctx, rel.Codename)
 		if err != nil {
@@ -223,6 +243,11 @@ func (s *Server) ensurePHPRepo(ctx context.Context, jc *jobs.Context) error {
 			err = errors.New(suryUnread(res, nil))
 		}
 		if err != nil {
+			if surySignedBy(err) {
+				// An administrator's source of Sury that apt had not read
+				// yet: the look before the write could not find it.
+				err = fmt.Errorf("%w; another source of packages.sury.org names another keyring (yours?): apt-get update has apt read it, and the next PHP install keeps it; or remove it, and the next install puts the panel's in its place", err)
+			}
 			// The source just written is the likely cause of a failure (a
 			// key apt refuses, a repository that went away): left behind,
 			// it would fail every later update-index on the host, a mail or
@@ -233,6 +258,11 @@ func (s *Server) ensurePHPRepo(ctx context.Context, jc *jobs.Context) error {
 				jc.Logf("repository source %s removed again: apt could not read it", surySource)
 			}
 			return err
+		}
+		if said := aptSaidOf(res, nil, "packages.sury.org"); said != "" {
+			// Lists of Sury from an earlier update, which apt keeps when it
+			// cannot fetch new ones: genuine, and apt installs from them.
+			jc.Logf("warning: apt did not refresh packages.sury.org/php this time and goes on with the index it had: %s", said)
 		}
 		logTail(jc, res.Output, 2)
 	case osprofile.FamilyRHEL:
@@ -883,9 +913,14 @@ func (s *Server) refreshPHPCLIIni(ctx context.Context, layout *osprofile.PHPLayo
 //     Sury's index. The agent no longer writes the PPA, so a source taken
 //     away first could not be put back: this way a move that fails leaves
 //     the host with the repository it had, and Sury's files go again;
-//   - when apt reads Sury already, from a source of it an administrator
-//     added, the PPA alone goes: a source of the panel's beside his would
-//     make apt refuse both for their different keyrings;
+//   - when apt reads Sury already, from a source of it the host has (an
+//     administrator's, a mirror's), the PPA alone goes, once apt has read
+//     that source anew: a source of the panel's beside an administrator's
+//     would make apt refuse both for their different keyrings;
+//   - the PPA goes only after an index update in which apt read Sury and
+//     said nothing against it: an index of Sury apt kept from before, when
+//     it could not fetch the new one, is no repository the host can rely
+//     on;
 //   - nothing is upgraded or reinstalled (php-fpm would restart): Sury's
 //     builds sort above the PPA's, and the next upgrade of the branches —
 //     the daily one, or mp stack upgrade php — takes them.
@@ -897,8 +932,8 @@ func (s *Server) switchPHPRepoToSury(ctx context.Context) {
 	if !s.onUbuntu() {
 		return
 	}
-	st, err := s.agent.Stat(ctx, ondrejSource, ondrejKeyring)
-	if err != nil || len(st.Entries) != 2 {
+	st, err := s.agent.Stat(ctx, ondrejSource, ondrejKeyring, surySource)
+	if err != nil || len(st.Entries) != 3 {
 		s.log.Warn("PHP repository: cannot look for the panel's source of ppa:ondrej/php", "err", err)
 		return
 	}
@@ -912,7 +947,7 @@ func (s *Server) switchPHPRepoToSury(ctx context.Context) {
 		}
 		return
 	}
-	why := s.moveToSury(ctx)
+	why := s.moveToSury(ctx, st.Entries[2].Exists)
 	if why == "" {
 		if err := s.db.DeleteSetting(context.WithoutCancel(ctx), settingPHPRepoSwitch); err != nil {
 			s.log.Warn("PHP repository", "err", err)
@@ -925,9 +960,10 @@ func (s *Server) switchPHPRepoToSury(ctx context.Context) {
 	}
 }
 
-// moveToSury is switchPHPRepoToSury's move; it tells why it did not happen,
-// "" when it did.
-func (s *Server) moveToSury(ctx context.Context) string {
+// moveToSury is switchPHPRepoToSury's move; own tells that the panel's own
+// source of Sury is there already, left by a move an API restart cut short.
+// It tells why the move did not happen, "" when it did.
+func (s *Server) moveToSury(ctx context.Context, own bool) string {
 	rel := s.profile.Release()
 	switch ok, err := suryHasRelease(ctx, rel.Codename); {
 	case err != nil:
@@ -935,15 +971,18 @@ func (s *Server) moveToSury(ctx context.Context) string {
 	case !ok:
 		return fmt.Sprintf("packages.sury.org/php does not publish Ubuntu %s (%s) yet", rel.VersionID, rel.Codename)
 	}
-	// An administrator who set Sury up himself, as its README says, has a
-	// source of his own signed by a keyring of his own
-	// (/etc/apt/sources.list.d/php.list,
-	// /usr/share/keyrings/deb.sury.org-php.gpg), and apt reads Sury from it
-	// already. The panel's source beside it would make apt refuse both
+	// apt may read Sury already from a source the host has of it: an
+	// administrator's, set up as Sury's README says
+	// (/etc/apt/sources.list.d/php.list, signed by
+	// /usr/share/keyrings/deb.sury.org-php.gpg), or a mirror's. The panel's
+	// source beside an administrator's would make apt refuse both
 	// ("Conflicting values set for option Signed-By"), and with them every
-	// other source: the move would fail at every start.
-	if s.suryIndexed(ctx, rel.Codename) {
-		return s.dropPPA(ctx, rel.Codename, "a source of packages.sury.org apt read before the move")
+	// other source: the move would fail at every start. The panel's own
+	// sury-php.list is no such source: it is written again, keyring and all.
+	if !own {
+		if hosts := s.suryOrigins(ctx, rel.Codename); len(hosts) > 0 {
+			return s.moveToHostsSury(ctx, rel.Codename, hosts)
+		}
 	}
 	files, err := suryRepoFiles(ctx, rel.Codename)
 	if err != nil {
@@ -952,19 +991,25 @@ func (s *Server) moveToSury(ctx context.Context) string {
 	if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Origin: "php:repo"}); err != nil {
 		return "writing the source of packages.sury.org: " + err.Error()
 	}
-	// Whether apt has Sury's index now decides, not how the update ended:
-	// it fails when any source fails (the PPA itself, or an
+	// Whether apt read Sury in this update decides, not how the update
+	// ended: it fails when any source fails (the PPA itself, or an
 	// administrator's), and it ends well when Sury failed for what apt takes
 	// for a passing network trouble — a name that did not resolve, a
-	// timeout — which is a warning, Sury left out. The PPA taken away then
-	// would leave the host with neither.
+	// timeout —, a warning, Sury left out or its lists from before kept. The
+	// PPA taken away then would leave the host with no repository of PHP it
+	// can refresh.
 	upd, uerr := s.agent.Pkg(ctx, "update-index")
-	if !s.suryIndexed(ctx, rel.Codename) {
+	if !s.suryIndexed(ctx, rel.Codename) || !suryRead(upd, uerr, "packages.sury.org") {
 		why := suryUnread(upd, uerr)
-		if aptSignedByConflict(uerr) {
+		switch {
+		case surySignedBy(uerr):
 			// Another source of Sury, one apt had not read yet: the look
-			// before the write did not find it.
-			why = strings.TrimSuffix(why, ".") + "; another source of packages.sury.org names another keyring (yours?): remove it, and the next start of the API puts the panel's in its place, or remove " + ondrejSource + " to keep yours"
+			// before the write could not find it.
+			why += "; another source of packages.sury.org names another keyring (yours?): apt-get update has apt read it, and the next start of the API keeps it, removing the PPA alone; or remove it, and the next start puts the panel's in its place"
+		case ppaSignedBy(uerr):
+			// An administrator's add-apt-repository beside the panel's own
+			// source of the PPA: apt has read no source since.
+			why += "; another source of ppa:ondrej/php names another keyring (yours, from add-apt-repository?), and apt reads no source while both are there: remove it, and the next start of the API moves PHP to packages.sury.org; or remove the panel's " + ondrejSource + " and " + ondrejKeyring + ", and PHP keeps coming from yours"
 		}
 		if _, rerr := s.agent.RemovePaths(context.WithoutCancel(ctx), &agent.RemovePathsRequest{Paths: []string{surySource, suryKeyring}}); rerr != nil {
 			// Left beside the PPA's, a source apt cannot read fails or
@@ -977,6 +1022,23 @@ func (s *Server) moveToSury(ctx context.Context) string {
 		s.log.Warn("PHP repository: the index update failed, but apt has the index of packages.sury.org/php", "err", pkgFailure(uerr))
 	}
 	return s.dropPPA(ctx, rel.Codename, surySource)
+}
+
+// moveToHostsSury is the move of a host whose own source of Sury apt reads,
+// from hosts: what apt has of it may be an index it can no longer refresh
+// (a keyring that expired: apt keeps the previous index files and warns),
+// so it is read anew, the PPA still there, and only then does the PPA go.
+// It tells why it did not, "" when it did.
+func (s *Server) moveToHostsSury(ctx context.Context, codename string, hosts []string) string {
+	upd, uerr := s.agent.Pkg(ctx, "update-index")
+	now := s.suryOrigins(ctx, codename)
+	if !suryRead(upd, uerr, now...) {
+		return "apt could not refresh packages.sury.org/php from the host's own source of it (" + strings.Join(hosts, ", ") + "): " + aptUnread(upd, uerr, hosts...)
+	}
+	if uerr != nil {
+		s.log.Warn("PHP repository: the index update failed, but apt has read packages.sury.org/php from the host's own source of it", "err", pkgFailure(uerr))
+	}
+	return s.dropPPA(ctx, codename, "the host's own source of packages.sury.org/php ("+strings.Join(now, ", ")+")")
 }
 
 // dropPPA ends the move once apt has the index of packages.sury.org from
@@ -995,68 +1057,214 @@ func (s *Server) dropPPA(ctx context.Context, codename, source string) string {
 	return ""
 }
 
-// suryUnread tells why apt has no index of packages.sury.org after an index
-// update: the update's failure, or apt's warning about Sury when it ended
-// well all the same.
+// suryUnread tells why apt has no index of packages.sury.org from an index
+// update, or one it did not refresh (aptUnread).
 func suryUnread(upd *agent.PkgResponse, uerr error) string {
-	var reason string
-	switch {
-	case uerr != nil:
-		reason = pkgFailure(uerr)
-	case upd != nil:
-		reason = aptSaidAbout(upd.Output, "packages.sury.org")
+	return "apt could not read packages.sury.org/php: " + aptUnread(upd, uerr, "packages.sury.org")
+}
+
+// aptUnread tells why an index update did not read the repositories at
+// hosts: what apt said against them; else, when the update failed, apt's
+// first error, which names the cause (a Signed-By conflict, a lock), with
+// the agent's word on the run; else that it ended without them.
+func aptUnread(upd *agent.PkgResponse, uerr error, hosts ...string) string {
+	reason := aptSaidOf(upd, uerr, hosts...)
+	if uerr == nil {
+		if reason == "" {
+			reason = "the index update ended without it"
+		}
+		return reason
+	}
+	var ae *agent.Error
+	if !errors.As(uerr, &ae) {
+		return pkgFailure(uerr)
 	}
 	if reason == "" {
-		reason = "the index update ended without it"
+		reason = aptFirstError(ae.Output)
 	}
-	return "apt could not read packages.sury.org/php: " + reason
+	if reason == "" {
+		return pkgFailure(uerr)
+	}
+	return oneLine(ae.Message+": "+reason, 400)
 }
 
-// aptSignedByConflict tells apt's refusal of two sources of one repository
-// signed by different keyrings; apt reads no source at all then.
-func aptSignedByConflict(err error) bool {
+// aptOutput is what apt printed in a run of the package manager that ended
+// well (upd) or failed (uerr, the agent's error).
+func aptOutput(upd *agent.PkgResponse, uerr error) string {
 	var ae *agent.Error
-	return errors.As(err, &ae) && strings.Contains(ae.Output, "Conflicting values set for option Signed-By")
+	switch {
+	case errors.As(uerr, &ae):
+		return ae.Output
+	case uerr == nil && upd != nil:
+		return upd.Output
+	}
+	return ""
 }
 
-// suryIndexed tells whether apt has the index of packages.sury.org/php for a
-// release: before the panel writes a source of it (an administrator may
-// have one of his own), and after the index update that follows, however
-// that ended (ensurePHPRepo, moveToSury). apt-cache policy lists the version
-// of php-common, which Sury has for every release, from each source that
-// has it, in lines like
-// "500 https://packages.sury.org/php noble/main amd64 Packages". Only Sury's
-// PHP repository counts: before the write, any source that carries it
-// stands in for the panel's.
-func (s *Server) suryIndexed(ctx context.Context, codename string) bool {
-	res, err := s.agent.Pkg(ctx, "available", "php-common")
-	if err != nil {
+// aptSaidOf is the first line apt printed against the repository at one of
+// hosts in a run (aptSaidAbout), "" when it said nothing against them.
+func aptSaidOf(upd *agent.PkgResponse, uerr error, hosts ...string) string {
+	out := aptOutput(upd, uerr)
+	for _, h := range hosts {
+		if line := aptSaidAbout(out, h); line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
+// suryRead tells whether an index update read Sury's PHP from hosts: apt
+// said nothing against them, and, should the update have failed, apt shows
+// it fetched from them ("Hit:7 https://packages.sury.org/php noble
+// InRelease", "Get:…"). A failed update may have fetched nothing at all —
+// apt stops at once on the lock of the lists another apt-get update holds,
+// and on sources it cannot read —, and lists of Sury kept from before would
+// pass for read.
+func suryRead(upd *agent.PkgResponse, uerr error, hosts ...string) bool {
+	if len(hosts) == 0 || aptSaidOf(upd, uerr, hosts...) != "" {
 		return false
 	}
-	for _, line := range strings.Split(res.Output, "\n") {
-		f := strings.Fields(line)
-		if len(f) < 3 || !strings.HasPrefix(f[2], codename+"/") {
+	if uerr == nil {
+		return true
+	}
+	for _, line := range strings.Split(aptOutput(upd, uerr), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "Hit:") && !strings.HasPrefix(line, "Get:") {
 			continue
 		}
-		if _, err := strconv.Atoi(f[0]); err != nil {
-			continue
-		}
-		if u, err := url.Parse(f[1]); err == nil && u.Hostname() == "packages.sury.org" && strings.HasPrefix(path.Clean(u.Path)+"/", "/php/") {
-			return true
+		for _, h := range hosts {
+			if strings.Contains(line, h) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
+// aptFirstError is apt's first error ("E: Could not get lock
+// /var/lib/apt/lists/lock …", "E: Conflicting values set for option
+// Signed-By regarding source …"), which says why it stopped; "" when it
+// printed none. Its last lines may say less: after a conflict over a key
+// inline in a .sources file come the key's lines and "E: The list of
+// sources could not be read.".
+func aptFirstError(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); strings.HasPrefix(line, "E:") {
+			return oneLine(line, 300)
+		}
+	}
+	return ""
+}
+
+// signedByConflict is apt's refusal of two sources of one repository that
+// name different keyrings, after which apt reads no source at all: the
+// repository's URI and apt's line ("E: Conflicting values set for option
+// Signed-By regarding source https://packages.sury.org/php/ noble:
+// /usr/share/keyrings/deb.sury.org-php.gpg != /etc/apt/keyrings/sury-php.gpg");
+// both "" when apt refused none.
+func signedByConflict(err error) (uri, line string) {
+	var ae *agent.Error
+	if !errors.As(err, &ae) {
+		return "", ""
+	}
+	for _, l := range strings.Split(ae.Output, "\n") {
+		if _, rest, ok := strings.Cut(l, "Conflicting values set for option Signed-By regarding source "); ok {
+			uri, _, _ = strings.Cut(rest, " ")
+			return uri, strings.TrimSpace(l)
+		}
+	}
+	return "", ""
+}
+
+// surySignedBy tells apt's refusal of the panel's source of
+// packages.sury.org/php beside another one that names another keyring.
+func surySignedBy(err error) bool {
+	uri, line := signedByConflict(err)
+	return repoOf(uri, "packages.sury.org", "/php/") && strings.Contains(line, suryKeyring)
+}
+
+// ppaSignedBy tells apt's refusal of the panel's source of ppa:ondrej/php,
+// as panels up to 0.8.19 wrote it, beside another one that names another
+// keyring or none: add-apt-repository's.
+func ppaSignedBy(err error) bool {
+	uri, line := signedByConflict(err)
+	return repoOf(uri, "ppa.launchpadcontent.net", "/ondrej/php/") && strings.Contains(line, ondrejKeyring)
+}
+
+// repoOf tells whether uri is of the repository at host whose paths start
+// with dir ("/php/": packages.sury.org/php and what is below it, not
+// /php-qa or /apache2).
+func repoOf(uri, host, dir string) bool {
+	u, err := url.Parse(uri)
+	return err == nil && u.Hostname() == host && strings.HasPrefix(path.Clean(u.Path)+"/", dir)
+}
+
+// suryIndexed tells whether apt has the index of packages.sury.org/php for
+// a release (suryOrigins), after the index update that follows the panel's
+// write of its source, however that ended (ensurePHPRepo, moveToSury).
+func (s *Server) suryIndexed(ctx context.Context, codename string) bool {
+	return slices.Contains(s.suryOrigins(ctx, codename), "packages.sury.org")
+}
+
+// suryOrigins are the hosts apt has Sury's PHP for a release from, as
+// apt-cache policy php-common lists them: each version, then its sources in
+// lines like "500 https://packages.sury.org/php noble/main amd64 Packages".
+// They are packages.sury.org/php itself, and any other host whose
+// php-common is one of Sury's own builds — "2:102+debsuryorg24.04.1+3", a
+// mirror of Sury; the PPA's read "+deb.sury.org+1". Sury has php-common for
+// every release. Before the panel writes a source of Sury, any of them
+// stands in for it (an administrator may have one of his own).
+func (s *Server) suryOrigins(ctx context.Context, codename string) []string {
+	res, err := s.agent.Pkg(ctx, "available", "php-common")
+	if err != nil {
+		return nil
+	}
+	var hosts []string
+	version := ""
+	for _, line := range strings.Split(res.Output, "\n") {
+		f := strings.Fields(line)
+		if len(f) > 0 && f[0] == "***" {
+			f = f[1:] // the installed version
+		}
+		switch {
+		case len(f) == 2 && isNumber(f[1]):
+			version = f[0]
+		case len(f) >= 3 && isNumber(f[0]) && strings.HasPrefix(f[2], codename+"/"):
+			u, err := url.Parse(f[1])
+			if err != nil || u.Hostname() == "" || slices.Contains(hosts, u.Hostname()) {
+				continue
+			}
+			if u.Hostname() == "packages.sury.org" && repoOf(f[1], "packages.sury.org", "/php/") || u.Hostname() != "packages.sury.org" && strings.Contains(version, "+debsuryorg") {
+				hosts = append(hosts, u.Hostname())
+			}
+		}
+	}
+	return hosts
+}
+
+// isNumber tells a priority of apt-cache policy's ("500").
+func isNumber(s string) bool {
+	_, err := strconv.Atoi(s)
+	return err == nil
+}
+
 // aptSaidAbout is the first warning or error apt-get update printed about a
 // host ("W: Failed to fetch https://packages.sury.org/php/dists/noble/InRelease
 // Temporary failure resolving 'packages.sury.org'"), "" when there is none.
+// A warning that starts with the URL of a file is a notice on a file apt
+// read all the same ("W: https://…/InRelease: Key is stored in legacy
+// trusted.gpg keyring …"); it does not count.
 func aptSaidAbout(out, host string) string {
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
-		if (strings.HasPrefix(line, "W:") || strings.HasPrefix(line, "E:")) && strings.Contains(line, host) {
-			return oneLine(line, 300)
+		warning := strings.HasPrefix(line, "W:")
+		if !warning && !strings.HasPrefix(line, "E:") || !strings.Contains(line, host) {
+			continue
 		}
+		if msg := strings.TrimSpace(line[2:]); warning && (strings.HasPrefix(msg, "https://") || strings.HasPrefix(msg, "http://")) {
+			continue
+		}
+		return oneLine(line, 300)
 	}
 	return ""
 }

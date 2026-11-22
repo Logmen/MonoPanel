@@ -1,0 +1,2 @@
+E: Could not get lock /var/lib/apt/lists/lock. It is held by process 9093 (python3)
+E: Unable to lock directory /var/lib/apt/lists/

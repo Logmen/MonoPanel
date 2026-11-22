@@ -48,6 +48,15 @@ func TestPrepareAndServe(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(o.WWW, "alex", "data", "www", "example.com", "wp-config.php")); err != nil {
 		t.Fatalf("the WordPress files: %v", err)
 	}
+	// The seed's PHP came from packages.sury.org: the panel wrote its source
+	// for the pretend noble host, and the pretend apt read it after that.
+	saved := NewAgent(o.config(), "", o.Log)
+	if err := saved.Load(o.statePath()); err != nil {
+		t.Fatal(err)
+	}
+	if f := saved.st.Files["/etc/apt/sources.list.d/sury-php.list"]; f == nil || !strings.Contains(f.Content, "https://packages.sury.org/php/ noble main") {
+		t.Fatalf("the pretend host's source of Sury: %+v", f)
+	}
 
 	o.Listen = freeAddr(t)
 	served := make(chan error, 1)

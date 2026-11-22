@@ -1,0 +1,2 @@
+E: Conflicting values set for option Signed-By regarding source https://packages.sury.org/php/ bookworm: /usr/share/keyrings/deb.sury.org-php.gpg != /etc/apt/keyrings/sury-php.gpg
+E: The list of sources could not be read.

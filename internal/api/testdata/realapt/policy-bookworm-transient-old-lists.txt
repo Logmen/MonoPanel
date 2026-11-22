@@ -1,0 +1,8 @@
+php-common:
+  Installed: (none)
+  Candidate: 2:102+debsuryorg12.1+3
+  Version table:
+     2:102+debsuryorg12.1+3 500
+        500 https://packages.sury.org/php bookworm/main amd64 Packages
+     2:93 500
+        500 mirror+file:/etc/apt/mirrors/debian.list bookworm/main amd64 Packages

@@ -44,6 +44,11 @@ type Agent struct {
 	calls   []Call
 	files   map[string]agent.FileSpec // last written content per path
 	removed []string
+	// aptRead are the lines of apt's sources ("<uri> <suite>/<component>")
+	// an index update read: apt-cache policy lists a source only then, and
+	// lists of a source apt fetched once stay until an update that failed
+	// nowhere (aptPolicy, aptUpdated).
+	aptRead map[string]bool
 	units   map[string]string // unit -> last action
 	// actions are the /v1/service actions, "<unit> <action>" in the order
 	// they came (status left out).
@@ -112,10 +117,14 @@ type Agent struct {
 	// request names the package: a dependency no enabled repository carries.
 	InstallFails map[string]string
 	// PkgFails makes these actions of the package manager fail with the
-	// given output ("update-index": a repository apt cannot read); PkgOutput
-	// is what the others answer with by action (default "ok"; for
-	// "available" what apt-cache policy prints of the sources written, see
-	// aptPolicy).
+	// given output ("update-index": a repository apt cannot read), as the
+	// agent fails a run: its message names the run, apt's text is the
+	// output. PkgOutput is what the others answer with by action (default
+	// "ok"; for "available" what apt-cache policy prints of the sources an
+	// index update read, see aptPolicy). On two sources of one repository
+	// whose Signed-By differ, update-index fails as apt does unless PkgFails
+	// says otherwise, and so does available unless PkgOutput does
+	// (aptConflict).
 	PkgFails  map[string]string
 	PkgOutput map[string]string
 	// PackageVersions overrides the version "query" and "available" report
@@ -250,6 +259,7 @@ func Start(t *testing.T) *Agent {
 	a := &Agent{
 		Socket:       filepath.Join(dir, "agent.sock"),
 		files:        map[string]agent.FileSpec{},
+		aptRead:      map[string]bool{},
 		units:        map[string]string{},
 		instances:    map[string]*instanceState{},
 		dirSpecs:     map[string]agent.DirSpec{},
@@ -344,16 +354,29 @@ func (a *Agent) handle(w http.ResponseWriter, r *http.Request) {
 	a.calls = append(a.calls, Call{Path: r.URL.Path, Body: body})
 	msg, failing := a.Fail[r.URL.Path]
 	status := a.FailStatus[r.URL.Path]
+	// run is the agent's message for a run of the package manager that
+	// failed (pkgFailed), its output msg.
+	run := ""
 	if r.URL.Path == "/v1/pkg" && !failing {
 		var req agent.PkgRequest
 		json.Unmarshal(body, &req) //nolint:errcheck // test double
 		msg, failing = a.PkgFails[req.Action]
+		if failing {
+			run = pkgFailed(req.Action)
+		}
 		for _, p := range req.Packages {
 			if out, ok := a.InstallFails[p]; ok && req.Action == "install" {
 				msg, failing = out, true
 			}
 			if out, ok := a.UpgradeFails[p]; ok && req.Action == "upgrade" {
 				msg, failing = out, true
+			}
+		}
+		if req.Action == "update-index" {
+			if conflict := a.aptConflict(); failing {
+				a.aptUpdated(msg, false)
+			} else if conflict != "" {
+				msg, failing, run = conflict, true, pkgFailed(req.Action)
 			}
 		}
 	}
@@ -380,7 +403,11 @@ func (a *Agent) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(agent.Error{Status: status, Message: msg, Output: msg}) //nolint:errcheck // test double
+		message := msg
+		if run != "" {
+			message = run
+		}
+		json.NewEncoder(w).Encode(agent.Error{Status: status, Message: message, Output: msg}) //nolint:errcheck // test double
 		return
 	}
 
@@ -738,12 +765,19 @@ func (a *Agent) respond(path string, body []byte) any {
 		out, ok := a.PkgOutput[req.Action]
 		if req.Action == "available" {
 			if !ok {
+				if conflict := a.aptConflict(); conflict != "" {
+					// apt-cache policy reads the sources as apt-get update does
+					return agent.PkgResponse{Available: map[string]string{}, Output: conflict + "\n"}
+				}
 				out = a.aptPolicy(req.Packages, versions)
 			}
 			return agent.PkgResponse{Available: versions, Output: out}
 		}
 		if !ok {
 			out = "ok"
+		}
+		if req.Action == "update-index" {
+			a.aptUpdated(out, true)
 		}
 		return agent.PkgResponse{Installed: versions, Output: out}
 
@@ -1197,6 +1231,7 @@ func (a *Agent) Reset() {
 	defer a.mu.Unlock()
 	a.calls = nil
 	a.files = map[string]agent.FileSpec{}
+	a.aptRead = map[string]bool{}
 	a.removed = nil
 	a.units = map[string]string{}
 	a.actions = nil

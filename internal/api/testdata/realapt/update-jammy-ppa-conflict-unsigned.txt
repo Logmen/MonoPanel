@@ -1,0 +1,2 @@
+E: Conflicting values set for option Signed-By regarding source https://ppa.launchpadcontent.net/ondrej/php/ubuntu/ jammy: /etc/apt/keyrings/ondrej-php.asc != 
+E: The list of sources could not be read.

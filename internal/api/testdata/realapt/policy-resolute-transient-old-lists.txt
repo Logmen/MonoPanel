@@ -1,0 +1,8 @@
+php-common:
+  Installed: (none)
+  Candidate: 2:102+debsuryorg26.04.1+3
+  Version table:
+     2:102+debsuryorg26.04.1+3 500
+        500 https://packages.sury.org/php resolute/main amd64 Packages
+     2:99ubuntu1 500
+        500 http://archive.ubuntu.com/ubuntu resolute/main amd64 Packages

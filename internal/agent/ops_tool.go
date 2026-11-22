@@ -78,7 +78,9 @@ func planRunner(ctx context.Context, plan *toolPlan, bin, stdin string, out io.W
 			path, argv, env, files = c.path, c.args, append(append([]string{}, plan.env...), c.env...), c.files
 		}
 		cmd := exec.CommandContext(ctx, path, argv...)
-		cmd.Env = append(os.Environ(), "LANG=C.UTF-8", "LC_ALL=C.UTF-8")
+		// English, whatever LANGUAGE the host gives its units (osprofile's
+		// aptManager.Env).
+		cmd.Env = append(os.Environ(), "LANG=C.UTF-8", "LC_ALL=C.UTF-8", "LANGUAGE=")
 		cmd.Env = append(cmd.Env, env...)
 		cmd.ExtraFiles = files
 		cmd.WaitDelay = 5 * time.Second

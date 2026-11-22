@@ -1,0 +1,7 @@
+Hit:1 http://archive.ubuntu.com/ubuntu jammy InRelease
+Get:2 https://ppa.launchpadcontent.net/ondrej/php/ubuntu jammy InRelease [24.6 kB]
+Hit:3 http://archive.ubuntu.com/ubuntu jammy-updates InRelease
+Hit:4 http://archive.ubuntu.com/ubuntu jammy-backports InRelease
+Hit:5 http://security.ubuntu.com/ubuntu jammy-security InRelease
+Reading package lists...
+E: Repository 'https://ppa.launchpadcontent.net/ondrej/php/ubuntu jammy InRelease' changed its 'Label' value from '***** The main PPA for supported PHP versions with many PECL extensions *****' to 'PPA for PHP (deprecated)'

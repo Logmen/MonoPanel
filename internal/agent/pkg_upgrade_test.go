@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"monopanel/internal/osprofile"
 )
@@ -336,4 +337,62 @@ func withTrees(t *testing.T, s *Server) *Server {
 		}
 	}
 	return s
+}
+
+// apt-get update does not wait for the lock of the lists another apt-get
+// update holds — apt-daily's at boot, an administrator's — as it waits for
+// dpkg's (DPkg::Lock::Timeout): it fails at once. The agent waits it out and
+// runs the update again; a request that went away starts no new run, and dnf,
+// which waits for its own lock, is run once.
+func TestIndexUpdateWaitsForTheListsLock(t *testing.T) {
+	const locked = "E: Could not get lock /var/lib/apt/lists/lock. It is held by process 9093 (apt-get)\nE: Unable to lock directory /var/lib/apt/lists/\n"
+	oldRun, oldPoll := runPackageManager, pkgWaitPoll
+	pkgWaitPoll = time.Millisecond
+	t.Cleanup(func() { runPackageManager, pkgWaitPoll = oldRun, oldPoll })
+	runs := 0
+	runPackageManager = func(_ *Server, _ context.Context, _ string, _ []string, argv ...string) (string, error) {
+		runs++
+		if runs < 3 {
+			return locked, errors.New("exit status 100 (monopanel-pkg-0123456789abcdef.service)")
+		}
+		return "Hit:1 http://deb.debian.org/debian trixie InRelease\nReading package lists...\n", nil
+	}
+	deb := withTrees(t, policyServer(t, debian13))
+	res, err := deb.pkg(context.Background(), &PkgRequest{Action: "update-index"})
+	if err != nil || runs != 3 || !strings.Contains(res.Output, "Hit:1") {
+		t.Fatalf("an index update behind another one's lock: %d runs, %v", runs, err)
+	}
+
+	// The request went away while the lock was held: the failure, no new run.
+	ctx, cancel := context.WithCancel(context.Background())
+	runs = 0
+	runPackageManager = func(*Server, context.Context, string, []string, ...string) (string, error) {
+		runs++
+		cancel()
+		if runs > 1 {
+			return "", nil // a run after the request ended: no one waits for it
+		}
+		return locked, errors.New("exit status 100 (monopanel-pkg-0123456789abcdef.service)")
+	}
+	if _, err := deb.pkg(ctx, &PkgRequest{Action: "update-index"}); err == nil || runs != 1 {
+		t.Fatalf("a request that is gone: %d runs, %v", runs, err)
+	}
+
+	// An install is no index update: apt-get install waits for dpkg's lock.
+	runs = 0
+	runPackageManager = func(*Server, context.Context, string, []string, ...string) (string, error) {
+		runs++
+		return locked, errors.New("exit status 100 (monopanel-pkg-0123456789abcdef.service)")
+	}
+	stubInstalled(t, map[string]string{})
+	if _, err := deb.pkg(context.Background(), &PkgRequest{Action: "install", Packages: []string{"nginx"}}); err == nil || runs != 1 {
+		t.Fatalf("an install that failed: %d runs, %v", runs, err)
+	}
+
+	// dnf waits for its own lock: a failure is the run's own.
+	runs = 0
+	el := withTrees(t, policyServer(t, alma9))
+	if _, err := el.pkg(context.Background(), &PkgRequest{Action: "update-index"}); err == nil || runs != 1 {
+		t.Fatalf("dnf's index update that failed: %d runs, %v", runs, err)
+	}
 }

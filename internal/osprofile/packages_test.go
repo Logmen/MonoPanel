@@ -56,3 +56,26 @@ func TestEPELPackage(t *testing.T) {
 		}
 	}
 }
+
+// The package managers speak English to the agent, whose readers look for
+// apt's and dnf's own words ("Candidate:", "Conflicting values set for
+// option Signed-By"): LC_ALL=C.UTF-8 alone does not do it, as gettext reads
+// LANGUAGE before it for every locale but plain C, and a host may set
+// LANGUAGE for all of systemd's units (LANGUAGE=ru_RU:ru in
+// /etc/default/locale). An empty LANGUAGE is no language at all.
+func TestPackageManagersSpeakEnglish(t *testing.T) {
+	for _, pm := range []PackageManager{aptManager{}, dnfManager{}} {
+		env := pm.Env()
+		has := func(kv string) bool {
+			for _, e := range env {
+				if e == kv {
+					return true
+				}
+			}
+			return false
+		}
+		if !has("LC_ALL=C.UTF-8") || !has("LANGUAGE=") {
+			t.Errorf("%s's environment: %v", pm.Name(), env)
+		}
+	}
+}

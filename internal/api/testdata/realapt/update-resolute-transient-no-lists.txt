@@ -1,0 +1,13 @@
+Ign:1 https://packages.sury.org/php resolute InRelease
+Hit:2 http://security.ubuntu.com/ubuntu resolute-security InRelease
+Hit:3 http://archive.ubuntu.com/ubuntu resolute InRelease
+Hit:4 http://archive.ubuntu.com/ubuntu resolute-updates InRelease
+Ign:1 https://packages.sury.org/php resolute InRelease
+Hit:5 http://archive.ubuntu.com/ubuntu resolute-backports InRelease
+Ign:1 https://packages.sury.org/php resolute InRelease
+Err:1 https://packages.sury.org/php resolute InRelease
+  Could not connect to packages.sury.org:443 (127.0.0.2). - connect (111: Connection refused)
+  Unable to connect to packages.sury.org:https:
+Reading package lists...
+W: Failed to fetch https://packages.sury.org/php/dists/resolute/InRelease  Unable to connect to packages.sury.org:https:
+W: Some index files failed to download. They have been ignored, or old ones used instead.

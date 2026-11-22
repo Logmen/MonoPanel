@@ -41,9 +41,15 @@ func (p *rhelProfile) Web() WebLayout {
 
 type dnfManager struct{}
 
-func (dnfManager) Name() string              { return "dnf" }
-func (dnfManager) Env() []string             { return []string{"LANG=C.UTF-8", "LC_ALL=C.UTF-8"} }
+func (dnfManager) Name() string { return "dnf" }
+
+// Env: English, as apt's (aptManager.Env); Python's gettext, dnf's, reads
+// LANGUAGE before LC_ALL too.
+func (dnfManager) Env() []string             { return []string{"LANG=C.UTF-8", "LC_ALL=C.UTF-8", "LANGUAGE="} }
 func (dnfManager) UpdateIndexArgv() []string { return strings.Fields("dnf -q -y --refresh makecache") }
+
+// IndexLocked: dnf waits for its lock as long as it takes.
+func (dnfManager) IndexLocked(string) bool { return false }
 func (dnfManager) InstallArgv(pkgs []string) []string {
 	return append([]string{"dnf", "-q", "-y", "install"}, pkgs...)
 }

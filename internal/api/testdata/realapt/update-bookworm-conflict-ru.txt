@@ -1,0 +1,8 @@
+E: Указаны конфликтующие значения параметра Signed-By из источника https://packages.sury.org/php/ bookworm: /usr/share/keyrings/deb.sury.org-php.gpg != /etc/apt/keyrings/sury-php.gpg
+E: Не удалось прочитать перечень источников.
+Игн:7 https://packages.sury.org/php bookworm InRelease
+Игн:7 https://packages.sury.org/php bookworm InRelease
+Игн:7 https://packages.sury.org/php bookworm InRelease
+Ошб:7 https://packages.sury.org/php bookworm InRelease
+  Не удалось соединиться с packages.sury.org:443 (127.0.0.2). - connect (111: В соединении отказано)
+W: Не удалось получить https://packages.sury.org/php/dists/bookworm/InRelease  Не удалось соединиться с packages.sury.org:443 (127.0.0.2). - connect (111: В соединении отказано)
