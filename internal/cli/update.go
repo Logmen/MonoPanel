@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"monopanel/internal/agent"
 	"monopanel/internal/apitypes"
 	"monopanel/internal/buildinfo"
 	"monopanel/internal/config"
@@ -275,10 +277,23 @@ func updateRunCmd() *cobra.Command {
 			To:      version,
 			From:    from,
 			Dir:     cfg.UpdatesDir(),
-			Binary:  panelBinary(),
-			Argv:    profile.Packages().InstallArgv([]string{pkg}),
-			Units:   []string{cfg.Update.AgentUnit, cfg.Update.APIUnit},
-			Ready:   panelVersionProbe(cfg),
+			// root's alone: a rollback copies this back as the panel binary
+			BackupDir: cfg.AgentUpdatesDir(),
+			// the state goes into the API's data directory without following
+			// a symlink the API may have left there
+			WriteState: func(dir string, data []byte) error {
+				err := agent.InstallFile(updater.StateFile(dir), data, 0o644)
+				if errors.Is(err, os.ErrNotExist) {
+					if _, err = agent.EnsureDir(agent.DirSpec{Path: dir, Mode: 0o755}); err == nil {
+						err = agent.InstallFile(updater.StateFile(dir), data, 0o644)
+					}
+				}
+				return err
+			},
+			Binary: panelBinary(),
+			Argv:   profile.Packages().InstallArgv([]string{pkg}),
+			Units:  []string{cfg.Update.AgentUnit, cfg.Update.APIUnit},
+			Ready:  panelVersionProbe(cfg),
 		}
 		return inst.Run(cmd.Context())
 	}}

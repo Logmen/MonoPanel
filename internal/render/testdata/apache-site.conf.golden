@@ -4,7 +4,7 @@
     ServerAlias www.example.com
     DocumentRoot /var/www/alex/data/www/example.com
     <Directory /var/www/alex/data/www/example.com>
-        AllowOverride All
+        AllowOverride All Options=Indexes,MultiViews,FollowSymLinks,SymLinksIfOwnerMatch,IncludesNOEXEC
         Options -Indexes +SymLinksIfOwnerMatch
         Require all granted
     </Directory>

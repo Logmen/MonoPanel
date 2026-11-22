@@ -6,7 +6,7 @@
 {{- end }}
     DocumentRoot {{ .Docroot }}
     <Directory {{ .Docroot }}>
-        AllowOverride All
+        AllowOverride All Options=Indexes,MultiViews,FollowSymLinks,SymLinksIfOwnerMatch,IncludesNOEXEC
         Options -Indexes +SymLinksIfOwnerMatch
         Require all granted
     </Directory>

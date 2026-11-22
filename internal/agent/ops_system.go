@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"net/http"
-	"strings"
 
 	"monopanel/internal/sysinfo"
 	"monopanel/internal/systemd"
@@ -40,12 +39,15 @@ func (s *Server) ensureUnixUser(ctx context.Context, req *EnsureUnixUserRequest)
 }
 
 func (s *Server) service(ctx context.Context, req *ServiceRequest) (*ServiceResponse, error) {
-	unit := req.Unit
-	if unit != "" && !strings.Contains(unit, ".") {
-		unit += ".service"
-	}
+	unit := fullUnit(req.Unit)
 	if unit != "" && !unitRe.MatchString(unit) {
 		return nil, &Error{Status: http.StatusBadRequest, Message: "invalid unit name"}
+	}
+	if unit == "" && req.Action != "daemon-reload" && req.Action != "status" && req.Action != "" {
+		return nil, &Error{Status: http.StatusBadRequest, Message: req.Action + " needs a unit"}
+	}
+	if err := serviceAllowed(unit, req.Action); err != nil {
+		return nil, err
 	}
 	conn, err := systemd.Connect(ctx)
 	if err != nil {

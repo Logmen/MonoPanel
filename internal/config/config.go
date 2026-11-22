@@ -273,8 +273,15 @@ func (c Config) TLSKeyPath() string {
 // DownloadsDir is where packages are staged before they are installed.
 func (c Config) DownloadsDir() string { return filepath.Join(c.DataDir, "downloads") }
 
-// UpdatesDir holds the state of the last self-update and the binary it replaced.
+// UpdatesDir holds the state of the last self-update, for the API to read.
+// Up to 0.8.19 it also kept the binary an update replaced.
 func (c Config) UpdatesDir() string { return filepath.Join(c.DataDir, "updates") }
+
+// AgentUpdatesDir is root's part of a self-update: the package being
+// installed, copied out of the API's downloads directory, and the binary it
+// replaces, which a rollback puts back as /usr/bin/monopanel. In a directory
+// the API owns, either could be swapped between the check and its use.
+func (c Config) AgentUpdatesDir() string { return filepath.Join(c.AgentStateDir(), "updates") }
 
 // AgentStateDir is the agent's own directory (agent.state_dir).
 func (c Config) AgentStateDir() string {

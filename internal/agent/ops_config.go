@@ -169,6 +169,9 @@ func (s *Server) applyConfigSet(ctx context.Context, req *ApplyConfigSetRequest)
 	if len(req.Files) == 0 && len(req.Reload) == 0 && len(req.Restart) == 0 && len(req.Validate) == 0 {
 		return nil, &Error{Status: http.StatusBadRequest, Message: "empty config set"}
 	}
+	if err := checkUnits("restart", req.Reload, req.Restart); err != nil {
+		return nil, err
+	}
 	contents := make([][]byte, len(req.Files))
 	for i := range req.Files {
 		f := &req.Files[i]
@@ -199,6 +202,9 @@ func (s *Server) applyConfigSet(ctx context.Context, req *ApplyConfigSetRequest)
 		// Configurations of daemons that run as root must not carry what
 		// would run code or write files as root for their author.
 		if err := confcheck.Check(f.Path, contents[i]); err != nil {
+			return nil, &Error{Status: http.StatusForbidden, Message: f.Path + ": " + err.Error()}
+		}
+		if err := confcheck.CheckOwnership(f.Path, f.Owner, f.Group, f.Mode); err != nil {
 			return nil, &Error{Status: http.StatusForbidden, Message: f.Path + ": " + err.Error()}
 		}
 	}

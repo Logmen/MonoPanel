@@ -189,7 +189,7 @@ func TestReadStateSurvivesAMissingFile(t *testing.T) {
 	if err != nil || st != nil {
 		t.Fatalf("no update yet: %v %v", st, err)
 	}
-	if err := writeState(dir, &State{Status: StatusDone, From: "0.5.1", To: "0.6.0"}); err != nil {
+	if err := (&Installer{Dir: dir}).writeState(&State{Status: StatusDone, From: "0.5.1", To: "0.6.0"}); err != nil {
 		t.Fatal(err)
 	}
 	st, err = ReadState(dir)
@@ -351,5 +351,38 @@ func TestClientRetriesTransientFailures(t *testing.T) {
 	start := time.Now()
 	if _, err := (&Client{Repo: "o/r", API: "http://127.0.0.1:1"}).Latest(cctx, ChannelStable); err == nil || time.Since(start) > time.Second {
 		t.Fatalf("a cancelled context must not wait for retries: %v in %s", err, time.Since(start))
+	}
+}
+
+// The state goes through the writer the installer is given (the panel's
+// writes it without following a symlink), and the binary backup into
+// BackupDir, which a rollback reads as root.
+func TestInstallerKeepsStateAndBackupApart(t *testing.T) {
+	state, backups := t.TempDir(), t.TempDir()
+	bin := filepath.Join(t.TempDir(), "monopanel")
+	if err := os.WriteFile(bin, []byte("old binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var wrote []string
+	i := &Installer{Dir: state, BackupDir: backups, Binary: bin, From: "0.8.19",
+		WriteState: func(dir string, data []byte) error {
+			wrote = append(wrote, dir)
+			return writeStateFile(dir, data)
+		}}
+	if err := i.writeState(&State{Status: StatusInstalling}); err != nil || len(wrote) != 1 || wrote[0] != state {
+		t.Fatalf("state writer: %v %q", err, wrote)
+	}
+	b, err := i.backupBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(b) != backups {
+		t.Fatalf("backup %s, want it in %s", b, backups)
+	}
+	if st, _ := os.Stat(b); st.Mode().Perm() != 0o700 {
+		t.Fatalf("backup mode %v", st.Mode().Perm())
+	}
+	if entries, _ := os.ReadDir(state); len(entries) != 1 {
+		t.Fatalf("state dir holds %d entries, want state.json only", len(entries))
 	}
 }

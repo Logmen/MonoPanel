@@ -179,7 +179,7 @@ Under each heading are that area's `mp` commands.
 `mp backup target add|list|rm`, `mp backup run|list|snapshots|restore`
 
 - restic in local, SFTP, S3, B2 or REST: files, MySQL dumps and a copy of panel.db.
-- Retention by days, weeks and months, a daily schedule; restore into `<data>/restore/<snapshot>` or in place.
+- Retention by days, weeks and months, a daily schedule; restore into `/var/lib/monopanel-agent/restore/<snapshot>` (root's alone) or in place.
 
 ### Files
 

@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/sys/unix"
 
+	"monopanel/internal/agent/confcheck"
 	"monopanel/internal/buildinfo"
 	"monopanel/internal/config"
 	"monopanel/internal/osprofile"
@@ -127,6 +128,12 @@ func (s *Server) ping(ctx context.Context, _ *struct{}) (*PingResponse, error) {
 // ListenAndServe serves on the agent socket until ctx is cancelled. The socket
 // is root:<service group> 0660 and only root or the service user may connect.
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	// The content checks of config/apply know the trees of this host.
+	confcheck.Configure(confcheck.Layout{
+		LogDir: s.cfg.LogDir, RunDir: s.cfg.RunDir, WWWRoot: s.cfg.WWWRoot,
+		ServiceUser: s.cfg.ServiceUser, ServiceGroup: s.cfg.ServiceGroup,
+		WebGroup: s.cfg.WebGroup, CLIGroup: s.cfg.CLIGroup,
+	})
 	s.prepareDirs()
 	sock := s.cfg.AgentSocket()
 	if err := os.MkdirAll(filepath.Dir(sock), 0o750); err != nil {

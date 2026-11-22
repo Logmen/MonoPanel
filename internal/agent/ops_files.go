@@ -683,7 +683,11 @@ func fileACL(mode fs.FileMode) [2]string {
 }
 
 func (s *Server) removePaths(ctx context.Context, req *RemovePathsRequest) (*RemovePathsResponse, error) {
-	// The checks to run afterwards are vetted before anything is removed.
+	// The checks and reloads to run afterwards are vetted before anything is
+	// removed.
+	if err := checkUnits("restart", req.Reload); err != nil {
+		return nil, err
+	}
 	for _, argv := range req.Validate {
 		if len(argv) == 0 || !filepath.IsAbs(argv[0]) {
 			return nil, &Error{Status: http.StatusBadRequest, Message: "validator must be an absolute argv"}

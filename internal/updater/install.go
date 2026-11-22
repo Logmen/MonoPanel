@@ -54,33 +54,57 @@ func ReadState(dir string) (*State, error) {
 	return &st, nil
 }
 
-func writeState(dir string, st *State) error {
+// writeStateFile is the plain writer of the state, for tests and for a Dir
+// nobody but root may write to.
+func writeStateFile(dir string, b []byte) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	tmp := StateFile(dir) + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, StateFile(dir))
+}
+
+func (i *Installer) writeState(st *State) error {
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := StateFile(dir) + ".tmp"
-	if err := os.WriteFile(tmp, append(b, '\n'), 0o644); err != nil {
-		return err
+	write := i.WriteState
+	if write == nil {
+		write = writeStateFile
 	}
-	return os.Rename(tmp, StateFile(dir))
+	return write(i.Dir, append(b, '\n'))
+}
+
+func (i *Installer) backupDir() string {
+	if i.BackupDir != "" {
+		return i.BackupDir
+	}
+	return i.Dir
 }
 
 // Installer replaces the running panel with a staged package. It runs as root
 // in a transient unit of its own, because installing the package restarts both
 // the API and the agent — whoever asked for the update is gone by step three.
 type Installer struct {
-	Package string   // staged .deb or .rpm
-	SHA256  string   // expected digest of Package
-	To      string   // version being installed
-	From    string   // version being replaced
-	Dir     string   // state and binary backups
-	Binary  string   // /usr/bin/monopanel
-	Argv    []string // package manager command installing Package
-	Units   []string // units to restart, the API last
+	Package string // staged .deb or .rpm
+	SHA256  string // expected digest of Package
+	To      string // version being installed
+	From    string // version being replaced
+	Dir     string // state of the update, which the API reads
+	// BackupDir keeps the binary being replaced (Dir when empty). A rollback
+	// copies it over Binary as root, so nobody but root may write there.
+	BackupDir string
+	// WriteState writes the state file into Dir; nil writes it by path. The
+	// panel's Dir belongs to the API, and root must not follow a symlink the
+	// API left there.
+	WriteState func(dir string, data []byte) error
+	Binary     string   // /usr/bin/monopanel
+	Argv       []string // package manager command installing Package
+	Units      []string // units to restart, the API last
 	// Ready reports the version the panel answers with, and is polled until it
 	// matches To. Without it an update is called done as soon as it installs.
 	Ready func(context.Context) (string, error)
@@ -106,7 +130,7 @@ func (i *Installer) Run(ctx context.Context) (err error) {
 		i.Settle = 90 * time.Second
 	}
 	st := &State{Status: StatusInstalling, From: i.From, To: i.To, Started: time.Now()}
-	if err := writeState(i.Dir, st); err != nil {
+	if err := i.writeState(st); err != nil {
 		return err
 	}
 	finish := func(status string, cause error, output string) error {
@@ -114,7 +138,7 @@ func (i *Installer) Run(ctx context.Context) (err error) {
 		if cause != nil {
 			st.Error = cause.Error()
 		}
-		if werr := writeState(i.Dir, st); werr != nil {
+		if werr := i.writeState(st); werr != nil {
 			i.log().Error("update state", "err", werr)
 		}
 		return cause
@@ -170,15 +194,20 @@ func (i *Installer) backupBinary() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", i.Binary, err)
 	}
-	if err := os.MkdirAll(i.Dir, 0o755); err != nil {
+	dir := i.backupDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
 	name := "monopanel-" + Version(i.From)
 	if i.From == "" {
 		name = "monopanel-previous"
 	}
-	dst := filepath.Join(i.Dir, name)
-	if err := os.WriteFile(dst, src, 0o755); err != nil {
+	dst := filepath.Join(dir, name)
+	tmp := dst + ".tmp"
+	if err := os.WriteFile(tmp, src, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
 		return "", err
 	}
 	return dst, nil
@@ -187,12 +216,13 @@ func (i *Installer) backupBinary() (string, error) {
 // pruneBackups keeps only the binary we can still roll back to; each one is
 // tens of megabytes and older ones are of no use once an update succeeded.
 func (i *Installer) pruneBackups(keep string) {
-	entries, err := os.ReadDir(i.Dir)
+	dir := i.backupDir()
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
 	for _, e := range entries {
-		path := filepath.Join(i.Dir, e.Name())
+		path := filepath.Join(dir, e.Name())
 		if e.IsDir() || path == keep || !strings.HasPrefix(e.Name(), "monopanel-") {
 			continue
 		}

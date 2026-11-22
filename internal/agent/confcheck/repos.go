@@ -132,8 +132,11 @@ func aptLine(s string) error {
 // aptRepository matches a URI against the panel's repositories.
 func aptRepository(raw string) (aptSource, error) {
 	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Port() != "" || u.RawQuery != "" || u.Fragment != "" || strings.Contains(u.Path, "..") {
-		return aptSource{}, fmt.Errorf("the panel's repositories are http(s) URIs of their vendors")
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Port() != "" || u.RawQuery != "" || u.Fragment != "" || strings.Contains(u.Path, "..") {
+		// Over plain http the keyring alone vouches for the packages, and
+		// the keyring is a file the API writes: TLS keeps the vendor's
+		// server the one that serves them.
+		return aptSource{}, fmt.Errorf("the panel's repositories are https URIs of their vendors")
 	}
 	p := path.Clean(u.Path) + "/"
 	for _, s := range aptSources {
@@ -289,7 +292,8 @@ func yumURLs(key, v string) error {
 			bad = u.Scheme != "https"
 		}
 		if !bad && key == "baseurl" {
-			bad = u.Scheme != "https" && u.Scheme != "http"
+			// as for apt: the vendor's server, over TLS
+			bad = u.Scheme != "https"
 		}
 		ok := false
 		if !bad {
@@ -301,7 +305,7 @@ func yumURLs(key, v string) error {
 			}
 		}
 		if !ok {
-			return notAllowed(fmt.Sprintf("yum %s %s", key, raw), "the panel's repositories are nginx.org and repo.mysql.com, their keys fetched over https")
+			return notAllowed(fmt.Sprintf("yum %s %s", key, raw), "the panel's repositories are nginx.org and repo.mysql.com over https")
 		}
 	}
 	return nil

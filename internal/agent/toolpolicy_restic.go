@@ -20,6 +20,8 @@ import (
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"monopanel/internal/config"
 )
 
 // RestoreDir is where a snapshot restored aside lands, as
@@ -27,7 +29,11 @@ import (
 // service user could swap the directory for a symlink while restic writes,
 // and restic would write the snapshot — whose content the API chooses, it
 // holds the repository's password — wherever the link points.
-const RestoreDir = "/var/lib/monopanel-agent/restore"
+//
+// It lies in the agent's default state directory (config.DefaultAgentStateDir):
+// the API names it as the target of the restore and has no other way to know
+// a state directory the agent's configuration moved.
+const RestoreDir = config.DefaultAgentStateDir + "/restore"
 
 // resticCacheDir is restic's cache, root's alone for the same reason: the
 // API names one in its own data directory, and the agent ignores that.

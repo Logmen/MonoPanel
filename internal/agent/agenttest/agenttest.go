@@ -417,6 +417,11 @@ func (a *Agent) respond(path string, body []byte) any {
 		if unit != "" && !strings.Contains(unit, ".") {
 			unit += ".service"
 		}
+		// Like the agent: templates' instances, targets and root shells
+		// only report their state.
+		if err := agent.CheckService(unit, req.Action); err != nil {
+			return err
+		}
 		if unit != "" && req.Action != "" && req.Action != "status" {
 			a.units[unit] = req.Action
 		}

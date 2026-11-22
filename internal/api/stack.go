@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,9 +15,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
-	"errors"
 	"monopanel/internal/agent"
-
 	"monopanel/internal/apitypes"
 	"monopanel/internal/jobs"
 	"monopanel/internal/osprofile"
@@ -347,13 +346,13 @@ func (s *Server) installNginx(ctx context.Context, jc *jobs.Context) error {
 		}
 		files := []agent.FileSpec{
 			{Path: "/etc/apt/keyrings/nginx.asc", Content: key, Mode: 0o644},
-			{Path: "/etc/apt/sources.list.d/nginx.list", Content: fmt.Sprintf("deb [signed-by=/etc/apt/keyrings/nginx.asc] http://nginx.org/packages/%s %s nginx\n", distro, rel.Codename), Mode: 0o644},
+			{Path: "/etc/apt/sources.list.d/nginx.list", Content: fmt.Sprintf("deb [signed-by=/etc/apt/keyrings/nginx.asc] https://nginx.org/packages/%s %s nginx\n", distro, rel.Codename), Mode: 0o644},
 			{Path: "/etc/apt/preferences.d/99nginx", Content: "Package: *\nPin: origin nginx.org\nPin: release o=nginx\nPin-Priority: 900\n", Mode: 0o644},
 		}
 		if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Origin: "stack:nginx"}); err != nil {
 			return err
 		}
-		jc.Logf("repository: http://nginx.org/packages/%s %s nginx", distro, rel.Codename)
+		jc.Logf("repository: https://nginx.org/packages/%s %s nginx", distro, rel.Codename)
 		jc.Progress(15, "apt-get update")
 		res, err := s.agent.Pkg(ctx, "update-index")
 		if err != nil {
@@ -361,7 +360,7 @@ func (s *Server) installNginx(ctx context.Context, jc *jobs.Context) error {
 		}
 		logTail(jc, res.Output, 3)
 	case osprofile.FamilyRHEL:
-		repo := fmt.Sprintf("[nginx-stable]\nname=nginx stable repo\nbaseurl=http://nginx.org/packages/centos/%s/$basearch/\ngpgcheck=1\nenabled=1\ngpgkey=https://nginx.org/keys/nginx_signing.key\nmodule_hotfixes=true\n", rel.MajorVersion())
+		repo := fmt.Sprintf("[nginx-stable]\nname=nginx stable repo\nbaseurl=https://nginx.org/packages/centos/%s/$basearch/\ngpgcheck=1\nenabled=1\ngpgkey=https://nginx.org/keys/nginx_signing.key\nmodule_hotfixes=true\n", rel.MajorVersion())
 		if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: []agent.FileSpec{{Path: "/etc/yum.repos.d/nginx.repo", Content: repo, Mode: 0o644}}, Origin: "stack:nginx"}); err != nil {
 			return err
 		}
@@ -638,4 +637,27 @@ func (s *Server) ensureACMEWebroot() error {
 		}
 	}
 	return nil
+}
+
+// repoSchemes are the vendor sources the panel wrote over plain http up to
+// 0.8.19, with what turns them to https: over http the keyring alone vouched
+// for the packages, and the agent's checks now take https sources only.
+var repoSchemes = []struct{ path, from, to string }{
+	{"/etc/apt/sources.list.d/nginx.list", " http://nginx.org/", " https://nginx.org/"},
+	{"/etc/apt/sources.list.d/mysql.list", " http://repo.mysql.com/", " https://repo.mysql.com/"},
+	{"/etc/yum.repos.d/nginx.repo", "baseurl=http://nginx.org/", "baseurl=https://nginx.org/"},
+}
+
+// refreshRepoSchemes moves the panel's vendor sources to https.
+func (s *Server) refreshRepoSchemes(ctx context.Context) {
+	for _, r := range repoSchemes {
+		b, err := os.ReadFile(r.path)
+		if err != nil || !strings.Contains(string(b), r.from) {
+			continue
+		}
+		content := strings.ReplaceAll(string(b), r.from, r.to)
+		if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: []agent.FileSpec{{Path: r.path, Content: content, Mode: 0o644}}, Origin: "repositories"}); err != nil {
+			s.log.Warn("repository over https", "file", r.path, "err", err)
+		}
+	}
 }

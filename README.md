@@ -169,7 +169,7 @@ mp                              # TUI-меню: разделы как в Web UI,
 `mp backup target add|list|rm`, `mp backup run|list|snapshots|restore`
 
 - restic в local, SFTP, S3, B2 или REST: файлы, дампы MySQL и копия panel.db.
-- Хранение по дням, неделям и месяцам, ежедневное расписание; восстановление в `<data>/restore/<snapshot>` или на место.
+- Хранение по дням, неделям и месяцам, ежедневное расписание; восстановление в `/var/lib/monopanel-agent/restore/<snapshot>` (только для root) или на место.
 
 ### Файлы
 

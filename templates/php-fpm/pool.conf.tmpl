@@ -18,7 +18,10 @@ pm.max_requests = 500
 request_terminate_timeout = {{ .TerminateTimeout }}s
 slowlog = {{ .LogDir }}/{{ .Name }}.php.slow.log
 request_slowlog_timeout = 10s
-catch_workers_output = yes
+;; What a worker prints goes nowhere, not into the master's log: the master
+;; runs as root, and its log lies in a directory the web server's account may
+;; write to on EL. PHP's own errors go to php_admin_value[error_log] below.
+catch_workers_output = no
 clear_env = no
 env[PATH]   = {{ .BinDir }}:/usr/local/bin:/usr/bin:/bin
 env[HOME]   = {{ .Home }}

@@ -827,6 +827,9 @@ func (a *Agent) service(_ context.Context, req *agent.ServiceRequest) (*agent.Se
 		return &agent.ServiceResponse{}, nil
 	}
 	name := unitName(req.Unit)
+	if err := agent.CheckService(name, req.Action); err != nil {
+		return nil, err
+	}
 	u, known := a.st.Units[name]
 	switch req.Action {
 	case "status":

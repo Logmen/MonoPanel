@@ -267,6 +267,12 @@ const (
 
 func isComposerWrapper(p string) bool { return p == composerBin }
 
+// ComposerRootGuard is the line of the composer wrapper that refuses root,
+// before the exec: composer.phar is a download the API made, so the archive
+// itself is the API's word, and root's composer would run it — and with it
+// the project's scripts and plugins — as root.
+const ComposerRootGuard = `[ "$(id -u)" != 0 ] || { echo "composer runs as a site's account, not as root: su -s /bin/sh -c 'composer ...' <login>" >&2; exit 1; }`
+
 var composerExecRe = regexp.MustCompile(`^exec (?:(/usr/bin/php[0-9]\.[0-9]+|/usr/bin/php|/opt/remi/php[0-9]+/root/usr/bin/php) )? ?` + regexp.QuoteMeta(composerPhar) + ` "\$@"$`)
 
 func checkComposerWrapper(_ *checker, _ string, content []byte) error {
@@ -277,11 +283,16 @@ func checkComposerWrapper(_ *checker, _ string, content []byte) error {
 	if len(lines) == 0 || lines[0] != "#!/bin/sh" {
 		return notAllowed("the composer wrapper", "it is the panel's #!/bin/sh wrapper")
 	}
-	execs := 0
+	execs, guarded := 0, false
 	for i, l := range lines[1:] {
 		switch {
 		case l == "" || strings.HasPrefix(l, "#"):
+		case l == ComposerRootGuard && execs == 0:
+			guarded = true
 		case composerExecRe.MatchString(l):
+			if !guarded {
+				return atLine(i+2, notAllowed("the composer wrapper", "it refuses root before it execs %s: the archive is the panel's download, and root's composer would run it", composerPhar))
+			}
 			execs++
 		default:
 			return atLine(i+2, notAllowed(fmt.Sprintf("the composer wrapper line %q", l), "root runs the wrapper when an administrator types composer; it only execs %s with a PHP binary of the panel", composerPhar))

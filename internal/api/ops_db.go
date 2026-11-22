@@ -663,7 +663,7 @@ func (s *Server) installDB(ctx context.Context, jc *jobs.Context, engine string)
 			distro := strings.ToLower(rel.ID)
 			files := []agent.FileSpec{
 				{Path: "/etc/apt/keyrings/mysql.asc", Content: key, Mode: 0o644},
-				{Path: "/etc/apt/sources.list.d/mysql.list", Content: fmt.Sprintf("deb [signed-by=/etc/apt/keyrings/mysql.asc] http://repo.mysql.com/apt/%s/ %s mysql-8.4-lts mysql-tools\n", distro, rel.Codename), Mode: 0o644},
+				{Path: "/etc/apt/sources.list.d/mysql.list", Content: fmt.Sprintf("deb [signed-by=/etc/apt/keyrings/mysql.asc] https://repo.mysql.com/apt/%s/ %s mysql-8.4-lts mysql-tools\n", distro, rel.Codename), Mode: 0o644},
 			}
 			if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Origin: "db:repo"}); err != nil {
 				return fail(err)

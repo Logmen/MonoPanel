@@ -247,8 +247,10 @@ Backups go to restic repositories — a local directory, SFTP, S3, B2 or a REST 
 with a daily schedule (the whole server) or manual runs and retention by days, weeks and
 months; the repository password is generated and shown once, and the S3, B2 and REST
 credentials are stored encrypted. A backup can be run for the whole server, an account, a
-site or a database; a snapshot is restored alongside, into `<data>/restore/<snapshot>`,
-or in place — for the chosen paths and after an explicit confirmation. Below is the
+site or a database; a snapshot is restored alongside, into `/var/lib/monopanel-agent/restore/<snapshot>`
+(root's alone), or in place — for the chosen paths in the web root, the panel's
+configuration, certificates, the ACME account and dumps, and after an explicit
+confirmation. Below is the
 history of runs, for all repositories or one, with their size and number of files. A
 repository can be forgotten: the panel stops writing to it and forgets its password, and
 the snapshots in it stay — they can be read again by adding the repository back with the
