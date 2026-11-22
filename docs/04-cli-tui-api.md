@@ -30,12 +30,12 @@ mp setup [--hostname …] [--listen …] [--admin-login …] [--admin-password �
          [--no-start] [--install-units] [--binary …]   # от root; повторный запуск создаёт только недостающее
                                      # --install-units: перезаписать юниты в /etc/systemd/system, кроме тех, что ставит пакет
 mp status                            # панель, хост, сервисы, задачи
-mp doctor                            # диагностика (в т.ч. песочница restic, Apache аккаунтов и их секрет, сокет порта панели,
-                                     # переезды обновления, ждущие обновления пакетов, модули ядра)
+mp doctor                            # диагностика (в т.ч. песочница restic, общие папки, Apache аккаунтов и их секрет, сокет
+                                     # порта панели, переезды обновления, ждущие обновления пакетов, модули ядра)
 mp whoami                            # кто вы для панели: аккаунт, роль, способ входа, токен, 2FA
 mp version
-mp update                            # что стоит и что вышло
-mp update check | apply [--version v0.8.19]
+mp update                            # что стоит и что вышло; после отката — что версия уже числится в базе пакетов
+mp update check | apply [--version v0.8.19]   # apply ставит заново и версию, чья установка откатилась
 mp update settings [--repo owner/name] [--channel stable|beta] [--check-hours 24] [--auto-apply] [--api …]
                    [--token …|--token-stdin|--clear-token]   # --repo "-" выключает обновления
 mp update trust [--key <ключ форка>] [--restart] | --clear | --off   # только root на сервере; без флагов — какой ключ проверяет подпись
@@ -47,7 +47,7 @@ mp user add <login> [--password …|--password-stdin|--generate] [--email …] [
 mp user set <login> [--password …|--password-stdin|--generate] [--current-password …|--current-password-stdin] [--email …] [--shell|--sftp-only] [--status active|suspended]   # свой пароль меняют с текущим (спрашивается в терминале)
 mp user list | show <login> | totp-reset <login>
 mp user rm <login> [--purge] [--yes]
-mp user share list <login> | add <login> --site <домен> --path <папка> [--name …] [--no-php] [--entry] | entry <login> <name> [--off] | rm <login> <name>   # папка сайта другого аккаунта по SFTP; entry — сессия начинается в ней; IN HOME — путь в доме, --json — ещё mount_point
+mp user share list <login> | add <login> --site <домен> --path <папка> [--name …] [--no-php] [--entry] | entry <login> <name> [--off] | rm <login> <name>   # папка сайта другого аккаунта по SFTP; entry — сессия начинается в ней; IN HOME — путь в доме, --json — ещё mount_point и статус (share.status, share.last_error: почему агент папку не смонтировал)
 mp totp status | setup [--qr] | enable <код> | disable [--password-stdin]   # 2FA своего аккаунта; настроить заново — после disable
 
 mp site add <domain> --user <login> [--php 8.4] [--mode fpm|apache|proxy] [--backend http://127.0.0.1:3000]
@@ -70,14 +70,17 @@ mp cms list
 mp cms install <domain> wordpress|joomla|opencart|bitrix [--title …] [--admin-login …] [--admin-password …|--password-stdin]
                [--admin-email …] [--force]   # Битрикс: --edition start|standard|small_business|business, --solution clean|demo|<id>
 
-mp php list [--available]
+mp php list [--available]            # PACKAGE — установленная сейчас версия пакета FPM, как в mp stack list
 mp php install <версия> | remove <версия>
 mp php ext list <версия> | enable <версия> <расширение> | disable <версия> <расширение>
 mp php ini [set key=value … | unset key …]   # PHP-параметры для всех сайтов
 
 mp stack list                        # у apache — «запущено N из M»: по Apache на аккаунт с сайтами в этом режиме; UPDATE — что
                                      # предлагает репозиторий; STATE «на заменённом бинарнике» — служба работает на старом коде
-                                     # до перезапуска (mp stack upgrade перезапустит её после проверки, даже когда ставить нечего)
+                                     # до перезапуска (mp stack upgrade перезапустит её после проверки, даже когда ставить нечего);
+                                     # строка на заменённом бинарнике получает свой перезапуск: mp stack upgrade <компонент> у nginx,
+                                     # PHP, Apache и сервера БД, systemctl restart <юнит> у остальных; при выключенном ежедневном
+                                     # обновлении — «mp stack auto-upgrade --on»
 mp stack install nginx|apache|percona|mysql|fail2ban|memcached|valkey|jpegoptim|git|composer|sphinx
 mp stack remove memcached|valkey|jpegoptim|git|composer|sphinx
 mp stack memcached [--memory-mb 256] [--max-conn 2048]    # без флагов — показать
@@ -88,9 +91,14 @@ mp stack upgrade [nginx|php|apache|db|all]   # обновить пакеты п�
                                      # перезапустил бы службу и уронил её); после обновления — новой (nginx -t, php-fpm -t,
                                      # apache2 -t, mysqld --validate-config), затем службы перезагружаются или перезапускаются;
                                      # при ошибке проверки служба работает как была (если её пакет уже не уронил её своим
-                                     # перезапуском: тогда она остаётся остановленной, задача это называет), ничего не откатывается
+                                     # перезапуском: тогда она остаётся остановленной, задача это называет), ничего не откатывается;
+                                     # перезапуск, после которого служба не поднялась, задача так и называет: «<юнит> was
+                                     # restarted but did not come up»; пока не закончен переезд на Apache аккаунтов — ещё и
+                                     # apache2ctl -t общего apache2.service до обновления; с обновлением панели не идёт одновременно
+                                     # (пришедшая второй задача ждёт в очереди)
 mp stack auto-upgrade [--on|--off] [--hour 4]   # ежедневное обновление nginx, PHP и Apache (включено по умолчанию, 04:00 по
-                                     # времени сервера); без флагов — показать его и последний запуск
+                                     # времени сервера), раз в сутки; без флагов — показать его, следующий и последний запуск
+                                     # (ошибка — одной строкой, целиком — mp job show <id>)
 mp valkey add cache|sessions [--user <login>] [--memory 128]   # экземпляр аккаунта: создать или сменить память (с перезапуском)
 mp valkey list [--user <login>] | restart cache|sessions | rm cache|sessions   # restart опустошает кеш
 
@@ -115,7 +123,8 @@ mp backup target add <имя> --type local|sftp|s3|b2|rest --repo … [--passwor
 mp backup target list | rm <имя>
 mp backup run [--target …] [--scope server|user:<login>|site:<domain>|db:<name>]
 mp backup list [--target …] [-n 50] | snapshots [--target …]   # статус: running, done, partial (снимок без части файлов), failed
-mp backup restore <snapshot> [--target …] [--include путь…] [--in-place]
+mp backup restore <snapshot> [--target …] [--include путь…] [--in-place]   # снимок с файлами устройств, FIFO, сокетами или
+                                     # setuid/setgid в выбранных путях задача отклоняет, называя первый, — выберите пути без них
 
 mp cron list | add --schedule "*/5 * * * *" --command "…" [--comment …] [--disabled]
 mp cron set <id> [--schedule …] [--command …] [--comment …] [--enable|--disable] | enable <id> | disable <id> | rm <id>
@@ -149,7 +158,9 @@ mp service status [unit] | start | stop | reload | restart | reload-or-restart |
                                      # экземпляры шаблонов (кроме monopanel-apache@<логин>), цели, юниты оболочек/питания и
                                      # systemd-tmpfiles-* — только status; php-fpm, nginx, Apache: отказ, пока
                                      # /var/log/monopanel/sites не только root'а или не вычищен, php-fpm — и пока /run/monopanel/php
-                                     # не только root'а (установка, обновление и удаление пакетов — тот же отказ, что у php-fpm)
+                                     # не только root'а (установка, обновление и удаление пакетов — тот же отказ, что у php-fpm);
+                                     # monopanel-update и monopanel-pkg-* (запуски самой панели) — только status; mount-юниты ниже
+                                     # веб-корня не запускаются, не перечитываются и не включаются (управляйте ими через systemctl)
 mp service status|stop|start monopanel-apache@<логин>   # Apache аккаунта
 mp logs <unit> [-n 100]              # журнал юнита через агент: mp logs monopanel-apache@<логин>
 mp metrics [--range 1h|6h|24h|7d|30d]
@@ -173,16 +184,20 @@ mp completion bash|zsh|fish|powershell   # скрипт автодополнен
 - Язык CLI и TUI — по локали терминала, как язык Web UI по браузеру: язык стран СНГ в `LC_ALL`, `LC_MESSAGES`, `LANG` или `LANGUAGE` — русский, любой другой, в том числе `C`/`POSIX`, — английский; `MP_LANG=ru` или `MP_LANG=en` задаёт язык явно. Сообщения самого сервера — на английском.
 - Автодополнение печатает `mp completion <shell>`; в пакет оно пока не входит.
 - Свои директивы nginx (`mp site nginx --set`) агент проверяет как сгенерированные: `fastcgi_pass` — только на сокет пула сайта, без `fastcgi_param PHP_VALUE/PHP_ADMIN_VALUE`; `proxy_method` — только слово, `uwsgi_modifier1` — только 0, `include` — без `/etc/nginx/default.d` и с шаблоном только в имени файла (подробно — [03 §3](03-web-stack.md#3-шаблон-nginx-режим-a-сокращённо)). Отклоняются и логи глубже `sites/<логин>/` или прямо в `sites/` (`access_log`, `error_log`), и location, который проксирует на Apache аккаунта без `include monopanel/apache/<логин>.conf;` — Apache ответил бы на его запросы 403 ([03 §3](03-web-stack.md#3-шаблон-nginx-режим-a-сокращённо)). Такой отказ API возвращает как 422 «the panel does not take these directives (nothing was changed)» — до записи и без `nginx -t`; «nginx rejected the configuration» значит, что директивы записались, `nginx -t` их не принял, и прежняя версия восстановлена.
-- `mp doctor` предупреждает строкой `[WARN] api socket`, если `monopanel-api.socket` включён, а API слушает порт сам: пока API перезапускается, порт может занять любой локальный аккаунт. Причину ищут в `journalctl -u monopanel-api -u monopanel-api.socket`, исправляет `mp setup`. Для порта ниже `net.ipv4.ip_unprivileged_port_start` сокет нарочно выключен, и предупреждения нет.
-- Строки `mp doctor` об обновлении до 0.8.20 и стеке (тексты сервера — на английском):
-  - `service apache2.service` — общий Apache 0.8.19 ещё работает (и где стоит переезд сайтов на Apache аккаунтов: задание в очереди, неудачи и время следующей попытки) или выключен, но включён в автозагрузку: при следующей загрузке он стартовал бы с общей конфигурацией 0.8.19 — `systemctl disable apache2`;
+- Строку `api socket` в `mp doctor` даёт API, о своём хосте (она же — в `--json`, на дашборде, в TUI): предупреждение, если API слушает порт сам, а `monopanel-api.socket` есть и не замаскирован (выключенный сокет всё равно стартует вместе с API через `Wants=`), — пока API перезапускается, порт может занять любой локальный аккаунт. Причину ищут в `journalctl -u monopanel-api -u monopanel-api.socket`, исправляет `mp setup`; чтобы API нарочно слушал порт сам, сокет маскируют: `systemctl mask monopanel-api.socket`. Для порта ниже `net.ipv4.ip_unprivileged_port_start` сокет нарочно выключен, и строка — ok. Для API, который такой строки не даёт, `mp doctor` считает её сам. Подробности проверок `mp doctor` печатает в одну строку, без управляющих последовательностей.
+- Строки `mp doctor` об обновлении до 0.8.20, стеке и других механизмах 0.8.20 (тексты сервера — на английском):
+  - `service apache2.service` — общий Apache 0.8.19 ещё работает (и где стоит переезд сайтов на Apache аккаунтов: задание в очереди, неудачи и время следующей попытки) или выключен, но включён в автозагрузку: при следующей загрузке он стартовал бы с общей конфигурацией 0.8.19 — `systemctl disable apache2`; остановленный, пока на нём ещё есть непереехавшие сайты, — провал: они отвечают 502, нужен `systemctl start apache2.service`;
+  - `apache move` — переезд на Apache аккаунтов не закончен: какие сайты ещё обслуживает общий `apache2.service` и у каких аккаунтов свой Apache появится с первым переехавшим сайтом (до тех пор он не проверяется);
   - `backend monopanel-apache@<логин>.service` — Apache аккаунта настроен до секрета nginx: отвечает — или ответит после запуска — любому локальному процессу; исправит следующий старт панели или `mp stack install apache`;
   - `site logs` — сайты, которые ещё пишут логи в `data/logs`, и почему: задание в очереди, неудачи с ошибкой и временем следующей попытки, ожидание правила SELinux;
   - `php X.Y pool www` — штатный пул ветки ещё не пуст или изменён администратором; `php-fpm pools` — пулы с `catch_workers_output = yes`;
   - `update <строка>` (`update nginx`, `update apache`, `update php-8.4`, `update percona`) — в репозитории ждёт версия новее установленной (`mp stack upgrade nginx|php|apache` или ежедневное обновление; сервер БД — только `mp stack upgrade db`), `updates` — сводка: новее ничего нет или менеджер пакетов не сказал, что предлагают репозитории, `held <строка>` — новые версии удержаны через `apt-mark hold`, `stack upgrade` — последнее обновление не удалось; `service <юнит>` с «on the binary an upgrade replaced» — служба работает на старом коде до перезапуска; у находок об ожидающем обновлении и о службах nginx, PHP, Apache и сервера БД на старом бинарнике в Web UI — ссылка «к обновлению»;
-  - `kernel modules` — есть ли правило, которое не даёт загружаться sctp, dccp, rds и tipc, и не загружен ли (не встроен ли в ядро) какой-то из них;
-  - `restic sandbox` — как работает restic; без Landlock, если он собран в ядро, но не включён (Oracle Linux с UEK), — ещё и как его включить.
-- Действие над юнитом, которое агент не выполняет (у экземпляров шаблонов, целей, оболочек, юнитов питания и `systemd-tmpfiles-*` — только состояние; запуск, перезапуск и reload php-fpm, nginx и Apache — пока дерево логов не только root'а или не вычищено, а php-fpm — и пока каталог сокетов пулов не только root'а), `mp service` получает как отказ API с причиной агента и кодом выхода 4, а не как ошибку агента.
+  - `kernel modules` — есть ли правило, которое не даёт загружаться sctp, dccp, rds и tipc, и не загружен ли (не встроен ли в ядро) какой-то из них; в контейнере — предупреждение, что модули грузит ядро хоста и правило нужно на хосте ([02](02-platform-matrix.md#1-поддерживаемые-ос));
+  - `restic sandbox` — как работает restic и с какой версией он запустился в песочнице бэкапа («restic starts as a backup's restic would (…)»); без Landlock, если он собран в ядро, но не включён (Oracle Linux с UEK), — ещё и как его включить; «restic does not start in its sandbox» — установленный restic в песочнице не запускается, бэкапы падают с той же ошибкой: сообщите её разработчикам панели;
+  - `shared folders` — смонтированы ли общие папки: «N mounted» или несмонтированные с причиной (владелец подменил папку ссылкой, гость или владелец в системной группе…); `mp site fix <домен>` монтирует папки сайта снова ([10](10-shared-folders.md));
+  - `jobs` — упавшие за сутки задачи, кроме тех, что позже исправила та же работа (тот же тип и ключ блокировки, у задач стека — и компонент; переезд на Apache аккаунтов исправляет и `mp stack install apache`), и тех, чей сайт или аккаунт удалён;
+  - `update attempt` — установка обновления панели не удалась или откатилась; если версия уже числится в базе пакетов, строка говорит, что `mp update apply` поставит её ещё раз (сама панель её не повторяет).
+- Действие над юнитом, которое агент не выполняет (у экземпляров шаблонов, целей, оболочек, юнитов питания, `systemd-tmpfiles-*` и запусков самой панели — `monopanel-update`, `monopanel-pkg-*` — только состояние; mount-юниты ниже веб-корня не запускаются, не перечитываются и не включаются; запуск, перезапуск и reload php-fpm, nginx и Apache — пока дерево логов не только root'а или не вычищено, а php-fpm — и пока каталог сокетов пулов не только root'а), `mp service` получает как отказ API с причиной агента и кодом выхода 4, а не как ошибку агента.
 
 ## 3. TUI-меню
 
@@ -193,7 +208,7 @@ mp completion bash|zsh|fish|powershell   # скрипт автодополнен
 
 | Раздел | Что в нём | Группы `mp` |
 |---|---|---|
-| Дашборд | сводка, диагностика с действиями «починить сайт», «починить все сайты», «включить enforcing», метрики, SELinux | `status`, `metrics`, `doctor`, `selinux` |
+| Дашборд | сводка, диагностика с действиями «починить сайт», «починить все сайты», «включить enforcing» и «обновить» (`u` на строке ждущего обновления или службы на заменённом бинарнике: `mp stack upgrade <компонент>`), метрики, SELinux | `status`, `metrics`, `doctor`, `selinux` |
 | Сайты | список сайтов; страница сайта: настройки, PHP-параметры, сертификат, CMS, логи, свои и сгенерированные nginx-директивы, apply, fix, приостановка, удаление, файлы сайта | `site`, `cms` |
 | Пользователи | список аккаунтов; страница аккаунта: изменение, пароль, shell или только SFTP, сброс 2FA, удаление; его cron, app-сервисы, Valkey, общие папки, API-токены и файлы | `user`, `cron`, `app`, `valkey`, `token` |
 | PHP | ветки: установка, удаление, расширения; php.ini сервера | `php` |
@@ -253,7 +268,8 @@ GET/POST        /users/{login}/cron               PATCH/DELETE /users/{login}/cr
 GET/POST        /users/{login}/apps               GET/PATCH/DELETE /users/{login}/apps/{name}   GET /apps
 GET             /users/{login}/apps/{name}/logs   POST /users/{login}/apps/{name}/{start|stop|restart}
 GET             /users/{login}/valkey             PUT/DELETE /users/{login}/valkey/{cache|sessions}   GET /valkey
-GET/POST        /users/{login}/shares             PATCH/DELETE /users/{login}/shares/{name}   (mount_point — где папка смонтирована)
+GET/POST        /users/{login}/shares             PATCH/DELETE /users/{login}/shares/{name}   (mount_point — где папка смонтирована;
+                                                  share.status failed и share.last_error — почему агент её не смонтировал)
 POST            /users/{login}/valkey/{purpose}/restart
 GET/POST        /sites                            GET/PATCH/DELETE /sites/{domain}   GET /sites/presets
 POST            /sites/{domain}/apply | fix | suspend | unsuspend | cms | tls/issue    POST /sites/move-ip
@@ -265,7 +281,8 @@ GET/POST        /databases                        DELETE /databases/{name}      
 GET             /db/engine                        POST /db/engine/tune               GET/PUT /db/engine/config
 GET             /stack                            POST /stack/install                DELETE /stack/{component}
 GET/PUT         /stack/memcached | /stack/nginx/real-ip | /stack/auto-upgrade   ({enabled, hour}: ежедневное обновление)
-POST            /stack/upgrade                    (задача stack.upgrade, тело {component}: nginx | php | apache | db | all)
+POST            /stack/upgrade                    (задача stack.upgrade, тело {component}: nginx | php | apache | db | all;
+                                                  тело необязательно — без него или с {} обновляется all: nginx, PHP и Apache)
                 (строки GET /stack несут upgrade {component, from, to, origin, packages}; статус службы — binary_replaced;
                  instances.replaced у apache — сколько запущенных Apache аккаунтов работает на заменённом бинарнике)
 GET/POST        /certificates                     GET/DELETE /certificates/{id}      POST /certificates/import | /{id}/renew
@@ -285,7 +302,9 @@ GET             /jobs | /jobs/{id} | /jobs/{id}/events
 GET/POST        /tokens                           DELETE /tokens/{id}
 GET/POST        /webhooks                         DELETE /webhooks/{id}               POST /webhooks/{id}/test
 GET             /system/status | doctor | metrics | logs/{unit} | audit    GET/PUT /system/selinux
+                (status: host.container — тип контейнера, в котором работает агент; пусто на хосте и в VM)
 GET/PUT         /system/update                    POST /system/update/check | apply
+                (last_attempt.reinstall — откатившаяся версия уже числится в базе пакетов: apply поставит её ещё раз)
 GET/PUT         /system/config                    GET /system/templates   (настройки панели в config.yaml, шаблоны и их переопределения)
 POST            /system/console                   (команды mp с потоковым выводом, только администратор)
 GET             /health

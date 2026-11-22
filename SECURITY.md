@@ -62,22 +62,29 @@ it gets fixed.
   could swap between the agent's check and its use, and so is an upgrade through
   the agent that brings a package the API names onto the host, moves one that is
   not the panel's (nginx, PHP, Apache, the database server) or, through apt,
-  removes one. For the move off the shared Apache of 0.8.19, the agent reads that
-  Apache's custom directive files for the API: plain files with one name in
-  `/etc/apache2/monopanel/sites/<domain>.d/`, 1 MiB each at most, reached as the
-  agent reaches `/etc` (only root's own symlinks on the way) and from
-  `/etc/apache2/monopanel/sites` down without any symlink. They are carried with
-  their permission bits, so a file only root could read stays so. restic, which
-  reads the web root and the panel's trees as root for a backup and writes a
-  snapshot for a restore, runs in a Landlock sandbox: a directory swapped for a
-  symlink while it works makes root neither read nor write outside those trees. A
-  backup also reads every tree it saves in a mount namespace of its own where
-  those trees follow no symlink and take in no mount that appears meanwhile —
-  with Landlock or without it (a kernel that lacks it, or one like Oracle Linux's
-  UEK that has it built in but not enabled), wherever the agent may mount; an
-  in-place restore is staged in a directory of root's alone on the destination's
-  file system (`<www_root>/.restore`), which inherits no ACL and which none of
-  the agent's calls for the API reach.
+  removes one. The package manager's changes run as transient units of their own
+  (`monopanel-pkg-<run>.service`) with the agent's fences, and an argument with a
+  `$`, which systemd would expand in a unit's command line, is refused. The agent
+  binds the shared folders itself, from directories it opened without following
+  a symlink, and starts no mount unit below the web root: a way to have it bind
+  anything else is in scope. For the move off the shared Apache of 0.8.19, the
+  agent reads that Apache's custom directive files for the API: plain files with
+  one name in `/etc/apache2/monopanel/sites/<domain>.d/`, 1 MiB each at most,
+  reached as the agent reaches `/etc` (only root's own symlinks on the way) and
+  from `/etc/apache2/monopanel/sites` down without any symlink. They are carried
+  with their permission bits, so a file only root could read stays so. restic,
+  which reads the web root and the panel's trees as root for a backup and writes
+  a snapshot for a restore, runs in a Landlock sandbox: a directory swapped for a
+  symlink while it works makes root neither read nor write outside those trees,
+  and a restore makes no device file, FIFO or socket and restores no set-user-ID
+  or set-group-ID file (the agent refuses such a snapshot before restic writes
+  anything). A backup also reads every tree it saves in a mount namespace of its
+  own where those trees follow no symlink and take in no mount that appears
+  meanwhile — with Landlock or without it (a kernel that lacks it, or one like
+  Oracle Linux's UEK that has it built in but not enabled), wherever the agent
+  may mount; an in-place restore is staged in a directory of root's alone on the
+  destination's file system (`<www_root>/.restore`), which inherits no ACL and
+  which none of the agent's calls for the API reach.
 - **The panel's port.** `monopanel-api.socket` (PID 1) holds the panel's HTTPS
   port and hands it to the API, so the port is never free while the API
   restarts, is stopped or has not started yet at boot. A way for a local account
@@ -110,14 +117,18 @@ it gets fixed.
   straight to another account's Apache for its dotfiles, or the port of an Apache
   that restarts), or the guest of a shared folder with `--no-php` running code as
   the site's owner or reading the owner's files outside the folder. So is a guest
-  that gets its shared folder bound anywhere but its mount point, and making a
-  backup store a file outside the account's home — or another account's — as the
-  account's own (restic's Landlock sandbox and the view without symlinks of every
-  tree a backup reads, which holds without Landlock too; `mp doctor` warns on a
-  kernel without Landlock, saying how to turn it on where it is built in, and
-  where the agent may not mount). So is reaching another account's Apache
-  (Apache mode) past nginx, its allow list, its rate limit and the client
-  address its `.htaccess` and PHP see, without that account's backend secret.
+  that gets its shared folder bound anywhere but its mount point, anything but the
+  folder bound there (a folder its owner swapped for a symlink: the agent binds
+  the directory it opened without following one), or a mount of its own inside
+  the folder shown in the owner's site, and so is making a backup store a file
+  outside the account's home — or another account's — as the account's own
+  (restic's Landlock sandbox and the view without symlinks of every tree a backup
+  reads, which holds without Landlock too; `mp doctor` warns on a kernel without
+  Landlock, saying how to turn it on where it is built in, where the agent may
+  not mount, or when the installed restic does not start in the sandbox). So is
+  reaching another account's Apache (Apache mode) past nginx, its allow list, its
+  rate limit and the client address its `.htaccess` and PHP see, without that
+  account's backend secret.
 - **Authentication.** Session handling (a password change ends the account's
   other browser sessions, a suspension all of them), Bearer tokens, TOTP (setting
   it up anew takes switching it off with the password first), the login rate

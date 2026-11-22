@@ -39,9 +39,10 @@ hour, six hours, a day, a week or a month. The "Table" button shows the same poi
 list, like `mp metrics`. If the agent does not answer, a warning says so at the top. For
 an administrator a service in the list opens on the "Services" page, and at the bottom
 are the diagnostics, the same as `mp doctor`: services, config syntax, disk, memory,
-certificates, DNS, jobs, drift of generated files, the stack's package updates that
-wait, kernel modules and the moves of the upgrade to 0.8.20. A finding's details expand
-on a click, and the checks can be run again. Some findings have a button next to them:
+certificates, DNS, jobs, drift of generated files, restic's sandbox, the shared folders,
+the panel port's socket, the stack's package updates that wait, kernel modules and the
+moves of the upgrade to 0.8.20. A finding's details expand on a click, and the checks
+can be run again. Some findings have a button next to them:
 fix a site or "Fix all sites", "Back to enforcing" for SELinux; findings about waiting
 updates, and about nginx, PHP, Apache and database services on a binary an upgrade
 replaced, have a "To the upgrade" link to the Extensions page.
@@ -95,7 +96,8 @@ anything but the site's pool, `fastcgi_param PHP_VALUE` and others —
 [03 §3](03-web-stack.md#3-nginx-template-mode-a-abridged)) are refused before anything is
 written, and the message says so — "the panel does not take these directives (nothing
 was changed)" — rather than blaming nginx. "Logs" shows access, error, php, slow and the Apache logs,
-from the last 50 to 5000 lines.
+from the last 50 to 5000 lines (for a site that has not moved out of `data/logs` since the
+upgrade to 0.8.20, from `~/data/logs`, read as the account).
 
 ## PHP
 
@@ -103,7 +105,9 @@ from the last 50 to 5000 lines.
 
 Every branch from 5.6 to 8.5 with its status from the PHP developers — eol, security,
 active; a branch can be installed and removed, and a failed installation retried. An
-installed branch expands into its list of extensions, which can be switched on and off;
+installed branch shows the version of its FPM package as installed now (the Extensions
+page shows the same, and an upgrade of the package past the panel shows there too) and
+expands into its list of extensions, which can be switched on and off;
 the dashed ones are in the repository but not installed — a click installs the package
 and enables the extension. Below are the PHP settings for all sites: every site inherits
 these values, a CMS preset sets what it needs, and a value set on the site itself wins
@@ -267,10 +271,14 @@ and scopes, as well as debug-shell, emergency, rescue, console-getty, the power 
 (systemd-halt, -poweroff, -reboot, -kexec, -soft-reboot, -exit, -suspend, -hibernate,
 -hybrid-sleep, -suspend-then-hibernate), systemd-sysext/confext and systemd-tmpfiles-*
 only report their state: the agent takes no action on them; the accounts' Apaches
-(`monopanel-apache@<login>`) are the exception. While the site log tree `sites/` is not
-root's alone or not cleared, the agent refuses to start, restart or reload php-fpm, nginx
-and Apache, and to install, upgrade or remove packages (PHP and stack installation jobs
-fail with that reason); while the socket directory `/run/monopanel/php` is not root's
+(`monopanel-apache@<login>`) are the exception. The panel's own runs — its self-update,
+`monopanel-update.service`, and the package manager, `monopanel-pkg-<run>.service` (they
+open by name while they run; a stop would break a dpkg/rpm transaction off halfway) —
+only report their state too, and a mount unit below the web root the agent never starts,
+reloads or enables: such units are for `systemctl`. While the site log tree `sites/` is
+not root's alone or not cleared, the agent refuses to start, restart or reload php-fpm,
+nginx and Apache, and to install, upgrade or remove packages (PHP and stack installation
+jobs fail with that reason); while the socket directory `/run/monopanel/php` is not root's
 alone, it refuses the same for php-fpm and the packages. It says the agent should be
 restarted, and a site log tree not cleared yet it tries to clear again before each such
 action. The page shows an agent's refusal with its reason (the API answers 403, not 502).
@@ -292,11 +300,15 @@ go back to has room: the snapshot is first staged next to them, in a directory o
 agent's on that file system. When there is not enough, the job fails at once, saying how
 much it takes and how much is free. A restore aside is checked for room too — in
 `/var/lib/monopanel-agent/restore`, on its file system — and refused at once when it is
-short: choose only the paths needed. Below is the
-history of runs, for all repositories or one, with their size and number of files. A
-repository can be forgotten: the panel stops writing to it and forgets its password, and
-the snapshots in it stay — they can be read again by adding the repository back with the
-same password.
+short: choose only the paths needed. A snapshot with device files, FIFOs, sockets or
+set-user-ID / set-group-ID files in the paths chosen is restored neither in place nor
+aside: the job fails at once, naming the first such file — choose the paths without it.
+While an in-place restore runs, no shared folder is bound or unbound: a change of a
+folder waits up to 30 seconds, then is refused — try it again once the restore is done.
+Below is the history of runs, for all repositories or one, with their size and number of
+files. A repository can be forgotten: the panel stops writing to it and forgets its
+password, and the snapshots in it stay — they can be read again by adding the repository
+back with the same password.
 
 restic runs in a sandbox ([01 §7](01-architecture.md#7-security)). A run in which restic
 could not read some files (exit code 3: a file vanished during the backup or the sandbox
@@ -314,7 +326,9 @@ it saves, or that restic reads `resolv.conf` by inode, the agent is not allowed 
 (usually a container's profile): a server backup is then guarded by Landlock alone, and a
 remote repository loses DNS if the host replaces `resolv.conf` during a backup. On Oracle
 Linux's UEK, which has Landlock built in but not enabled, the line says how to turn it
-on.
+on. If `mp doctor` says "restic does not start in its sandbox", backups fail with that
+same error: the line names what the sandbox kept from restic — report it to the panel's
+developers and upgrade the panel once a release fixes it.
 
 ## Migration
 
@@ -377,7 +391,11 @@ nothing else, both accounts and the web server read and write the files, and the
 PHP" box stops the site from executing scripts uploaded there. The "entry point" box (and the
 "entry point" button in the table) makes the SFTP session start right inside the folder
 instead of the home. That is how a contractor or an exchange service gets one folder of a
-site without getting the account.
+site without getting the account. The panel's agent binds the folders, after a reboot at
+the panel's start. The table shows whether a folder is mounted; one the agent refused to
+bind (its owner swapped it for a symlink, the guest or the owner is in a system group)
+shows as not mounted, with why: once that is fixed, "Fix files" on the site
+(`mp site fix`) or the panel's next start binds it ([10](10-shared-folders.md)).
 
 ![The account's Valkey: instances for the cache and for PHP sessions](img/valkey.webp)
 
@@ -412,11 +430,15 @@ with the command root runs to put the old value back. When the address changes, 
 restart also moves `monopanel-api.socket`, which holds the panel's port while the API
 restarts. Below are the panel update (check,
 install the new or any other version, repository, channel, token, schedule and automatic
-installation; the release signing key is changed only on the server, `mp update trust`),
+installation; the release signing key is changed only on the server, `mp update trust`;
+when an install rolled back while the package database lists that version already, the
+card says that updating to it installs it once more — the panel does not retry it on its
+own),
 webhooks signed with HMAC-SHA256 with a test delivery, trusted proxies for the visitor's
 real address (Cloudflare's networks are built in), the "Daily upgrade of nginx, PHP and
 Apache" card (on or off, the hour in server time, when it runs next and how the last run
-ended: what was upgraded, or the error; the database server is not upgraded this way),
+ended: what was upgraded, or the error in one line, all of it in the job whose number is
+shown there; the database server is not upgraded this way),
 the SELinux mode on EL, and the list of configuration templates — which of them are
 overridden by files in `/etc/monopanel/templates/`.
 

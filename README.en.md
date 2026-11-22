@@ -181,7 +181,7 @@ Under each heading are that area's `mp` commands.
 
 - restic in local, SFTP, S3, B2 or REST: files, MySQL dumps and a copy of panel.db.
 - Retention by days, weeks and months, a daily schedule; restore into `/var/lib/monopanel-agent/restore/<snapshot>` (root's alone) or in place.
-- restic runs in a Landlock sandbox: a backup reads only what it backs up and follows no symlink in the trees it saves (the web root, the panel's configuration, the data directory with certificates and dumps); the latter also holds on a kernel without Landlock; restic reads the system's files of `/etc` in a private `/etc`, so a host that replaces `resolv.conf` or `/etc/passwd` during a backup does not take DNS or owner names away from it; a restore writes only into its target; a run that could not read some files is marked `partial`. A local repository is a directory of restic's own.
+- restic runs in a Landlock sandbox: a backup reads only what it backs up and follows no symlink in the trees it saves (the web root, the panel's configuration, the data directory with certificates and dumps); the latter also holds on a kernel without Landlock; restic reads the system's files of `/etc` in a private `/etc`, so a host that replaces `resolv.conf` or `/etc/passwd` during a backup does not take DNS or owner names away from it; a restore writes only into its target and brings back no device file, FIFO, socket or set-user-ID / set-group-ID file (a snapshot with one in the paths chosen is refused); a run that could not read some files is marked `partial`. A local repository is a directory of restic's own.
 - An in-place restore stages the snapshot on the file system it goes back to (for the web root `<www_root>/.restore`, root's alone), a restore aside lands in `/var/lib/monopanel-agent/restore`; before restic starts the agent compares what the snapshot's listing selects with the free space and inodes there (the parts of one restore on one file system together) and refuses at once when they are short; it removes what an interrupted in-place restore left when it starts.
 
 ### Files
@@ -199,7 +199,7 @@ Under each heading are that area's `mp` commands.
 - A panel account is a unix user. SFTP-only means a chroot into `/var/www/<login>` via `sshd_config.d/monopanel.conf`; one password for the panel and SFTP; a shell is given by a flag, and with it access to `mp` over the local socket (group `monopanel-cli`); requests to the socket from php-fpm, Apache and nginx processes are refused.
 - `mp user rm <login> [--purge]` removes the account together with its sites, databases, cron, app services, Valkey instances and certificates.
 - An ordinary account sees what concerns it in the web UI and the terminal menu: its own sites, databases, mail, files, jobs and the Account page — cron, app services, Valkey, shared folders, API tokens, password and 2FA.
-- A shared folder (`mp user share add <guest> --site <domain> --path <folder> [--no-php]`): a folder of one account's site is bind-mounted (a systemd unit) into another account's home (for a guest with a shell into `/var/www/.shares/<guest>`, with a symlink in its home) — the guest sees it after signing in over SFTP and nothing else, both accounts and the web server read and write the files (ACLs), `--no-php` stops the site from executing PHP from that folder, and `--entry` (or `mp user share entry`) makes the folder the entry point — the SFTP session starts right inside it. The guest's home does not change: the chroot stays root-owned and account isolation stays as it is. A file uploaded over SFTP with mode 0644 can be read and deleted by the other side but not rewritten in place — that is how the ACL mask works; `mp site fix` lifts the limit from the files already there.
+- A shared folder (`mp user share add <guest> --site <domain> --path <folder> [--no-php]`): a folder of one account's site is bind-mounted by the agent (from the directory it opened without following a symlink, no systemd unit) into another account's home (for a guest with a shell into `/var/www/.shares/<guest>`, with a symlink in its home) — the guest sees it after signing in over SFTP and nothing else, both accounts and the web server read and write the files (ACLs), `--no-php` stops the site from executing PHP from that folder, and `--entry` (or `mp user share entry`) makes the folder the entry point — the SFTP session starts right inside it. The guest's home does not change: the chroot stays root-owned and account isolation stays as it is. A file uploaded over SFTP with mode 0644 can be read and deleted by the other side but not rewritten in place — that is how the ACL mask works; `mp site fix` lifts the limit from the files already there.
 
 ### Cron
 
@@ -218,7 +218,7 @@ Under each heading are that area's `mp` commands.
 `mp stack list`, `mp stack install apache`, `mp stack install|remove memcached|jpegoptim|git|composer|sphinx`, `mp stack memcached --memory-mb --max-conn`, `mp stack upgrade [nginx|php|apache|db]`, `mp stack auto-upgrade [--on|--off] [--hour 4]`
 
 - Apache 2.4 on Debian/Ubuntu: every account with sites in apache mode gets an instance of its own, `monopanel-apache@<login>.service`; the root parent listens on `127.<100+uid>>16>.<(uid>>8)&255>.<uid&255>:81` (a privileged port on an address of that account alone), and the children run as the account and read only what it reads. The configuration is `/etc/apache2/monopanel/accounts/<login>/` (`httpd.conf`, `backend.conf`, `sites/<domain>.conf`, `sites/<domain>.d/*.conf`); mpm_event and a short module list without cgi, include, lua, ext_filter, status and info; `.htaccess` may do anything (`AllowOverride All`) except in shared folders with `--no-php`, where no `.htaccess` is read and no PHP runs. Only nginx talks to an account's Apache: every request nginx sends carries the account's secret (the `X-MonoPanel-Backend` header), and a local process connecting to the Apache's address directly gets 403, so a site's `--allow` list, rate limit and client address cannot be bypassed past nginx; PHP never sees the secret. What nginx answers 404 for (dotfiles such as `.env` and `.git/`, `composer.json`, `.user.ini`) the account's Apache refuses even with the secret. The panel stops and disables the distribution's `apache2.service` and takes `www-data` out of `monopanel-web`. A site's custom directives (`sites/<domain>.d/`) live as long as the site does: a mode change or a suspension leaves them alone.
-- The stack packages the panel installed — nginx from nginx.org, the PHP branches from Sury, ppa:ondrej/php or Remi, Apache from the distribution, Percona or MySQL — are upgraded from their repositories by `mp stack upgrade` or the Upgrade button on the Extensions page, and only the installed packages of the panel's set. The running version checks the configuration of nginx, PHP and the database server before the upgrade (`nginx -t`, `php-fpm -t`, `mysqld --validate-config`): their packages restart those services themselves, and a component that fails is not upgraded. After the upgrade the new version checks the configuration, each account's Apache included (`apache2 -t`), and then the services reload or restart. A service that fails the check after the upgrade is not reloaded and runs on as it was — unless its own package's restart during the upgrade has already taken it down: then it stays down, and the job says so. Nothing is rolled back. The panel upgrades nginx, PHP and Apache by itself as well, every day at 04:00 server time (`mp stack auto-upgrade`, Settings); the database server only by name (`mp stack upgrade db`), as its restart is downtime for the sites. `mp doctor` names the components with an update waiting and the services that still run a binary an upgrade replaced.
+- The stack packages the panel installed — nginx from nginx.org, the PHP branches from Sury, ppa:ondrej/php or Remi, Apache from the distribution, Percona or MySQL — are upgraded from their repositories by `mp stack upgrade` or the Upgrade button on the Extensions page, and only the installed packages of the panel's set. The running version checks the configuration of nginx, PHP and the database server before the upgrade (`nginx -t`, `php-fpm -t`, `mysqld --validate-config`): their packages restart those services themselves, and a component that fails is not upgraded. After the upgrade the new version checks the configuration, each account's Apache included (`apache2 -t`), and then the services reload or restart. A service that fails the check after the upgrade is not reloaded and runs on as it was — unless its own package's restart during the upgrade has already taken it down: then it stays down, and the job says so. Nothing is rolled back. The panel upgrades nginx, PHP and Apache by itself as well, every day at 04:00 server time (`mp stack auto-upgrade`, Settings); the database server only by name (`mp stack upgrade db`), as its restart is downtime for the sites. `mp doctor` names the components with an update waiting and the services that still run a binary an upgrade replaced. The stack upgrade and the panel's self-update never run at the same time; the panel runs the installs and upgrades of packages (apt, dnf) as a systemd unit of their own (`monopanel-pkg-<run>.service`), so an agent restart does not break them off in the middle of a transaction.
 - The "Extensions" page in the web UI: memcached (127.0.0.1 only, memory and connections adjustable, restarted on change), jpegoptim, git, composer (from getcomposer.org with the published checksum, running on the newest PHP branch the panel installed, for the accounts and not for root; installing again updates it).
 - Sphinx for 1C-Bitrix: the distribution's Sphinx 2.2 on Debian/Ubuntu, the sphinxsearch.com build of Sphinx 3 on EL; the `bitrix` index as Bitrix's own settings page documents it, a stale index on disk is recreated, SphinxQL on 127.0.0.1:9306.
 
@@ -237,10 +237,10 @@ Under each heading are that area's `mp` commands.
 `mp status`, `mp metrics`, `mp site logs`, `mp logs <unit>`, `mp service`, `mp job list|show|wait`, `mp doctor`, `mp audit`
 
 - A sampler every 10 s, stored as one point per minute for 30 days; site and journald log tails through the agent.
-- Services — the units of the panel and the stack (the agent, the web servers, the database server, every installed PHP branch) and any unit by name: state, start, stop, restart, `reload-or-restart`, autostart and the journal — `mp service`, `mp logs`, the Services page. Template instances (but the accounts' Apaches), targets, shells, the power units and runs of systemd-tmpfiles over every file only report their state. While the site log tree `/var/log/monopanel/sites` is not root's alone or not cleared, php-fpm, nginx and Apache are not started, restarted or reloaded, and no package is installed, upgraded or removed; while the socket directory `/run/monopanel/php` is not root's alone, the same holds for php-fpm and the packages. The agent refuses, saying why, and takes both trees over at its own start. The API stops or restarts the panel itself only after it has answered. Stopping `monopanel-api` leaves the port to its socket, and the next connection starts the API again (and the agent, should it be stopped too); to stop the panel completely: `systemctl stop monopanel-api.socket monopanel-api monopanel-agent`. A package upgrade does not start a panel stopped so, nor enable units that are disabled (but an install after the package's removal enables them, as a fresh one does); to keep the panel down across reboots: `systemctl disable --now monopanel-api.socket monopanel-api.service monopanel-agent.service`.
+- Services — the units of the panel and the stack (the agent, the web servers, the database server, every installed PHP branch) and any unit by name: state, start, stop, restart, `reload-or-restart`, autostart and the journal — `mp service`, `mp logs`, the Services page. Template instances (but the accounts' Apaches), targets, shells, the power units, runs of systemd-tmpfiles over every file and the panel's own runs (its self-update `monopanel-update`, the package manager `monopanel-pkg-*`) only report their state; a mount unit below the web root the panel never starts or enables. While the site log tree `/var/log/monopanel/sites` is not root's alone or not cleared, php-fpm, nginx and Apache are not started, restarted or reloaded, and no package is installed, upgraded or removed; while the socket directory `/run/monopanel/php` is not root's alone, the same holds for php-fpm and the packages. The agent refuses, saying why, and takes both trees over at its own start. The API stops or restarts the panel itself only after it has answered. Stopping `monopanel-api` leaves the port to its socket, and the next connection starts the API again (and the agent, should it be stopped too); to stop the panel completely: `systemctl stop monopanel-api.socket monopanel-api monopanel-agent`. A package upgrade does not start a panel stopped so, nor enable units that are disabled (but an install after the package's removal enables them, as a fresh one does); to keep the panel down across reboots: `systemctl disable --now monopanel-api.socket monopanel-api.service monopanel-agent.service`.
 - Long actions are jobs with a log: `mp job list|show|wait`, the Jobs page. An administrator sees every job, other accounts their own; passwords and tokens in a job's parameters are hidden in the answers.
 - Site logs live in `/var/log/monopanel/sites/<login>/`, outside the home (nginx, Apache and php-fpm open them as root), and the account reads them through its group; they rotate weekly or at 100 MB: eight copies, compressed from the second one.
-- `mp doctor` checks services, configs, disk, certificates, DNS, jobs and drift of the generated files, and also the vendor package updates that wait, loaded kernel modules and what the upgrade to 0.8.20 has not finished moving.
+- `mp doctor` checks services, configs, disk, certificates, DNS, jobs and drift of the generated files, and also whether the shared folders are mounted, whether restic starts in its sandbox, the vendor package updates that wait, loaded kernel modules and what the upgrade to 0.8.20 has not finished moving.
 - The audit log — who signed in and from where, who created tokens, who changed what: `mp audit`, the "Audit log" page, `GET /system/audit`; the same feed goes to `/var/log/monopanel/audit.log` as rotated JSON lines, and sign-ins and refusals to journald as well.
 
 ### Console in the web UI
@@ -282,7 +282,7 @@ Under each heading are that area's `mp` commands.
 
 `mp update`, `mp update check|apply|settings`, `mp update trust`
 
-- The panel finds a new version in this repository's releases, downloads the package for its OS, verifies the ed25519 signature and installs it from a separate systemd unit. If the new version does not answer, the previous binary comes back.
+- The panel finds a new version in this repository's releases, downloads the package for its OS, verifies the ed25519 signature and installs it from a separate systemd unit. If the new version does not answer, the previous binary comes back; `mp update apply` installs that version once more, the automatic update does not retry it.
 - Only root on the server changes the key the signature is checked against (`mp update trust`): it never passes through the panel process — neither the API nor the console; the web UI shows it read-only.
 - The panel never installs a version older than the installed one; should going back be unavoidable, root does it by hand — see [Going back to an older version](#going-back-to-an-older-version): from 0.8.20 to an older version it takes steps afterwards.
 
@@ -386,6 +386,26 @@ the previous binary if the new version fails to answer. An unsigned release will
 install unless the check is switched off explicitly. A slow link is fine: the package
 download has no overall deadline, only a stalled stream is given up.
 
+The package manager runs with the panel's environment: on Ubuntu `NEEDRESTART_MODE=l`, so
+needrestart lists the services left on old libraries instead of restarting them all, the
+database server among them; `install.sh` does the same. The update's install never runs
+at the same time as the stack upgrade or the panel's other apt and dnf runs: they wait
+for each other. An update that rolled back leaves the package database with the new
+version while the previous binary runs: `mp update apply` installs it once more
+(`apt-get --reinstall`, `dnf reinstall`); `mp update`, Settings, the TUI and `mp doctor`
+say so; and the automatic update does not retry that version (it installs the next
+release as usual).
+
+An update from 0.8.19 to 0.8.20 that rolled back is an exception: the retry runs 0.8.19's
+updater, whose plain `apt-get install` / `dnf install` changes nothing for a version the
+package database lists already, so it rolls back again (and 0.8.19 with automatic
+updates on retries at every check). Install the package by hand:
+`apt install --reinstall ./monopanel_0.8.20_<arch>.deb` or
+`dnf reinstall ./monopanel-0.8.20.<arch>.rpm`. Take the file from the 0.8.20 release; the
+one 0.8.19 downloaded is in `/var/lib/monopanel/downloads/`, but that directory is the API
+process's — check its sum against the release's `SHA256SUMS`. From 0.8.20 on,
+`mp update apply` reinstalls such a version itself.
+
 ### Upgrading to 0.8.20
 
 What an administrator notices after the upgrade from 0.8.19:
@@ -416,11 +436,16 @@ What an administrator notices after the upgrade from 0.8.19:
   or a copy for another binary, the upgrade leaves alone, and `mp setup` warns that it
   overrides the package's unit.
 - After a start the panel waits for its agent however long the agent takes (it may be
-  retiring unsafe mount units of shared folders): the API's journal says
-  `start-up refresh: waiting for the agent` and `the agent answers`, the start-up work
-  (the moves, the checks) begins once it answers, and queued jobs wait for the agent up
-  to three minutes instead of failing on "agent unreachable". Should the API stop first,
-  the start-up work runs at the next start.
+  taking over the previous version's mount units of shared folders and checking what they
+  mounted): the API's journal says `start-up refresh: waiting for the agent` and
+  `the agent answers`, the start-up work (the moves, the checks) begins once it answers,
+  and queued jobs wait for the agent up to three minutes instead of failing on "agent
+  unreachable". Should the API stop first, the start-up work runs at the next start.
+- An API that cannot take what it serves on — the port of `web.listen` (held by another
+  process), its TLS key, the socket `api.sock` — no longer runs on without its port: it
+  changes nothing on the host, logs `monopanel api cannot start` with the reason and
+  exits, and systemd starts it again. The jobs, the start-up refresh and the loops start
+  only once the API has taken everything it serves on.
 - The panel never installs a version older than the installed one (nor a release over a
   later build such as `0.8.19-5-gabc1234`); the refusal says what going back would break
   and points to [Going back to an older version](#going-back-to-an-older-version).
@@ -450,7 +475,12 @@ What an administrator notices after the upgrade from 0.8.19:
   in both Apache-mode locations, and `apache/site.conf.tmpl` without `RewriteEngine On`
   right inside the `<VirtualHost>`. The move does not repeat at every start: after a
   failure the next try waits as for the logs (below), `mp doctor` shows the state in its
-  `service apache2.service` line, and `mp stack install apache` tries at once.
+  `service apache2.service` line, and `mp stack install apache` tries at once. While the
+  move has not finished, an `apache move` line names the sites on the shared Apache, the
+  Apaches of accounts none of whose sites has moved yet are not checked, and the shared
+  Apache stopped meanwhile is a failure in `mp doctor`: those sites answer 502
+  (`systemctl start apache2.service`). `mp stack upgrade apache` and the daily upgrade
+  check its configuration first (`apache2ctl -t`) and restart it after the upgrade.
 - The panel makes every php-fpm branch's stock `www` pool idle once — when it installs the
   branch, or at the first start of 0.8.20: a virtual host of your own that used its socket
   (`/run/php/php<version>-fpm.sock`, on EL `/var/opt/remi/phpXY/run/php-fpm/www.sock`;
@@ -459,9 +489,11 @@ What an administrator notices after the upgrade from 0.8.19:
   file back to the panel, remove it and restart `monopanel-api`. The same happens if you
   take the maintainer's version when dpkg asks about `www.conf` during a manual upgrade of
   php-fpm; the default answer keeps the panel's pool, and the apt runs of the panel itself
-  ask no such question. On EL the panel likewise sets `error_log = syslog` in
-  `php-fpm.conf` once: should the line be removed or changed later, the same doctor line
-  warns, and it is put back by hand — the panel never writes `php-fpm.conf` anew. The
+  ask no such question. Comments do not count: a pool that differs from the panel's idle
+  pool in them alone stays the panel's, and `mp doctor` does not warn about it. On EL the
+  panel likewise sets `error_log = syslog` in `php-fpm.conf` once: should the line be
+  removed or changed later, the same doctor line warns, and it is put back by hand — the
+  panel never writes `php-fpm.conf` anew. The
   output of php-fpm's workers no longer goes into the master's log
   (`catch_workers_output = no`); PHP's errors still go to `<domain>.php.error.log`. A pool
   that still has it on is named in the doctor's `php-fpm pools` line: the sites' pools
@@ -476,7 +508,18 @@ What an administrator notices after the upgrade from 0.8.19:
 - Units: `mp service` and the Services page only show the state of template instances
   (but the accounts' Apaches), targets, shells such as `debug-shell`, the power units and
   runs of systemd-tmpfiles over every file (`systemd-tmpfiles-setup*`,
-  `systemd-tmpfiles-clean`).
+  `systemd-tmpfiles-clean`). The same holds for the panel's own runs,
+  `monopanel-update.service` and `monopanel-pkg-<run>.service`, and a mount unit of yours
+  below the web root the panel never starts, reloads or enables: use `systemctl` for
+  those.
+- The panel runs the installs, upgrades and removals of packages (apt, dnf) not as the
+  agent's child processes but as a systemd unit of their own,
+  `monopanel-pkg-<run>.service` (`systemctl list-units 'monopanel-pkg-*'` shows a run
+  while it goes): an agent restart — a self-update, `systemctl restart` — no longer
+  cuts a dpkg or rpm transaction off, and the next run waits until it is over. A job
+  whose call died with the agent names the unit; its result is in
+  `journalctl -u monopanel-pkg-<run>.service`. The stack upgrade and the panel's
+  self-update never run at the same time: the one that comes second waits in the queue.
 - The pools' socket directory `/run/monopanel/php` and the site log tree
   `/var/log/monopanel/sites` are root's alone: systemd-tmpfiles makes `php/` at boot, and
   the agent prepares both at its start, before the API. A directory someone else made (up
@@ -489,8 +532,10 @@ What an administrator notices after the upgrade from 0.8.19:
   with the reason: a directory of someone else's it takes over when restarted, and the
   site log tree it tries to clear again before each such action. The upgrade adds the line
   for `php/` to the copy of `/etc/tmpfiles.d/monopanel.conf` that `mp setup` left as well,
-  and removes `/etc/tmpfiles.d/monopanel-php.conf`, which the API wrote; should that file
-  hold anything else, the package warns: check it, then remove it.
+  and keeps `/etc/tmpfiles.d/monopanel-php.conf`, which the API wrote: a version older
+  than 0.8.20 needs it after its own `mp setup`, and the same line in two files is no
+  warning. Should that file hold anything else, the package warns: check what it makes as
+  root at boot, and leave the panel's line in it.
 - composer does not run as root: `su -s /bin/sh -c 'composer …' <login>`. The package
   sources the panel wrote over http (nginx.org, repo.mysql.com) it moves to https at its
   start, and it writes no others. On Ubuntu with `ppa:ondrej/php` the panel puts the
@@ -513,9 +558,13 @@ What an administrator notices after the upgrade from 0.8.19:
   after each further one, at least once a day. Once the cause is fixed,
   `mp site apply <domain>` moves the site at once. Until a site has moved, nothing rotates
   its logs in `data/logs` and fail2ban does not read them: root does not work on files in
-  a client's directory. On EL with SELinux the sites move only once the label rule of the
-  log tree is in place; if that failed, the next start tries again. The config history is
-  in `/var/lib/monopanel-agent/confhistory/`.
+  a client's directory; its log tail (the "Logs" tab, `mp site logs`) shows the file in
+  `~/data/logs`. On EL with SELinux the sites move only once the label rule of the log
+  tree is in place. If `semanage` failed, the panel tries the rule again every hour and
+  before it applies a site; while the rule is missing, a site on an enforcing host is not
+  applied — the job gives `semanage`'s reason, and the site runs on as it was — and the
+  webmail on its port stays as it is. The config history is in
+  `/var/lib/monopanel-agent/confhistory/`.
 - Backups: restic runs in a sandbox. A local repository must be a directory of restic's
   own — a target whose repository lies right in a directory with other files (such as
   `/var/backups`) stops working: add a new one, `/var/backups/monopanel` for example.
@@ -524,7 +573,15 @@ What an administrator notices after the upgrade from 0.8.19:
   files is marked `partial`. An in-place restore stages the snapshot on the file system it
   goes back to (for the web root in `/var/www/.restore`) and checks the free space and
   inodes there before restic starts; a restore aside is checked the same way. When there
-  is not enough, the job fails at once, saying how much it takes and how much is free.
+  is not enough, the job fails at once, saying how much it takes and how much is free. A
+  restore refuses a snapshot with device files, FIFOs, sockets or set-user-ID /
+  set-group-ID files in the paths chosen — choose the paths without them; while an
+  in-place restore runs, no shared folder is bound or unbound (a change of a folder waits
+  up to 30 s, then is refused: try again once the restore is done). The `restic sandbox`
+  line of `mp doctor` names the restic version that started in a backup's sandbox, and
+  "restic does not start in its sandbox" means that restic does not start there and
+  backups fail with that same error (EPEL's restic on AlmaLinux, Rocky and Oracle Linux
+  reads `/proc/sys/crypto/fips_enabled` as it starts — the sandbox grants it that file).
 - On Oracle Linux with the UEK kernel Landlock is built in but not enabled: restic runs
   without the sandbox, while a backup still reads the trees it saves without symlinks.
   The `restic sandbox` line of `mp doctor` says how to turn Landlock on:
@@ -544,15 +601,60 @@ What an administrator notices after the upgrade from 0.8.19:
   nginx, PHP, Apache and the database server `mp stack upgrade <component>`, after the
   configuration check. Ubuntu's needrestart, after the apt runs with which the panel
   installs and upgrades the stack, now only lists the services on old libraries and
-  restarts nothing itself, the database server included.
+  restarts nothing itself, the database server included. If the agent restarts in the
+  middle of an upgrade, the job runs again after the panel restarts and waits for the
+  apt/dnf run to end; its result is in `journalctl -u monopanel-pkg-<run>.service`, its
+  output in `/var/log/apt/term.log` or `/var/log/dnf.log`. The record of the last upgrade
+  (`mp stack auto-upgrade`, Settings) keeps one line of the error: its start and its end,
+  where apt-get or dnf give the reason; all of it is in `mp job show <id>`. Below its
+  table `mp stack list` says how the waiting updates get installed (and whether the daily
+  upgrade is off), and for each service on a replaced binary what restarts it.
 - The kernel modules sctp, dccp, rds and tipc no longer load
   (`/usr/lib/modprobe.d/monopanel.conf`). A module loaded already stays until a reboot or
   `rmmod`, and `mp doctor` warns about it. To let a module load, put a copy of the file
   without its line into `/etc/modprobe.d/monopanel.conf` (an empty file lets all four
-  load).
-- The shared folders of guests with a shell move to `/var/www/.shares/<guest>/<name>`,
-  with a symlink left in the home; a folder in use moves at the next start or after
-  `mp site fix <domain>`.
+  load). A copy of the rule `mp setup` wrote on an install from the binary alone goes once
+  the package is installed; a file you changed stays, and the install warns. In a
+  container the host's kernel loads the modules: the `kernel modules` line warns that the
+  rule belongs in the host's `/etc/modprobe.d`.
+- The agent binds the shared folders, not systemd: it takes the previous version's mount
+  units over at its first start — those whose guest or owner no longer passes the account
+  check too — and takes a mount that does not show the folder (systemd mounted it by path,
+  through the owner's symlink) off at once, in use or not. There are no units any more:
+  nothing mounts the folders at boot, the panel binds them at its start, and until the
+  API starts no shared folder is mounted. A folder its owner swapped for a symlink, and a
+  folder of an account in a system or privileged group (`users`, `sudo`, `docker` … — the
+  rules of an account's own units), the agent does not bind: its status is `failed` with
+  why, and the `shared folders` line of `mp doctor` names it; once the cause is fixed, run
+  `mp site fix <domain>`. Mount units of your own below the web root the panel never
+  starts or enables — they are for `systemctl`. The shared folders of guests with a shell
+  move to `/var/www/.shares/<guest>/<name>`, with a symlink left in the home; a folder in
+  use moves at the next start or after `mp site fix <domain>`. In detail:
+  [docs/en/10-shared-folders.md](docs/en/10-shared-folders.md); what becomes of the folders
+  after going back: [Going back to an older version](#going-back-to-an-older-version).
+- When systemd refuses the panel a start or restart of a service for its start limit (it
+  was restarted too often, not crashing), the agent resets it and runs the start once
+  more; a crashing service it does not bring up this way. A PHP branch's optional
+  extensions install in one run of apt or dnf: with one package per run the branch's
+  php-fpm restarted more often than systemd allows, and `mp php install` failed. A
+  fail2ban that is enabled but not running the panel restarts at the next refresh of the
+  jails (a site created or deleted, a start of the panel), and a running one once a site
+  log on its list appears (a site suspended under 0.8.19 and unsuspended, say).
+- New and changed lines of `mp doctor`: `shared folders` (the shared folders that are not
+  mounted, and why), `apache move` (the sites still on the shared Apache), `restic sandbox`
+  (the version of the restic that started in the sandbox, or its error), `kernel modules`
+  in a container (the host's kernel loads the modules), `update attempt`
+  (`mp update apply` installs a version that rolled back). The API judges the
+  `api socket` line itself: a warning when it listens on the port itself while the socket
+  is there and not masked (to have the API listen itself on purpose:
+  `systemctl mask monopanel-api.socket`). `jobs` does not count a failed job that the same
+  work fixed later, or whose site or account was deleted.
+- On Ubuntu the update to 0.8.20 itself runs 0.8.19's updater, whose apt run may let
+  needrestart restart the services left on old libraries, the database server among them.
+  To avoid that, update by hand:
+  `NEEDRESTART_MODE=l apt install ./monopanel_0.8.20_<arch>.deb`. A self-update from
+  0.8.19 that rolled back is not mended by a retry — see
+  [Releases and updates](#releases-and-updates).
 - The web UI's console runs no command that reads or writes files on the server
   (`files get|put`, `ssl import`, `site nginx --set`, `migrate --key`), nor
   `mp update trust`: the panel's pages or `mp` over SSH do that.
@@ -566,21 +668,31 @@ bring back what later ones fixed, the agent's own checks included — and the re
 `mp update apply` points here. Should going back be unavoidable, root installs the older
 package by hand, over the newer one:
 `apt install --allow-downgrades ./monopanel_<version>_<arch>.deb` or
-`dnf downgrade ./monopanel-<version>.<arch>.rpm`. Do install it over the newer one, not
-after `apt remove` or `dnf remove`: only then does the package's script keep the accounts'
-Apache template and print what breaks and what to do.
+`dnf downgrade -y ./monopanel-<version>.<arch>.rpm` (without `-q`: with it dnf does not
+show the script's notice, which then goes only to `/var/log/dnf.rpm.log`). Install it over
+the newer one: then the package's script says what breaks and what to do. After
+`apt remove` or `dnf remove` the script cannot know that an older version follows: it
+keeps the accounts' Apache template and the php-fpm socket directory's line all the same,
+but names only what stops — the steps below are needed then too.
 
 Going back from 0.8.20 or later to a version older than 0.8.20 takes steps: the older
 version does not know what 0.8.20 changed on the server. The package script of 0.8.20 and
 later does not stop the installation (a failing prerm would leave dpkg with a
 half-installed package and rpm with both versions at once); it keeps the accounts' Apache
-template and prints what breaks and what to do. In detail:
+template and the php-fpm socket directory's line, and prints what breaks and what to do.
+In detail:
 
 - the site logs are in `<log_dir>/sites` (`/var/log/monopanel/sites`), while the older
   version's logrotate and fail2ban look at the accounts' `data/logs`: the logs are not
   rotated and attacks on the sites go unseen. The older package also hands
   `/var/log/monopanel` back to the user `monopanel`, so the logs root opens there sit
   below a directory of the service user — apply the sites right away;
+- the php-fpm socket directory `<run_dir>/php` (`/run/monopanel/php`): the older
+  version's `mp setup` writes `/etc/tmpfiles.d/monopanel.conf` without its line, and after
+  a reboot no php-fpm would start (502 on every PHP site). The script puts
+  `d /run/monopanel/php 0755 root root -` into `/etc/tmpfiles.d/monopanel-php.conf` when
+  that file is missing; keep it while a version older than 0.8.20 runs. On an install from
+  the binary alone, `mp setup` of 0.8.20 and later writes that file;
 - sites in Apache mode run on their accounts' Apaches (`monopanel-apache@<login>`), and
   the distribution's `apache2.service` is off. The older package has no
   `monopanel-apache@.service` template: the script copies it to `/etc/systemd/system`,
@@ -589,10 +701,13 @@ template and prints what breaks and what to do. In detail:
   site answers 502;
 - apps with an env file start through `monopanel app-exec`, which the older version
   lacks, and do not come up at their next start — the script names them;
-- shell guests' shared folders stay mounted in `/var/www/.shares` and reachable through
-  the link in their homes; the older panel shows them unmounted and cannot make them
-  again — leave them be until the next upgrade (`mp user share rm` under the older
-  version leaves the mount behind);
+- the 0.8.20 agent binds the shared folders, with no units: until a reboot they stay
+  mounted (the shell guests' ones in `/var/www/.shares`, reachable through the link in
+  their homes; the older panel shows them unmounted), and after one none is mounted. The
+  folders of SFTP-only guests the older version's `mp site fix <domain>` mounts again,
+  writing their units; those of shell guests the older version cannot mount — leave them
+  be until the next upgrade (`mp user share rm` under the older version leaves the mount
+  behind);
 - the panel's port: nothing to do — before the older version starts, the API unit's
   drop-in stops the socket, and it listens on the port itself; the drop-in can go:
   `rm /etc/systemd/system/monopanel-api.service.d/socket.conf && systemctl daemon-reload`.
@@ -615,10 +730,34 @@ the app's unit and restarts it; the older version does not read the root-only va
 files in `/etc/monopanel/apps/`.
 
 Back to 0.8.20 or later: the package's upgrade removes the copy of the Apache template
-from `/etc/systemd/system` itself. The one-time moves of 0.8.20 remember they were done
-and do not repeat by themselves after such an upgrade: run `mp stack install apache` (if
-sites run in Apache mode), `mp site apply` for every site, and `mp mail apply` if the
-webmail has a port of its own.
+from `/etc/systemd/system` itself, and `/etc/tmpfiles.d/monopanel-php.conf` stays: one
+line in two tmpfiles files is no warning. The shared folders' units the older version
+wrote the agent takes over at its start, and the panel binds the folders. The one-time
+moves of 0.8.20 remember they were done and do not repeat by themselves after such an
+upgrade: run `mp stack install apache` (if sites run in Apache mode), `mp site apply` for
+every site, and `mp mail apply` if the webmail has a port of its own.
+
+### Removing the panel
+
+`apt remove monopanel` / `dnf remove monopanel` stops and disables the panel; what it set
+up keeps running. Sites in Apache mode keep their accounts' Apaches: the script copies the
+`monopanel-apache@.service` template to `/etc/systemd/system`
+(`systemctl disable --now monopanel-apache@<login>` stops one for good; the next install
+of the package removes the copy). `/etc/tmpfiles.d/monopanel-php.conf` keeps making
+`/run/monopanel/php`, where the sites' pools listen, at boot. Apps with an env file of
+their own start through `monopanel app-exec`, which goes with the package: they fail at
+their next start, and the script names them. Before removing the panel, switch them to
+panel variables (`mp app set <name> --user <login> --env-file '' --env KEY=…`) or remove
+them; installing the panel again brings them back. Shared folders stay mounted until a
+reboot: the agent binds them, with no units, and after one none is mounted.
+
+A removal from a host `mp setup` never set up leaves nothing behind. Where the line for
+`/run/monopanel/php` cannot be kept (`monopanel-php.conf` holds something else), the
+script says what to put there before an older version is installed. dnf shows the
+script's notice only without `-q`. To retire the accounts' Apaches for good:
+`systemctl disable --now monopanel-apache@<login>` for each, then
+`rm /etc/systemd/system/monopanel-apache@.service && systemctl daemon-reload`
+(`apt purge` leaves the copy too).
 
 ## Moving in
 

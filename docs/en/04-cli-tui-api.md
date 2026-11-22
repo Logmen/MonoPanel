@@ -30,12 +30,12 @@ mp setup [--hostname …] [--listen …] [--admin-login …] [--admin-password �
          [--no-start] [--install-units] [--binary …]   # as root; running it again only creates what is missing
                                      # --install-units: overwrite the units in /etc/systemd/system, but those the package installs
 mp status                            # panel, host, services, jobs
-mp doctor                            # diagnostics (restic's sandbox, the accounts' Apaches and their secret, the panel port's
-                                     # socket, the upgrade's moves, package updates that wait, kernel modules included)
+mp doctor                            # diagnostics (restic's sandbox, the shared folders, the accounts' Apaches and their secret,
+                                     # the panel port's socket, the upgrade's moves, package updates that wait, kernel modules included)
 mp whoami                            # who you are to the panel: account, role, how you are authenticated, token, 2FA
 mp version
-mp update                            # what is installed and what is available
-mp update check | apply [--version v0.8.19]
+mp update                            # what is installed and what is available; after a rollback, that the package database lists the version already
+mp update check | apply [--version v0.8.19]   # apply installs a version whose install rolled back once more as well
 mp update settings [--repo owner/name] [--channel stable|beta] [--check-hours 24] [--auto-apply] [--api …]
                    [--token …|--token-stdin|--clear-token]   # --repo "-" turns updates off
 mp update trust [--key <fork key>] [--restart] | --clear | --off   # root on the server only; no flags — which key checks the signature
@@ -47,7 +47,7 @@ mp user add <login> [--password …|--password-stdin|--generate] [--email …] [
 mp user set <login> [--password …|--password-stdin|--generate] [--current-password …|--current-password-stdin] [--email …] [--shell|--sftp-only] [--status active|suspended]   # one's own password is changed with the current one (asked on a terminal)
 mp user list | show <login> | totp-reset <login>
 mp user rm <login> [--purge] [--yes]
-mp user share list <login> | add <login> --site <domain> --path <folder> [--name …] [--no-php] [--entry] | entry <login> <name> [--off] | rm <login> <name>   # a folder of another account's site over SFTP; entry — the session starts inside it; IN HOME — the path in the home, --json adds mount_point
+mp user share list <login> | add <login> --site <domain> --path <folder> [--name …] [--no-php] [--entry] | entry <login> <name> [--off] | rm <login> <name>   # a folder of another account's site over SFTP; entry — the session starts inside it; IN HOME — the path in the home, --json adds mount_point and the status (share.status, share.last_error: why the agent did not bind the folder)
 mp totp status | setup [--qr] | enable <code> | disable [--password-stdin]   # 2FA of your own account; set it up again after disable
 
 mp site add <domain> --user <login> [--php 8.4] [--mode fpm|apache|proxy] [--backend http://127.0.0.1:3000]
@@ -70,14 +70,17 @@ mp cms list
 mp cms install <domain> wordpress|joomla|opencart|bitrix [--title …] [--admin-login …] [--admin-password …|--password-stdin]
                [--admin-email …] [--force]   # Bitrix: --edition start|standard|small_business|business, --solution clean|demo|<id>
 
-mp php list [--available]
+mp php list [--available]            # PACKAGE is the FPM package as installed now, as in mp stack list
 mp php install <version> | remove <version>
 mp php ext list <version> | enable <version> <extension> | disable <version> <extension>
 mp php ini [set key=value … | unset key …]   # PHP settings for all sites
 
 mp stack list                        # apache shows "N of M running": an Apache per account with sites in that mode; UPDATE —
                                      # what the repository offers; STATE "on a replaced binary" — the service runs the old code
-                                     # until a restart (mp stack upgrade restarts it after the check even with nothing to install)
+                                     # until a restart (mp stack upgrade restarts it after the check even with nothing to install);
+                                     # a row on a replaced binary gets its restart: mp stack upgrade <component> for nginx, PHP,
+                                     # Apache and the database server, systemctl restart <unit> for the rest; with the daily
+                                     # upgrade off — "mp stack auto-upgrade --on"
 mp stack install nginx|apache|percona|mysql|fail2ban|memcached|valkey|jpegoptim|git|composer|sphinx
 mp stack remove memcached|valkey|jpegoptim|git|composer|sphinx
 mp stack memcached [--memory-mb 256] [--max-conn 2048]    # without flags — show the settings
@@ -89,9 +92,13 @@ mp stack upgrade [nginx|php|apache|db|all]   # upgrade the panel's packages from
                                      # the upgrade with the new one (nginx -t, php-fpm -t, apache2 -t, mysqld --validate-config),
                                      # then the services reload or restart; a failed check leaves the service as it was (unless
                                      # its package's restart already took it down: it stays down, the job says so), nothing is
-                                     # rolled back
+                                     # rolled back; a restart after which the service did not come up the job names as such:
+                                     # "<unit> was restarted but did not come up"; while the move to the accounts' Apaches has not
+                                     # finished, also apache2ctl -t of the shared apache2.service before the upgrade; it never runs
+                                     # at the same time as the panel update (the job that comes second waits in the queue)
 mp stack auto-upgrade [--on|--off] [--hour 4]   # the daily upgrade of nginx, PHP and Apache (on by default, 04:00 server
-                                     # time); without flags — show it and the last run
+                                     # time), once a day; without flags — show it, the next and the last run (an error in one
+                                     # line, all of it in mp job show <id>)
 mp valkey add cache|sessions [--user <login>] [--memory 128]   # the account's instance: create it or change its memory (restarts it)
 mp valkey list [--user <login>] | restart cache|sessions | rm cache|sessions   # restart empties the cache
 
@@ -116,7 +123,8 @@ mp backup target add <name> --type local|sftp|s3|b2|rest --repo … [--password 
 mp backup target list | rm <name>
 mp backup run [--target …] [--scope server|user:<login>|site:<domain>|db:<name>]
 mp backup list [--target …] [-n 50] | snapshots [--target …]   # status: running, done, partial (a snapshot without some files), failed
-mp backup restore <snapshot> [--target …] [--include path…] [--in-place]
+mp backup restore <snapshot> [--target …] [--include path…] [--in-place]   # a snapshot with device files, FIFOs, sockets or
+                                     # set-user-ID/set-group-ID files in the paths chosen the job refuses, naming the first — choose paths without them
 
 mp cron list | add --schedule "*/5 * * * *" --command "…" [--comment …] [--disabled]
 mp cron set <id> [--schedule …] [--command …] [--comment …] [--enable|--disable] | enable <id> | disable <id> | rm <id>
@@ -150,7 +158,9 @@ mp service status [unit] | start | stop | reload | restart | reload-or-restart |
                                      # template instances (but monopanel-apache@<login>), targets, shell/power units and
                                      # systemd-tmpfiles-*: status only; php-fpm, nginx, Apache: refused while
                                      # /var/log/monopanel/sites is not root's alone or not cleared, php-fpm also while
-                                     # /run/monopanel/php is not (installing, upgrading and removing packages: as php-fpm)
+                                     # /run/monopanel/php is not (installing, upgrading and removing packages: as php-fpm);
+                                     # monopanel-update and monopanel-pkg-* (the panel's own runs): status only; a mount unit below
+                                     # the web root is never started, reloaded or enabled (use systemctl for those)
 mp service status|stop|start monopanel-apache@<login>   # an account's Apache
 mp logs <unit> [-n 100]              # the unit's journal, through the agent: mp logs monopanel-apache@<login>
 mp metrics [--range 1h|6h|24h|7d|30d]
@@ -174,16 +184,20 @@ Conventions:
 - The CLI and the TUI speak the language of the terminal locale, the way the web UI follows the browser: a CIS language in `LC_ALL`, `LC_MESSAGES`, `LANG` or `LANGUAGE` gives Russian, anything else, including `C`/`POSIX`, English; `MP_LANG=ru` or `MP_LANG=en` sets it explicitly. The server's own messages are in English.
 - `mp completion <shell>` prints the completion script; it is not part of the package yet.
 - The agent checks custom nginx directives (`mp site nginx --set`) like generated ones: `fastcgi_pass` only to a site's pool socket, no `fastcgi_param PHP_VALUE/PHP_ADMIN_VALUE`, `proxy_method` a plain word, `uwsgi_modifier1` 0, and `include` never of `/etc/nginx/default.d` and with a wildcard in the file name only (see [03 §3](03-web-stack.md#3-nginx-template-mode-a-abridged)). So are logs deeper than `sites/<login>/` or right in `sites/` (`access_log`, `error_log`), and a location that proxies to an account's Apache without `include monopanel/apache/<login>.conf;` — the Apache would answer it 403 ([03 §3](03-web-stack.md#3-nginx-template-mode-a-abridged)). The API returns such a refusal as a 422 "the panel does not take these directives (nothing was changed)" — before anything is written and without `nginx -t`; "nginx rejected the configuration" means the directives were written, `nginx -t` refused them and the previous version was restored.
-- `mp doctor` warns with `[WARN] api socket` when `monopanel-api.socket` is enabled but the API listens on the port itself: while the API restarts, any local account can take the port. Look for the cause in `journalctl -u monopanel-api -u monopanel-api.socket`; `mp setup` fixes it. For a port below `net.ipv4.ip_unprivileged_port_start` the socket is kept off on purpose, and there is no warning.
-- The `mp doctor` lines on the upgrade to 0.8.20 and the stack:
-  - `service apache2.service` — the shared Apache of 0.8.19 still runs (and where the move of the sites to their accounts' Apaches stands: a queued job, the failures and the next try), or it is off but enabled at boot: it would start with the shared 0.8.19 configuration at the next boot — `systemctl disable apache2`;
+- The `api socket` line of `mp doctor` comes from the API, about its own host (and is in `--json`, on the dashboard, in the TUI): a warning when the API listens on the port itself while `monopanel-api.socket` is there and not masked (a disabled socket still starts with the API through `Wants=`) — while the API restarts, any local account can take the port. Look for the cause in `journalctl -u monopanel-api -u monopanel-api.socket`; `mp setup` fixes it; to have the API listen on the port itself on purpose, mask the socket: `systemctl mask monopanel-api.socket`. For a port below `net.ipv4.ip_unprivileged_port_start` the socket is kept off on purpose, and the line is ok. For an API that gives no such line, `mp doctor` judges it itself. `mp doctor` prints each check's detail on one line, without escape sequences.
+- The `mp doctor` lines on the upgrade to 0.8.20, the stack and the other mechanisms of 0.8.20:
+  - `service apache2.service` — the shared Apache of 0.8.19 still runs (and where the move of the sites to their accounts' Apaches stands: a queued job, the failures and the next try), or it is off but enabled at boot: it would start with the shared 0.8.19 configuration at the next boot — `systemctl disable apache2`; stopped while sites that have not moved are still on it, it is a failure: they answer 502, and it wants `systemctl start apache2.service`;
+  - `apache move` — the move to the accounts' Apaches has not finished: which sites the shared `apache2.service` still serves, and which accounts get an Apache of their own with their first site that moves (it is not checked until then);
   - `backend monopanel-apache@<login>.service` — an account's Apache was set up before nginx's secret: it answers — or will once it starts — any local process; the next panel start or `mp stack install apache` fixes it;
   - `site logs` — the sites that still write their logs into `data/logs`, and why: a queued job, failures with the error and the next try, the wait for the SELinux rule;
   - `php X.Y pool www` — the branch's stock pool not idle yet, or changed by the administrator; `php-fpm pools` — pools with `catch_workers_output = yes`;
   - `update <row>` (`update nginx`, `update apache`, `update php-8.4`, `update percona`) — a newer version waits in the repository (`mp stack upgrade nginx|php|apache`, or the daily upgrade; the database server only with `mp stack upgrade db`), `updates` — the summary: nothing newer, or the package manager could not say what the repositories offer, `held <row>` — newer versions held back with `apt-mark hold`, `stack upgrade` — the last upgrade failed; `service <unit>` with "on the binary an upgrade replaced" — the service runs the old code until a restart; in the web UI the findings on a waiting update and on an nginx, PHP, Apache or database service on the old binary have a "To the upgrade" link;
-  - `kernel modules` — whether the rule that keeps sctp, dccp, rds and tipc from loading is in place, and whether one of them is loaded (or built into the kernel);
-  - `restic sandbox` — how restic runs; without Landlock, where the kernel has it built in but not enabled (Oracle Linux's UEK), also how to turn it on.
-- An action on a unit the agent does not take (template instances, targets, shells, power units and `systemd-tmpfiles-*` only report their state; php-fpm, nginx and Apache are not started, restarted or reloaded while the site log tree is not root's alone or not cleared, and php-fpm also while the pools' socket directory is not root's alone) reaches `mp service` as the API's refusal with the agent's reason and exit code 4, not as an agent failure.
+  - `kernel modules` — whether the rule that keeps sctp, dccp, rds and tipc from loading is in place, and whether one of them is loaded (or built into the kernel); in a container, a warning that the host's kernel loads the modules and the rule belongs on the host ([02](02-platform-matrix.md#1-supported-operating-systems));
+  - `restic sandbox` — how restic runs and which version started in a backup's sandbox ("restic starts as a backup's restic would (…)"); without Landlock, where the kernel has it built in but not enabled (Oracle Linux's UEK), also how to turn it on; "restic does not start in its sandbox" — the installed restic does not start in the sandbox, and backups fail with that same error: report it to the panel's developers;
+  - `shared folders` — whether the shared folders are mounted: "N mounted", or the ones that are not, with why (an owner swapped the folder for a symlink, a guest or owner in a system group …); `mp site fix <domain>` binds a site's folders again ([10](10-shared-folders.md));
+  - `jobs` — the jobs that failed in the last day, but for those the same work fixed later (the same type and lock key, for the stack's jobs the component as well; `mp stack install apache` also fixes the move to the accounts' Apaches) and those whose site or account was deleted;
+  - `update attempt` — the install of a panel update failed or rolled back; when the package database lists that version already, the line says that `mp update apply` installs it once more (the panel does not retry it on its own).
+- An action on a unit the agent does not take (template instances, targets, shells, power units, `systemd-tmpfiles-*` and the panel's own runs — `monopanel-update`, `monopanel-pkg-*` — only report their state; a mount unit below the web root is never started, reloaded or enabled; php-fpm, nginx and Apache are not started, restarted or reloaded while the site log tree is not root's alone or not cleared, and php-fpm also while the pools' socket directory is not root's alone) reaches `mp service` as the API's refusal with the agent's reason and exit code 4, not as an agent failure.
 
 ## 3. TUI menu
 
@@ -194,7 +208,7 @@ The areas are those of the web UI navigation, in the same order. Each has its ow
 
 | Area | What is there | `mp` groups |
 |---|---|---|
-| Dashboard | the summary, diagnostics with "fix the site", "fix every site" and "switch to enforcing", metrics, SELinux | `status`, `metrics`, `doctor`, `selinux` |
+| Dashboard | the summary, diagnostics with "fix the site", "fix every site", "switch to enforcing" and "upgrade" (`u` on a row of an update waiting or of a service on a replaced binary: `mp stack upgrade <component>`), metrics, SELinux | `status`, `metrics`, `doctor`, `selinux` |
 | Sites | the site list; the site page: settings, PHP values, certificate, CMS, logs, the custom and the generated nginx directives, apply, fix, suspend, delete, the site's files | `site`, `cms` |
 | Users | the account list; the account page: change, password, shell or SFTP only, 2FA reset, delete; its cron jobs, app services, Valkey, shared folders, API tokens and files | `user`, `cron`, `app`, `valkey`, `token` |
 | PHP | branches: install, remove, extensions; the server's php.ini | `php` |
@@ -254,7 +268,8 @@ GET/POST        /users/{login}/cron               PATCH/DELETE /users/{login}/cr
 GET/POST        /users/{login}/apps               GET/PATCH/DELETE /users/{login}/apps/{name}   GET /apps
 GET             /users/{login}/apps/{name}/logs   POST /users/{login}/apps/{name}/{start|stop|restart}
 GET             /users/{login}/valkey             PUT/DELETE /users/{login}/valkey/{cache|sessions}   GET /valkey
-GET/POST        /users/{login}/shares             PATCH/DELETE /users/{login}/shares/{name}   (mount_point — where the folder is mounted)
+GET/POST        /users/{login}/shares             PATCH/DELETE /users/{login}/shares/{name}   (mount_point — where the folder is mounted;
+                                                  share.status failed and share.last_error — why the agent did not bind it)
 POST            /users/{login}/valkey/{purpose}/restart
 GET/POST        /sites                            GET/PATCH/DELETE /sites/{domain}   GET /sites/presets
 POST            /sites/{domain}/apply | fix | suspend | unsuspend | cms | tls/issue    POST /sites/move-ip
@@ -266,7 +281,8 @@ GET/POST        /databases                        DELETE /databases/{name}      
 GET             /db/engine                        POST /db/engine/tune               GET/PUT /db/engine/config
 GET             /stack                            POST /stack/install                DELETE /stack/{component}
 GET/PUT         /stack/memcached | /stack/nginx/real-ip | /stack/auto-upgrade   ({enabled, hour}: the daily upgrade)
-POST            /stack/upgrade                    (job stack.upgrade, body {component}: nginx | php | apache | db | all)
+POST            /stack/upgrade                    (job stack.upgrade, body {component}: nginx | php | apache | db | all;
+                                                  the body is optional — none, or {}, upgrades all: nginx, PHP and Apache)
                 (GET /stack rows carry upgrade {component, from, to, origin, packages}; a service status carries
                  binary_replaced; apache's instances.replaced — how many running accounts' Apaches run a replaced binary)
 GET/POST        /certificates                     GET/DELETE /certificates/{id}      POST /certificates/import | /{id}/renew
@@ -286,7 +302,9 @@ GET             /jobs | /jobs/{id} | /jobs/{id}/events
 GET/POST        /tokens                           DELETE /tokens/{id}
 GET/POST        /webhooks                         DELETE /webhooks/{id}               POST /webhooks/{id}/test
 GET             /system/status | doctor | metrics | logs/{unit} | audit    GET/PUT /system/selinux
+                (status: host.container — the kind of container the agent runs in; empty on a host or a VM)
 GET/PUT         /system/update                    POST /system/update/check | apply
+                (last_attempt.reinstall — a rolled-back version the package database lists already: apply installs it once more)
 GET/PUT         /system/config                    GET /system/templates   (the panel's settings in config.yaml, the templates and their overrides)
 POST            /system/console                   (mp commands with streamed output, administrator only)
 GET             /health
