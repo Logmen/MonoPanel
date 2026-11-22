@@ -175,11 +175,22 @@ func TestFromScanIsLinear(t *testing.T) {
 		// takes for escaped (it once sent a reading back to the start)
 		"escaped parentheses": `@\(x`,
 	} {
-		value := strings.Repeat(unit, 100*1024/len(unit))
-		start := time.Now()
-		FromAddresses(value)
-		if took := time.Since(start); took > 150*time.Millisecond {
-			t.Errorf("%s: a 100 kB From header takes %v", name, took)
+		// the fastest of three runs, for 10 kB and 100 kB: a linear reading
+		// takes some ten times as long for ten times the length, a quadratic
+		// one a hundred times; under the race detector with coverage on a
+		// slow machine the absolute time alone says nothing
+		measure := func(n int) time.Duration {
+			value, best := strings.Repeat(unit, n/len(unit)), time.Duration(1<<62)
+			for range 3 {
+				start := time.Now()
+				FromAddresses(value)
+				best = min(best, time.Since(start))
+			}
+			return best
+		}
+		small, large := measure(10*1024), measure(100*1024)
+		if large > 150*time.Millisecond && large > 30*max(small, time.Millisecond) {
+			t.Errorf("%s: a 100 kB From header takes %v, a 10 kB one %v", name, large, small)
 		}
 	}
 }

@@ -22,7 +22,13 @@ import (
 // API's or an account's, nothing others may rearrange (but sticky ones), a
 // group's only where the distribution makes it so.
 func TestDirTrustRules(t *testing.T) {
-	tr := &dirTrust{rootUID: 0, serviceUser: "daemon", strict: true} // daemon (uid 2) plays the API's user
+	tr := &dirTrust{rootUID: 0, serviceUser: "daemon", strict: true} // daemon plays the API's user
+	// daemon is uid 1 on Debian and Ubuntu, uid 2 on Arch: the other of the
+	// two is a system account that is not the API's
+	api, system := uint32(2), uint32(1)
+	if u, err := user.Lookup("daemon"); err == nil && u.Uid == "1" {
+		api, system = 1, 2
+	}
 	mailGID := -1
 	if g, err := user.LookupGroup("mail"); err == nil {
 		mailGID = atoiOr(g.Gid, -1)
@@ -36,8 +42,8 @@ func TestDirTrustRules(t *testing.T) {
 		ok   bool
 	}{
 		{"root's", "/etc/nginx", 0, 0, 0o755, true},
-		{"a system account's", "/var/lib/sphinx", 1, 1, 0o750, true},
-		{"the API's", "/var/lib/monopanel", 2, 2, 0o751, false},
+		{"a system account's", "/var/lib/sphinx", system, system, 0o750, true},
+		{"the API's", "/var/lib/monopanel", api, api, 0o751, false},
 		{"an account's", "/var/www/alex", 1500, 1500, 0o750, false},
 		{"writable by everyone", "/etc/nginx", 0, 0, 0o777, false},
 		{"sticky and writable by everyone", "/tmp", 0, 0, 0o1777, true},

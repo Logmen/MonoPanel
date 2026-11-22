@@ -530,7 +530,14 @@ func TestResticPrivateEtc(t *testing.T) {
 		return append([]string{"backup", "--json", "--tag", "monopanel", "--tag", "scope=server"}, paths...)
 	}
 	acc, err := s.resticRules(bin, backup(home), "s3:https://s3.example.com/b")
-	if err != nil || !slices.Equal(acc.etc, existingPaths(resticEtcReads)) || len(acc.etc) == 0 || acc.etcBind != nil {
+	// resolv.conf as a symlink into /run (systemd-resolved) stays one: bound
+	// in, its directory granted, instead of a copy in the private /etc
+	wantEtc, wantBind := existingPaths(resticEtcReads), []string(nil)
+	if _, ok := runLinkDir(resolvConf); ok {
+		wantEtc = slices.DeleteFunc(wantEtc, func(p string) bool { return p == resolvConf })
+		wantBind = []string{resolvConf}
+	}
+	if err != nil || !slices.Equal(acc.etc, wantEtc) || len(acc.etc) == 0 || !slices.Equal(acc.etcBind, wantBind) {
 		t.Fatalf("private /etc: %+v %v", acc, err)
 	}
 	for _, p := range acc.ro {
