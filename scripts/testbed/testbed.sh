@@ -143,10 +143,14 @@ deploy() {
 	# The Cloudflare token travels on stdin, not on a command line.
 	# shellcheck disable=SC2029
 	ssh "$vm" "TB_CF_TOKEN=\$(head -1) TB_PHP=${TB_PHP:-} TB_DB=${TB_DB:-} TB_EXTRA=${TB_EXTRA:-} TB_PANEL_CERT=$panelcert bash /tmp/bootstrap.sh $pkg $addr" <<<"${TB_CF_TOKEN:-}"
-	# Keep a freshly issued certificate for the next reset.
-	if [ -z "$panelcert" ] && ssh "$vm" 'openssl x509 -in /var/lib/monopanel/tls/panel.crt -noout -issuer 2>/dev/null' | grep -qi "let's encrypt"; then
+	# Keep a freshly issued certificate for the next reset. An issued one
+	# lives with the panel's ACME certificates under its name, not in tls/
+	# (that is the self-signed one it starts with).
+	local issued="/var/lib/monopanel/certs/$addr"
+	# shellcheck disable=SC2029
+	if [ -z "$panelcert" ] && ssh "$vm" "openssl x509 -in $issued/fullchain.pem -noout -issuer 2>/dev/null" | grep -qi "let's encrypt"; then
 		mkdir -p "$certdir" && chmod 700 "$certdir"
-		scp -q "$vm:/var/lib/monopanel/tls/panel.crt" "$certdir/panel.crt" && scp -q "$vm:/var/lib/monopanel/tls/panel.key" "$certdir/panel.key" && chmod 600 "$certdir"/panel.* && log "$vm: panel certificate kept in $certdir"
+		scp -q "$vm:$issued/fullchain.pem" "$certdir/panel.crt" && scp -q "$vm:$issued/privkey.pem" "$certdir/panel.key" && chmod 600 "$certdir"/panel.* && log "$vm: panel certificate kept in $certdir"
 	fi
 }
 

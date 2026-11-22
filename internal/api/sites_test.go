@@ -394,8 +394,26 @@ func TestSiteCustomNginxValidatedAndRolledBack(t *testing.T) {
 
 	// A validator failure must surface as 422, not a 500.
 	f.agent.Fail["/v1/config/apply"] = "nginx: [emerg] unknown directive"
-	f.call(http.MethodPut, "/sites/"+site.Domain+"/nginx", map[string]any{"custom": "nonsense;"}, http.StatusUnprocessableEntity, nil)
+	var msg struct {
+		Detail string `json:"detail"`
+	}
+	f.call(http.MethodPut, "/sites/"+site.Domain+"/nginx", map[string]any{"custom": "nonsense;"}, http.StatusUnprocessableEntity, &msg)
+	if !strings.Contains(msg.Detail, "nginx rejected the configuration") {
+		t.Fatalf("nginx -t's refusal: %q", msg.Detail)
+	}
+	// The agent's own content check refuses before nginx sees anything, and
+	// the answer says so rather than blaming nginx.
+	f.agent.Fail["/v1/config/apply"] = `nginx directive "fastcgi_pass" is not allowed`
+	if f.agent.FailStatus == nil {
+		f.agent.FailStatus = map[string]int{}
+	}
+	f.agent.FailStatus["/v1/config/apply"] = http.StatusForbidden
+	f.call(http.MethodPut, "/sites/"+site.Domain+"/nginx", map[string]any{"custom": "fastcgi_pass unix:/run/php/x.sock;"}, http.StatusUnprocessableEntity, &msg)
+	if !strings.Contains(msg.Detail, "the panel does not take these directives") || strings.Contains(msg.Detail, "nginx rejected") {
+		t.Fatalf("the content check's refusal: %q", msg.Detail)
+	}
 	delete(f.agent.Fail, "/v1/config/apply")
+	delete(f.agent.FailStatus, "/v1/config/apply")
 }
 
 // Смена ветки PHP: пул старой версии удаляется, и её мастер перезапускается

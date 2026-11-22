@@ -287,3 +287,19 @@ func TestStopsPanelReadsUnitNamesAsSystemd(t *testing.T) {
 		}
 	}
 }
+
+// The agent's refusal of a unit is the request's fault, not a gateway's:
+// the answer keeps its 403 and its reason; an agent that fails stays 502.
+func TestServiceRefusalKeepsItsStatus(t *testing.T) {
+	f := newSiteFixture(t)
+	code, _, raw := serviceCall(f, "debug-shell.service", "start")
+	if code != http.StatusForbidden || !strings.Contains(raw, "root shell") {
+		t.Fatalf("a refused unit: %d %s", code, raw)
+	}
+	f.agent.Fail["/v1/service"] = "systemctl: connection to the bus failed"
+	code, _, raw = serviceCall(f, "nginx.service", "reload")
+	if code != http.StatusBadGateway {
+		t.Fatalf("a failing agent: %d %s", code, raw)
+	}
+	delete(f.agent.Fail, "/v1/service")
+}

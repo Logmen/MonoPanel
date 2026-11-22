@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"path"
@@ -98,6 +99,13 @@ func (s *Server) registerSiteNginx() {
 				Files: []agent.FileSpec{{Path: cur.CustomPath, Content: content, Mode: 0o644}}, Validate: [][]string{web.NginxCheckArgv}, Reload: []string{web.NginxService}, Origin: "site:" + site.Domain + ":custom",
 			})
 			if err != nil {
+				// The agent's own check of the content says no before nginx
+				// ever sees it (nothing was written); nginx -t's refusal
+				// comes after the write, which the agent rolled back.
+				var ae *agent.Error
+				if errors.As(err, &ae) && ae.Status == http.StatusForbidden {
+					return nil, huma.Error422UnprocessableEntity("the panel does not take these directives (nothing was changed): " + err.Error())
+				}
 				return nil, huma.Error422UnprocessableEntity("nginx rejected the configuration (previous version restored): " + err.Error())
 			}
 		}

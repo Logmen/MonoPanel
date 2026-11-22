@@ -54,7 +54,7 @@ func (s *Server) registerServices() {
 	}, func(ctx context.Context, in *serviceInput) (*serviceOutput, error) {
 		res, err := s.agent.Service(ctx, in.Unit, "status")
 		if err != nil {
-			return nil, huma.Error502BadGateway("agent: " + err.Error())
+			return nil, agentStatus("agent: "+err.Error(), err)
 		}
 		return &serviceOutput{Body: res.Status}, nil
 	})
@@ -72,7 +72,7 @@ func (s *Server) registerServices() {
 		res, err := s.agent.Service(actx, in.Unit, in.Body.Action)
 		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "service." + in.Body.Action, Target: in.Unit, IP: requestInfo(ctx).IP, Result: resultOf(err)})
 		if err != nil {
-			return nil, huma.Error502BadGateway("agent: " + err.Error())
+			return nil, agentStatus("agent: "+err.Error(), err)
 		}
 		return &serviceOutput{Body: res.Status}, nil
 	})
