@@ -611,7 +611,7 @@ type siteLayout struct {
 	nginxConf  string
 	nginxDir   string
 	poolConf   string
-	apacheConf string
+	apacheConf string // the shared Apache's virtual host of 0.8.19; the account's own Apache has apacheInstance.vhost
 }
 
 func (s *Server) layoutFor(site *store.Site, user *store.User) *siteLayout {
@@ -769,6 +769,12 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 	if err := jc.Unmarshal(&p); err != nil {
 		return err
 	}
+	return s.applySite(ctx, jc, p)
+}
+
+// applySite is site.apply's work, which the move of the sites in Apache mode
+// to their accounts' Apaches does inline, site by site (apache.go).
+func (s *Server) applySite(ctx context.Context, jc *jobs.Context, p sitePayload) error {
 	site, err := s.db.GetSite(ctx, p.SiteID)
 	if err != nil {
 		return err
@@ -798,6 +804,14 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 	}
 	login := user.Login
 	suspended := site.Status == store.SiteSuspended
+	// A site in Apache mode runs on its account's own Apache, behind nginx.
+	apacheMode := site.Mode == store.ModeApache && !suspended
+	var apache *apacheInstance
+	if apacheMode {
+		if apache, err = s.apacheInstanceFor(user); err != nil {
+			return s.siteFail(ctx, site, err)
+		}
+	}
 
 	jc.Progress(10, "directories and permissions")
 	if err := s.siteTree(ctx, jc, l, user); err != nil {
@@ -871,9 +885,12 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 		Domain: site.Domain, Aliases: site.Aliases, Mode: site.Mode, IP: site.IP, TLS: tls, HTTP2: site.HTTP2, HTTP3: site.HTTP3 && tls,
 		RedirectHTTPS: site.RedirectHTTPS, RedirectWWW: site.RedirectWWW, Docroot: l.docroot, LogDir: s.siteLogDir(login),
 		IncludeDir: "monopanel/sites/" + site.Domain + ".d", ClientMaxBodySize: strings.ToLower(site.ClientMaxBody), StaticByNginx: site.StaticByNginx,
-		ApacheBackend: "127.0.0.1:8080", FPMSocket: l.socket, ProxyTimeout: terminate, Backend: site.Backend, AllowFrom: site.AllowFrom,
+		FPMSocket: l.socket, ProxyTimeout: terminate, Backend: site.Backend, AllowFrom: site.AllowFrom,
 		HSTS: tls && site.RedirectHTTPS, Preset: site.Preset, IPv6: site.IPv6, SecurityHeaders: site.SecurityHeaders, RateLimit: site.RateLimit,
 		NoPHPPaths: s.siteNoPHPPaths(ctx, site.ID),
+	}
+	if apache != nil {
+		rs.ApacheBackend = apache.addr
 	}
 	for _, p := range rs.NoPHPPaths {
 		jc.Logf("shared folder %s: PHP execution denied", p)
@@ -914,16 +931,10 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 		validate = append(validate, l.php.FPMCheckArgv)
 		reload = append(reload, l.php.FPMService)
 	}
-	if site.Mode == store.ModeApache && !suspended {
-		rs.IncludeDir = path.Join(web.ApacheConfDir, "monopanel", "sites", site.Domain+".d")
-		apacheConf, err := s.render.Render("apache/site.conf.tmpl", rs)
-		if err != nil {
-			return err
-		}
-		files = append(files, agent.FileSpec{Path: l.apacheConf, Content: apacheConf, Mode: 0o644}, agent.FileSpec{Path: path.Join(rs.IncludeDir, "README"), Content: "Custom Apache directives for " + site.Domain + " (inside <VirtualHost>).\n", Mode: 0o644})
-		validate = append(validate, web.ApacheCheckArgv)
-		reload = append(reload, web.ApacheService)
-	} else {
+	if !apacheMode {
+		// The site's virtual host of the shared Apache of 0.8.19: nginx sends
+		// the site elsewhere (the account's own Apache keeps a site in Apache
+		// mode, settleApacheInstance below takes it off there otherwise).
 		remove = append(remove, l.apacheConf)
 	}
 	// stale pools of other PHP branches (after a version switch)
@@ -982,11 +993,27 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 		jc.Logf("removed default servers of gone addresses: %s", strings.Join(gone, ", "))
 	}
 	jc.Progress(75, "applying")
+	if apacheMode {
+		// The account's Apache gets the site, and answers, before nginx is
+		// sent there: until nginx's reload below the site is served where it
+		// was.
+		if err := s.applyApacheSite(ctx, jc, apache, site, user, rs); err != nil {
+			return s.siteFail(ctx, site, err)
+		}
+	}
 	apply, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Validate: validate, Reload: reload, Force: true, Origin: "site:" + site.Domain})
 	if err != nil {
 		return s.siteFail(ctx, site, err)
 	}
 	jc.Logf("configuration: %d written, %d unchanged; reloaded %s", len(apply.Written), len(apply.Unchanged), strings.Join(apply.Reloaded, ", "))
+	if !apacheMode {
+		// nginx no longer sends the site to its account's Apache (it left
+		// Apache mode or is suspended): its virtual host goes there, and the
+		// Apache reloads without it, or stops with no site left.
+		if err := s.settleApacheInstance(ctx, jc.Logf, user, site, false); err != nil {
+			jc.Logf("warning: %v", err)
+		}
+	}
 	if !suspended && !proxy && s.poolSocketWait > 0 {
 		// systemd's reload returns once the signal is sent; give php-fpm a moment to open the pool socket.
 		deadline := time.Now().Add(s.poolSocketWait)
@@ -1242,6 +1269,8 @@ func (s *Server) removeSiteConfig(ctx context.Context, jc *jobs.Context, site *s
 	}
 	l := s.layoutFor(site, user)
 	web := s.profile.Web()
+	// The shared Apache's virtual host of 0.8.19 too, should the site still
+	// have one: nothing reloads that Apache any more.
 	paths := []string{l.nginxConf, l.nginxDir, l.apacheConf, path.Join(web.ApacheConfDir, "monopanel", "sites", site.Domain+".d")}
 	reload := []string{web.NginxService}
 	for _, v := range osprofileVersions() {
@@ -1252,14 +1281,17 @@ func (s *Server) removeSiteConfig(ctx context.Context, jc *jobs.Context, site *s
 			}
 		}
 	}
-	if v, _ := s.db.GetSetting(ctx, settingApache); v == "installed" {
-		reload = append(reload, web.ApacheService)
-	}
 	rr, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: paths, Recursive: true, Validate: [][]string{web.NginxCheckArgv}, Reload: reload})
 	if err != nil {
 		return err
 	}
 	jc.Logf("%s: removed %s", site.Domain, strings.Join(rr.Removed, ", "))
+	// nginx no longer sends the site anywhere: off its account's Apache with
+	// its custom directives; the Apache reloads, or stops with no site left
+	// (an account's removal comes here for every site before the account goes).
+	if err := s.settleApacheInstance(ctx, jc.Logf, user, site, true); err != nil {
+		jc.Logf("warning: %v", err)
+	}
 	if purge {
 		rr, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: []string{l.siteRoot}, Recursive: true})
 		if err != nil {

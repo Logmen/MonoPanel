@@ -234,6 +234,8 @@ func start(ctx context.Context, o Options, cfg config.Config, ag *Agent) (*runni
 	runner := jobs.NewRunner(db, cfg.Jobs.Workers, log)
 	srv := api.New(cfg, db, agent.NewClient(cfg.AgentSocket()), runner, Profile(), log)
 	srv.SetReadinessWaits(0, 0)
+	// The pretend Apache binds nothing, whatever the container allows.
+	srv.SetUnprivilegedPortStart(func() int { return 1024 })
 	srv.SetHostIPs(func() []string { return []string{SiteIP} })
 	srv.SetHostIPv6s(func() []string { return nil })
 	srv.SetLookup(lookup)

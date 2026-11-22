@@ -10,11 +10,15 @@ import (
 // Apache: the parent process runs as root. It loads modules and libraries,
 // starts piped loggers and RewriteMap programs, opens the logs, writes the
 // pid file, the scoreboard and the mutexes, and reads every Include. The
-// panel writes the main httpd.conf of its own, ports.conf, the include of
-// conf-available and the virtual hosts; administrators extend them through
-// template overrides. Directives are case-insensitive, ${VAR} is expanded in
-// the whole line before it is read, and a backslash at the end of a line
-// joins the next one: the check reads the lines the same way.
+// panel writes the configuration of each account's Apache
+// (apache_instance.go): its httpd.conf, the virtual hosts and the custom
+// directives; administrators extend them through template overrides. Up to
+// 0.8.19 it wrote a shared httpd.conf, ports.conf and the include of
+// conf-available for the distribution's apache2.service, and the rest of
+// /etc/apache2 is still checked the way it was then. Directives are
+// case-insensitive, ${VAR} is expanded in the whole line before it is read,
+// and a backslash at the end of a line joins the next one: the check reads
+// the lines the same way.
 
 var apacheDirs = []string{"/etc/apache2", "/etc/httpd"}
 
@@ -97,12 +101,21 @@ func checkApache(c *checker, p string, content []byte) error {
 	if !strings.HasSuffix(p, ".conf") && path.Base(p) != "README" {
 		return notAllowed("writing "+p, "the panel writes *.conf files to Apache's directories; other files there (envvars, magic, *.load) are read or sourced as root")
 	}
+	inst, err := c.apacheInstance(p)
+	if err != nil {
+		return err
+	}
+	// A README of an account's Apache is included by nothing; were it, it
+	// would be read as custom directives, and is checked as those.
+	if inst != nil && inst.kind == instReadme {
+		inst.kind = instCustom
+	}
 	lines, err := apacheLines(content)
 	if err != nil {
 		return err
 	}
 	for _, l := range lines {
-		if err := atLine(l.n, c.apacheLine(root, l.text)); err != nil {
+		if err := atLine(l.n, c.apacheLine(root, inst, l.text)); err != nil {
 			return err
 		}
 	}
@@ -137,7 +150,13 @@ func apacheLines(content []byte) ([]apLine, error) {
 	return out, nil
 }
 
-func (c *checker) apacheLine(root, line string) error {
+func (c *checker) apacheLine(root string, inst *apacheInst, line string) error {
+	if inst != nil && strings.Contains(line, "${") {
+		// apache2 -f reads no envvars: ${APACHE_LOG_DIR} would stay as it is
+		// written, and a variable that is defined could only be one a
+		// Define made, spelling whatever it was made to.
+		return notAllowed("an Apache variable in "+inst.path, "an account's Apache reads no envvars and defines nothing")
+	}
 	if root != "/etc/apache2" && strings.Contains(line, "${") {
 		// EL's httpd has no envvars: an undefined variable stays in the
 		// line as it is written, a relative path into the ServerRoot.
@@ -174,6 +193,15 @@ func (c *checker) apacheLine(root, line string) error {
 		}
 		return nil
 	}
+	args := apWords(rest)
+	// An account's Apache: its httpd.conf sets, with the exact values, what
+	// is refused everywhere else (LoadModule, PidFile, Mutex, ServerRoot …);
+	// the logs go to the account's own directory.
+	if inst != nil {
+		if handled, err := c.apacheInstanceLine(inst, name, lname, args); handled {
+			return err
+		}
+	}
 	if why, ok := apacheDenied[lname]; ok {
 		return notAllowed(what, "%s", why)
 	}
@@ -182,7 +210,6 @@ func (c *checker) apacheLine(root, line string) error {
 			return notAllowed(what, "the module runs embedded code or programs as root or as accounts of its choosing")
 		}
 	}
-	args := apWords(rest)
 	for _, a := range args {
 		// Piped logs of every module (mod_log_config, mod_log_forensic,
 		// mod_security's SecAuditLog2, mod_jk) and SSLPassPhraseDialog start
@@ -264,10 +291,8 @@ func (c *checker) apacheLine(root, line string) error {
 			}
 		}
 	}
-	if strings.HasSuffix(lname, "log") || strings.HasSuffix(lname, "logfile") || lname == "secauditlog2" {
-		if len(args) > 0 {
-			return c.apacheLog(root, name, args[0])
-		}
+	if isApacheLog(lname) && len(args) > 0 {
+		return c.apacheLog(root, name, args[0])
 	}
 	return nil
 }

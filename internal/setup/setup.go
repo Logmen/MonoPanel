@@ -139,12 +139,62 @@ FreeBind=yes
 WantedBy=sockets.target
 `
 
+// apacheUnit is the Apache of one account's sites in Apache mode,
+// monopanel-apache@<login>.service, which the API enables and starts through
+// the agent. The parent runs as root, as Debian's apache2.service does — it
+// binds the account's address on port 81 and opens the logs, which only
+// root writes — and the children as the account (User and Group of
+// httpd.conf, which the agent writes only for a hosting account). Debian's
+// apache2 has no mod_systemd: Type=simple with -DFOREGROUND keeps the parent
+// the main process, and USR1 is its graceful restart, which keeps the
+// listening socket. The bounding set is what the parent needs: bind port 81,
+// switch the children to the account (and set their groups), signal them,
+// hand them the lock files (chown), and pass the account's 0750 home to
+// check each DocumentRoot as it reads the configuration (CAP_SETUID gives it
+// that much already). The runtime directory, the pid file in it, goes when
+// the unit stops: logrotate signals no stale pid.
+const apacheUnit = `[Unit]
+Description=Apache for the sites of %i in Apache mode (MonoPanel)
+After=network.target remote-fs.target nss-lookup.target
+# MonoPanel writes the configuration of an account that has sites in Apache
+# mode; without it there is nothing to start.
+ConditionPathExists=/etc/apache2/monopanel/accounts/%i/httpd.conf
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/apache2 -f /etc/apache2/monopanel/accounts/%i/httpd.conf -DFOREGROUND
+ExecReload=/bin/kill -USR1 $MAINPID
+KillMode=mixed
+Restart=on-failure
+RestartSec=2
+RuntimeDirectory=monopanel-apache/%i
+UMask=0027
+LimitNOFILE=8192
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL CAP_CHOWN CAP_DAC_READ_SEARCH
+
+[Install]
+WantedBy=multi-user.target
+`
+
 // The panel's units and where mp setup writes them.
 const (
-	systemUnitDir = "/etc/systemd/system"
-	agentService  = "monopanel-agent.service"
-	apiService    = "monopanel-api.service"
-	apiSocket     = "monopanel-api.socket"
+	systemUnitDir  = "/etc/systemd/system"
+	agentService   = "monopanel-agent.service"
+	apiService     = "monopanel-api.service"
+	apiSocket      = "monopanel-api.socket"
+	apacheUnitName = "monopanel-apache@.service"
 )
 
 // Run performs the setup.
@@ -458,6 +508,8 @@ func writeUnits(dir, binary string, force bool) ([]string, error) {
 		{agentService, fmt.Sprintf(agentUnit, binary)},
 		{apiSocket, apiSocketUnit},
 		{apiService, fmt.Sprintf(apiUnit, binary)},
+		// A template: the API enables its instances, mp setup none.
+		{apacheUnitName, apacheUnit},
 	} {
 		path := filepath.Join(dir, u.name)
 		if _, err := os.Stat(path); !force && !errors.Is(err, os.ErrNotExist) {

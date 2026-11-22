@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"monopanel/internal/agent"
+	"monopanel/internal/agent/confcheck"
 	"monopanel/internal/config"
 	"monopanel/internal/osprofile"
 	"monopanel/internal/systemd"
@@ -46,7 +47,16 @@ type Agent struct {
 	// actions are the /v1/service actions, "<unit> <action>" in the order
 	// they came (status left out).
 	actions []string
-	dirs    []string
+	// instances are the states of the template instances the panel acts on
+	// (an account's Apache, monopanel-apache@<login>.service): one nothing
+	// started is inactive and disabled, and one whose httpd.conf the panel
+	// did not write does not start (ConditionPathExists).
+	instances map[string]*instanceState
+	// apacheCtls are the /v1/apache/ctl calls the fake ran.
+	apacheCtls []agent.ApacheCtlRequest
+	// before runs ahead of every answer (SetBefore).
+	before func(path string, body []byte)
+	dirs   []string
 	// dirSpecs is how dirs/ensure was last told to make a directory (an
 	// empty owner keeps the one before), symlinks what symlink/ensure made:
 	// the fake judges the way to a shared folder's mount point by them, as
@@ -182,6 +192,7 @@ func Start(t *testing.T) *Agent {
 		Socket:       filepath.Join(dir, "agent.sock"),
 		files:        map[string]agent.FileSpec{},
 		units:        map[string]string{},
+		instances:    map[string]*instanceState{},
 		dirSpecs:     map[string]agent.DirSpec{},
 		symlinks:     map[string]string{},
 		mounted:      map[string]bool{},
@@ -264,6 +275,12 @@ func (a *Agent) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	body, _ := readAll(r)
 	a.mu.Lock()
+	before := a.before
+	a.mu.Unlock()
+	if before != nil {
+		before(r.URL.Path, body)
+	}
+	a.mu.Lock()
 	a.calls = append(a.calls, Call{Path: r.URL.Path, Body: body})
 	msg, failing := a.Fail[r.URL.Path]
 	status := a.FailStatus[r.URL.Path]
@@ -334,9 +351,11 @@ func (a *Agent) respond(path string, body []byte) any {
 		}
 		for _, u := range req.Reload {
 			a.units[u] = "reload"
+			a.startInstance(u)
 		}
 		for _, u := range req.Restart {
 			a.units[u] = "restart"
+			a.startInstance(u)
 		}
 		return agent.ApplyConfigSetResponse{Written: written, Validated: len(req.Validate), Reloaded: req.Reload}
 
@@ -463,12 +482,31 @@ func (a *Agent) respond(path string, body []byte) any {
 		}
 		// A real agent reports only what existed, and the panel acts on that
 		// (a removed pool means the old php-fpm has to be reloaded). The fake
-		// knows what it wrote, so it answers the same way.
+		// knows what it wrote, so it answers the same way; a directory
+		// removed with recursive takes what the fake wrote in it along.
 		gone := []string{}
 		for _, p := range req.Paths {
+			had := false
 			if _, ok := a.files[p]; ok {
 				delete(a.files, p)
+				had = true
+			}
+			if req.Recursive {
+				for f := range a.files {
+					if strings.HasPrefix(f, filepath.Clean(p)+"/") {
+						delete(a.files, f)
+						had = true
+					}
+				}
+			}
+			if had {
 				gone = append(gone, p)
+			}
+		}
+		// Like the agent: the units reload only when something went.
+		if len(gone) > 0 {
+			for _, u := range req.Reload {
+				a.startInstance(u)
 			}
 		}
 		return agent.RemovePathsResponse{Removed: gone}
@@ -502,6 +540,9 @@ func (a *Agent) respond(path string, body []byte) any {
 		}
 		if strings.HasSuffix(unit, ".mount") {
 			return a.mountService(unit, req.Action)
+		}
+		if strings.Contains(unit, "@") {
+			return a.instanceService(unit, req.Action)
 		}
 		if unit != "" && req.Action != "" && req.Action != "status" {
 			a.units[unit] = req.Action
@@ -683,8 +724,130 @@ func (a *Agent) respond(path string, body []byte) any {
 
 	case "/v1/system/info":
 		return map[string]any{"hostname": "test-host", "cpus": 2, "mem_total_bytes": a.MemTotalBytes}
+
+	case "/v1/apache/ctl":
+		// Like the agent: switching something of the distribution's Apache
+		// on is refused.
+		var req agent.ApacheCtlRequest
+		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		if _, err := agent.CheckApacheCtl(req.Action, req.Name); err != nil {
+			var ae *agent.Error
+			if errors.As(err, &ae) {
+				return ae
+			}
+			return &agent.Error{Status: http.StatusForbidden, Message: err.Error()}
+		}
+		a.apacheCtls = append(a.apacheCtls, req)
+		return agent.ApacheCtlResponse{Output: req.Action + " " + req.Name + ": done\n"}
 	}
 	return map[string]any{}
+}
+
+// instanceState is what the fake knows of a template instance.
+type instanceState struct{ active, enabled bool }
+
+// instanceConfigured tells whether the unit has what it needs to start: an
+// account's Apache its httpd.conf. The caller holds mu.
+func (a *Agent) instanceConfigured(unit string) bool {
+	if login, ok := confcheck.ApacheInstanceLoginOf(unit); ok {
+		_, has := a.files[confcheck.ApacheInstanceConf(login)]
+		return has
+	}
+	return true
+}
+
+// startInstance starts a template instance that config/apply or
+// paths/remove reloads (reload-or-restart starts a stopped unit). The caller
+// holds mu.
+func (a *Agent) startInstance(unit string) {
+	if !strings.Contains(unit, "@") {
+		return
+	}
+	if !strings.Contains(unit, ".") {
+		unit += ".service"
+	}
+	st := a.instance(unit)
+	st.active = a.instanceConfigured(unit)
+}
+
+// instance is the state of a template instance, inactive and disabled until
+// the panel acts on it. The caller holds mu.
+func (a *Agent) instance(unit string) *instanceState {
+	st, ok := a.instances[unit]
+	if !ok {
+		st = &instanceState{}
+		a.instances[unit] = st
+	}
+	return st
+}
+
+// instanceService is /v1/service for a template instance. The caller holds
+// mu.
+func (a *Agent) instanceService(unit, action string) any {
+	st := a.instance(unit)
+	switch action {
+	case "start", "restart", "reload-or-restart":
+		st.active = a.instanceConfigured(unit)
+	case "reload":
+		if !st.active {
+			return &agent.Error{Status: http.StatusBadGateway, Message: "reload " + unit + " failed", Output: "Unit " + unit + " is not active."}
+		}
+	case "stop":
+		st.active = false
+	case "enable":
+		st.enabled = true
+	case "disable":
+		st.enabled = false
+	}
+	if action != "" && action != "status" {
+		a.units[unit] = action
+		a.actions = append(a.actions, unit+" "+action)
+	}
+	status := systemd.Status{Unit: unit, LoadState: "loaded", ActiveState: "inactive", SubState: "dead", UnitFileState: "disabled"}
+	if l, ok := a.LoadState[unit]; ok {
+		status.LoadState = l
+	}
+	if st.active {
+		status.ActiveState, status.SubState = "active", "running"
+	}
+	if st.enabled {
+		status.UnitFileState = "enabled"
+	}
+	return agent.ServiceResponse{Status: status}
+}
+
+// InstanceState tells whether a template instance runs and is enabled.
+func (a *Agent) InstanceState(unit string) (active, enabled bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if st, ok := a.instances[unit]; ok {
+		return st.active, st.enabled
+	}
+	return false, false
+}
+
+// SetInstance puts a template instance in a state: the one a host was left
+// in.
+func (a *Agent) SetInstance(unit string, active, enabled bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.instances[unit] = &instanceState{active: active, enabled: enabled}
+}
+
+// SetBefore has fn run ahead of every call the fake answers (path and body
+// as they came), outside its lock: a test can hold one call back while
+// others go on. nil removes it.
+func (a *Agent) SetBefore(fn func(path string, body []byte)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.before = fn
+}
+
+// ApacheCtls returns the /v1/apache/ctl calls the fake ran.
+func (a *Agent) ApacheCtls() []agent.ApacheCtlRequest {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]agent.ApacheCtlRequest{}, a.apacheCtls...)
 }
 
 // Calls returns the recorded requests.
@@ -834,6 +997,8 @@ func (a *Agent) Reset() {
 	a.removed = nil
 	a.units = map[string]string{}
 	a.actions = nil
+	a.instances = map[string]*instanceState{}
+	a.apacheCtls = nil
 	a.dirs = nil
 	a.dirSpecs = map[string]agent.DirSpec{}
 	a.symlinks = map[string]string{}

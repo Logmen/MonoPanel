@@ -226,8 +226,10 @@ func unitStopNote(u string) string {
 		return T("Таблица nftables панели будет снята: снаружи станут доступны все порты, которые слушают службы сервера, — пока юнит не запустят снова или не применят firewall.", "The panel's nftables table is removed: every port a service of the server listens on becomes reachable from outside until the unit is started again or the firewall is applied.")
 	case u == "nginx":
 		return T("Все сайты сервера перестанут отвечать, пока nginx не запустят снова. Сама панель продолжит работать: она слушает свой порт.", "Every site on this server stops answering until nginx is started again. The panel itself keeps working: it listens on its own port.")
+	case strings.HasPrefix(u, "monopanel-apache@"):
+		return T("Сайты этого аккаунта в режиме apache будут отвечать 502, пока его Apache не запустят снова; сайты других аккаунтов продолжат работать.", "This account's sites in apache mode answer 502 until its Apache is started again; the sites of other accounts keep working.")
 	case u == "apache2" || u == "httpd":
-		return T("Сайты в режиме apache будут отвечать 502, пока Apache не запустят снова; остальные сайты продолжат работать.", "Sites in apache mode answer 502 until Apache is started again; the other sites keep working.")
+		return T("Это Apache дистрибутива: сайты панели в режиме apache работают на Apache своих аккаунтов (monopanel-apache@<логин>) и продолжат работать.", "This is the distribution's Apache: the panel's sites in apache mode run on their accounts' own Apaches (monopanel-apache@<login>) and keep working.")
 	case u == "mysql" || u == "mysqld" || u == "mariadb":
 		return T("Сайты потеряют базы данных и начнут показывать ошибки, пока сервер не запустят снова; выполняющиеся запросы оборвутся.", "Sites lose their databases and show errors until the server is started again; queries running now are cut off.")
 	case (strings.HasPrefix(u, "php") && strings.HasSuffix(u, "-fpm")) || strings.HasPrefix(u, "monopanel-php-fpm@"):

@@ -31,7 +31,7 @@ func site(mode string, edit func(*render.Site)) render.Site {
 	s := render.Site{
 		Domain: "example.com", Aliases: []string{"www.example.com"}, Mode: mode, IP: "203.0.113.10",
 		RedirectWWW: "none", Docroot: "/var/www/alex/data/www/example.com", LogDir: "/var/log/monopanel/sites/alex",
-		IncludeDir: "monopanel/sites/example.com.d", ClientMaxBodySize: "64m", ApacheBackend: "127.0.0.1:8080",
+		IncludeDir: "monopanel/sites/example.com.d", ClientMaxBodySize: "64m", ApacheBackend: "127.100.3.233:81",
 		FPMSocket: "/run/monopanel/php/example.com.sock", ProxyTimeout: 150,
 	}
 	if edit != nil {
@@ -157,26 +157,81 @@ ssl_certificate_key /var/lib/monopanel/certs/example.com/privkey.pem;
 func TestApacheContentPasses(t *testing.T) {
 	var cases []acceptance
 	add := func(name, p, content string) { cases = append(cases, acceptance{name, p, content}) }
-	for _, dir := range []string{"/etc/apache2", "/etc/httpd"} {
-		listen := ""
-		if dir == "/etc/httpd" {
-			listen = "127.0.0.1:8080"
+	// apache.go: the Apaches of alex and shop (uids 1001 and 1002 of
+	// testdata/etc), as applyApacheSite writes them.
+	for _, a := range []struct{ login, addr string }{{"alex", "127.100.3.233:81"}, {"shop", "127.100.3.234:81"}} {
+		dir := "/etc/apache2/monopanel/accounts/" + a.login
+		add("httpd.conf "+a.login, dir+"/httpd.conf", renderT(t, "apache/account.conf.tmpl", render.ApacheAccount{
+			Login: a.login, Listen: a.addr, RunDir: "/run/monopanel-apache/" + a.login, Home: "/var/www/" + a.login,
+			ErrorLog: "/var/log/monopanel/sites/" + a.login + "/apache.error.log", SitesDir: dir + "/sites",
+		}))
+		add("sites README "+a.login, dir+"/sites/README", "Generated virtual hosts of the sites of "+a.login+" in Apache mode. Custom directives go to sites/<domain>.d/*.conf.\n")
+		for _, withTLS := range []bool{false, true} {
+			s := site("apache", func(s *render.Site) {
+				s.ApacheBackend, s.IncludeDir = a.addr, dir+"/sites/example.com.d"
+				s.Docroot, s.LogDir = "/var/www/"+a.login+"/data/www/example.com", "/var/log/monopanel/sites/"+a.login
+				if withTLS {
+					// and a shared folder of another account, without PHP
+					tls(s)
+					s.NoPHPPaths = []string{"upload/kaspy"}
+				}
+			})
+			add(fmt.Sprintf("site %s tls=%v", a.login, withTLS), dir+"/sites/example.com.conf", renderT(t, "apache/site.conf.tmpl", s))
 		}
-		add("httpd.conf "+dir, dir+"/monopanel/httpd.conf", renderT(t, "apache/httpd.conf.tmpl", render.ApacheMain{Listen: listen, Backend: "127.0.0.1:8080", SitesDir: dir + "/monopanel/sites"}))
-		s := site("apache", func(s *render.Site) { s.IncludeDir = dir + "/monopanel/sites/example.com.d" })
-		add("site "+dir, dir+"/monopanel/sites/example.com.conf", renderT(t, "apache/site.conf.tmpl", s))
-		add("site README "+dir, dir+"/monopanel/sites/example.com.d/README", "Custom Apache directives for example.com (inside <VirtualHost>).\n")
-		add("sites README "+dir, dir+"/monopanel/sites/README", "Generated per-site virtual hosts. Custom directives go to sites/<domain>.d/*.conf.\n")
+		add("site README "+a.login, dir+"/sites/example.com.d/README", "Custom Apache directives for example.com (inside <VirtualHost>).\n")
 	}
-	// stack.go installApache
-	add("ports.conf", "/etc/apache2/ports.conf", "# Managed by MonoPanel: Apache listens on loopback only; nginx terminates client connections.\nListen 127.0.0.1:8080\n")
+	// Custom directives an administrator typically puts in a site's .d.
+	add("custom directives", "/etc/apache2/monopanel/accounts/alex/sites/example.com.d/custom.conf", `RewriteEngine On
+RewriteRule ^old/(.*)$ /new/$1 [R=301,L]
+Header always set X-Frame-Options SAMEORIGIN
+<Directory /var/www/alex/data/www/example.com/private>
+    AuthType Basic
+    AuthName "Restricted"
+    AuthUserFile /var/www/alex/data/.htpasswd
+    Require valid-user
+</Directory>
+Alias /files /var/www/alex/data/files
+ErrorDocument 404 /404.html
+CustomLog /var/log/monopanel/sites/alex/example.com.extra.log combined
+ErrorLog syslog:local7
+SetEnvIf Request_URI "^/health" dontlog
+ExpiresActive On
+ExpiresByType image/webp "access plus 1 year"
+ProxyPass /api/ http://127.0.0.1:3000/
+`)
+	// The rest of /etc/apache2 is checked as it was: the shared layout of
+	// 0.8.19 (sites not moved yet, an administrator's override).
+	add("shared site", "/etc/apache2/monopanel/sites/example.com.conf", renderT(t, "apache/site.conf.tmpl", site("apache", func(s *render.Site) { s.IncludeDir = "/etc/apache2/monopanel/sites/example.com.d" })))
+	add("shared site relative include", "/etc/apache2/monopanel/sites/example.com.conf", renderT(t, "apache/site.conf.tmpl", site("apache", nil)))
+	add("site EL", "/etc/httpd/monopanel/sites/example.com.conf", renderT(t, "apache/site.conf.tmpl", site("apache", func(s *render.Site) { s.IncludeDir = "/etc/httpd/monopanel/sites/example.com.d" })))
 	add("conf-available", "/etc/apache2/conf-available/monopanel.conf", "IncludeOptional /etc/apache2/monopanel/httpd.conf\n")
 	add("conf.d EL", "/etc/httpd/conf.d/monopanel.conf", "IncludeOptional /etc/httpd/monopanel/httpd.conf\n")
-	// The relative IncludeDir of the golden test resolves against ServerRoot.
-	add("site relative include", "/etc/apache2/monopanel/sites/example.com.conf", renderT(t, "apache/site.conf.tmpl", site("apache", nil)))
-	// What an administrator's template override typically adds.
 	add("override", "/etc/apache2/monopanel/httpd.conf", "Header always set X-Frame-Options SAMEORIGIN\nRewriteEngine On\nRewriteMap lower int:tolower\nErrorLog ${APACHE_LOG_DIR}/monopanel-error.log\nCustomLog \"logs/access_log\" combined\nUser ${APACHE_RUN_USER}\n<IfModule mod_deflate.c>\n    AddOutputFilterByType DEFLATE text/html\n</IfModule>\nInclude /etc/apache2/monopanel/extra/*.conf\nErrorLog syslog:local7\n")
 	runAcceptances(t, cases)
+}
+
+// Every module of the account template is on the allow-list, and every one
+// of the list in the template, from Debian's module directory.
+func TestApacheInstanceModulesAreTheTemplates(t *testing.T) {
+	conf := renderT(t, "apache/account.conf.tmpl", render.ApacheAccount{Login: "alex", Listen: "127.100.3.233:81", RunDir: "/run/monopanel-apache/alex",
+		Home: "/var/www/alex", ErrorLog: "/var/log/monopanel/sites/alex/apache.error.log", SitesDir: "/etc/apache2/monopanel/accounts/alex/sites"})
+	var loaded []string
+	for _, line := range strings.Split(conf, "\n") {
+		if f := strings.Fields(line); len(f) == 3 && f[0] == "LoadModule" {
+			loaded = append(loaded, strings.TrimSuffix(f[1], "_module"))
+			if f[2] != "/usr/lib/apache2/modules/mod_"+strings.TrimSuffix(f[1], "_module")+".so" {
+				t.Errorf("LoadModule %s %s: not Debian's file of the module", f[1], f[2])
+			}
+		}
+	}
+	if strings.Join(loaded, " ") != strings.Join(ApacheInstanceModules, " ") {
+		t.Fatalf("the template loads %v, the allow-list is %v", loaded, ApacheInstanceModules)
+	}
+	for _, bad := range []string{"cgi", "cgid", "include", "lua", "ext_filter", "status", "info", "userdir", "perl", "python", "suexec", "mpm_itk", "ruid2", "macro", "dav", "ssl"} {
+		if apacheInstanceModules[bad] {
+			t.Errorf("%s must not be loaded by an account's Apache", bad)
+		}
+	}
 }
 
 func pool(edit func(*render.Pool)) render.Pool {
@@ -326,12 +381,17 @@ func TestMailContentPasses(t *testing.T) {
 func TestSystemContentPasses(t *testing.T) {
 	var cases []acceptance
 	add := func(name, p, content string) { cases = append(cases, acceptance{name, p, content}) }
-	// logrotate.go applySiteLogrotate
-	for _, pid := range []string{"/run/apache2/apache2.pid", "/run/httpd/httpd.pid"} {
-		add("logrotate "+pid, "/etc/logrotate.d/monopanel-sites", renderT(t, "logrotate/sites.tmpl", render.SiteLogrotate{NginxPID: "/run/nginx.pid", ApachePID: pid,
-			Accounts: []render.LogrotateAccount{{Login: "alex", LogDir: "/var/log/monopanel/sites/alex"}, {Login: "shop", LogDir: "/var/log/monopanel/sites/shop"}}}))
+	// logrotate.go applySiteLogrotate: with the accounts' Apaches, with the
+	// shared one of 0.8.19 still serving sites, without Apache.
+	withApache := []render.LogrotateAccount{
+		{Login: "alex", LogDir: "/var/log/monopanel/sites/alex", ApachePID: "/run/monopanel-apache/alex/httpd.pid"},
+		{Login: "shop", LogDir: "/var/log/monopanel/sites/shop", ApachePID: "/run/monopanel-apache/shop/httpd.pid"},
 	}
-	add("logrotate no accounts", "/etc/logrotate.d/monopanel-sites", renderT(t, "logrotate/sites.tmpl", render.SiteLogrotate{NginxPID: "/run/nginx.pid", ApachePID: "/run/apache2/apache2.pid"}))
+	add("logrotate apache", "/etc/logrotate.d/monopanel-sites", renderT(t, "logrotate/sites.tmpl", render.SiteLogrotate{NginxPID: "/run/nginx.pid", Accounts: withApache}))
+	add("logrotate shared apache", "/etc/logrotate.d/monopanel-sites", renderT(t, "logrotate/sites.tmpl", render.SiteLogrotate{NginxPID: "/run/nginx.pid", SharedApachePID: "/run/apache2/apache2.pid", Accounts: withApache}))
+	add("logrotate nginx only", "/etc/logrotate.d/monopanel-sites", renderT(t, "logrotate/sites.tmpl", render.SiteLogrotate{NginxPID: "/run/nginx.pid",
+		Accounts: []render.LogrotateAccount{{Login: "alex", LogDir: "/var/log/monopanel/sites/alex"}, {Login: "shop", LogDir: "/var/log/monopanel/sites/shop"}}}))
+	add("logrotate no accounts", "/etc/logrotate.d/monopanel-sites", renderT(t, "logrotate/sites.tmpl", render.SiteLogrotate{NginxPID: "/run/nginx.pid"}))
 	// fail2ban.go applyFail2ban
 	for _, nginx := range []bool{false, true} {
 		add(fmt.Sprintf("jail nginx=%v", nginx), "/etc/fail2ban/jail.d/monopanel.local", renderT(t, "fail2ban/jail.local.tmpl", render.Fail2ban{
@@ -412,12 +472,16 @@ func TestRepositoryContentPasses(t *testing.T) {
 // request go through Check file by file: a whole set passes.
 func TestSiteApplySetPasses(t *testing.T) {
 	s := site("apache", func(s *render.Site) { tls(s); s.Preset = "wordpress"; s.StaticByNginx = true })
+	inst := "/etc/apache2/monopanel/accounts/alex"
 	files := map[string]string{
-		"/etc/nginx/monopanel/sites/example.com.conf":            renderT(t, "nginx/site.conf.tmpl", s),
-		"/etc/nginx/monopanel/sites/example.com.d/README":        "Custom nginx directives for example.com (inside server {}): *.conf files here are included by the panel and never overwritten.\n",
-		"/etc/php/8.4/fpm/pool.d/example.com.conf":               renderT(t, "php-fpm/pool.conf.tmpl", pool(nil)),
-		"/etc/apache2/monopanel/sites/example.com.conf":          renderT(t, "apache/site.conf.tmpl", site("apache", func(s *render.Site) { s.IncludeDir = "/etc/apache2/monopanel/sites/example.com.d" })),
-		"/etc/apache2/monopanel/sites/example.com.d/README":      "Custom Apache directives for example.com (inside <VirtualHost>).\n",
+		"/etc/nginx/monopanel/sites/example.com.conf":     renderT(t, "nginx/site.conf.tmpl", s),
+		"/etc/nginx/monopanel/sites/example.com.d/README": "Custom nginx directives for example.com (inside server {}): *.conf files here are included by the panel and never overwritten.\n",
+		"/etc/php/8.4/fpm/pool.d/example.com.conf":        renderT(t, "php-fpm/pool.conf.tmpl", pool(nil)),
+		inst + "/httpd.conf": renderT(t, "apache/account.conf.tmpl", render.ApacheAccount{Login: "alex", Listen: "127.100.3.233:81", RunDir: "/run/monopanel-apache/alex",
+			Home: "/var/www/alex", ErrorLog: "/var/log/monopanel/sites/alex/apache.error.log", SitesDir: inst + "/sites"}),
+		inst + "/sites/README":                                   "Generated virtual hosts of the sites of alex in Apache mode. Custom directives go to sites/<domain>.d/*.conf.\n",
+		inst + "/sites/example.com.conf":                         renderT(t, "apache/site.conf.tmpl", site("apache", func(s *render.Site) { s.IncludeDir = inst + "/sites/example.com.d" })),
+		inst + "/sites/example.com.d/README":                     "Custom Apache directives for example.com (inside <VirtualHost>).\n",
 		path.Join("/etc/php/8.4/cli/conf.d", "99-monopanel.ini"): renderT(t, "php/monopanel.ini.tmpl", render.PHPIni{Version: "8.4", Timezone: "UTC", OpcacheMemory: 128, ShortOpenTag: true}),
 	}
 	for p, content := range files {

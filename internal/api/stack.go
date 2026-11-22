@@ -17,6 +17,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 
 	"monopanel/internal/agent"
+	"monopanel/internal/agent/confcheck"
 	"monopanel/internal/apitypes"
 	"monopanel/internal/jobs"
 	"monopanel/internal/osprofile"
@@ -62,13 +63,14 @@ func (s *Server) registerStack() {
 		if s.profile.Family() == osprofile.FamilyRHEL {
 			apachePkg = "httpd"
 		}
+		// Apache is the accounts' own Apaches, one per account with sites in
+		// Apache mode: how many run, not the distribution's apache2.service,
+		// which the panel keeps off.
 		ac := apitypes.StackComponent{Name: "apache", Kind: "web"}
 		if q, err := s.agent.Pkg(actx, "query", apachePkg); err == nil {
 			if v, ok := q.Installed[apachePkg]; ok {
 				ac.Installed, ac.Version = true, v
-				if st, err := s.agent.Service(actx, web.ApacheService, "status"); err == nil {
-					ac.Service = &st.Status
-				}
+				ac.Instances = s.apacheInstancesStatus(actx)
 			}
 		}
 		out.Body = append(out.Body, ac)
@@ -589,13 +591,21 @@ func localIPv4s() []string {
 
 const settingApache = "stack.apache"
 
-// installApache installs Apache 2.4 behind nginx on 127.0.0.1:8080 with
-// mpm_event + mod_proxy_fcgi (Debian/Ubuntu; EL in a later iteration).
+// installApache installs Apache 2.4 for the sites in Apache mode (Debian and
+// Ubuntu): the package's binaries and modules, and nothing of its shared
+// server. Each account with sites in Apache mode gets an Apache of its own
+// (apache.go), which site.apply writes and starts; apache2.service stops and
+// is disabled, and the distribution's Apache account leaves the web group.
+// On a panel of 0.8.19 or older, or to repair, the sites in Apache mode are
+// applied again first, each moving to (or refreshing) its account's Apache
+// before the shared one stops.
 func (s *Server) installApache(ctx context.Context, jc *jobs.Context) error {
 	if s.profile.Family() != osprofile.FamilyDebian {
 		return errors.New("Apache installation is implemented for Debian/Ubuntu so far")
 	}
-	web := s.profile.Web()
+	if err := s.apachePortHeld(); err != nil {
+		return err
+	}
 	jc.Progress(10, "installing apache2")
 	res, err := s.agent.Pkg(ctx, "install", "apache2")
 	if err != nil {
@@ -603,59 +613,14 @@ func (s *Server) installApache(ctx context.Context, jc *jobs.Context) error {
 	}
 	logTail(jc, res.Output, 3)
 	jc.Logf("apache2 package: %s", res.Installed["apache2"])
-
-	jc.Progress(40, "modules")
-	for _, m := range []string{"mpm_prefork", "mpm_worker", "php8.4", "php8.3", "php8.2", "php8.1"} {
-		s.agent.ApacheCtl(ctx, "dismod", m) //nolint:errcheck // best effort: the module may not be enabled
-	}
-	for _, m := range []string{"mpm_event", "proxy", "proxy_fcgi", "rewrite", "remoteip", "headers", "expires", "setenvif", "deflate", "dir", "alias", "mime"} {
-		if _, err := s.agent.ApacheCtl(ctx, "enmod", m); err != nil {
-			return err
-		}
-	}
-	s.agent.ApacheCtl(ctx, "dissite", "000-default") //nolint:errcheck // best effort: apachectl reports the result
-	if _, err := s.agent.EnsureGroup(ctx, &agent.EnsureGroupRequest{Name: s.cfg.WebGroup, System: true}); err != nil {
-		return err
-	}
-	if _, err := s.agent.EnsureUnixUser(ctx, &agent.EnsureUnixUserRequest{Login: web.ApacheUser, System: true, Groups: []string{s.cfg.WebGroup}}); err != nil {
-		return err
-	}
-
-	jc.Progress(70, "configuration")
-	confDir := web.ApacheConfDir
-	main, err := s.render.Render("apache/httpd.conf.tmpl", render.ApacheMain{Backend: "127.0.0.1:8080", SitesDir: path.Join(confDir, "monopanel", "sites")})
-	if err != nil {
-		return err
-	}
-	files := []agent.FileSpec{
-		{Path: path.Join(confDir, "ports.conf"), Content: "# Managed by MonoPanel: Apache listens on loopback only; nginx terminates client connections.\nListen 127.0.0.1:8080\n", Mode: 0o644},
-		{Path: path.Join(confDir, "monopanel", "httpd.conf"), Content: main, Mode: 0o644},
-		{Path: path.Join(confDir, "monopanel", "sites", "README"), Content: "Generated per-site virtual hosts. Custom directives go to sites/<domain>.d/*.conf.\n", Mode: 0o644},
-		{Path: path.Join(confDir, "conf-available", "monopanel.conf"), Content: "IncludeOptional " + path.Join(confDir, "monopanel", "httpd.conf") + "\n", Mode: 0o644},
-	}
-	if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Origin: "stack:apache"}); err != nil {
-		return err
-	}
-	if _, err := s.agent.ApacheCtl(ctx, "enconf", "monopanel"); err != nil {
-		return err
-	}
-	if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Validate: [][]string{web.ApacheCheckArgv}, Restart: []string{web.ApacheService}, Force: true, Origin: "stack:apache"}); err != nil {
-		return err
-	}
-	if _, err := s.agent.Service(ctx, web.ApacheService, "enable"); err != nil {
-		return err
-	}
-	st, err := s.agent.Service(ctx, web.ApacheService, "status")
-	if err != nil {
-		return err
-	}
-	jc.Logf("%s: %s (%s) on 127.0.0.1:8080", web.ApacheService, st.Status.ActiveState, st.Status.SubState)
-	if st.Status.ActiveState != "active" {
-		return fmt.Errorf("%s is %s after install", web.ApacheService, st.Status.ActiveState)
-	}
 	if err := s.db.SetSetting(ctx, settingApache, "installed"); err != nil {
 		return err
 	}
+	jc.Progress(40, "sites in Apache mode")
+	if err := s.moveToApacheInstances(ctx, jc); err != nil {
+		return err
+	}
+	jc.Logf("each account with sites in Apache mode gets its own Apache (monopanel-apache@<login>), its children running as the account, on 127.100.x.y:%d", confcheck.ApacheInstancePort)
 	jc.Progress(100, "apache ready")
 	return nil
 }

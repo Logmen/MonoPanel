@@ -904,16 +904,38 @@ func removeIn(w *walked, name, p string, recursive bool) (bool, error) {
 	return removed, nil
 }
 
-var apacheNameRe = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+// apacheNameRe is a module, configuration or site name; never one that a2*
+// would read as an option (-f, --purge).
+var apacheNameRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
+
+// apacheCtlTools are the a2* tools /v1/apache/ctl runs: only the ones that
+// switch something of the distribution's Apache off. The panel's sites run
+// on their accounts' own Apaches, which read no mods-enabled, conf-enabled
+// or sites-enabled; up to 0.8.19 the panel enabled its configuration for the
+// shared apache2.service, and the upgrade switches it off again.
+var apacheCtlTools = map[string]string{"dismod": "a2dismod", "disconf": "a2disconf", "dissite": "a2dissite"}
+
+// CheckApacheCtl tells the a2* tool of an action, or why the agent does
+// not run it (the agent's doubles answer with the same refusal).
+func CheckApacheCtl(action, name string) (string, error) {
+	switch action {
+	case "enmod", "enconf", "ensite":
+		return "", notAllowed("a2"+action+" "+name, "an enabled module, configuration or site would load into the root parent of the distribution's apache2.service, which serves none of the panel's sites (each account's Apache has its own configuration and an allow-list of modules) and stays off")
+	}
+	tool, ok := apacheCtlTools[action]
+	if !ok || !apacheNameRe.MatchString(name) {
+		return "", &Error{Status: http.StatusBadRequest, Message: "invalid apache action or name"}
+	}
+	return tool, nil
+}
 
 func (s *Server) apacheCtl(ctx context.Context, req *ApacheCtlRequest) (*ApacheCtlResponse, error) {
 	if s.profile.Family() != osprofile.FamilyDebian {
 		return nil, &Error{Status: http.StatusNotImplemented, Message: "a2* tools exist on Debian/Ubuntu only"}
 	}
-	tools := map[string]string{"enmod": "a2enmod", "dismod": "a2dismod", "enconf": "a2enconf", "disconf": "a2disconf", "ensite": "a2ensite", "dissite": "a2dissite"}
-	tool, ok := tools[req.Action]
-	if !ok || !apacheNameRe.MatchString(req.Name) {
-		return nil, &Error{Status: http.StatusBadRequest, Message: "invalid apache action or name"}
+	tool, err := CheckApacheCtl(req.Action, req.Name)
+	if err != nil {
+		return nil, err
 	}
 	out, err := runArgv(ctx, nil, "/usr/sbin/"+tool, "-q", req.Name)
 	if err != nil {

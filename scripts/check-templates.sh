@@ -4,7 +4,7 @@
 # rather than on a customer's host.
 #
 # Usage: scripts/check-templates.sh [golden-dir]
-# Needs: nginx, and apache2ctl/httpd for the vhost check (skipped when absent).
+# Needs: nginx, and Debian's apache2 for the Apache check (skipped when absent).
 set -euo pipefail
 
 golden=${1:-internal/render/testdata}
@@ -86,45 +86,37 @@ for f in "$golden"/nginx-site-*.golden; do
 	fi
 done
 
-# Apache vhost: the panel only generates it on Debian-family hosts.
-# apache2ctl/apachectl are wrappers that create /var/run/apache2; the binary
-# takes the same -t and runs unprivileged.
+# Apache: the whole configuration of an account's Apache (Debian-family
+# hosts only) — its httpd.conf with the site's virtual host included, as
+# monopanel-apache@<login> starts it. apache2ctl/apachectl are wrappers that
+# create /var/run/apache2; the binary takes the same -t and runs
+# unprivileged. The paths move onto the throwaway tree, the account onto the
+# user running the check (User must name an existing account).
 apachectl=$(command -v apache2 || command -v httpd || command -v apache2ctl || command -v apachectl || true)
+main="$golden/apache-account.conf.golden"
 vhost="$golden/apache-site.conf.golden"
-if [ -n "$apachectl" ] && [ -f "$vhost" ]; then
-	mkdir -p "$work/apache/sites" "$work/apache/include" "$work/apache/run"
-	sed -e "s#/var/www/alex/data/www/example.com#$work/docroot#" \
-		-e "s#/var/log/monopanel/sites/alex#$work/logs#" \
-		-e "s#/etc/apache2/monopanel/sites/example.com.d#$work/apache/include#" \
-		"$vhost" > "$work/apache/sites/site.conf"
-	modules=$(dirname "$(dirname "$apachectl")")/lib/apache2/modules
-	[ -d "$modules" ] || modules=/usr/lib/apache2/modules
-	cat > "$work/apache/httpd.conf" <<EOF
-ServerName localhost
-PidFile $work/apache/httpd.pid
-DefaultRuntimeDir $work/apache/run
-ErrorLog $work/logs/apache-error.log
-EOF
-	# Some of these are compiled in depending on the build; only load what is missing.
-	for m in mpm_event:mod_mpm_event authz_core:mod_authz_core dir:mod_dir mime:mod_mime \
-		proxy:mod_proxy proxy_fcgi:mod_proxy_fcgi remoteip:mod_remoteip log_config:mod_log_config unixd:mod_unixd; do
-		name=${m%%:*}; file=${m##*:}
-		[ -f "$modules/$file.so" ] || continue
-		printf '<IfModule !%s_module>\nLoadModule %s_module %s/%s.so\n</IfModule>\n' "$name" "$name" "$modules" "$file" >> "$work/apache/httpd.conf"
-	done
-	cat >> "$work/apache/httpd.conf" <<EOF
-Listen 127.0.0.1:18080
-Include $work/apache/sites/site.conf
-EOF
-	if out=$($apachectl -t -f "$work/apache/httpd.conf" -d "$work/apache" 2>&1); then
-		echo "ok   apache-site"
+if [ -n "$apachectl" ] && [ -f "$main" ] && [ -f "$vhost" ] && [ -d /usr/lib/apache2/modules ]; then
+	mkdir -p "$work/apache/sites/example.com.d" "$work/apache/run"
+	apache_paths() {
+		sed -e "s#/var/www/alex/data/www/example.com#$work/docroot#" \
+			-e "s#/var/log/monopanel/sites/alex#$work/logs#" \
+			-e "s#/run/monopanel-apache/alex#$work/apache/run#" \
+			-e "s#/etc/apache2/monopanel/accounts/alex/sites#$work/apache/sites#" \
+			-e "s#^User alex\$#User $(id -un)#" \
+			-e "s#^Group alex\$#Group $(id -gn)#" \
+			"$1"
+	}
+	apache_paths "$main" > "$work/apache/httpd.conf"
+	apache_paths "$vhost" > "$work/apache/sites/example.com.conf"
+	if out=$($apachectl -t -f "$work/apache/httpd.conf" 2>&1); then
+		echo "ok   apache-account (with apache-site)"
 	else
-		echo "FAIL apache-site"
+		echo "FAIL apache-account (with apache-site)"
 		echo "$out" | sed 's/^/     /'
 		fail=1
 	fi
 else
-	echo "skip apache-site (no apachectl)"
+	echo "skip apache-account (no Debian apache2)"
 fi
 
 exit $fail

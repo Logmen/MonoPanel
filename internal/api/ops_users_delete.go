@@ -11,6 +11,7 @@ import (
 	"monopanel/internal/agent"
 	"monopanel/internal/apitypes"
 	"monopanel/internal/jobs"
+	"monopanel/internal/osprofile"
 	"monopanel/internal/store"
 )
 
@@ -173,6 +174,14 @@ func (s *Server) jobUserDelete(ctx context.Context, jc *jobs.Context) error {
 
 	jc.Progress(75, "unix account")
 	if u.UnixUID != nil {
+		// Its Apache, its children the account's, stops before the account
+		// goes; the last of its sites above stopped it already, unless that
+		// failed.
+		if s.apacheInstalled(ctx) && s.profile.Family() == osprofile.FamilyDebian {
+			if err := s.retireApacheInstance(ctx, jc.Logf, u, 0); err != nil {
+				return fail(err)
+			}
+		}
 		// The account is "deleting" and drops out of the log rotation before
 		// its unix user goes: logrotate must not meet an unknown su user.
 		if err := s.applySiteLogrotate(ctx); err != nil {

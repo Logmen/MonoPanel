@@ -15,8 +15,9 @@ func TestValidatorAllowed(t *testing.T) {
 	}{
 		{deb, []string{"/usr/sbin/nginx", "-t", "-q"}},
 		{el, []string{"/usr/sbin/nginx", "-t", "-q"}},
-		{deb, []string{"/usr/sbin/apache2ctl", "-t"}},
-		{el, []string{"/usr/sbin/apachectl", "-t"}},
+		// an account's Apache (Debian): apache2 -t on its own httpd.conf
+		{deb, []string{"/usr/sbin/apache2", "-t", "-f", "/etc/apache2/monopanel/accounts/alex/httpd.conf"}},
+		{deb, []string{"/usr/sbin/apache2", "-t", "-f", "/etc/apache2/monopanel/accounts/shop_2/httpd.conf"}},
 		{deb, []string{"/usr/sbin/php-fpm8.4", "-t", "-y", "/etc/php/8.4/fpm/php-fpm.conf"}},
 		{deb, []string{"/usr/sbin/php-fpm5.6", "-t", "-y", "/etc/php/5.6/fpm/php-fpm.conf"}},
 		{el, []string{"/opt/remi/php83/root/usr/sbin/php-fpm", "-t", "-y", "/etc/opt/remi/php83/php-fpm.conf"}},
@@ -41,9 +42,18 @@ func TestValidatorAllowed(t *testing.T) {
 		{"/usr/sbin/nginx", "-t", "-q", "-g", "load_module /tmp/x.so;"},
 		{"/usr/sbin/nginx", "-c", "/tmp/x"},
 		{"/usr/local/sbin/nginx", "-t", "-q"},
-		{"/usr/sbin/apachectl", "-t"}, // Debian names it apache2ctl
+		{"/usr/sbin/apachectl", "-t"},
+		// the shared Apache of 0.8.19 is checked no more: it serves no site
+		{"/usr/sbin/apache2ctl", "-t"},
 		{"/usr/sbin/apache2ctl", "-t", "-f", "/tmp/httpd.conf"},
 		{"/usr/sbin/apache2ctl", "-k", "start", "-C", "LoadModule x /tmp/x.so"},
+		{"/usr/sbin/apache2", "-t", "-f", "/tmp/httpd.conf"},
+		{"/usr/sbin/apache2", "-t", "-f", "/etc/apache2/monopanel/accounts/root/httpd.conf"},
+		{"/usr/sbin/apache2", "-t", "-f", "/etc/apache2/monopanel/accounts/alex/sites/example.com.conf"},
+		{"/usr/sbin/apache2", "-t", "-f", "/etc/apache2/monopanel/accounts/../../../tmp/httpd.conf"},
+		{"/usr/sbin/apache2", "-t", "-f", "/etc/apache2/monopanel/accounts/alex/httpd.conf", "-C", "LoadModule x /tmp/x.so"},
+		{"/usr/sbin/apache2", "-f", "/etc/apache2/monopanel/accounts/alex/httpd.conf", "-DFOREGROUND"},
+		{"/usr/sbin/apache2", "-t"},
 		{"/usr/sbin/php-fpm8.4", "-t", "-y", "/tmp/php-fpm.conf"},
 		{"/usr/sbin/php-fpm8.4", "-t", "-y", "/etc/php/8.4/fpm/php-fpm.conf", "-d", "extension=/tmp/x.so"},
 		{"/usr/bin/php8.4", "-r", "system('id');"},
@@ -61,5 +71,9 @@ func TestValidatorAllowed(t *testing.T) {
 		if err := deb.validatorAllowed(argv); err == nil {
 			t.Errorf("%q must be refused", argv)
 		}
+	}
+	// EL has no Apache mode.
+	if err := el.validatorAllowed([]string{"/usr/sbin/apache2", "-t", "-f", "/etc/apache2/monopanel/accounts/alex/httpd.conf"}); err == nil {
+		t.Error("the check of an account's Apache passed on EL")
 	}
 }

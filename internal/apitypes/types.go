@@ -110,6 +110,16 @@ type StackComponent struct {
 	Kind string `json:"kind,omitempty"`
 	// Removable components can be uninstalled from the panel (the tools).
 	Removable bool `json:"removable,omitempty"`
+	// Instances counts the servers of a component that runs one per account
+	// (Apache: monopanel-apache@<login>, one for each account with sites in
+	// Apache mode) and how many of them run; Service is empty then.
+	Instances *StackInstances `json:"instances,omitempty"`
+}
+
+// StackInstances is how many of a component's per-account servers run.
+type StackInstances struct {
+	Running int `json:"running"`
+	Total   int `json:"total"`
 }
 
 // StackInstallRequest installs a component.

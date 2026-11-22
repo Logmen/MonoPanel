@@ -28,6 +28,8 @@ contents:
     dst: /usr/lib/systemd/system/monopanel-api.service
   - src: ./packaging/systemd/monopanel-api.socket
     dst: /usr/lib/systemd/system/monopanel-api.socket
+  - src: ./packaging/systemd/monopanel-apache@.service
+    dst: /usr/lib/systemd/system/monopanel-apache@.service
   - src: ./packaging/sysusers.d/monopanel.conf
     dst: /usr/lib/sysusers.d/monopanel.conf
   - src: ./packaging/tmpfiles.d/monopanel.conf

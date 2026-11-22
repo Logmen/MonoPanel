@@ -73,6 +73,8 @@ func newFixture(t *testing.T, tweak func(*config.Config)) *siteFixture {
 	s := New(cfg, db, fake.Client(), runner, profile, quiet)
 	s.SetReadinessWaits(0, 0)                      // no php-fpm socket and no nginx behind the fake agent
 	s.SetHostIPv6s(func() []string { return nil }) // the developer's machine may have one; tests set their own
+	// Whatever the developer's machine allows, accounts bind no port below 1024.
+	s.SetUnprivilegedPortStart(func() int { return 1024 })
 	runner.Start(ctx)
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)

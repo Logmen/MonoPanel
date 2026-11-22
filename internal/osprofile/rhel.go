@@ -29,15 +29,13 @@ func (p *rhelProfile) EPELPackage() string {
 
 func (p *rhelProfile) Web() WebLayout {
 	return WebLayout{
-		NginxUser:       "nginx",
-		NginxService:    "nginx.service",
-		NginxConfDir:    "/etc/nginx",
-		NginxCheckArgv:  []string{"/usr/sbin/nginx", "-t", "-q"},
-		ApacheUser:      "apache",
-		ApacheService:   "httpd.service",
-		ApachePID:       "/run/httpd/httpd.pid",
-		ApacheConfDir:   "/etc/httpd",
-		ApacheCheckArgv: []string{"/usr/sbin/apachectl", "-t"},
+		NginxUser:      "nginx",
+		NginxService:   "nginx.service",
+		NginxConfDir:   "/etc/nginx",
+		NginxCheckArgv: []string{"/usr/sbin/nginx", "-t", "-q"},
+		ApacheUser:     "apache",
+		ApacheService:  "httpd.service",
+		ApacheConfDir:  "/etc/httpd",
 	}
 }
 

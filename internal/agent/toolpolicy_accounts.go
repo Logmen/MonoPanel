@@ -124,8 +124,10 @@ func (s *Server) checkPanelAccount(u *user.User) error {
 }
 
 // systemLogins are the system users the panel adds to groups or creates:
-// the web servers' users join the web group, postfix joins opendkim (the
-// milter socket), vmail owns the mail store, Sphinx 3 gets a user of its own.
+// nginx's user joins the web group, postfix joins opendkim (the milter
+// socket), vmail owns the mail store, Sphinx 3 gets a user of its own; the
+// distribution's Apache account only leaves the web group
+// (checkApacheUserLeaves).
 func (s *Server) systemLogins() map[string]bool {
 	web := s.profile.Web()
 	out := map[string]bool{mailUser: true, "postfix": true}
@@ -142,10 +144,11 @@ func (s *Server) systemLogins() map[string]bool {
 //   - a client (internal/api/ops_users.go provisionUser): home <www_root>/<login>,
 //     shell nologin or /bin/bash, the SFTP or the CLI group, the other one
 //     removed; refreshCLIGroup adds an existing client to the CLI group;
-//   - the web servers' users join the web group (stack.go), postfix joins
-//     opendkim (ops_mail_install.go), vmail is made with its own primary group
-//     and the mail store as home, Sphinx 3's user with its data directory
-//     (ops_tools.go).
+//   - nginx's user joins the web group (stack.go), postfix joins opendkim
+//     (ops_mail_install.go), vmail is made with its own primary group and the
+//     mail store as home, Sphinx 3's user with its data directory
+//     (ops_tools.go); the distribution's Apache account leaves the web group
+//     (apache.go, which 0.8.19's installApache had it join).
 //
 // Anything else would let the API make itself a sudoer, an account with a
 // login shell and root's groups, or take over one of the system's users.
@@ -185,6 +188,10 @@ func (s *Server) checkEnsureSystemUser(req *EnsureUnixUserRequest, existing *use
 	if !s.systemLogins()[login] {
 		return notAllowed("the system account "+login, "the panel manages only the web servers' users, postfix, vmail and the Sphinx user")
 	}
+	web := s.profile.Web()
+	if login == web.ApacheUser {
+		return s.checkApacheUserLeaves(req, existing)
+	}
 	if req.Shell != "" && req.Shell != s.profile.NologinShell() {
 		return notAllowed("the shell "+req.Shell+" for the system account "+login, "system accounts get "+s.profile.NologinShell())
 	}
@@ -200,19 +207,42 @@ func (s *Server) checkEnsureSystemUser(req *EnsureUnixUserRequest, existing *use
 			return notAllowed("the home "+req.Home+" for "+login, "it is not the directory the panel keeps for it")
 		}
 	}
-	web := s.profile.Web()
 	for _, g := range req.Groups {
 		ok := g == login ||
-			(g == s.cfg.WebGroup && (login == web.NginxUser || login == web.ApacheUser)) ||
+			(g == s.cfg.WebGroup && login == web.NginxUser) ||
 			(g == "opendkim" && login == "postfix")
 		if !ok {
-			return notAllowed("the group "+g+" for "+login, "the panel adds only the web servers' users to "+s.cfg.WebGroup+" and postfix to opendkim")
+			return notAllowed("the group "+g+" for "+login, "the panel adds only nginx's user to "+s.cfg.WebGroup+" and postfix to opendkim")
 		}
 	}
 	if existing != nil {
 		if uid, _ := strconv.Atoi(existing.Uid); uid == 0 {
 			return notAllowed("the account "+login, "it is root's")
 		}
+	}
+	return nil
+}
+
+// checkApacheUserLeaves allows the one change the panel makes to the
+// distribution's Apache account (www-data, apache): it leaves the web group.
+// Up to 0.8.19 the shared Apache ran as that account, and the web group let
+// its children read every site and connect to every php-fpm pool; the sites
+// run on their accounts' own Apaches now, and the account joins nothing and
+// is never made.
+func (s *Server) checkApacheUserLeaves(req *EnsureUnixUserRequest, existing *user.User) error {
+	login := req.Login
+	switch {
+	case existing == nil:
+		return notAllowed("making the account "+login, "the panel takes the distribution's Apache account out of "+s.cfg.WebGroup+" and makes no such account")
+	case len(req.Groups) > 0:
+		return notAllowed("the groups "+strings.Join(req.Groups, ", ")+" for "+login, "the distribution's Apache serves none of the panel's sites: its account joins no group of the panel")
+	case len(req.RemoveGroups) != 1 || req.RemoveGroups[0] != s.cfg.WebGroup:
+		return notAllowed("removing "+login+" from "+strings.Join(req.RemoveGroups, ", "), "the panel only takes it out of "+s.cfg.WebGroup)
+	case req.UpdateShell || req.CreateHome || req.Shell != "" || req.Home != "" || req.PrimaryGroup != "" || req.Comment != "":
+		return notAllowed("changing the account "+login, "the panel only takes it out of "+s.cfg.WebGroup)
+	}
+	if uid, _ := strconv.Atoi(existing.Uid); uid == 0 {
+		return notAllowed("the account "+login, "it is root's")
 	}
 	return nil
 }

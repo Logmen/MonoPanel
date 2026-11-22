@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"monopanel/internal/agent/confcheck"
 	"monopanel/internal/config"
 )
 
@@ -82,8 +83,9 @@ func TestDBFilesMustBePlain(t *testing.T) {
 // from the binary alone and one from the package behave the same.
 func TestUnitsAreThePackages(t *testing.T) {
 	for file, want := range map[string]string{
-		"monopanel-api.service": fmt.Sprintf(apiUnit, "/usr/bin/monopanel"),
-		"monopanel-api.socket":  apiSocketUnit,
+		"monopanel-api.service":     fmt.Sprintf(apiUnit, "/usr/bin/monopanel"),
+		"monopanel-api.socket":      apiSocketUnit,
+		"monopanel-apache@.service": apacheUnit,
 	} {
 		b, err := os.ReadFile(filepath.Join("..", "..", "packaging", "systemd", file))
 		if err != nil {
@@ -99,6 +101,9 @@ func TestUnitsAreThePackages(t *testing.T) {
 	}
 	if !strings.Contains(string(nfpm), "src: ./packaging/systemd/monopanel-api.socket\n    dst: /usr/lib/systemd/system/monopanel-api.socket\n") {
 		t.Error("the package does not ship monopanel-api.socket")
+	}
+	if !strings.Contains(string(nfpm), "src: ./packaging/systemd/monopanel-apache@.service\n    dst: /usr/lib/systemd/system/monopanel-apache@.service\n") {
+		t.Error("the package does not ship monopanel-apache@.service")
 	}
 	// The API wants its socket and does not require it; the socket listens
 	// where :8443 would, on every address and both families.
@@ -136,7 +141,7 @@ func TestInstallUnitsWritesTheSocket(t *testing.T) {
 	cfg.Web.Listen = "203.0.113.5:9443"
 
 	wrote, moved, socketErr, err := installUnits(ctx, dir, cfg, "/usr/bin/monopanel", false, reload)
-	if err != nil || socketErr != nil || !slices.Equal(wrote, []string{agentService, apiSocket}) || !moved || reloads != 2 {
+	if err != nil || socketErr != nil || !slices.Equal(wrote, []string{agentService, apiSocket, apacheUnitName}) || !moved || reloads != 2 {
 		t.Fatalf("first: %v %v %v %v, %d reloads", wrote, moved, socketErr, err, reloads)
 	}
 	if b, _ := os.ReadFile(filepath.Join(dir, apiSocket)); string(b) != apiSocketUnit {
@@ -157,7 +162,7 @@ func TestInstallUnitsWritesTheSocket(t *testing.T) {
 		t.Fatalf("again: %v %v %v %v, %d reloads", wrote, moved, socketErr, err, reloads)
 	}
 	wrote, _, socketErr, err = installUnits(ctx, dir, cfg, "/usr/bin/monopanel", true, reload)
-	if err != nil || socketErr != nil || !slices.Equal(wrote, []string{agentService, apiSocket, apiService}) {
+	if err != nil || socketErr != nil || !slices.Equal(wrote, []string{agentService, apiSocket, apiService, apacheUnitName}) {
 		t.Fatalf("--install-units: %v %v %v", wrote, socketErr, err)
 	}
 	if b, _ := os.ReadFile(filepath.Join(dir, apiService)); string(b) != fmt.Sprintf(apiUnit, "/usr/bin/monopanel") {
@@ -276,5 +281,33 @@ func TestPackageScriptsOrderTheSocket(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "systemctl disable --now monopanel-api.socket monopanel-api.service monopanel-agent.service") {
 		t.Error("preremove.sh leaves the socket listening")
+	}
+}
+
+// The template of the accounts' Apaches starts apache2 on the configuration
+// the agent writes and checks for that account (confcheck), with the
+// runtime directory the configuration names; its parent keeps only the
+// capabilities it needs, and no instance of it is enabled by mp setup.
+func TestApacheUnitIsTheAgents(t *testing.T) {
+	for _, line := range []string{
+		"\nConditionPathExists=" + confcheck.ApacheInstanceConf("%i") + "\n",
+		"\nExecStart=" + confcheck.ApacheBinary + " -f " + confcheck.ApacheInstanceConf("%i") + " -DFOREGROUND\n",
+		"\nExecReload=/bin/kill -USR1 $MAINPID\n",
+		"\nRuntimeDirectory=" + strings.TrimPrefix(confcheck.ApacheInstanceRunDir("%i"), "/run/") + "\n",
+		"\nType=simple\n", "\nRestart=on-failure\n", "\nNoNewPrivileges=yes\n", "\nProtectSystem=full\n", "\nProtectHome=yes\n", "\nPrivateTmp=yes\n",
+		"\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL CAP_CHOWN CAP_DAC_READ_SEARCH\n",
+		"\nWantedBy=multi-user.target\n",
+	} {
+		if !strings.Contains(apacheUnit, line) {
+			t.Errorf("the Apache unit lacks %q", line)
+		}
+	}
+	for _, bad := range []string{"User=", "Group=", "%I", "apache2ctl", "EnvironmentFile", "CAP_SYS_ADMIN", "CAP_DAC_OVERRIDE"} {
+		if strings.Contains(apacheUnit, bad) {
+			t.Errorf("the Apache unit has %q", bad)
+		}
+	}
+	if login, ok := confcheck.ApacheInstanceLoginOf(apacheUnitName); ok {
+		t.Errorf("the template itself reads as the Apache of %q", login)
 	}
 }

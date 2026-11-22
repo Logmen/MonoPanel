@@ -3,23 +3,24 @@ package agent
 import (
 	"strings"
 
+	"monopanel/internal/agent/confcheck"
 	"monopanel/internal/osprofile"
 )
 
 // panelValidators are the configuration checks the API runs through
-// config/apply and paths/remove, argv for argv: nginx -t and the Apache check
-// of the OS layout (osprofile WebLayout: every site, stack, mail and doctor
-// call), php-fpm -t of each branch's layout (Sury's php-fpmX.Y, Remi's
+// config/apply and paths/remove, argv for argv: nginx -t of the OS layout
+// (osprofile WebLayout: every site, stack, mail and doctor call), php-fpm -t
+// of each branch's layout (Sury's php-fpmX.Y, Remi's
 // /opt/remi/phpXY/root/usr/sbin/php-fpm), sshd -t (ops_users.go), the
 // MySQL/Percona check (ops_db.go; mariadbd is the same server under its own
 // name), logrotate on the panel's site rotation (logrotate.go),
 // fail2ban-client -t (fail2ban.go), postfix check and doveconf -n
-// (ops_mail.go).
+// (ops_mail.go). The check of an account's Apache has a login in it
+// (apacheInstanceCheck).
 func (s *Server) panelValidators() [][]string {
 	web := s.profile.Web()
 	out := [][]string{
 		web.NginxCheckArgv,
-		web.ApacheCheckArgv,
 		{"/usr/sbin/sshd", "-t"},
 		{"/usr/sbin/mysqld", "--validate-config", "--user=mysql"},
 		{"/usr/sbin/mariadbd", "--validate-config", "--user=mysql"},
@@ -49,10 +50,27 @@ func (s *Server) validatorAllowed(argv []string) error {
 	if len(argv) == 0 {
 		return notAllowed("an empty validator", "a validator is one of the panel's configuration checks")
 	}
+	if s.apacheInstanceCheck(argv) {
+		return nil
+	}
 	for _, v := range s.panelValidators() {
 		if len(v) > 0 && equalArgs(argv, v) {
 			return nil
 		}
 	}
 	return notAllowed("the validator "+strings.Join(quoteArgs(argv), " "), "it is not one of the panel's configuration checks")
+}
+
+// apacheInstanceCheck tells the check of an account's Apache (sites in
+// Apache mode, Debian): apache2 -t -f on the httpd.conf of the account's
+// directory, in exactly that shape. apache2 parses the file as root and
+// loads the modules it names; the file is one config/apply wrote after
+// confcheck read it as that account's (its modules from the allow-list), and
+// a login without one only makes apache2 fail.
+func (s *Server) apacheInstanceCheck(argv []string) bool {
+	if s.profile == nil || s.profile.Family() != osprofile.FamilyDebian {
+		return false
+	}
+	login, ok := confcheck.ApacheInstanceCheckLogin(argv)
+	return ok && nameRe.MatchString(login)
 }

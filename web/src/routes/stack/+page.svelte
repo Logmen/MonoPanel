@@ -90,8 +90,9 @@
     run: async () => { const r: any = await api(`/stack/${name}`, { method: 'DELETE' }); job = r.job_id; }
   });
   async function saveMem(e: Event) { e.preventDefault(); error = ''; try { mem = await api('/stack/memcached', { method: 'PUT', json: memForm }); notify(mem.installed ? t('stack.memReconfigured') : t('stack.memSavedPending')); } catch (e) { fail(e); } }
-  const stateOf = (c: any) => !c?.installed ? t('stack.stateNotInstalled') : c.service ? `${c.service.active_state}` : t('stack.stateInstalled');
-  const tagOf = (c: any) => (c?.installed ? (c.service && c.service.active_state !== 'active' ? 'tag-err' : 'tag-ok') : c?.version ? 'tag-err' : 'tag-muted');
+  // Apache runs one server per account with sites in apache mode: the state is how many run.
+  const stateOf = (c: any) => !c?.installed ? t('stack.stateNotInstalled') : c.instances?.total ? t('stack.stateInstances', { running: c.instances.running, total: c.instances.total }) : c.service ? `${c.service.active_state}` : t('stack.stateInstalled');
+  const tagOf = (c: any) => (c?.installed ? ((c.service && c.service.active_state !== 'active') || (c.instances && c.instances.running < c.instances.total) ? 'tag-err' : 'tag-ok') : c?.version ? 'tag-err' : 'tag-muted');
 </script>
 
 <PageHead title={t('stack.title')} sub={t('stack.sub')} />

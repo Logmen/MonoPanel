@@ -6,10 +6,23 @@
 {{- end }}
     DocumentRoot {{ .Docroot }}
     <Directory {{ .Docroot }}>
-        AllowOverride All Options=Indexes,MultiViews,FollowSymLinks,SymLinksIfOwnerMatch,IncludesNOEXEC
+        AllowOverride All
         Options -Indexes +SymLinksIfOwnerMatch
         Require all granted
     </Directory>
+{{- range .NoPHPPaths }}
+    # Shared folder: another account writes here. No .htaccess in it is read
+    # (one would hand any name to PHP or switch the owner check of symlinks
+    # off), no PHP from it runs, also for a request that comes past nginx, and
+    # a symlink in it leads only to a file of the link's owner.
+    <Directory {{ $.Docroot }}/{{ . }}>
+        AllowOverride None
+        Options +SymLinksIfOwnerMatch
+        <FilesMatch "\.(?:php|phtml|phar)$">
+            Require all denied
+        </FilesMatch>
+    </Directory>
+{{- end }}
     <FilesMatch "\.php$">
         SetHandler "proxy:unix:{{ .FPMSocket }}|fcgi://localhost"
     </FilesMatch>

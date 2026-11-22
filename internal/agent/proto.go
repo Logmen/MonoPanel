@@ -258,9 +258,11 @@ type RemovePathsResponse struct {
 	Removed []string `json:"removed"`
 }
 
-// ApacheCtlRequest runs a2enmod/a2dismod/a2enconf/a2disconf/a2ensite/a2dissite (Debian).
+// ApacheCtlRequest runs a2dismod/a2disconf/a2dissite (Debian): the upgrade
+// from 0.8.19 switches the panel's configuration of the shared Apache off.
+// enmod, enconf and ensite are refused (CheckApacheCtl).
 type ApacheCtlRequest struct {
-	Action string `json:"action"` // enmod dismod enconf disconf ensite dissite
+	Action string `json:"action"` // dismod disconf dissite
 	Name   string `json:"name"`
 }
 

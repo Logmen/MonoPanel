@@ -72,11 +72,15 @@ func TestSiteLogsRotateInTheRootTree(t *testing.T) {
 		dir + "/*.access.log " + dir + "/*[!p].error.log " + dir + "/*[!h]p.error.log " + dir + "/*[!p]hp.error.log " + dir + "/*[!.]php.error.log " + dir + "/*.php.slow.log {\n",
 		"\tcreate 0640 root bob\n", "\n" + dir + "/*.php.error.log {\n", "\tcreate 0660 bob bob\n",
 		"\tcreate 0640 root alex\n", "\tcreate 0660 alex alex\n",
-		`kill -USR1 "$(cat /run/nginx.pid)"`, `kill -USR1 "$(cat /run/apache2/apache2.pid)"`,
+		`kill -USR1 "$(cat /run/nginx.pid)"`,
 	} {
 		if !strings.Contains(conf, want) {
 			t.Fatalf("rotation lacks %q:\n%s", want, conf)
 		}
+	}
+	// No Apache here: nothing of it to reopen.
+	if strings.Contains(conf, "apache") {
+		t.Fatalf("a host without Apache reopens one:\n%s", conf)
 	}
 	for _, line := range strings.Split(conf, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "su ") {
@@ -174,9 +178,10 @@ func TestSiteConfigsLogOutsideTheHome(t *testing.T) {
 	f.createSite(map[string]any{"domain": "example.com", "user": "alex", "php_version": "8.4", "ssl": "none", "mode": "apache"})
 	dir := "/var/log/monopanel/sites/alex/"
 	for file, wants := range map[string][]string{
-		"/etc/nginx/monopanel/sites/example.com.conf":   {"access_log " + dir + "example.com.access.log main;", "error_log  " + dir + "example.com.error.log;"},
-		"/etc/php/8.4/fpm/pool.d/example.com.conf":      {"slowlog = " + dir + "example.com.php.slow.log", "php_admin_value[error_log]         = " + dir + "example.com.php.error.log"},
-		"/etc/apache2/monopanel/sites/example.com.conf": {"ErrorLog  " + dir + "example.com.apache.error.log", "CustomLog " + dir + "example.com.apache.access.log combined"},
+		"/etc/nginx/monopanel/sites/example.com.conf":                 {"access_log " + dir + "example.com.access.log main;", "error_log  " + dir + "example.com.error.log;"},
+		"/etc/php/8.4/fpm/pool.d/example.com.conf":                    {"slowlog = " + dir + "example.com.php.slow.log", "php_admin_value[error_log]         = " + dir + "example.com.php.error.log"},
+		"/etc/apache2/monopanel/accounts/alex/sites/example.com.conf": {"ErrorLog  " + dir + "example.com.apache.error.log", "CustomLog " + dir + "example.com.apache.access.log combined"},
+		"/etc/apache2/monopanel/accounts/alex/httpd.conf":             {"ErrorLog " + dir + "apache.error.log\n"},
 	} {
 		conf, ok := f.agent.File(file)
 		if !ok {
@@ -192,7 +197,7 @@ func TestSiteConfigsLogOutsideTheHome(t *testing.T) {
 		}
 	}
 	if got := f.agent.SiteLogs("alex"); !slices.Equal(got, []string{
-		"example.com.access.log", "example.com.apache.access.log", "example.com.apache.error.log",
+		"apache.error.log", "example.com.access.log", "example.com.apache.access.log", "example.com.apache.error.log",
 		"example.com.error.log", "example.com.php.error.log", "example.com.php.slow.log",
 	}) {
 		t.Fatalf("logs prepared: %v", got)

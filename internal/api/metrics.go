@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"monopanel/internal/agent"
+	"monopanel/internal/agent/confcheck"
 	"monopanel/internal/apitypes"
 	"monopanel/internal/buildinfo"
 	"monopanel/internal/store"
@@ -284,9 +285,20 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 	web := s.profile.Web()
 	units := []string{web.NginxService}
 	validators := [][]string{web.NginxCheckArgv}
-	if v, _ := s.db.GetSetting(actx, settingApache); v == "installed" {
-		units = append(units, web.ApacheService)
-		validators = append(validators, web.ApacheCheckArgv)
+	// The accounts' Apaches: each its unit and apache2 -t on its httpd.conf
+	// (whose runtime directory apache2 -t wants to see).
+	for _, unit := range s.apacheUnits(actx) {
+		login, _ := confcheck.ApacheInstanceLoginOf(unit)
+		inst := apacheInstanceOf(login)
+		units = append(units, unit)
+		if err := s.ensureApacheRunDir(actx, inst); err == nil {
+			validators = append(validators, inst.check)
+		}
+	}
+	if s.apacheInstalled(actx) {
+		for _, c := range s.apacheDoctor(actx) {
+			add(c)
+		}
 	}
 	if versions, err := s.db.ListPHPVersions(actx); err == nil {
 		for _, v := range versions {
@@ -319,10 +331,14 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 		}
 	}
 	for _, v := range validators {
+		name := "config " + path.Base(v[0])
+		if login, ok := confcheck.ApacheInstanceCheckLogin(v); ok {
+			name = "config " + confcheck.ApacheInstanceUnit(login)
+		}
 		if _, err := s.agent.ApplyConfigSet(actx, &agent.ApplyConfigSetRequest{Validate: [][]string{v}, Origin: "doctor"}); err != nil {
-			add(check("config "+path.Base(v[0]), "fail", err.Error()))
+			add(check(name, "fail", err.Error()))
 		} else {
-			add(check("config "+path.Base(v[0]), "ok", "syntax ok"))
+			add(check(name, "ok", "syntax ok"))
 		}
 	}
 	if info, err := s.agent.SystemInfo(actx); err == nil {

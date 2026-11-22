@@ -36,6 +36,21 @@ func TestServicePolicy(t *testing.T) {
 		{"systemd-hybrid-sleep.service", "start", false},
 		{"systemd-suspend-then-hibernate.service", "start", false},
 		{"systemd-suspend.service", "status", true},
+		// an account's Apache: the panel's own template, its instance a login
+		{"monopanel-apache@alex.service", "start", true},
+		{"monopanel-apache@alex.service", "reload-or-restart", true},
+		{"monopanel-apache@shop-2.service", "enable", true},
+		{"monopanel-apache@alex.service", "disable", true},
+		{"monopanel-apache@alex.service", "stop", true},
+		{"monopanel-apache@root.service", "start", false},
+		{"monopanel-apache@.service", "start", false},
+		{"monopanel-apache@Alex.service", "start", false},
+		{"monopanel-apache@a\\x2fb.service", "start", false},
+		{"monopanel-apache@alex.socket", "start", false},
+		{"monopanel-apache@alex.timer", "start", false},
+		{"apache2@alex.service", "start", false},
+		{"monopanel-valkey@alex.service", "start", false},
+		{"monopanel-apache@root.service", "status", true},
 		// arguments of the caller's choosing
 		{"modprobe@dccp.service", "start", false},
 		{"systemd-nspawn@box.service", "start", false},
@@ -55,6 +70,15 @@ func TestServicePolicy(t *testing.T) {
 	}
 	if err := CheckService("nginx", "restart"); err != nil {
 		t.Errorf("a name without its type is a service: %v", err)
+	}
+	if err := CheckService("monopanel-apache@alex", "restart"); err != nil {
+		t.Errorf("the Apache of alex without its type: %v", err)
+	}
+	if err := CheckReloads([]string{"monopanel-apache@alex.service"}); err != nil {
+		t.Errorf("config/apply reloads the Apache of alex: %v", err)
+	}
+	if err := CheckReloads([]string{"monopanel-apache@root.service"}); err == nil {
+		t.Error("config/apply must not start an Apache of root")
 	}
 }
 

@@ -677,6 +677,9 @@ func stackCmd() *cobra.Command {
 				if comp.Service != nil {
 					state += " · " + comp.Service.ActiveState
 				}
+				if in := comp.Instances; in != nil && in.Total > 0 {
+					state += " · " + fmt.Sprintf(T("запущено %d из %d", "%d of %d running"), in.Running, in.Total)
+				}
 			}
 			rows = append(rows, []string{comp.Name, ver, state})
 		}

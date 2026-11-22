@@ -23,7 +23,9 @@ type statusOutput struct {
 
 func (s *Server) knownUnits() []string {
 	web := s.profile.Web()
-	units := []string{"monopanel-agent.service", web.NginxService, web.ApacheService}
+	// The accounts' Apaches (monopanel-apache@<login>) stand for Apache: the
+	// distribution's apache2.service serves no site of the panel.
+	units := append([]string{"monopanel-agent.service", web.NginxService}, s.apacheUnits(context.Background())...)
 	if s.profile.Family() == "rhel" {
 		units = append(units, "mysqld.service")
 	} else {

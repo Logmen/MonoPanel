@@ -393,7 +393,7 @@ func doctorCmd() *cobra.Command {
 
 func logsCmd() *cobra.Command {
 	var lines int
-	c := &cobra.Command{Use: "logs <unit>", Short: T("журнал сервиса: nginx, apache2, mysql, php8.4-fpm, monopanel-api, fail2ban …", "service journal: nginx, apache2, mysql, php8.4-fpm, monopanel-api, fail2ban …"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	c := &cobra.Command{Use: "logs <unit>", Short: T("журнал сервиса: nginx, monopanel-apache@<логин>, mysql, php8.4-fpm, monopanel-api, fail2ban …", "service journal: nginx, monopanel-apache@<login>, mysql, php8.4-fpm, monopanel-api, fail2ban …"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err

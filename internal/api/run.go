@@ -75,6 +75,9 @@ func (s *Server) Run(ctx context.Context) error {
 				// jails list its files.
 				s.refreshSELinuxSiteLogs(ctx)
 				s.moveSiteLogs(ctx)
+				// Sites of 0.8.19 in Apache mode move off the shared Apache
+				// to their accounts' own, once.
+				s.refreshApacheInstances(ctx)
 				s.refreshFail2ban(ctx)
 				s.refreshSELinuxModule(ctx)
 				s.refreshSELinuxSSH(ctx)

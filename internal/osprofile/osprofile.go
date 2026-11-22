@@ -85,15 +85,17 @@ type PackageManager interface {
 
 // WebLayout holds web-server users, services, directories and check commands.
 type WebLayout struct {
-	NginxUser       string   `json:"nginx_user"`
-	NginxService    string   `json:"nginx_service"`
-	NginxConfDir    string   `json:"nginx_conf_dir"`
-	NginxCheckArgv  []string `json:"nginx_check_argv"`
-	ApacheUser      string   `json:"apache_user"`
-	ApacheService   string   `json:"apache_service"`
-	ApachePID       string   `json:"apache_pid"` // SIGUSR1 there is a graceful restart: logs reopen
-	ApacheConfDir   string   `json:"apache_conf_dir"`
-	ApacheCheckArgv []string `json:"apache_check_argv"`
+	NginxUser      string   `json:"nginx_user"`
+	NginxService   string   `json:"nginx_service"`
+	NginxConfDir   string   `json:"nginx_conf_dir"`
+	NginxCheckArgv []string `json:"nginx_check_argv"`
+	// ApacheUser and ApacheService are the distribution's Apache: its
+	// account and its shared server. The panel's sites in Apache mode run
+	// on an Apache of their account's own (monopanel-apache@<login>); the
+	// shared server stays off and its account out of the web group.
+	ApacheUser    string `json:"apache_user"`
+	ApacheService string `json:"apache_service"`
+	ApacheConfDir string `json:"apache_conf_dir"`
 }
 
 // Profile is the per-family behaviour used everywhere else in the panel.

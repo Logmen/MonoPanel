@@ -15,15 +15,13 @@ func (p *debianProfile) EPELPackage() string      { return "" }
 
 func (p *debianProfile) Web() WebLayout {
 	return WebLayout{
-		NginxUser:       "nginx",
-		NginxService:    "nginx.service",
-		NginxConfDir:    "/etc/nginx",
-		NginxCheckArgv:  []string{"/usr/sbin/nginx", "-t", "-q"},
-		ApacheUser:      "www-data",
-		ApacheService:   "apache2.service",
-		ApachePID:       "/run/apache2/apache2.pid",
-		ApacheConfDir:   "/etc/apache2",
-		ApacheCheckArgv: []string{"/usr/sbin/apache2ctl", "-t"},
+		NginxUser:      "nginx",
+		NginxService:   "nginx.service",
+		NginxConfDir:   "/etc/nginx",
+		NginxCheckArgv: []string{"/usr/sbin/nginx", "-t", "-q"},
+		ApacheUser:     "www-data",
+		ApacheService:  "apache2.service",
+		ApacheConfDir:  "/etc/apache2",
 	}
 }
 

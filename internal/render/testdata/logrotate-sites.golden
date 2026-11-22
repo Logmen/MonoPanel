@@ -18,10 +18,12 @@
 # its own, and since logrotate refuses a file two stanzas name, the four masks
 # with *.error.log in the first one take every error log but the PHP ones.
 #
-# Afterwards nginx gets USR1 (its workers reopen the logs) and Apache a graceful
-# restart, both through their pid files: asking systemd from here is what
-# SELinux denies logrotate. PHP opens its error log and php-fpm its slow log
-# anew for every write, so they need no signal.
+# Afterwards nginx gets USR1 (its workers reopen the logs) and so does the
+# account's own Apache (a graceful restart), both through their pid files:
+# asking systemd from here is what SELinux denies logrotate. The Apache's pid
+# file lies in its unit's runtime directory, which goes when the unit stops.
+# PHP opens its error log and php-fpm its slow log anew for every write, so
+# they need no signal.
 
 /var/log/monopanel/sites/alex/*.access.log /var/log/monopanel/sites/alex/*[!p].error.log /var/log/monopanel/sites/alex/*[!h]p.error.log /var/log/monopanel/sites/alex/*[!p]hp.error.log /var/log/monopanel/sites/alex/*[!.]php.error.log /var/log/monopanel/sites/alex/*.php.slow.log {
 	weekly
@@ -36,7 +38,7 @@
 	sharedscripts
 	postrotate
 		[ ! -s /run/nginx.pid ] || kill -USR1 "$(cat /run/nginx.pid)" 2>/dev/null || true
-		[ ! -s /run/apache2/apache2.pid ] || kill -USR1 "$(cat /run/apache2/apache2.pid)" 2>/dev/null || true
+		[ ! -s /run/monopanel-apache/alex/httpd.pid ] || kill -USR1 "$(cat /run/monopanel-apache/alex/httpd.pid)" 2>/dev/null || true
 	endscript
 }
 
@@ -65,7 +67,7 @@
 	sharedscripts
 	postrotate
 		[ ! -s /run/nginx.pid ] || kill -USR1 "$(cat /run/nginx.pid)" 2>/dev/null || true
-		[ ! -s /run/apache2/apache2.pid ] || kill -USR1 "$(cat /run/apache2/apache2.pid)" 2>/dev/null || true
+		[ ! -s /run/monopanel-apache/shop/httpd.pid ] || kill -USR1 "$(cat /run/monopanel-apache/shop/httpd.pid)" 2>/dev/null || true
 	endscript
 }
 

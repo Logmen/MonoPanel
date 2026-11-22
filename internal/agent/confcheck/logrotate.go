@@ -12,9 +12,9 @@ import (
 // creates (with the owner create names) and removes files, runs
 // compresscmd, mails logs and follows include. The panel writes one file,
 // monopanel-sites: two stanzas per account over the account's directory of
-// the site log tree, a USR1 to nginx and Apache through their pid files.
-// Global options in a logrotate.d file would reach every file read after
-// it, so there are none.
+// the site log tree, a USR1 to nginx and to the account's own Apache through
+// their pid files. Global options in a logrotate.d file would reach every
+// file read after it, so there are none.
 
 const logrotateDir = "/etc/logrotate.d"
 
@@ -39,11 +39,19 @@ var logrotateNumeric = map[string]*regexp.Regexp{
 	"start":   regexp.MustCompile(`^[0-9]+$`),
 }
 
-// logrotatePIDs are the pid files the panel signals: nginx's (its
-// nginx.conf) and Apache's on Debian and EL.
+// logrotatePIDs are the pid files the panel may signal in every stanza:
+// nginx's (its nginx.conf) and that of the distribution's Apache, which
+// served the sites in Apache mode up to 0.8.19 and does so until they have
+// moved to their accounts' own (Debian's; EL's never served any).
 var logrotatePIDs = []string{"/run/nginx.pid", "/run/apache2/apache2.pid", "/run/httpd/httpd.pid"}
 
 var logrotateLoginRe = regexp.MustCompile(`^[a-z_][a-z0-9_-]*$`)
+
+// logrotateUSR1 is the line that has a server reopen its logs: USR1 through
+// its pid file, nothing when it does not run.
+func logrotateUSR1(pid string) string {
+	return fmt.Sprintf(`[ ! -s %s ] || kill -USR1 "$(cat %s)" 2>/dev/null || true`, pid, pid)
+}
 
 func checkLogrotate(c *checker, _ string, content []byte) error {
 	lines, err := textLines(content)
@@ -52,7 +60,13 @@ func checkLogrotate(c *checker, _ string, content []byte) error {
 	}
 	allowedScript := map[string]bool{}
 	for _, pid := range logrotatePIDs {
-		allowedScript[fmt.Sprintf(`[ ! -s %s ] || kill -USR1 "$(cat %s)" 2>/dev/null || true`, pid, pid)] = true
+		allowedScript[logrotateUSR1(pid)] = true
+	}
+	// A stanza also reopens the logs of its own account's Apache, whose root
+	// parent writes the pid file into the unit's runtime directory, root's
+	// and removed with the unit's stop, so that no stale pid is signalled.
+	ownApache := func(login, s string) bool {
+		return login != "" && s == logrotateUSR1(ApacheInstanceRunDir(login)+"/httpd.pid")
 	}
 	inBlock, inScript := false, false
 	login := ""
@@ -69,8 +83,8 @@ func checkLogrotate(c *checker, _ string, content []byte) error {
 				inScript = false
 				continue
 			}
-			if s != "" && !allowedScript[s] {
-				return atLine(n, notAllowed(fmt.Sprintf("logrotate script line %q", s), "root runs it through the shell; the panel's scripts only send USR1 to nginx and Apache through their pid files"))
+			if s != "" && !allowedScript[s] && !ownApache(login, s) {
+				return atLine(n, notAllowed(fmt.Sprintf("logrotate script line %q", s), "root runs it through the shell; the panel's scripts only send USR1 to nginx and to the account's Apache through their pid files"))
 			}
 			continue
 		}

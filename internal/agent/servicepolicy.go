@@ -2,6 +2,8 @@ package agent
 
 import (
 	"strings"
+
+	"monopanel/internal/agent/confcheck"
 )
 
 // The agent acts on systemd units for the API: the panel's stack, its own
@@ -11,7 +13,14 @@ import (
 // commands on an argument the caller picks: the instance name of a template
 // unit (modprobe@<module> loads any kernel module, systemd-nspawn@<name>
 // boots a container, user@<uid> starts anybody's service manager). Those
-// only report their state; the panel itself acts on none of them.
+// only report their state; the panel itself acts on none of them — but on
+// its own template monopanel-apache@.service, an account's Apache. Its
+// instance name, a login, only picks the configuration the Apache starts
+// with, /etc/apache2/monopanel/accounts/<login>/httpd.conf, which the unit
+// needs to start at all and config/apply writes only for a hosting account,
+// in the shape confcheck allows: children that run as that account, its own
+// address. So whatever login the API names, the instance runs an Apache of
+// that account or nothing.
 
 // statusOnlyUnits are plain units that only report their state, with why.
 var statusOnlyUnits = map[string]string{
@@ -56,8 +65,11 @@ func serviceAllowed(unit, action string) error {
 	if !actionableKinds[kind] {
 		return notAllowed(action+" of "+unit, "the agent starts and stops services, sockets, timers, paths, mounts and swap; a ."+kind+" unit only reports its state")
 	}
+	if _, ok := confcheck.ApacheInstanceLoginOf(unit); ok {
+		return nil
+	}
 	if strings.Contains(name, "@") {
-		return notAllowed(action+" of "+unit, "an instance of a template unit runs root's commands on its instance name (modprobe@<module> loads any kernel module); only its state is reported")
+		return notAllowed(action+" of "+unit, "an instance of a template unit runs root's commands on its instance name (modprobe@<module> loads any kernel module); only its state is reported, but for an account's Apache, monopanel-apache@<login>.service")
 	}
 	if why, ok := statusOnlyUnits[unit]; ok {
 		return notAllowed(action+" of "+unit, why)

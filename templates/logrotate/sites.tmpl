@@ -18,10 +18,12 @@
 # its own, and since logrotate refuses a file two stanzas name, the four masks
 # with *.error.log in the first one take every error log but the PHP ones.
 #
-# Afterwards nginx gets USR1 (its workers reopen the logs) and Apache a graceful
-# restart, both through their pid files: asking systemd from here is what
-# SELinux denies logrotate. PHP opens its error log and php-fpm its slow log
-# anew for every write, so they need no signal.
+# Afterwards nginx gets USR1 (its workers reopen the logs) and so does the
+# account's own Apache (a graceful restart), both through their pid files:
+# asking systemd from here is what SELinux denies logrotate. The Apache's pid
+# file lies in its unit's runtime directory, which goes when the unit stops.
+# PHP opens its error log and php-fpm its slow log anew for every write, so
+# they need no signal.
 {{- range .Accounts }}
 
 {{ .LogDir }}/*.access.log {{ .LogDir }}/*[!p].error.log {{ .LogDir }}/*[!h]p.error.log {{ .LogDir }}/*[!p]hp.error.log {{ .LogDir }}/*[!.]php.error.log {{ .LogDir }}/*.php.slow.log {
@@ -37,7 +39,12 @@
 	sharedscripts
 	postrotate
 		[ ! -s {{ $.NginxPID }} ] || kill -USR1 "$(cat {{ $.NginxPID }})" 2>/dev/null || true
-		[ ! -s {{ $.ApachePID }} ] || kill -USR1 "$(cat {{ $.ApachePID }})" 2>/dev/null || true
+{{- if $.SharedApachePID }}
+		[ ! -s {{ $.SharedApachePID }} ] || kill -USR1 "$(cat {{ $.SharedApachePID }})" 2>/dev/null || true
+{{- end }}
+{{- if .ApachePID }}
+		[ ! -s {{ .ApachePID }} ] || kill -USR1 "$(cat {{ .ApachePID }})" 2>/dev/null || true
+{{- end }}
 	endscript
 }
 

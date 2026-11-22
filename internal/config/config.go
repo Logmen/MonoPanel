@@ -108,9 +108,8 @@ var DefaultAllowedWritePrefixes = []string{
 	"/etc/nginx/nginx.conf",
 	"/etc/nginx/monopanel/",
 	"/etc/nginx/conf.d/default.conf",
-	"/etc/apache2/monopanel/",
-	"/etc/apache2/conf-available/monopanel.conf",
-	"/etc/apache2/ports.conf",
+	"/etc/apache2/monopanel/",                    // the accounts' Apaches (accounts/<login>/)
+	"/etc/apache2/conf-available/monopanel.conf", // the shared Apache's include of 0.8.19, removed on the upgrade
 	"/etc/httpd/monopanel/",
 	"/etc/httpd/conf.d/monopanel.conf",
 	"/etc/php/",

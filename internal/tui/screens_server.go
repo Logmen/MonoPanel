@@ -152,6 +152,13 @@ func openStack(m *model, a *area) screen {
 						tn = toneWarn
 					}
 				}
+				// Apache: one per account with sites in apache mode.
+				if in := c.Instances; in != nil && in.Total > 0 {
+					state += " · " + fmt.Sprintf(T("запущено %d из %d", "%d of %d running"), in.Running, in.Total)
+					if in.Running < in.Total {
+						tn = toneWarn
+					}
+				}
 			}
 			res.rows = append(res.rows, row{cells: []string{c.Name, c.Kind, ver, state}, tones: []tone{toneNone, toneMuted, toneNone, tn},
 				vals: map[string]string{"name": c.Name, "installed": tf(c.Installed), "removable": tf(c.Removable)}})

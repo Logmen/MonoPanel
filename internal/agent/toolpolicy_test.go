@@ -96,6 +96,7 @@ func standardAccounts(s *Server) []testAccount {
 		{"daemonish", "999", "999", www + "/daemonish", []string{"daemonish"}},
 		{"rootgroup", "1004", "0", www + "/rootgroup", []string{"root"}},
 		{"www-data", "33", "33", "/var/www", []string{"www-data"}},
+		{"apache", "48", "48", "/usr/share/httpd", []string{"apache"}},
 		{"nginx", "990", "990", "/var/lib/nginx", []string{"nginx"}},
 		{"postfix", "105", "105", "/var/spool/postfix", []string{"postfix"}},
 		{"vmail", "991", "991", mailStore, []string{"vmail"}},

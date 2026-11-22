@@ -6,7 +6,9 @@ import (
 	"slices"
 
 	"monopanel/internal/agent"
+	"monopanel/internal/agent/confcheck"
 	"monopanel/internal/jobs"
+	"monopanel/internal/osprofile"
 	"monopanel/internal/render"
 	"monopanel/internal/store"
 )
@@ -49,12 +51,22 @@ func (s *Server) applySiteLogrotate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	m := render.SiteLogrotate{NginxPID: nginxPIDFile, ApachePID: s.profile.Web().ApachePID}
+	m := render.SiteLogrotate{NginxPID: nginxPIDFile}
+	// Each account's Apache writes the Apache logs of its sites and reopens
+	// them; the shared Apache of 0.8.19 does so for the sites not moved yet.
+	apache := s.apacheInstalled(ctx) && s.profile.Family() == osprofile.FamilyDebian
+	if v, _ := s.db.GetSetting(ctx, settingApacheInstances); apache && v != "yes" {
+		m.SharedApachePID = sharedApachePID
+	}
 	for _, u := range users {
 		if u.UnixUID == nil || u.Status == store.UserDeleting {
 			continue
 		}
-		m.Accounts = append(m.Accounts, render.LogrotateAccount{Login: u.Login, LogDir: s.siteLogDir(u.Login)})
+		a := render.LogrotateAccount{Login: u.Login, LogDir: s.siteLogDir(u.Login)}
+		if apache {
+			a.ApachePID = path.Join(confcheck.ApacheInstanceRunDir(u.Login), "httpd.pid")
+		}
+		m.Accounts = append(m.Accounts, a)
 	}
 	text, err := s.render.Render("logrotate/sites.tmpl", m)
 	if err != nil {
@@ -68,12 +80,13 @@ func (s *Server) applySiteLogrotate(ctx context.Context) error {
 	return err
 }
 
-// siteLogNames are the logs a site has: nginx's, Apache's in apache mode, and
-// PHP's error log and php-fpm's slow log unless the site is a proxy.
+// siteLogNames are the logs a site has: nginx's, Apache's in apache mode (and
+// the log of the account's Apache itself), and PHP's error log and
+// php-fpm's slow log unless the site is a proxy.
 func siteLogNames(site *store.Site) []string {
 	names := []string{site.Domain + ".access.log", site.Domain + ".error.log"}
 	if site.Mode == store.ModeApache {
-		names = append(names, site.Domain+".apache.access.log", site.Domain+".apache.error.log")
+		names = append(names, site.Domain+".apache.access.log", site.Domain+".apache.error.log", apacheInstanceLog)
 	}
 	if site.Mode != store.ModeProxy {
 		names = append(names, site.Domain+".php.error.log", site.Domain+".php.slow.log")

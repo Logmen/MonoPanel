@@ -94,6 +94,7 @@
     if (u.startsWith('monopanel-app-')) return t('services.roleApp');
     if (u.startsWith('monopanel-valkey-')) return t('services.roleValkey');
     if (u === 'nginx') return t('services.roleNginx');
+    if (u.startsWith('monopanel-apache@')) return t('services.roleApacheAccount', { login: u.slice('monopanel-apache@'.length) });
     if (u === 'apache2' || u === 'httpd') return t('services.roleApache');
     if (isDb(u)) return t('services.roleDb');
     if (isPhpFpm(u)) return t('services.rolePhp', { php: phpOf(u) || 'PHP' });
@@ -111,6 +112,7 @@
     if (unit === AGENT_UNIT) return t('services.askStopAgentNote');
     if (u === 'monopanel-firewall') return t('services.askStopFirewallNote');
     if (u === 'nginx') return t('services.askStopNginxNote');
+    if (u.startsWith('monopanel-apache@')) return t('services.askStopApacheAccountNote', { login: u.slice('monopanel-apache@'.length) });
     if (u === 'apache2' || u === 'httpd') return t('services.askStopApacheNote');
     if (isDb(u)) return t('services.askStopDbNote');
     if (isPhpFpm(u)) return t('services.askStopPhpNote', { php: phpOf(u) || t('services.thisPhp') });

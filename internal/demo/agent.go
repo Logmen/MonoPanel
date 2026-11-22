@@ -29,6 +29,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"monopanel/internal/agent"
+	"monopanel/internal/agent/confcheck"
 	"monopanel/internal/buildinfo"
 	"monopanel/internal/config"
 	"monopanel/internal/osprofile"
@@ -649,6 +650,11 @@ func (a *Agent) removePaths(_ context.Context, req *agent.RemovePathsRequest) (*
 }
 
 func (a *Agent) apacheCtl(_ context.Context, req *agent.ApacheCtlRequest) (*agent.ApacheCtlResponse, error) {
+	// The real agent's refusal of what would switch the distribution's
+	// Apache on.
+	if _, err := agent.CheckApacheCtl(req.Action, req.Name); err != nil {
+		return nil, err
+	}
 	return &agent.ApacheCtlResponse{Output: fmt.Sprintf("%s %s: done\n", req.Action, req.Name)}, nil
 }
 
@@ -843,6 +849,11 @@ func (a *Agent) service(_ context.Context, req *agent.ServiceRequest) (*agent.Se
 		return nil, err
 	}
 	u, known := a.st.Units[name]
+	if _, apache := confcheck.ApacheInstanceLoginOf(name); apache && !known {
+		// The panel's template comes with its package: an account's Apache
+		// is a unit of the server, stopped until the panel starts it.
+		u, known = &unitState{}, true
+	}
 	switch req.Action {
 	case "status":
 	case "start", "restart", "reload", "reload-or-restart", "try-restart", "try-reload-or-restart":

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -72,6 +73,19 @@ type Server struct {
 	// is what tests with a fake agent want.
 	poolSocketWait time.Duration
 	nginxWait      time.Duration
+	// apacheWait is how long an account's Apache that has just started may
+	// take to answer on its address before nginx is sent there.
+	apacheWait time.Duration
+	// apacheLocks holds a *sync.Mutex per login (lockApache): the jobs of
+	// two sites of one account run side by side.
+	apacheLocks sync.Map
+	// apacheLegacy is the directory of the shared Apache's configuration of
+	// 0.8.19 and older (/etc/apache2/monopanel), which the upgrade reads the
+	// administrators' custom directives from; tests point it elsewhere.
+	apacheLegacy string
+	// portStart answers net.ipv4.ip_unprivileged_port_start; tests and the
+	// demo, whose Apache binds nothing, answer themselves.
+	portStart func() int
 	// probe answers whether a local port has a listener. Mail installs verify
 	// their own listeners this way; tests with a fake agent replace it.
 	probe func(port int, banner bool) (bool, string)
@@ -90,10 +104,16 @@ type Server struct {
 	restartDelay time.Duration
 }
 
-// SetReadinessWaits overrides the post-reload waits. Intended for tests.
+// SetReadinessWaits overrides the post-reload waits: for php-fpm's socket,
+// and for nginx and an account's Apache to answer. Intended for tests.
 func (s *Server) SetReadinessWaits(poolSocket, nginx time.Duration) {
-	s.poolSocketWait, s.nginxWait = poolSocket, nginx
+	s.poolSocketWait, s.nginxWait, s.apacheWait = poolSocket, nginx, nginx
 }
+
+// SetUnprivilegedPortStart overrides the reading of
+// net.ipv4.ip_unprivileged_port_start. Intended for tests and the demo,
+// whose pretend Apache binds nothing.
+func (s *Server) SetUnprivilegedPortStart(fn func() int) { s.portStart = fn }
 
 // SetHostIPs overrides the host's addresses. Intended for tests.
 func (s *Server) SetHostIPs(fn func() []string) { s.hostIPs = fn }
@@ -143,7 +163,9 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	if cfg.Log.AuditFile != "" {
 		db.SetAuditSink(s.auditFile(cfg.Log.AuditFile))
 	}
-	s.poolSocketWait, s.nginxWait = 10*time.Second, 15*time.Second
+	s.poolSocketWait, s.nginxWait, s.apacheWait = 10*time.Second, 15*time.Second, apacheWaitDefault
+	s.apacheLegacy = path.Join(profile.Web().ApacheConfDir, "monopanel")
+	s.portStart = unprivilegedPortStart
 	s.restartDelay = 500 * time.Millisecond
 	s.activation = activation.Listeners
 	s.stopAPISocket = func(ctx context.Context) error {
@@ -233,6 +255,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	s.jobs.Register("user.provision", s.jobUserProvision)
 	s.jobs.Register("user.delete", s.jobUserDelete)
 	s.jobs.Register("stack.install", s.jobStackInstall)
+	s.jobs.Register("apache.migrate", s.jobApacheMigrate)
 	s.jobs.Register("stack.remove", s.jobStackRemove)
 	s.jobs.Register("cert.issue", s.jobCertIssue)
 	s.jobs.Register("php.install", s.jobPHPInstall)

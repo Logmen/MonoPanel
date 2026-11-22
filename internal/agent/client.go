@@ -150,7 +150,8 @@ func (c *Client) RemovePaths(ctx context.Context, req *RemovePathsRequest) (*Rem
 	return &r, c.call(ctx, "/v1/paths/remove", req, &r)
 }
 
-// ApacheCtl toggles Apache modules/configs/sites on Debian.
+// ApacheCtl switches a module, a configuration or a site of the
+// distribution's Apache off (Debian); switching one on is refused.
 func (c *Client) ApacheCtl(ctx context.Context, action, name string) (*ApacheCtlResponse, error) {
 	var r ApacheCtlResponse
 	return &r, c.call(ctx, "/v1/apache/ctl", &ApacheCtlRequest{Action: action, Name: name}, &r)

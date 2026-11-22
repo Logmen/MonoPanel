@@ -11,6 +11,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"monopanel/internal/agent/confcheck"
 	"monopanel/internal/osprofile"
 )
 
@@ -233,10 +234,14 @@ func (s *Server) dirAllowed(p string) bool {
 	if s.pathAllowed(strings.TrimSuffix(p, "/") + "/") {
 		return true
 	}
-	// The web root (the accounts' homes) and the run directory (php-fpm's
-	// sockets in /run/monopanel/php). The log directory is not here: its
-	// site-log tree has its own call (/v1/sitelogs/ensure).
-	for _, root := range []string{filepath.Clean(s.cfg.WWWRoot), filepath.Clean(s.cfg.RunDir)} {
+	// The web root (the accounts' homes), the run directory (php-fpm's
+	// sockets in /run/monopanel/php) and that of the accounts' Apaches:
+	// apache2 -t refuses a DefaultRuntimeDir or a Mutex directory that does
+	// not exist, and systemd makes it only when the unit starts (root's,
+	// like everything the agent makes outside the web root). The log
+	// directory is not here: its site-log tree has its own call
+	// (/v1/sitelogs/ensure).
+	for _, root := range []string{filepath.Clean(s.cfg.WWWRoot), filepath.Clean(s.cfg.RunDir), confcheck.ApacheInstanceRunRoot} {
 		if p == root || strings.HasPrefix(p, root+"/") {
 			return true
 		}

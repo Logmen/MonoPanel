@@ -82,12 +82,16 @@ func (s Site) ServerNames() string {
 	return strings.Join(append([]string{s.Domain}, s.Aliases...), " ")
 }
 
-// ApacheMain feeds apache/httpd.conf.tmpl. Listen is empty on Debian, where
-// ports.conf owns it.
-type ApacheMain struct {
-	Listen   string
-	Backend  string
-	SitesDir string
+// ApacheAccount feeds apache/account.conf.tmpl: the whole configuration of
+// an account's Apache (monopanel-apache@<login>.service), whose children run
+// as the account.
+type ApacheAccount struct {
+	Login    string // User and Group
+	Listen   string // the account's loopback address, port 81
+	RunDir   string // the unit's runtime directory: pid file, lock files
+	Home     string // the account's home, where .htaccess may set anything
+	ErrorLog string // the Apache's own log in the account's directory of the site log tree
+	SitesDir string // sites/<domain>.conf, one virtual host per site
 }
 
 // PHPIni feeds php/monopanel.ini.tmpl.
@@ -228,9 +232,12 @@ type CronLine struct {
 // the root-owned tree <log_dir>/sites, two stanzas per account (the servers'
 // logs, the PHP error log).
 type SiteLogrotate struct {
-	Accounts  []LogrotateAccount
-	NginxPID  string
-	ApachePID string
+	Accounts []LogrotateAccount
+	NginxPID string
+	// SharedApachePID is the pid file of the distribution's Apache while it
+	// still serves sites of 0.8.19 and older that have not moved to their
+	// accounts' own; empty otherwise.
+	SharedApachePID string
 }
 
 // LogrotateAccount is an account and its directory of site logs,
@@ -238,6 +245,9 @@ type SiteLogrotate struct {
 type LogrotateAccount struct {
 	Login  string
 	LogDir string
+	// ApachePID is the pid file of the account's Apache, which writes the
+	// Apache logs of its sites; empty where Apache is not installed.
+	ApachePID string
 }
 
 // AppUnit feeds systemd/app.service.tmpl.
