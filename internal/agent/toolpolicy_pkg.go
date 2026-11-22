@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"monopanel/internal/osprofile"
 )
 
@@ -77,7 +79,16 @@ func (s *Server) pkgArgs(ctx context.Context, action string, pkgs []string) ([]s
 			out = append(out, p) // dnf installs the URL itself
 			continue
 		}
-		file, dir, err := fetchReleasePackage(ctx, p, name)
+		// apt-get runs in a unit of its own (pkg_unit.go), which does not
+		// see the agent's private /tmp: the download goes into the agent's
+		// directory of the package manager's runs.
+		pdir, err := s.openPkgDir()
+		if err != nil {
+			cleanup()
+			return nil, nil, &Error{Message: "download " + p, Output: err.Error()}
+		}
+		unix.Close(pdir) //nolint:errcheck // a directory opened for reading
+		file, dir, err := fetchReleasePackage(ctx, s.pkgDir(), p, name)
 		if dir != "" {
 			tmp = append(tmp, dir)
 		}
@@ -90,11 +101,18 @@ func (s *Server) pkgArgs(ctx context.Context, action string, pkgs []string) ([]s
 	return out, cleanup, nil
 }
 
-// fetchReleasePackage downloads a release package into a directory of the
-// agent's own (its private /tmp) and checks that it is the package it should
-// be. Tests replace it.
-var fetchReleasePackage = func(ctx context.Context, url, want string) (file, dir string, err error) {
-	dir, err = os.MkdirTemp("", "monopanel-pkg-")
+// releaseDirPrefix starts the name of a directory a release package is
+// downloaded into, in pkgDir; the agent's start removes those an earlier
+// agent left once no run of theirs may still install from them
+// (reapPkgRuns).
+const releaseDirPrefix = "release-"
+
+// fetchReleasePackage downloads a release package into a new directory of
+// the agent's own below parent (pkgDir: root's alone, which the package
+// manager's run reads too) and checks that it is the package it should be.
+// Tests replace it.
+var fetchReleasePackage = func(ctx context.Context, parent, url, want string) (file, dir string, err error) {
+	dir, err = os.MkdirTemp(parent, releaseDirPrefix)
 	if err != nil {
 		return "", "", err
 	}

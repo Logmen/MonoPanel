@@ -16,7 +16,7 @@ import (
 // toolpolicy.go): the tool, its arguments, its environment and its output
 // file are all checked against what the panel sends.
 func (s *Server) tool(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
-	plan, err := s.planTool(&toolCall{name: req.Name, args: req.Args, env: req.Env, mode: modeTool, outputFile: req.OutputFile})
+	plan, err := s.planTool(&toolCall{name: req.Name, args: req.Args, env: req.Env, mode: modeTool, outputFile: req.OutputFile, run: req.Run})
 	if err != nil {
 		return nil, err
 	}

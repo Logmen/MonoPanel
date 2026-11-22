@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os/user"
 	"path/filepath"
+	"strconv"
 
 	"monopanel/internal/sysinfo"
 )
@@ -128,6 +129,14 @@ func (s *Server) pkg(ctx context.Context, req *PkgRequest) (*PkgResponse, error)
 	default:
 		return nil, &Error{Status: http.StatusBadRequest, Message: "unknown action: " + req.Action}
 	}
+	run := req.Run
+	switch {
+	case !pkgChanges(req.Action):
+	case run == "":
+		run = newRunID() // an API older than the agent names none
+	case !runIDRe.MatchString(run):
+		return nil, &Error{Status: http.StatusBadRequest, Message: "invalid run id " + strconv.Quote(run)}
+	}
 	pkgs, cleanup, err := s.pkgArgs(ctx, req.Action, req.Packages)
 	if err != nil {
 		return nil, err
@@ -187,6 +196,9 @@ func (s *Server) pkg(ctx context.Context, req *PkgRequest) (*PkgResponse, error)
 	}
 	s.pkgMu.Lock()
 	defer s.pkgMu.Unlock()
+	// pkgMu orders the agent's own runs; a run an earlier agent left going
+	// and a panel install are waited for as well (pkg_unit.go).
+	s.waitPkgRuns(ctx, pkgUnitPattern, updateUnit)
 	if err := ctx.Err(); err != nil {
 		// The API went away while this waited for its turn: a change nobody
 		// would settle afterwards (reload, restart, record) does not start.
@@ -198,20 +210,24 @@ func (s *Server) pkg(ctx context.Context, req *PkgRequest) (*PkgResponse, error)
 			return nil, err
 		}
 	}
-	s.log.Info("package manager", "action", req.Action, "packages", req.Packages)
+	s.log.Info("package manager", "action", req.Action, "packages", req.Packages, "unit", pkgUnit(run))
 	// The run outlives the request. The request ends whenever the API does
 	// — monopanel-api restarted during the nightly upgrade, a job's time
 	// limit — and a package manager killed halfway leaves dpkg or rpm with
 	// a half-done transaction ("dpkg was interrupted", a package unpacked
 	// but not configured, a service a maintainer script stopped and never
-	// started) that only an administrator repairs. The lock keeps the next
-	// run waiting until this one is through; pkgRunLimit bounds one that
-	// hangs.
+	// started) that only an administrator repairs. It outlives the agent as
+	// well, in a unit of its own (pkg_unit.go). The lock keeps the next run
+	// waiting until this one is through; pkgRunLimit bounds one that hangs.
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pkgRunLimit)
 	defer cancel()
-	out, err := runPackageManager(rctx, pm.Env(), argv...)
+	out, err := runPackageManager(s, rctx, run, pm.Env(), argv...)
 	if err != nil {
-		return nil, &Error{Message: pm.Name() + " " + req.Action + " failed", Output: out}
+		var ae *Error
+		if errors.As(err, &ae) {
+			return nil, &Error{Status: ae.Status, Message: pm.Name() + " " + req.Action + " not started: " + ae.Message, Output: ae.Output}
+		}
+		return nil, &Error{Message: pm.Name() + " " + req.Action + " failed: " + err.Error(), Output: out}
 	}
 	resp := &PkgResponse{Output: out, Installed: map[string]string{}}
 	if len(req.Packages) > 0 {

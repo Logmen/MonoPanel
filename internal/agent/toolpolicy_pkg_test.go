@@ -47,14 +47,25 @@ func TestPkgPolicy(t *testing.T) {
 	if ol.profile.EPELPackage() != "https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm" {
 		t.Fatalf("osprofile changed the EPEL package of Oracle Linux 10: %s", ol.profile.EPELPackage())
 	}
-	// Debian: the agent downloads percona-release itself
-	staged := filepath.Join(t.TempDir(), "percona-release_latest.generic_all.deb")
+	// Debian: the agent downloads percona-release itself, into its own
+	// directory of the package manager's runs — apt-get, in a unit of its
+	// own, does not see the agent's private /tmp.
+	deb.cfg.Agent.StateDir = t.TempDir()
+	var staged string
 	old := fetchReleasePackage
-	fetchReleasePackage = func(_ context.Context, url, want string) (string, string, error) {
-		if url != PerconaReleaseDebURL || want != "percona-release" {
-			t.Errorf("fetch %s as %s", url, want)
+	fetchReleasePackage = func(_ context.Context, parent, url, want string) (string, string, error) {
+		if url != PerconaReleaseDebURL || want != "percona-release" || parent != deb.pkgDir() {
+			t.Errorf("fetch %s as %s into %s", url, want, parent)
 		}
-		return staged, filepath.Dir(staged), os.WriteFile(staged, []byte("deb"), 0o600)
+		if st, err := os.Stat(parent); err != nil || st.Mode().Perm() != 0o700 {
+			t.Errorf("the download's directory: %v %v", st, err)
+		}
+		dir, err := os.MkdirTemp(parent, releaseDirPrefix)
+		if err != nil {
+			return "", "", err
+		}
+		staged = filepath.Join(dir, "percona-release_latest.generic_all.deb")
+		return staged, dir, os.WriteFile(staged, []byte("deb"), 0o600)
 	}
 	t.Cleanup(func() { fetchReleasePackage = old })
 	got, cleanup, err := deb.pkgArgs(ctx, "install", []string{PerconaReleaseDebURL, "nginx"})
@@ -62,7 +73,7 @@ func TestPkgPolicy(t *testing.T) {
 		t.Fatalf("percona-release: %v %v", got, err)
 	}
 	cleanup()
-	if _, err := os.Stat(staged); err == nil {
+	if _, err := os.Stat(filepath.Dir(staged)); err == nil {
 		t.Fatal("the download is not cleaned up")
 	}
 

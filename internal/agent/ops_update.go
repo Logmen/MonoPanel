@@ -64,6 +64,18 @@ func (s *Server) installPanel(ctx context.Context, req *InstallPanelRequest) (*I
 	if p := s.cfg.Path(); p != "" {
 		argv = append(argv, "--config", p)
 	}
+	// Not while the package manager runs: the update's own run of it, the
+	// install of the panel's package, would meet that run's lock (apt-get
+	// gives up after ten minutes), and the restarts the update ends in make
+	// the API's jobs start over. The agent's runs hold pkgMu, those an
+	// earlier agent left going are waited for; the runs after it wait for
+	// the update in turn (pkg).
+	s.pkgMu.Lock()
+	defer s.pkgMu.Unlock()
+	s.waitPkgRuns(ctx, pkgUnitPattern)
+	if err := ctx.Err(); err != nil {
+		return nil, &Error{Message: "the update is not started: the request ended while it waited for the package manager", Output: err.Error()}
+	}
 	conn, err := systemd.Connect(ctx)
 	if err != nil {
 		return nil, &Error{Message: "systemd unreachable", Output: err.Error()}

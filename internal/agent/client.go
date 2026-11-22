@@ -5,9 +5,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
+	"strings"
+	"sync/atomic"
 
 	"monopanel/internal/sysinfo"
 )
@@ -37,14 +42,20 @@ func (c *Client) call(ctx context.Context, path string, req, resp any) error {
 	if err != nil {
 		return err
 	}
-	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://agent"+path, bytes.NewReader(body))
+	// Whether the agent got the request: a connection that breaks after it
+	// did, with no answer and the caller still waiting, is an agent that went
+	// away in the middle of the call (restarted, stopped, killed) — not one
+	// that was not there to take it.
+	var wrote atomic.Bool
+	trace := &httptrace.ClientTrace{WroteRequest: func(i httptrace.WroteRequestInfo) { wrote.Store(i.Err == nil) }}
+	hreq, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), http.MethodPost, "http://agent"+path, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	hreq.Header.Set("Content-Type", "application/json")
 	res, err := c.http.Do(hreq)
 	if err != nil {
-		return &Error{Message: "agent unreachable at " + c.socket, Output: err.Error()}
+		return &Error{Message: "agent unreachable at " + c.socket, Output: err.Error(), gone: wrote.Load() && ctx.Err() == nil}
 	}
 	defer res.Body.Close()
 	if res.StatusCode >= 400 {
@@ -97,10 +108,35 @@ func (c *Client) Service(ctx context.Context, unit, action string) (*ServiceResp
 	return &r, c.call(ctx, "/v1/service", &ServiceRequest{Unit: unit, Action: action}, &r)
 }
 
-// Pkg drives the package manager.
+// Pkg drives the package manager. A change (update-index, install, remove,
+// upgrade) runs in a unit of its own, monopanel-pkg-<run>.service, of this
+// call's naming: should the agent go away in the middle, the run goes on to
+// its end, and the error says where to look.
 func (c *Client) Pkg(ctx context.Context, action string, packages ...string) (*PkgResponse, error) {
+	req := &PkgRequest{Action: action, Packages: packages}
+	if pkgChanges(action) {
+		req.Run = newRunID()
+	}
 	var r PkgResponse
-	return &r, c.call(ctx, "/v1/pkg", &PkgRequest{Action: action, Packages: packages}, &r)
+	err := c.call(ctx, "/v1/pkg", req, &r)
+	if req.Run != "" {
+		err = runGone(err, "the package manager ("+strings.TrimSpace(action+" "+strings.Join(packages, " "))+")", req.Run)
+	}
+	return &r, err
+}
+
+// runGone is err of a call that ran the package manager in run's unit,
+// told apart when the agent went away in the middle of it: the run, if it
+// had started, is not the agent's and goes on to its end, and the result is
+// in its unit's journal, not in a connection error.
+func runGone(err error, what, run string) error {
+	var ae *Error
+	if !errors.As(err, &ae) || !ae.gone {
+		return err
+	}
+	unit := pkgUnit(run)
+	return &Error{Message: fmt.Sprintf("the agent went away (restarted or stopped) while it ran %s: a run it had started is not stopped with it and goes on to its end in %s; journalctl -u %s shows how it ended",
+		what, unit, unit), Output: ae.Output, gone: true}
 }
 
 // EnsureDirs creates directories with mode and ownership.
@@ -164,10 +200,21 @@ func (c *Client) ApacheLegacy(ctx context.Context, domain string) (*ApacheLegacy
 	return &r, c.call(ctx, "/v1/apache/legacy", &ApacheLegacyRequest{Domain: domain}, &r)
 }
 
-// Tool runs an allow-listed administrative tool.
+// Tool runs an allow-listed administrative tool. dnf install, which is the
+// package manager and runs as /v1/pkg's changes do (planDnf), gets a run of
+// this call's naming, as Pkg's changes do.
 func (c *Client) Tool(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+	if req.Name == "dnf" && len(req.Args) > 1 && req.Args[1] == "install" && req.Run == "" {
+		named := *req
+		named.Run = newRunID()
+		req = &named
+	}
 	var r ToolResponse
-	return &r, c.call(ctx, "/v1/tool", req, &r)
+	err := c.call(ctx, "/v1/tool", req, &r)
+	if req.Run != "" {
+		err = runGone(err, strings.Join(append([]string{req.Name}, req.Args...), " "), req.Run)
+	}
+	return &r, err
 }
 
 // Stat checks paths.

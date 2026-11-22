@@ -148,6 +148,11 @@ type ServiceResponse struct {
 type PkgRequest struct {
 	Action   string   `json:"action"` // update-index install remove query available candidates upgrade
 	Packages []string `json:"packages,omitempty"`
+	// Run names the change's run, 16 hex digits: it goes on, whatever
+	// becomes of the agent, in monopanel-pkg-<run>.service. The caller picks
+	// it so as to know where to look should the agent go away meanwhile;
+	// the agent picks one when it is empty.
+	Run string `json:"run,omitempty"`
 }
 
 // PkgResponse returns output and installed versions; for "available" the
@@ -174,6 +179,9 @@ type Error struct {
 	Status  int    `json:"-"`
 	Message string `json:"error"`
 	Output  string `json:"output,omitempty"`
+	// gone marks, at the client, a call the agent took and then went away
+	// in the middle of, without an answer (Client.call).
+	gone bool
 }
 
 func (e *Error) Error() string {
@@ -353,6 +361,10 @@ type ToolRequest struct {
 	OutputFile string   `json:"output_file,omitempty"`
 	// TimeoutSeconds bounds the run (default 10 minutes).
 	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+	// Run names the run of a tool that is the package manager (dnf
+	// install), which goes on in monopanel-pkg-<run>.service as /v1/pkg's
+	// changes do (PkgRequest.Run).
+	Run string `json:"run,omitempty"`
 }
 
 // ToolResponse returns the exit status and output.

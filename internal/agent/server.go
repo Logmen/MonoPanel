@@ -239,6 +239,11 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		rctx, cancel := context.WithTimeout(ctx, time.Minute)
 		s.retireUnsafeShareUnits(rctx)
 		cancel()
+		// before a run of the package manager can start: what the runs of
+		// an earlier agent left in its directory (pkg_unit.go)
+		rctx, cancel = context.WithTimeout(ctx, time.Minute)
+		s.reapPkgRuns(rctx)
+		cancel()
 	}
 	sock := s.cfg.AgentSocket()
 	if err := os.MkdirAll(filepath.Dir(sock), 0o750); err != nil {

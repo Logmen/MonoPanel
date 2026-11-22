@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -233,11 +234,24 @@ func exeDeleted(pid uint32) bool {
 }
 
 // runPackageManager runs a change of the package manager's (pkg: update,
-// install, remove, upgrade). Tests replace it.
-var runPackageManager = runArgv
+// install, remove, upgrade) in the run's unit (pkg_unit.go) and returns its
+// output, with an error saying how it failed. An *Error is a run that did
+// not start. Tests replace it.
+var runPackageManager = func(s *Server, ctx context.Context, run string, env []string, argv ...string) (string, error) {
+	res, err := s.runPackageUnit(ctx, run, env, argv)
+	if err != nil {
+		return "", err
+	}
+	if res.failed() {
+		return res.output, errors.New(res.why + " (" + res.unit + ")")
+	}
+	return res.output, nil
+}
 
 // pkgRunLimit bounds a package manager run that the API no longer waits
 // for: generous, as one waits up to ten minutes for dpkg's lock
 // (aptLockWait) and the downloads of every PHP branch can be slow, but a
-// maintainer script that hangs must not hold the lock for good.
+// maintainer script that hangs must not hold the lock for good. The agent
+// stops the run's unit then, and systemd a minute later should the agent be
+// gone (pkgStopMargin).
 const pkgRunLimit = 2 * time.Hour

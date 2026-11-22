@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -82,13 +83,35 @@ func (d *DB) EnqueueJob(ctx context.Context, j *Job) error {
 }
 
 // ClaimJob atomically takes the oldest queued job whose lock key is not held
-// by a running job. It returns nil, nil when nothing is runnable.
-func (d *DB) ClaimJob(ctx context.Context, worker string) (*Job, error) {
-	j, err := scanJob(d.sql.QueryRowContext(ctx, `UPDATE jobs SET status=?, started_at=?, worker=? WHERE id = (
+// by a running job and none of whose exclusive types runs: each of the
+// exclusive groups is job types of which no two run at the same time,
+// whatever their lock keys. A job held back that way stays queued, and the
+// jobs queued after it are claimed as before. It returns nil, nil when
+// nothing is runnable.
+func (d *DB) ClaimJob(ctx context.Context, worker string, exclusive ...[]string) (*Job, error) {
+	q := `UPDATE jobs SET status=?, started_at=?, worker=? WHERE id = (
 			SELECT j.id FROM jobs j
-			WHERE j.status=? AND NOT EXISTS (SELECT 1 FROM jobs r WHERE r.status=? AND r.lock_key<>'' AND r.lock_key=j.lock_key)
+			WHERE j.status=? AND NOT EXISTS (SELECT 1 FROM jobs r WHERE r.status=? AND r.lock_key<>'' AND r.lock_key=j.lock_key)`
+	args := []any{JobRunning, now(), worker, JobQueued, JobRunning}
+	for _, types := range exclusive {
+		if len(types) == 0 {
+			continue
+		}
+		in := strings.TrimSuffix(strings.Repeat("?,", len(types)), ",")
+		q += `
+			AND NOT (j.type IN (` + in + `) AND EXISTS (SELECT 1 FROM jobs r WHERE r.status=? AND r.type IN (` + in + `)))`
+		for _, t := range types {
+			args = append(args, t)
+		}
+		args = append(args, JobRunning)
+		for _, t := range types {
+			args = append(args, t)
+		}
+	}
+	q += `
 			ORDER BY j.id LIMIT 1
-		) RETURNING `+jobCols, JobRunning, now(), worker, JobQueued, JobRunning))
+		) RETURNING ` + jobCols
+	j, err := scanJob(d.sql.QueryRowContext(ctx, q, args...))
 	if errors.Is(err, ErrNotFound) {
 		return nil, nil
 	}

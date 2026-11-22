@@ -159,6 +159,8 @@ type toolCall struct {
 	env        []string
 	mode       toolMode
 	outputFile string
+	// run names the run of a tool that is the package manager (planDnf).
+	run string
 }
 
 type toolPolicy func(s *Server, c *toolCall) (*toolPlan, error)

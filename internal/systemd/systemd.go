@@ -126,7 +126,8 @@ func (c *Conn) Result(ctx context.Context, unit string) (string, error) {
 }
 
 // ResetFailed is systemctl reset-failed of one unit: the unit leaves the
-// failed state, and its start limit counts from zero again.
+// failed state, its start limit counts from zero again, and a transient unit
+// that failed (a package manager run's) is collected.
 func (c *Conn) ResetFailed(ctx context.Context, unit string) error {
 	if err := c.c.ResetFailedUnitContext(ctx, unit); err != nil {
 		return fmt.Errorf("reset-failed %s: %w", unit, err)

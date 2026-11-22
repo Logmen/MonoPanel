@@ -153,13 +153,19 @@ func (s *Server) planDnf(c *toolCall) (*toolPlan, error) {
 				return nil, notAllowed("the package "+p, "only package names are installed, no files, URLs or options")
 			}
 		}
+		if c.run != "" && !runIDRe.MatchString(c.run) {
+			return nil, &Error{Status: http.StatusBadRequest, Message: "invalid run id " + strconv.Quote(c.run)}
+		}
+		run := c.run
 		// As /v1/pkg install: the scriptlets of what it upgrades on the
-		// way restart php-fpm and nginx.
-		return &toolPlan{args: a, wrap: func(ctx context.Context, run toolRun, _ io.Writer) (int, error) {
+		// way restart php-fpm and nginx, and the transaction runs on to its
+		// end in a unit of its own, whatever becomes of the request or the
+		// agent (pkg_unit.go).
+		return &toolPlan{args: a, wrap: func(ctx context.Context, _ toolRun, out io.Writer) (int, error) {
 			if err := s.vetPackageScripts(ctx, "install"); err != nil {
 				return 0, err
 			}
-			return run(a, nil)
+			return s.runPkgTool(ctx, run, append([]string{"dnf"}, a...), out)
 		}}, nil
 	}
 	return nil, refuseArgs("dnf", a, "not a form the panel uses")

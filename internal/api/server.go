@@ -311,6 +311,16 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	s.jobs.Register("mail.apply", s.jobMailApply)
 	s.jobs.Register("mail.webmail", s.jobWebmailInstall)
 	s.jobs.Register("migrate.run", s.jobMigrateRun)
+	// The daily upgrade of nginx, PHP and Apache and the panel's own update
+	// come on their own, by night, and both run the package manager — and
+	// the update ends in restarting the agent and the API. Neither starts
+	// while the other runs, in either order: it waits in the queue instead
+	// of meeting the other's dpkg lock or restarts. Their lock keys stay as
+	// they are: the upgrade still waits for the other stack jobs, nothing
+	// else waits for the update. The update's install, which goes on in
+	// monopanel-update.service after its job, and the package manager's runs
+	// keep apart in the agent (pkg_unit.go).
+	s.jobs.Exclusive("stack.upgrade", "panel.update")
 	return s
 }
 

@@ -260,7 +260,7 @@ func TestPackageManagerOutlivesTheRequest(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		var ran []string
 		var during error
-		runPackageManager = func(rctx context.Context, _ []string, argv ...string) (string, error) {
+		runPackageManager = func(_ *Server, rctx context.Context, _ string, _ []string, argv ...string) (string, error) {
 			ran = argv
 			cancel() // the API is gone
 			during = rctx.Err()
@@ -283,7 +283,10 @@ func TestPackageManagerOutlivesTheRequest(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	ran := false
-	runPackageManager = func(context.Context, []string, ...string) (string, error) { ran = true; return "", nil }
+	runPackageManager = func(*Server, context.Context, string, []string, ...string) (string, error) {
+		ran = true
+		return "", nil
+	}
 	if _, err := deb.pkg(ctx, &PkgRequest{Action: "upgrade", Packages: []string{"nginx"}}); err == nil || ran {
 		t.Fatalf("an upgrade for a request that is gone: ran %v, %v", ran, err)
 	}

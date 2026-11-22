@@ -24,6 +24,14 @@ func TestServicePolicy(t *testing.T) {
 		{"debug-shell.service", "status", true},
 		{"modprobe@dccp.service", "status", true},
 		{"rescue.target", "status", true},
+		// the panel's own runs, which a stop would break off halfway
+		{"monopanel-pkg-1c6d5f656140e67b.service", "stop", false},
+		{"monopanel-pkg-1c6d5f656140e67b.service", "restart", false},
+		{"monopanel-pkg-1c6d5f656140e67b.service", "status", true},
+		{"monopanel-update.service", "stop", false},
+		{"monopanel-update.service", "start", false},
+		{"monopanel-update.service", "status", true},
+		{"monopanel-api.service", "restart", true},
 		// root shells and power
 		{"debug-shell.service", "start", false},
 		{"debug-shell.service", "enable", false},

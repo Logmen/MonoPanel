@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"monopanel/internal/osprofile"
+	"monopanel/internal/systemd"
 )
 
 // treeHost is an agent whose run and log directories are the test's own,
@@ -703,7 +705,9 @@ func TestSiteLogSweepFailureFailsClosed(t *testing.T) {
 
 // dnf install, the mail's packages from CodeReady Builder, is the package
 // manager as well: the scriptlets of what it upgrades on the way restart
-// php-fpm and nginx. Checked when it is about to run, not before.
+// php-fpm and nginx. Checked when it is about to run, not before. It runs as
+// /v1/pkg's install does, in a unit of its own (pkg_unit.go), with the
+// caller's name for the run; its exit status and output come back.
 func TestDnfInstallVetsTheTrees(t *testing.T) {
 	ctx := context.Background()
 	s, run, logDir, _ := treeHost(t)
@@ -713,6 +717,10 @@ func TestDnfInstallVetsTheTrees(t *testing.T) {
 	}
 	if s.profile, err = osprofile.FromRelease(rel); err != nil {
 		t.Fatal(err)
+	}
+	units := withUnits(t, s)
+	units.play = func(systemd.Oneshot) (string, string, systemd.Exit) {
+		return "Error: Unable to find a match: dovecot\n", "failed", systemd.Exit{Code: 1, Status: 1, Result: "exit-code"}
 	}
 	php := filepath.Join(run, "php")
 	for _, d := range []string{php, filepath.Join(logDir, "sites")} {
@@ -724,6 +732,7 @@ func TestDnfInstallVetsTheTrees(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := tc(modeTool, "dnf", "-y", "install", "--enablerepo=crb", "dovecot")
+	call.run = testRun
 	plan, err := s.planTool(&call)
 	if err != nil {
 		t.Fatal(err)
@@ -734,14 +743,28 @@ func TestDnfInstallVetsTheTrees(t *testing.T) {
 	}
 	ran := false
 	dnf := func([]string, io.Writer) (int, error) { ran = true; return 0, nil }
-	if _, err := plan.wrap(ctx, dnf, io.Discard); agentStatus(err) != http.StatusForbidden || !strings.Contains(err.Error(), php) || ran {
-		t.Fatalf("php/ others may write to: %v, dnf ran: %v", err, ran)
+	if _, err := plan.wrap(ctx, dnf, io.Discard); agentStatus(err) != http.StatusForbidden || !strings.Contains(err.Error(), php) || ran || len(units.started) != 0 {
+		t.Fatalf("php/ others may write to: %v, dnf ran: %v %v", err, ran, units.started)
 	}
 	if err := os.Chmod(php, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := plan.wrap(ctx, dnf, io.Discard); err != nil || !ran {
-		t.Fatalf("the trees root's: %v, dnf ran: %v", err, ran)
+	var out strings.Builder
+	code, err := plan.wrap(ctx, dnf, &out)
+	if err != nil || ran || len(units.started) != 1 {
+		t.Fatalf("the trees root's: %v, dnf ran as the agent's child: %v, units %v", err, ran, units.started)
+	}
+	o := units.started[0]
+	if o.Unit != pkgUnit(testRun) || o.Path != "/usr/bin/dnf" || !slices.Equal(o.Argv, []string{"dnf", "-y", "install", "--enablerepo=crb", "dovecot"}) || !slices.Equal(o.Env, s.profile.Packages().Env()) {
+		t.Fatalf("the run: %+v", o)
+	}
+	if code != 1 || !strings.Contains(out.String(), "Unable to find a match") || !strings.Contains(out.String(), "exit status 1") {
+		t.Fatalf("exit %d, output %q", code, out.String())
+	}
+	bad := tc(modeTool, "dnf", "-y", "install", "--enablerepo=crb", "dovecot")
+	bad.run = "../x"
+	if _, err := s.planTool(&bad); agentStatus(err) != http.StatusBadRequest {
+		t.Fatalf("a bad run name: %v", err)
 	}
 }
 

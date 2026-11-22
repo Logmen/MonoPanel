@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"time"
 
@@ -53,6 +54,9 @@ type Runner struct {
 	timeout  time.Duration
 	// ready holds the workers back at Start until it returns (Hold).
 	ready func(ctx context.Context)
+	// exclusive are the groups of job types of which no two run at the
+	// same time (Exclusive).
+	exclusive [][]string
 }
 
 // NewRunner creates a runner with n workers.
@@ -81,6 +85,17 @@ type Option func(*store.Job)
 
 // WithLockKey serialises jobs sharing a key (e.g. "site:12").
 func WithLockKey(k string) Option { return func(j *store.Job) { j.LockKey = k } }
+
+// Exclusive makes the jobs of the types never run at the same time, in
+// whichever order they come, whatever their lock keys: one of them stays
+// queued while another of them runs, and so waits for it rather than meeting
+// it. Their lock keys go on serialising each with the jobs of its own key,
+// and jobs of other types run beside them as before. Called before Start.
+func (r *Runner) Exclusive(types ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.exclusive = append(r.exclusive, slices.Clone(types))
+}
 
 // WithRequestedBy records the actor.
 func WithRequestedBy(actor string) Option { return func(j *store.Job) { j.RequestedBy = actor } }
@@ -163,8 +178,11 @@ func (r *Runner) worker(ctx context.Context, name string, start <-chan struct{})
 	}
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	r.mu.RLock()
+	exclusive := r.exclusive
+	r.mu.RUnlock()
 	for {
-		job, err := r.db.ClaimJob(ctx, name)
+		job, err := r.db.ClaimJob(ctx, name, exclusive...)
 		if err != nil {
 			if ctx.Err() != nil {
 				return

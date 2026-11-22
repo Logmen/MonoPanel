@@ -82,6 +82,15 @@ func serviceAllowed(unit, action string) error {
 	if why, ok := statusOnlyUnits[unit]; ok {
 		return notAllowed(action+" of "+unit, why)
 	}
+	// The panel's own runs: the self-update the agent starts in
+	// monopanel-update.service, and the package manager's runs in
+	// monopanel-pkg-<id>.service (pkg_unit.go), which outlive the agent so
+	// that dpkg and rpm finish their transactions. A stop or restart from
+	// outside would break exactly that off halfway; the agent starts them
+	// itself, and they only report their state.
+	if unit == "monopanel-update.service" || strings.HasPrefix(unit, "monopanel-pkg-") {
+		return notAllowed(action+" of "+unit, "it is a run of the panel's own (its self-update or the package manager), which a stop or restart would break off halfway")
+	}
 	return nil
 }
 

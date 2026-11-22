@@ -117,6 +117,62 @@ func TestJobsClaimAndLock(t *testing.T) {
 	}
 }
 
+// Jobs of an exclusive group never run together, whatever their lock keys
+// and in either order: one that comes while another runs stays queued, the
+// jobs queued after it are claimed past it, and it is claimed once the other
+// is over.
+func TestJobsClaimExclusive(t *testing.T) {
+	ctx := context.Background()
+	groups := [][]string{{"stack.upgrade", "panel.update"}}
+	for _, order := range [][]string{{"stack.upgrade", "panel.update"}, {"panel.update", "stack.upgrade"}} {
+		db := openTest(t)
+		keys := map[string]string{"stack.upgrade": "stack", "panel.update": "panel:update"}
+		first := &Job{Type: order[0], LockKey: keys[order[0]]}
+		second := &Job{Type: order[1], LockKey: keys[order[1]]}
+		other := &Job{Type: "site.apply", LockKey: "site:1"}
+		stack := &Job{Type: "stack.install", LockKey: "stack"}
+		for _, j := range []*Job{first, second, other, stack} {
+			if err := db.EnqueueJob(ctx, j); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got, err := db.ClaimJob(ctx, "w1", groups...); err != nil || got == nil || got.ID != first.ID {
+			t.Fatalf("%v: first claim %+v %v", order, got, err)
+		}
+		// the other one of the group waits; a site's job does not, nor —
+		// when the update runs — another stack job
+		got, _ := db.ClaimJob(ctx, "w2", groups...)
+		if got == nil || got.ID != other.ID {
+			t.Fatalf("%v: second claim must pass the held one by, got %+v", order, got)
+		}
+		got, _ = db.ClaimJob(ctx, "w3", groups...)
+		switch order[0] {
+		case "stack.upgrade":
+			if got != nil {
+				t.Fatalf("%v: claimed %+v while the upgrade holds stack and the group", order, got)
+			}
+		default:
+			if got == nil || got.ID != stack.ID {
+				t.Fatalf("%v: the update holds no stack key: %+v", order, got)
+			}
+			db.FinishJob(ctx, stack.ID, JobDone, "")
+		}
+		db.FinishJob(ctx, first.ID, JobDone, "")
+		if got, _ := db.ClaimJob(ctx, "w4", groups...); got == nil || got.ID != second.ID {
+			t.Fatalf("%v: after the first, the second: %+v", order, got)
+		}
+		// without the group the two would have run side by side
+		db2 := openTest(t)
+		a, b := &Job{Type: order[0], LockKey: keys[order[0]]}, &Job{Type: order[1], LockKey: keys[order[1]]}
+		db2.EnqueueJob(ctx, a)
+		db2.EnqueueJob(ctx, b)
+		db2.ClaimJob(ctx, "w1")
+		if got, _ := db2.ClaimJob(ctx, "w2"); got == nil || got.ID != b.ID {
+			t.Fatalf("%v: lock keys alone keep them apart: %+v", order, got)
+		}
+	}
+}
+
 func TestJobIdempotency(t *testing.T) {
 	ctx := context.Background()
 	db := openTest(t)

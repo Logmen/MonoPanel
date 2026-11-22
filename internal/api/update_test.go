@@ -14,7 +14,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"monopanel/internal/agent"
 	"monopanel/internal/apitypes"
@@ -185,6 +187,66 @@ func TestUpdateApplyRemembersTheReleaseItFound(t *testing.T) {
 	f.call(http.MethodGet, "/system/update", nil, http.StatusOK, &st)
 	if st.Latest != "9.9.9" || st.Tag != "v9.9.9" || st.CheckedAt == nil {
 		t.Fatalf("the status still shows what the earlier check saw: %+v", st)
+	}
+}
+
+// The daily upgrade of nginx, PHP and Apache and the panel's update never
+// run together, in either order, though the fixture's second worker is free
+// and their lock keys differ: the one that comes while the other runs stays
+// queued until the other is over, then runs — it does not fail for it.
+func TestUpgradeAndUpdateNeverRunTogether(t *testing.T) {
+	rel := newRelease(t, "9.9.9")
+	for _, first := range []string{"stack.upgrade", "panel.update"} {
+		f := newFixture(t, func(c *config.Config) { c.Update.PublicKey = rel.pub })
+		f.configureUpdates(rel)
+		// The first job stops at its first call of the package manager or of
+		// the install until the test lets it go on.
+		held := map[string]string{"stack.upgrade": "/v1/pkg", "panel.update": "/v1/panel/install"}[first]
+		entered, release := make(chan struct{}), make(chan struct{})
+		var once, freed sync.Once
+		free := func() { freed.Do(func() { close(release) }) }
+		// a failure lets the held call go before the fixture shuts its
+		// fake agent down, which waits for it
+		t.Cleanup(free)
+		f.agent.SetBefore(func(path string, body []byte) {
+			if path != held || (path == "/v1/pkg" && !strings.Contains(string(body), `"update-index"`)) {
+				return
+			}
+			once.Do(func() {
+				close(entered)
+				<-release
+			})
+		})
+		var upgrade, update struct {
+			JobID int64 `json:"job_id"`
+		}
+		start := map[string]func(){
+			"stack.upgrade": func() { f.call(http.MethodPost, "/stack/upgrade", map[string]any{}, http.StatusAccepted, &upgrade) },
+			"panel.update": func() {
+				f.call(http.MethodPost, "/system/update/apply", map[string]any{}, http.StatusAccepted, &update)
+			},
+		}
+		second := map[string]string{"stack.upgrade": "panel.update", "panel.update": "stack.upgrade"}[first]
+		start[first]()
+		select {
+		case <-entered:
+		case <-time.After(20 * time.Second):
+			t.Fatalf("%s did not start", first)
+		}
+		start[second]()
+		ids := map[string]int64{"stack.upgrade": upgrade.JobID, "panel.update": update.JobID}
+		time.Sleep(1500 * time.Millisecond) // the free worker's ticks claim what they may
+		if got, _ := f.db.GetJob(f.ctx, ids[second]); got.Status != store.JobQueued {
+			t.Fatalf("%s is %s while %s runs", second, got.Status, first)
+		}
+		free()
+		a, b := f.waitJob(ids[first]), f.waitJob(ids[second])
+		if a.Status != store.JobDone || b.Status != store.JobDone {
+			t.Fatalf("%s %s %s, %s %s %s", first, a.Status, a.Error, second, b.Status, b.Error)
+		}
+		if b.StartedAt.Before(*a.FinishedAt) {
+			t.Fatalf("%s started at %v, before %s ended at %v", second, b.StartedAt, first, a.FinishedAt)
+		}
 	}
 }
 
