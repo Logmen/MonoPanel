@@ -3,109 +3,14 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
-	"os/user"
 	"path/filepath"
-	"strconv"
 	"strings"
 
-	"monopanel/internal/osprofile"
+	"golang.org/x/sys/unix"
 )
-
-// EnsureGroup creates a group when missing. Exported so `mp setup` (which
-// runs as root before the agent exists) can reuse the exact same logic.
-func EnsureGroup(ctx context.Context, req *EnsureGroupRequest) (*EnsureGroupResponse, error) {
-	if !nameRe.MatchString(req.Name) {
-		return nil, &Error{Status: http.StatusBadRequest, Message: "invalid group name"}
-	}
-	if gid, err := lookupGID(req.Name); err == nil {
-		return &EnsureGroupResponse{GID: gid}, nil
-	}
-	argv := []string{"groupadd"}
-	if req.System {
-		argv = append(argv, "-r")
-	}
-	argv = append(argv, req.Name)
-	if out, err := runArgv(ctx, nil, argv...); err != nil {
-		return nil, &Error{Message: "groupadd failed", Output: out}
-	}
-	gid, err := lookupGID(req.Name)
-	if err != nil {
-		return nil, err
-	}
-	return &EnsureGroupResponse{GID: gid, Created: true}, nil
-}
-
-// EnsureUnixUser creates a unix user when missing and adds supplementary groups.
-func EnsureUnixUser(ctx context.Context, profile osprofile.Profile, req *EnsureUnixUserRequest) (*EnsureUnixUserResponse, error) {
-	if !nameRe.MatchString(req.Login) {
-		return nil, &Error{Status: http.StatusBadRequest, Message: "invalid login"}
-	}
-	for _, g := range req.Groups {
-		if !nameRe.MatchString(g) {
-			return nil, &Error{Status: http.StatusBadRequest, Message: "invalid group name: " + g}
-		}
-	}
-	created := false
-	u, err := user.Lookup(req.Login)
-	if err != nil {
-		shell := req.Shell
-		if shell == "" {
-			shell = profile.NologinShell()
-		}
-		argv := []string{"useradd"}
-		if req.System {
-			argv = append(argv, "-r")
-		}
-		if req.Home != "" {
-			argv = append(argv, "-d", req.Home)
-		}
-		if req.CreateHome {
-			argv = append(argv, "-m")
-		} else {
-			argv = append(argv, "-M")
-		}
-		if req.Comment != "" {
-			argv = append(argv, "-c", req.Comment)
-		}
-		if req.PrimaryGroup != "" {
-			if !nameRe.MatchString(req.PrimaryGroup) {
-				return nil, &Error{Status: http.StatusBadRequest, Message: "invalid primary group"}
-			}
-			argv = append(argv, "-g", req.PrimaryGroup)
-		} else {
-			argv = append(argv, "-U")
-		}
-		argv = append(argv, "-s", shell, req.Login)
-		if out, err := runArgv(ctx, nil, argv...); err != nil {
-			return nil, &Error{Message: "useradd failed", Output: out}
-		}
-		created = true
-		if u, err = user.Lookup(req.Login); err != nil {
-			return nil, err
-		}
-	}
-	if !created && req.UpdateShell && req.Shell != "" {
-		if out, err := runArgv(ctx, nil, "usermod", "-s", req.Shell, req.Login); err != nil {
-			return nil, &Error{Message: "usermod -s failed", Output: out}
-		}
-	}
-	for _, g := range req.Groups {
-		if out, err := runArgv(ctx, nil, "usermod", "-aG", g, req.Login); err != nil {
-			return nil, &Error{Message: "usermod failed for group " + g, Output: out}
-		}
-	}
-	for _, g := range req.RemoveGroups {
-		if !nameRe.MatchString(g) {
-			return nil, &Error{Status: http.StatusBadRequest, Message: "invalid group name: " + g}
-		}
-		runArgv(ctx, nil, "gpasswd", "-d", req.Login, g) //nolint:errcheck // not a member of the group: nothing to do
-	}
-	uid, _ := strconv.Atoi(u.Uid)
-	gid, _ := strconv.Atoi(u.Gid)
-	return &EnsureUnixUserResponse{UID: uid, GID: gid, Home: u.HomeDir, Created: created}, nil
-}
 
 // EnsureDir creates one directory with mode and ownership (idempotent).
 func EnsureDir(d DirSpec) (created bool, err error) {
@@ -160,6 +65,96 @@ func EnsureDir(d DirSpec) (created bool, err error) {
 	return created, nil
 }
 
+// errSymlinkInPath marks a path below the web root that leads through a
+// symlink or a file where a directory should be.
+var errSymlinkInPath = errors.New("a symlink or a file in the path")
+
+// dirIDs resolves the mode and the numeric owner and group of a DirSpec (-1:
+// leave as is).
+func dirIDs(d DirSpec) (mode os.FileMode, uid, gid int, err error) {
+	mode = os.FileMode(d.Mode) & os.ModePerm
+	if mode == 0 {
+		mode = 0o755
+	}
+	uid, gid = -1, -1
+	if d.Owner != "" {
+		if uid, err = lookupUID(d.Owner); err != nil {
+			return 0, -1, -1, err
+		}
+	}
+	if d.Group != "" {
+		if gid, err = lookupGID(d.Group); err != nil {
+			return 0, -1, -1, err
+		}
+	}
+	return mode, uid, gid, nil
+}
+
+// ensureHomeDir is EnsureDir for a directory below root (the web root, whose
+// subdirectories the clients own). It walks every component below root
+// through the directory opened before it, never following a symlink
+// (O_NOFOLLOW), makes the missing levels there and changes mode and owner
+// through the opened directory: a client who swaps a component for a symlink
+// at any moment can only make the call fail, never redirect it.
+func ensureHomeDir(root string, d DirSpec) (created bool, err error) {
+	mode, uid, gid, err := dirIDs(d)
+	if err != nil {
+		return false, err
+	}
+	rel, err := filepath.Rel(root, d.Path)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
+		return false, fmt.Errorf("%s is not below %s", d.Path, root)
+	}
+	fd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return false, &os.PathError{Op: "open", Path: root, Err: err}
+	}
+	defer func() { unix.Close(fd) }() //nolint:errcheck // a directory opened for reading
+	const flags = unix.O_RDONLY | unix.O_DIRECTORY | unix.O_NOFOLLOW | unix.O_CLOEXEC
+	parts := strings.Split(rel, "/")
+	cur := root
+	for i, name := range parts {
+		cur = filepath.Join(cur, name)
+		made := false
+		next, err := unix.Openat(fd, name, flags, 0)
+		if errors.Is(err, unix.ENOENT) {
+			if err := unix.Mkdirat(fd, name, uint32(mode)); err != nil && !errors.Is(err, unix.EEXIST) {
+				return created, &os.PathError{Op: "mkdir", Path: cur, Err: err}
+			}
+			made = true
+			next, err = unix.Openat(fd, name, flags, 0)
+		}
+		if errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR) {
+			return created, fmt.Errorf("%w: refusing %s", errSymlinkInPath, cur)
+		}
+		if err != nil {
+			return created, &os.PathError{Op: "open", Path: cur, Err: err}
+		}
+		unix.Close(fd) //nolint:errcheck // a directory opened for reading
+		fd = next
+		last := i == len(parts)-1
+		if made && last {
+			created = true
+		}
+		// The levels made on the way get the owner too, as EnsureDir gives
+		// them (a root-owned parent keeps the client out of its own tree).
+		if made && !last && (uid >= 0 || gid >= 0) {
+			if err := unix.Fchown(fd, uid, gid); err != nil {
+				return created, &os.PathError{Op: "chown", Path: cur, Err: err}
+			}
+		}
+	}
+	if err := unix.Fchmod(fd, uint32(mode)); err != nil {
+		return created, &os.PathError{Op: "chmod", Path: d.Path, Err: err}
+	}
+	if uid >= 0 || gid >= 0 {
+		if err := unix.Fchown(fd, uid, gid); err != nil {
+			return created, &os.PathError{Op: "chown", Path: d.Path, Err: err}
+		}
+	}
+	return created, nil
+}
+
 // missingLevels lists the ancestors of p that do not exist yet, topmost
 // first; p itself is not included.
 func missingLevels(p string) []string {
@@ -174,6 +169,12 @@ func missingLevels(p string) []string {
 }
 
 func (s *Server) dirAllowed(p string) bool {
+	// A directory made in place of config.yaml or the secret key, or a
+	// change of mode or owner of the directory that holds them, is a write
+	// to them as well.
+	if s.coversProtected(p) {
+		return false
+	}
 	if s.pathAllowed(strings.TrimSuffix(p, "/") + "/") {
 		return true
 	}
@@ -187,13 +188,26 @@ func (s *Server) dirAllowed(p string) bool {
 
 func (s *Server) ensureDirs(ctx context.Context, req *EnsureDirsRequest) (*EnsureDirsResponse, error) {
 	resp := &EnsureDirsResponse{Created: []string{}}
+	root := filepath.Clean(s.cfg.WWWRoot)
 	for _, d := range req.Dirs {
 		p := filepath.Clean(d.Path)
 		if !filepath.IsAbs(p) || !s.dirAllowed(p) {
 			return nil, &Error{Status: http.StatusForbidden, Message: "directory not allowed: " + p}
 		}
 		d.Path = p
-		created, err := EnsureDir(d)
+		var created bool
+		var err error
+		if strings.HasPrefix(p, root+"/") {
+			// Clients own the directories below the web root: one of them
+			// swapped for a symlink would turn this root mkdir, chmod and
+			// chown into one of /etc/systemd/system or /root.
+			created, err = ensureHomeDir(root, d)
+			if errors.Is(err, errSymlinkInPath) {
+				return nil, &Error{Status: http.StatusForbidden, Message: err.Error()}
+			}
+		} else {
+			created, err = EnsureDir(d)
+		}
 		if err != nil {
 			return nil, &Error{Message: "ensure dir " + p, Output: err.Error()}
 		}

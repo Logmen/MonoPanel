@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -14,8 +15,21 @@ import (
 // panel's own nftables firewall takes over, firewalld is gone (see
 // firewallEnable). Failures are logged, not fatal: the service itself works.
 func (s *Server) firewalldOpen(ctx context.Context, logf func(string, ...any), ports ...string) {
+	running, err := s.firewalldAdd(ctx, ports...)
+	switch {
+	case !running:
+	case err != nil:
+		logf("firewalld: cannot open %s: %v", strings.Join(ports, " "), err)
+	default:
+		logf("firewalld: opened %s", strings.Join(ports, " "))
+	}
+}
+
+// firewalldAdd opens ports in firewalld, permanently and at once; running is
+// false when there is no firewalld to talk to.
+func (s *Server) firewalldAdd(ctx context.Context, ports ...string) (running bool, err error) {
 	if !s.firewalldRunning(ctx) {
-		return
+		return false, nil
 	}
 	args := []string{"-q", "--permanent"}
 	for _, p := range ports {
@@ -27,12 +41,11 @@ func (s *Server) firewalldOpen(ctx context.Context, logf func(string, ...any), p
 	}
 	switch {
 	case err != nil:
-		logf("firewalld: cannot open %s: %v", strings.Join(ports, " "), err)
+		return true, err
 	case res.ExitCode != 0:
-		logf("firewalld: cannot open %s: %s", strings.Join(ports, " "), strings.TrimSpace(res.Output))
-	default:
-		logf("firewalld: opened %s", strings.Join(ports, " "))
+		return true, errors.New(strings.TrimSpace(res.Output))
 	}
+	return true, nil
 }
 
 // firewalldRunning reports whether firewalld is installed and active.

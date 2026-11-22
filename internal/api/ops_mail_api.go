@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"unicode"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -128,14 +129,20 @@ func (s *Server) ownerFor(ctx context.Context, login string) (*store.User, error
 func (s *Server) registerMail() {
 	huma.Register(s.api, huma.Operation{
 		OperationID: "mail-status", Method: http.MethodGet, Path: "/mail", Summary: "Mail server status", Tags: []string{"mail"}, Security: secured,
+		Description: "For an ordinary account, domains, mailboxes and aliases count its own, and the warnings are about its own mail only: what the server-wide ones say is the administrator's to fix.",
 	}, func(ctx context.Context, _ *struct{}) (*mailStatusOutput, error) {
-		return &mailStatusOutput{Body: s.mailStatus(ctx)}, nil
+		return &mailStatusOutput{Body: s.mailStatusFor(ctx)}, nil
 	})
 
 	huma.Register(s.api, huma.Operation{
 		OperationID: "mail-install", Method: http.MethodPost, Path: "/mail/install", Summary: "Install postfix, dovecot and opendkim (async)", Tags: []string{"mail"}, Security: secured, Metadata: adminOnly, DefaultStatus: http.StatusAccepted,
 	}, func(ctx context.Context, in *mailInstallInput) (*jobRefOutput, error) {
 		p := principalFrom(ctx)
+		// Checked here, not only in the job: the name goes into main.cf as
+		// it is, the temporary one of the install included.
+		if h := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(in.Body.Hostname), ".")); h != "" && !mailDomainOK(h) {
+			return nil, huma.Error422UnprocessableEntity("mail server hostname must be fully qualified, e.g. mail.example.com")
+		}
 		job, err := s.jobs.Enqueue(ctx, "mail.install", mailInstallPayload{Hostname: in.Body.Hostname, POP3: in.Body.POP3}, jobs.WithLockKey("mail"), jobs.WithRequestedBy(p.Login))
 		if err != nil {
 			return nil, err
@@ -161,10 +168,13 @@ func (s *Server) registerMail() {
 		p := principalFrom(ctx)
 		c := s.loadMailConfig(ctx)
 		if in.Body.Hostname != "" {
-			if !strings.Contains(in.Body.Hostname, ".") {
+			// The name goes into main.cf, dovecot.conf and opendkim's
+			// TrustedHosts as it is: a host name and nothing else.
+			h := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(in.Body.Hostname), "."))
+			if !mailDomainOK(h) {
 				return nil, huma.Error422UnprocessableEntity("mail server hostname must be fully qualified, e.g. mail.example.com")
 			}
-			c.Hostname = strings.ToLower(in.Body.Hostname)
+			c.Hostname = h
 		}
 		if in.Body.MaxSizeMB > 0 {
 			c.MaxSizeMB = in.Body.MaxSizeMB
@@ -189,7 +199,7 @@ func (s *Server) registerMail() {
 			list := []string{}
 			for _, r := range *in.Body.RBL {
 				if r = strings.TrimSpace(strings.ToLower(r)); r != "" {
-					if !mailDomainRe.MatchString(strings.TrimSuffix(r, ".")) {
+					if !mailDomainOK(strings.TrimSuffix(r, ".")) {
 						return nil, huma.Error422UnprocessableEntity("a blocklist must be a domain, e.g. zen.spamhaus.org")
 					}
 					list = append(list, r)
@@ -236,12 +246,27 @@ func (s *Server) registerMail() {
 			return nil, huma.Error422UnprocessableEntity("mail server is not installed")
 		}
 		name := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(in.Body.Name), "."))
-		if !mailDomainRe.MatchString(name) {
+		if !mailDomainOK(name) {
 			return nil, huma.Error422UnprocessableEntity("domain must look like example.com")
 		}
 		owner, err := s.ownerFor(ctx, in.Body.User)
 		if err != nil {
 			return nil, err
+		}
+		if p.Role != store.RoleAdmin {
+			// The server delivers mail for its domains itself: a domain of
+			// the panel or under another account's name would hand that mail
+			// to this account.
+			if s.panelNames(ctx)[name] {
+				return nil, huma.Error422UnprocessableEntity(name + " is a hostname of this panel itself (the panel or its mail server)")
+			}
+			other, err := s.foreignDomain(ctx, owner.ID, name)
+			if err != nil {
+				return nil, err
+			}
+			if other != "" {
+				return nil, huma.Error403Forbidden(name + " is under " + other + ", which belongs to another account")
+			}
 		}
 		if in.Body.SendOnly && in.Body.Lenient {
 			return nil, huma.Error422UnprocessableEntity("a send-only domain receives no mail here, so it cannot be lenient")
@@ -287,7 +312,11 @@ func (s *Server) registerMail() {
 		if err := s.db.DeleteMailDomain(ctx, d.ID); err != nil {
 			return nil, err
 		}
-		if _, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: []string{mailBase + "/" + d.Name, dkimDir + "/keys/" + d.Name}, Recursive: true}); err != nil {
+		// The name is a path component here: one that came in another way
+		// (see mapToken) could lead into another tenant's directory.
+		if !mapToken(d.Name) {
+			s.log.Warn("mail: the domain's name is not a directory name; its directories are left alone", "domain", d.Name)
+		} else if _, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: []string{mailBase + "/" + d.Name, dkimDir + "/keys/" + d.Name}, Recursive: true}); err != nil {
 			s.log.Warn("mail: removing the domain directory", "domain", d.Name, "err", err)
 		}
 		if err := s.applyMail(ctx, nil); err != nil {
@@ -366,7 +395,9 @@ func (s *Server) registerMail() {
 		if err := s.db.UpdateMailDomain(ctx, d); err != nil {
 			return nil, err
 		}
-		if old != "" {
+		// A selector that is no file name (see mapToken) names no key the
+		// panel wrote: a new key replaces it, and nothing is removed for it.
+		if old != "" && mapToken(old) && mapToken(d.Name) {
 			s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: []string{fmt.Sprintf("%s/keys/%s/%s.private", dkimDir, d.Name, old)}}) //nolint:errcheck // старый ключ уже не нужен
 		}
 		if err := s.applyMail(ctx, nil); err != nil {
@@ -425,6 +456,9 @@ func (s *Server) registerMail() {
 		if d.SendOnly {
 			return nil, huma.Error422UnprocessableEntity(sendOnlyRefusal(d.Name))
 		}
+		if !mailboxNameOK(in.Body.Name) {
+			return nil, huma.Error422UnprocessableEntity(badMailboxName)
+		}
 		password, generated := in.Body.Password, false
 		if password == "" {
 			password, _ = auth.NewPassword(16)
@@ -434,9 +468,9 @@ func (s *Server) registerMail() {
 		if err != nil {
 			return nil, err
 		}
-		quota := in.Body.QuotaMB
-		if quota == 0 && in.Body.QuotaMB == 0 {
-			quota = 1024
+		quota := 1024
+		if in.Body.QuotaMB != nil {
+			quota = *in.Body.QuotaMB // 0: no limit
 		}
 		b := &store.Mailbox{DomainID: d.ID, LocalPart: local, Address: local + "@" + domain, Name: in.Body.Name, PasswordHash: hash, QuotaMB: quota, Active: true}
 		if err := s.db.CreateMailbox(ctx, b); err != nil {
@@ -484,10 +518,13 @@ func (s *Server) registerMail() {
 			b.PasswordHash = hash
 		}
 		if in.Body.Name != nil {
+			if !mailboxNameOK(*in.Body.Name) {
+				return nil, huma.Error422UnprocessableEntity(badMailboxName)
+			}
 			b.Name = *in.Body.Name
 		}
 		if in.Body.QuotaMB != nil {
-			b.QuotaMB = *in.Body.QuotaMB
+			b.QuotaMB = *in.Body.QuotaMB // 0: no limit
 		}
 		if in.Body.Active != nil {
 			b.Active = *in.Body.Active
@@ -517,7 +554,12 @@ func (s *Server) registerMail() {
 		if err := s.db.DeleteMailbox(ctx, b.ID); err != nil {
 			return nil, err
 		}
-		if in.Purge {
+		// The maildir is the domain and the local part as path components:
+		// a local part that came in another way (see mapToken) could name
+		// another tenant's maildir.
+		if in.Purge && (!mapToken(b.Domain) || !mapToken(b.LocalPart) || b.Address != b.LocalPart+"@"+b.Domain) {
+			s.log.Warn("mail: the mailbox's local part is not its address; its maildir is left alone", "address", b.Address, "local_part", b.LocalPart)
+		} else if in.Purge {
 			if _, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: []string{fmt.Sprintf("%s/%s/%s", mailBase, b.Domain, b.LocalPart)}, Recursive: true}); err != nil {
 				s.log.Warn("mail: removing the maildir", "address", b.Address, "err", err)
 			}
@@ -666,6 +708,50 @@ func (s *Server) mailboxFor(ctx context.Context, address string) (*store.Mailbox
 		return nil, errors.New("mailbox not found")
 	}
 	return b, err
+}
+
+// mailboxNameOK: the display name of a mailbox is one line of text. It is in
+// no map, but every listing shows it, mp mail box list in the administrator's
+// terminal among them.
+func mailboxNameOK(name string) bool {
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+
+const badMailboxName = "name must be one line, without control characters"
+
+// mailStatusFor is GET /mail as the caller may see it. An ordinary account
+// learns nothing about the other tenants of the server: the counts are of its
+// own domains, mailboxes and aliases, and of the warnings only the one about
+// its own mail stays — certificates, ports and the encryption key are the
+// administrator's to fix, and say how the whole server is set up.
+func (s *Server) mailStatusFor(ctx context.Context) apitypes.MailStatus {
+	st := s.mailStatus(ctx)
+	p := principalFrom(ctx)
+	if p.Role == store.RoleAdmin {
+		return st
+	}
+	st.Domains, st.Mailboxes, st.Aliases, st.Warnings = 0, 0, 0, nil
+	if p.UserID == 0 {
+		return st // no account, nothing of its own
+	}
+	domains, err := s.db.ListMailDomains(ctx, p.UserID)
+	if err != nil {
+		return st
+	}
+	st.Domains = len(domains)
+	for _, d := range domains {
+		st.Mailboxes += d.Mailboxes
+		st.Aliases += d.Aliases
+	}
+	if st.Installed && len(domains) == 0 {
+		st.Warnings = []string{"no domains added yet"}
+	}
+	return st
 }
 
 // sendOnlyRefusal explains why a send-only domain takes no mailboxes.

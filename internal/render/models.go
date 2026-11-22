@@ -33,7 +33,7 @@ type Site struct {
 	CertPath          string
 	KeyPath           string
 	Docroot           string
-	LogDir            string
+	LogDir            string // <log_dir>/sites/<login>: root's, never in the account's home
 	IncludeDir        string
 	ClientMaxBodySize string
 	StaticByNginx     bool
@@ -130,7 +130,7 @@ type Pool struct {
 	Home             string
 	DataDir          string
 	TmpDir           string
-	LogDir           string
+	LogDir           string // <log_dir>/sites/<login>: the slow log (php-fpm's master) and the PHP error log
 	BinDir           string
 	SendmailFrom     string
 	DisableFunctions string
@@ -225,14 +225,16 @@ type CronLine struct {
 }
 
 // SiteLogrotate feeds logrotate/sites.tmpl: the rotation of the site logs in
-// the accounts' homes, one stanza per account.
+// the root-owned tree <log_dir>/sites, two stanzas per account (the servers'
+// logs, the PHP error log).
 type SiteLogrotate struct {
 	Accounts  []LogrotateAccount
 	NginxPID  string
 	ApachePID string
 }
 
-// LogrotateAccount is an account whose data/logs rotate under its own rights.
+// LogrotateAccount is an account and its directory of site logs,
+// <log_dir>/sites/<login>.
 type LogrotateAccount struct {
 	Login  string
 	LogDir string
@@ -246,8 +248,16 @@ type AppUnit struct {
 	Command     string
 	WorkDir     string
 	EnvFile     string
-	Env         []string
-	Restart     string
+	// PanelEnvFile holds Env (root-only): a unit's Environment= lines are
+	// readable by every local user, in the unit file and over D-Bus
+	// (systemctl show), an EnvironmentFile's content by root alone. Env stays
+	// for templates overridden before the file existed.
+	PanelEnvFile string
+	Env          []string
+	Restart      string
+	// Binary is the panel's own binary, which reads EnvFile as the account
+	// (mp app-exec) before it execs Command.
+	Binary string
 }
 
 // ValkeyUnit feeds systemd/valkey.service.tmpl: one Valkey (or Redis)
@@ -365,7 +375,7 @@ type Webmail struct {
 	CertPath          string
 	KeyPath           string
 	Docroot           string
-	LogDir            string
+	LogDir            string // the site owner's <log_dir>/sites/<login>
 	Socket            string
 	ClientMaxBodySize string
 }

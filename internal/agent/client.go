@@ -115,6 +115,19 @@ func (c *Client) EnsureFile(ctx context.Context, req *EnsureFileRequest) (*Ensur
 	return &r, c.call(ctx, "/v1/file/ensure", req, &r)
 }
 
+// EnsureSiteLogs prepares an account's site logs in the root-owned tree
+// <log_dir>/sites/<login>/ before the web servers open them.
+func (c *Client) EnsureSiteLogs(ctx context.Context, req *SiteLogsRequest) (*SiteLogsResponse, error) {
+	var r SiteLogsResponse
+	return &r, c.call(ctx, "/v1/sitelogs/ensure", req, &r)
+}
+
+// RemoveSiteLogs deletes an account's directory of site logs.
+func (c *Client) RemoveSiteLogs(ctx context.Context, req *RemoveSiteLogsRequest) (*RemoveSiteLogsResponse, error) {
+	var r RemoveSiteLogsResponse
+	return &r, c.call(ctx, "/v1/sitelogs/remove", req, &r)
+}
+
 // EnsureSymlink creates a symlink in a client's home.
 func (c *Client) EnsureSymlink(ctx context.Context, req *EnsureSymlinkRequest) error {
 	return c.call(ctx, "/v1/symlink/ensure", req, nil)
@@ -195,6 +208,13 @@ func (c *Client) RemoveUnixUser(ctx context.Context, req *RemoveUnixUserRequest)
 func (c *Client) InstallPanel(ctx context.Context, req *InstallPanelRequest) (*InstallPanelResponse, error) {
 	var r InstallPanelResponse
 	return &r, c.call(ctx, "/v1/panel/install", req, &r)
+}
+
+// SetPanelConfig changes the panel's own settings in config.yaml (the keys of
+// config.PanelKeys, nothing else); they take effect when the API restarts.
+func (c *Client) SetPanelConfig(ctx context.Context, req *PanelConfigRequest) (*PanelConfigResponse, error) {
+	var r PanelConfigResponse
+	return &r, c.call(ctx, "/v1/panel/config", req, &r)
 }
 
 // ListDir lists an allow-listed configuration directory.

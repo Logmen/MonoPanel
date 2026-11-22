@@ -64,7 +64,13 @@ func (s *Server) migrateLogin(ctx context.Context, scope string) (*store.User, e
 	if !ok || kind != "user" || login == "" {
 		return nil, huma.Error422UnprocessableEntity("only a user:<login> scope can be migrated so far")
 	}
+	// The administrator role is required in every case: a grant token belongs
+	// to the administrator who issued it, and the scope only narrows it to one
+	// account. A scope alone proves nothing — it is a string in a token row.
 	p := principalFrom(ctx)
+	if p.Role != store.RoleAdmin {
+		return nil, huma.Error403Forbidden("administrator role required")
+	}
 	if len(p.Scopes) > 0 {
 		allowed := false
 		for _, sc := range p.Scopes {
@@ -75,8 +81,6 @@ func (s *Server) migrateLogin(ctx context.Context, scope string) (*store.User, e
 		if !allowed {
 			return nil, huma.Error403Forbidden("the token was issued for another scope")
 		}
-	} else if p.Role != store.RoleAdmin {
-		return nil, huma.Error403Forbidden("administrator role required")
 	}
 	u, err := s.db.GetUserByLogin(ctx, login)
 	if errors.Is(err, store.ErrNotFound) {
@@ -270,18 +274,9 @@ func (s *Server) registerMigrateSource() {
 			return nil, err
 		}
 		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "migrate.grant", Target: u.Login, IP: requestInfo(ctx).IP, Details: map[string]any{"hours": hours}})
-		// В подсказке должен быть адрес, по которому панель действительно
-		// отвечает: имя из конфигурации порт не содержит.
-		host := s.cfg.Web.Hostname
-		if host == "" {
-			host = requestInfo(ctx).Host
-		}
-		if !strings.Contains(host, ":") {
-			host = fmt.Sprintf("%s:%d", host, s.panelPort())
-		}
 		return &migrateGrantOutput{Body: apitypes.MigrationGrantResponse{
 			Token: plain, Scope: "user:" + u.Login, ExpiresAt: exp,
-			Command: fmt.Sprintf("mp migrate plan --source https://%s --token %s --scope user:%s", host, plain, u.Login),
+			Command: fmt.Sprintf("mp migrate plan --source https://%s --token %s --scope user:%s", s.panelAddress(ctx), plain, u.Login),
 		}}, nil
 	})
 
@@ -342,6 +337,11 @@ func (s *Server) registerMigrateSource() {
 			args = append(args, "--newer-mtime="+t.UTC().Format("2006-01-02 15:04:05"))
 		}
 		args = append(args, ".")
+		details := map[string]any{"part": in.Part}
+		if in.Part == "mail" {
+			details["domain"] = in.Domain
+		}
+		s.db.Audit(ctx, store.AuditEntry{Actor: principalFrom(ctx).Login, Action: "migrate.files", Target: u.Login, IP: requestInfo(ctx).IP, Details: details})
 		return &huma.StreamResponse{Body: func(hctx huma.Context) {
 			hctx.SetHeader("Content-Type", "application/x-tar")
 			if err := s.agent.StreamOut(ctx, &agent.StreamRequest{Name: "tar", Args: args}, hctx.BodyWriter()); err != nil {
@@ -363,7 +363,11 @@ func (s *Server) registerMigrateSource() {
 		if err != nil || db.UserID != u.ID {
 			return nil, huma.Error404NotFound("the database does not belong to this account")
 		}
-		args := []string{"--protocol=socket", "--single-transaction", "--routines", "--triggers", "--events", "--databases", db.Name}
+		// The receiving side loads the dump as the database's own account:
+		// GTID lines (a server with gtid_mode=ON) would need SUPER there and
+		// mean nothing to a fresh database.
+		args := []string{"--protocol=socket", "--single-transaction", "--routines", "--triggers", "--events", "--set-gtid-purged=OFF", "--databases", db.Name}
+		s.db.Audit(ctx, store.AuditEntry{Actor: principalFrom(ctx).Login, Action: "migrate.dump", Target: u.Login, IP: requestInfo(ctx).IP, Details: map[string]any{"db": db.Name}})
 		return &huma.StreamResponse{Body: func(hctx huma.Context) {
 			hctx.SetHeader("Content-Type", "application/sql")
 			if err := s.agent.StreamOut(ctx, &agent.StreamRequest{Name: "mysqldump", Args: args}, hctx.BodyWriter()); err != nil {

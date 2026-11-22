@@ -69,6 +69,12 @@ func (s *Server) registerTOTP() {
 		if s.secrets == nil {
 			return nil, huma.Error422UnprocessableEntity("secret key unavailable")
 		}
+		// A new secret replaces the old one and is inactive until confirmed, so
+		// on an account with 2FA on it would switch 2FA off — without the
+		// password that /auth/totp/disable asks for. Turning 2FA off comes first.
+		if s.totpEnabled(ctx, p.UserID) {
+			return nil, huma.Error409Conflict("2FA is already on: turn it off first (that asks for the password), then set it up again")
+		}
 		key, err := totp.Generate(totp.GenerateOpts{Issuer: "MonoPanel " + s.cfg.Web.Hostname, AccountName: p.Login})
 		if err != nil {
 			return nil, err
@@ -80,6 +86,7 @@ func (s *Server) registerTOTP() {
 		if err := s.db.SetTOTP(ctx, p.UserID, enc, false); err != nil {
 			return nil, err
 		}
+		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "totp.setup", IP: requestInfo(ctx).IP})
 		return &totpSetupOutput{Body: apitypes.TOTPSetup{Secret: key.Secret(), URL: key.URL()}}, nil
 	})
 

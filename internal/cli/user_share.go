@@ -46,7 +46,7 @@ func userShareCmd() *cobra.Command {
 	}}
 
 	var req apitypes.ShareRequest
-	add := &cobra.Command{Use: "add <login> --site <domain> --path <folder>", Short: T("дать аккаунту папку сайта другого аккаунта", "give the account a folder of another account's site"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	add := &cobra.Command{Use: "add <login>", Short: T("дать аккаунту папку сайта другого аккаунта (--site и --path)", "give the account a folder of another account's site (--site and --path)"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -80,6 +80,8 @@ func userShareCmd() *cobra.Command {
 	add.Flags().StringVar(&req.Name, "name", "", T("имя папки в доме гостя (по умолчанию последний сегмент пути)", "folder name in the guest's home (default: the last path segment)"))
 	add.Flags().BoolVar(&req.NoPHP, "no-php", false, T("не выполнять PHP из этой папки на сайте", "never execute PHP from this folder on the site"))
 	add.Flags().BoolVar(&req.Entry, "entry", false, T("точка входа: сессия SFTP начинается в этой папке, а не в доме (у аккаунта одна)", "entry point: the SFTP session starts inside this folder, not the home (one per account)"))
+	add.MarkFlagRequired("site")
+	add.MarkFlagRequired("path")
 
 	var off bool
 	entry := &cobra.Command{Use: "entry <login> <name>", Short: T("точка входа: начинать сессию SFTP в этой папке (--off — снова в доме)", "entry point: start the SFTP session inside this folder (--off: in the home again)"), Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {

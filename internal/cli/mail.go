@@ -353,12 +353,22 @@ func mailboxCmd() *cobra.Command {
 	}}
 
 	var req apitypes.MailboxRequest
+	var addPasswordStdin bool
+	addQuota := 1024
 	add := &cobra.Command{Use: "add <user@example.com>", Short: T("создать ящик", "create a mailbox"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
 		}
+		if err := secretFlag(cmd, "password-stdin", "password", T("Пароль ящика: ", "Mailbox password: "), &req.Password); err != nil {
+			return err
+		}
 		req.Address = args[0]
+		// Only a quota given goes to the API, which keeps its own default
+		// (1024 MB); 0 is a quota too: no limit.
+		if cmd.Flags().Changed("quota") {
+			req.QuotaMB = &addQuota
+		}
 		res, err := cl.CreateMailbox(cmd.Context(), req)
 		if err != nil {
 			return err
@@ -375,15 +385,20 @@ func mailboxCmd() *cobra.Command {
 		return nil
 	}}
 	add.Flags().StringVar(&req.Password, "password", "", T("пароль (пустой — сгенерируется)", "password (generated if empty)"))
+	add.Flags().BoolVar(&addPasswordStdin, "password-stdin", false, T("прочитать пароль из stdin", "read the password from stdin"))
 	add.Flags().StringVar(&req.Name, "name", "", T("имя владельца ящика", "name of the mailbox owner"))
-	add.Flags().IntVar(&req.QuotaMB, "quota", 0, T("квота в МБ (0 — без ограничения)", "quota in MB (0 — unlimited)"))
+	add.Flags().IntVar(&addQuota, "quota", addQuota, T("квота в МБ (0 — без ограничения)", "quota in MB (0 — unlimited)"))
 
 	var patch apitypes.MailboxUpdateRequest
 	var active, name string
 	var quota int
-	set := &cobra.Command{Use: "set <user@example.com>", Short: T("изменить пароль, квоту или состояние", "change the password, quota or state"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	var setPasswordStdin bool
+	set := &cobra.Command{Use: "set <user@example.com>", Short: T("изменить пароль, имя, квоту или состояние", "change the password, name, quota or state"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
+			return err
+		}
+		if err := secretFlag(cmd, "password-stdin", "password", T("Новый пароль ящика: ", "New mailbox password: "), &patch.Password); err != nil {
 			return err
 		}
 		if cmd.Flags().Changed("quota") {
@@ -414,8 +429,9 @@ func mailboxCmd() *cobra.Command {
 		return nil
 	}}
 	set.Flags().StringVar(&patch.Password, "password", "", T("новый пароль (без других флагов пароль генерируется)", "new password (with no other flags, one is generated)"))
+	set.Flags().BoolVar(&setPasswordStdin, "password-stdin", false, T("прочитать новый пароль из stdin", "read the new password from stdin"))
 	set.Flags().StringVar(&name, "name", "", T("имя владельца ящика", "name of the mailbox owner"))
-	set.Flags().IntVar(&quota, "quota", 0, T("квота в МБ", "quota in MB"))
+	set.Flags().IntVar(&quota, "quota", 0, T("квота в МБ (0 — без ограничения)", "quota in MB (0 — unlimited)"))
 	set.Flags().StringVar(&active, "active", "", "true|false")
 
 	var purge bool

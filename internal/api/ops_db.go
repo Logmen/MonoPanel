@@ -137,18 +137,69 @@ func (s *Server) dbInstance(ctx context.Context) (*store.DBInstance, error) {
 	return inst, err
 }
 
+// legacyAuthFor resolves legacy_auth: the request's value, or — when the
+// request leaves it out — whether the owner runs a site on PHP below 7.4.
+func (s *Server) legacyAuthFor(ctx context.Context, owner *store.User, legacyAuth *bool) bool {
+	if legacyAuth != nil {
+		return *legacyAuth
+	}
+	return s.ownerNeedsLegacyAuth(ctx, owner.ID)
+}
+
+// legacyAuthAllowed refuses an ordinary account a database that would switch
+// mysql_native_password on: that rewrites the server's configuration and
+// restarts MySQL under every site of the host, which is the administrator's
+// call. With the plugin already on nothing restarts, and anyone may use it.
+// A request that ends in createDatabase for an ordinary account asks this
+// first: a job that runs createDatabase later has no caller to ask about.
+func (s *Server) legacyAuthAllowed(ctx context.Context, p *principal, inst *store.DBInstance, owner *store.User, legacyAuth *bool) error {
+	if p == nil || p.Role == store.RoleAdmin || inst.NativePassword || !s.legacyAuthFor(ctx, owner, legacyAuth) {
+		return nil
+	}
+	msg := "legacy authentication (mysql_native_password, for PHP below 7.4) is not enabled on this server, and enabling it restarts MySQL for every site: ask the administrator to enable legacy authentication"
+	if legacyAuth == nil {
+		msg += " (the account has sites on PHP below 7.4, and their databases need it)"
+	}
+	return huma.Error403Forbidden(msg)
+}
+
+// dbNameTaken tells whether the panel has recorded name for another account,
+// as a database or as a database account. Logins may hold "_", so
+// <login>_<name> of one account can spell a database of another (alex +
+// x_shop is alex_x + shop), and the CREATE … IF NOT EXISTS and ALTER USER
+// that make a database would hand that one over with a new password.
+func (s *Server) dbNameTaken(ctx context.Context, owner *store.User, name string) (bool, error) {
+	dbs, err := s.db.ListDatabases(ctx, 0)
+	if err != nil {
+		return false, err
+	}
+	for _, db := range dbs {
+		if db.Name == name && db.UserID != owner.ID {
+			return true, nil
+		}
+		for _, u := range db.Users {
+			if u.Name == name && u.Host == "localhost" && u.UserID != owner.ID {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
 // createDatabase makes (or re-keys) a database and its single account for
 // the owner: the MySQL side first, then the panel's records. Shared by the
-// databases endpoint and the CMS installer.
+// databases endpoint and the CMS installer. Re-keying is for the owner's own
+// database only.
 func (s *Server) createDatabase(ctx context.Context, inst *store.DBInstance, owner *store.User, full, password string, legacyAuth *bool) (*store.Database, string, error) {
-	plugin := "caching_sha2_password"
-	legacy := false
-	if legacyAuth != nil {
-		legacy = *legacyAuth
-	} else {
-		legacy = s.ownerNeedsLegacyAuth(ctx, owner.ID)
+	// Checked first, before a restart for legacy authentication.
+	errTaken := huma.Error409Conflict("the name " + full + " belongs to a database of another account: choose another name")
+	if other, err := s.dbNameTaken(ctx, owner, full); err != nil {
+		return nil, "", err
+	} else if other {
+		return nil, "", errTaken
 	}
-	if legacy {
+	plugin := "caching_sha2_password"
+	if s.legacyAuthFor(ctx, owner, legacyAuth) {
 		if err := s.ensureNativePassword(ctx, inst); err != nil {
 			return nil, "", err
 		}
@@ -166,7 +217,12 @@ func (s *Server) createDatabase(ctx context.Context, inst *store.DBInstance, own
 	if err := s.db.CreateDatabase(ctx, db); err != nil && !errors.Is(err, store.ErrExists) {
 		return nil, "", err
 	} else if errors.Is(err, store.ErrExists) {
-		db, _ = s.db.GetDatabaseByName(ctx, full)
+		if db, err = s.db.GetDatabaseByName(ctx, full); err != nil {
+			return nil, "", err
+		}
+		if db.UserID != owner.ID { // recorded by another account meanwhile
+			return nil, "", errTaken
+		}
 	}
 	if len(db.Users) == 0 {
 		s.db.CreateDBUser(ctx, &store.DBUser{UserID: owner.ID, DatabaseID: &db.ID, Name: full, Host: "localhost", AuthPlugin: plugin}) //nolint:errcheck // best effort while rolling back a failed create
@@ -198,8 +254,9 @@ func (s *Server) registerDB() {
 	})
 
 	// The generated zz-monopanel.cnf changes with the panel's defaults and
-	// with the host (RAM, legacy PHP); this re-renders it and restarts the
-	// server, so an existing installation picks the current defaults up.
+	// with the host (RAM, legacy PHP and accounts on mysql_native_password);
+	// this re-renders it and restarts the server, so an existing installation
+	// picks the current defaults up.
 	huma.Register(s.api, huma.Operation{
 		OperationID: "db-engine-tune", Method: http.MethodPost, Path: "/db/engine/tune", Summary: "Re-render the panel's MySQL configuration for this host and restart the server", Tags: []string{"db"},
 		Security: secured, Metadata: adminOnly,
@@ -209,11 +266,16 @@ func (s *Server) registerDB() {
 		if err != nil {
 			return nil, huma.Error422UnprocessableEntity(err.Error())
 		}
-		inst.NativePassword = s.anyLegacyPHP(ctx)
+		inst.NativePassword = s.nativePasswordNeeded(ctx, inst.NativePassword)
 		if err := s.writeDBConfig(ctx, inst, true); err != nil {
 			return nil, err
 		}
-		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "db.engine.tune", Target: inst.Engine, IP: requestInfo(ctx).IP})
+		// The record follows the file: the startup refresh re-renders from it,
+		// and databases-create decides from it whether a restart is due.
+		if err := s.db.UpsertDBInstance(ctx, inst); err != nil {
+			return nil, err
+		}
+		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "db.engine.tune", Target: inst.Engine, IP: requestInfo(ctx).IP, Details: map[string]any{"native_password": inst.NativePassword}})
 		out := &dbEngineOutput{}
 		out.Body.Installed, out.Body.Instance = true, inst
 		if st, err := s.agent.Service(ctx, inst.Service, "status"); err == nil {
@@ -270,6 +332,14 @@ func (s *Server) registerDB() {
 		full := owner.Login + "_" + in.Body.Name
 		if len(full) > 32 {
 			return nil, huma.Error422UnprocessableEntity("login_name must be at most 32 characters (MySQL account limit)")
+		}
+		if err := s.legacyAuthAllowed(ctx, p, inst, owner, in.Body.LegacyAuth); err != nil {
+			if in.Body.LegacyAuth == nil {
+				// Left out, legacy_auth follows the owner's sites; a regular
+				// account is still the caller's to ask for.
+				return nil, huma.Error403Forbidden(err.Error() + "; legacy_auth=false makes a regular account")
+			}
+			return nil, err
 		}
 		password := in.Body.Password
 		generated := false
@@ -390,6 +460,44 @@ func (s *Server) anyLegacyPHP(ctx context.Context) bool {
 	return false
 }
 
+// nativePasswordUsers counts the accounts that sign in with
+// mysql_native_password. The column keeps the plugin's name while the plugin
+// is off, so the count is right before a switch either way; the locked system
+// accounts (mysql.sys and its kind) never sign in and do not count.
+const nativePasswordUsers = "SELECT COUNT(*) FROM mysql.user WHERE plugin = 'mysql_native_password' AND account_locked = 'N';"
+
+// nativePasswordNeeded says whether zz-monopanel.cnf must load
+// mysql_native_password: legacy PHP on the host needs it, and so does every
+// account that signs in with it — made with legacy_auth, brought by a
+// migration or created by hand on a server without legacy PHP. Turning the
+// plugin off under such an account locks it out of MySQL 8.4, so when the
+// panel cannot tell (no answer from the server), the plugin stays as it was.
+func (s *Server) nativePasswordNeeded(ctx context.Context, was bool) bool {
+	if s.anyLegacyPHP(ctx) {
+		return true
+	}
+	dbs, err := s.db.ListDatabases(ctx, 0)
+	if err != nil {
+		return was
+	}
+	for _, db := range dbs {
+		for _, u := range db.Users {
+			if u.AuthPlugin == "mysql_native_password" {
+				return true
+			}
+		}
+	}
+	out, err := s.mysqlExec(ctx, nativePasswordUsers)
+	if err != nil {
+		return was
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return was
+	}
+	return n > 0
+}
+
 // ensureNativePassword enables mysql_native_password (restarting the server)
 // when legacy PHP needs it.
 func (s *Server) ensureNativePassword(ctx context.Context, inst *store.DBInstance) error {
@@ -403,9 +511,10 @@ func (s *Server) ensureNativePassword(ctx context.Context, inst *store.DBInstanc
 	return s.db.UpsertDBInstance(ctx, inst)
 }
 
-// refreshDBConfig re-renders zz-monopanel.cnf at startup on hosts that run
-// legacy PHP, so a panel update that changes the legacy-auth settings reaches
-// the server; the agent restarts MySQL only when the file changed.
+// refreshDBConfig re-renders zz-monopanel.cnf at startup on hosts where
+// mysql_native_password is on (legacy PHP, or accounts that sign in with it),
+// so a panel update that changes the legacy-auth settings reaches the server;
+// the agent restarts MySQL only when the file changed.
 func (s *Server) refreshDBConfig(ctx context.Context) {
 	inst, err := s.db.GetDBInstance(ctx)
 	if err != nil || inst.Status != store.DBReady || !inst.NativePassword {
@@ -489,20 +598,43 @@ func (s *Server) refreshDBSizes(ctx context.Context, list []*store.Database) {
 
 // installDB installs Percona Server or MySQL Community 8.4 and configures
 // root access via auth_socket.
+//
+// On a server that is already ready the same run is a reinstall (repair or
+// update), and the server stays in service meanwhile: its record keeps the
+// ready status and version until the job succeeds, so databases, CMS
+// installs, webmail, migrations and backups go on using it. The job itself
+// is the record of the reinstall.
 func (s *Server) installDB(ctx context.Context, jc *jobs.Context, engine string) error {
 	rel := s.profile.Release()
 	layout := osprofile.DB(s.profile, engine)
 	inst := &store.DBInstance{Engine: engine, Status: store.DBInstalling, Service: layout.Service, Socket: layout.Socket}
+	var prev *store.DBInstance // the ready server a reinstall repairs
 	if existing, err := s.db.GetDBInstance(ctx); err == nil {
 		if existing.Status == store.DBReady && existing.Engine != engine {
 			return fmt.Errorf("%s is already installed; only one database engine per server", existing.Engine)
 		}
 		inst.ID = existing.ID
+		if existing.Status == store.DBReady {
+			prev = existing
+			inst.Version, inst.NativePassword = existing.Version, existing.NativePassword
+		}
 	}
-	if err := s.db.UpsertDBInstance(ctx, inst); err != nil {
-		return err
+	if prev == nil {
+		if err := s.db.UpsertDBInstance(ctx, inst); err != nil {
+			return err
+		}
+	} else {
+		jc.Logf("%s %s stays in service while it is reinstalled", engine, prev.Version)
 	}
+	// fileNative is what zz-monopanel.cnf on disk says about
+	// mysql_native_password: the record of a failed reinstall follows the
+	// file, because databases-create trusts the record to know whether
+	// enabling the plugin still needs a restart.
+	fileNative := inst.NativePassword
 	fail := func(err error) error {
+		if prev != nil {
+			return s.reinstallDBFailed(ctx, jc, prev, fileNative, err)
+		}
 		inst.Status, inst.LastError = store.DBError, err.Error()
 		_ = s.db.UpsertDBInstance(context.WithoutCancel(ctx), inst)
 		return err
@@ -619,10 +751,20 @@ func (s *Server) installDB(ctx context.Context, jc *jobs.Context, engine string)
 	jc.Logf("%s %s, root@localhost uses auth_socket", engine, inst.Version)
 
 	jc.Progress(80, "configuration")
-	inst.NativePassword = s.anyLegacyPHP(ctx)
+	inst.NativePassword = s.nativePasswordNeeded(ctx, inst.NativePassword)
+	if inst.NativePassword {
+		jc.Logf("mysql_native_password stays on: legacy PHP or accounts that sign in with it")
+	}
 	if err := s.writeDBConfig(ctx, inst, true); err != nil {
+		// A file mysqld refused never replaced the old one (the agent puts it
+		// back); any other failure is the restart after the file was written.
+		var ae *agent.Error
+		if !errors.As(err, &ae) || ae.Status != http.StatusUnprocessableEntity {
+			fileNative = inst.NativePassword
+		}
 		return fail(err)
 	}
+	fileNative = inst.NativePassword
 	for i := 0; i < 15; i++ {
 		if _, err = s.mysqlExec(ctx, "SELECT 1;"); err == nil {
 			break
@@ -639,4 +781,35 @@ func (s *Server) installDB(ctx context.Context, jc *jobs.Context, engine string)
 	s.db.SetSetting(ctx, settingDB, engine)
 	jc.Progress(100, engine+" "+inst.Version+" ready")
 	return nil
+}
+
+// reinstallDBFailed settles the record of a ready server whose reinstall
+// failed. A repository or package error leaves the old server running, a
+// failed restart leaves it down: the record says what the socket says, so a
+// server that still answers stays in service (with the version it now
+// reports) and only one that no longer does is marked as failed. native is
+// what the configuration file on disk says about mysql_native_password.
+func (s *Server) reinstallDBFailed(ctx context.Context, jc *jobs.Context, prev *store.DBInstance, native bool, cause error) error {
+	if ctx.Err() != nil {
+		// The panel is stopping: the job runs again after the restart, and
+		// the record stays as it was until then.
+		return cause
+	}
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	inst := *prev
+	inst.NativePassword = native
+	if out, err := s.mysqlExec(wctx, "SELECT VERSION();"); err == nil {
+		if v := strings.TrimSpace(out); v != "" {
+			inst.Version = v
+		}
+		jc.Logf("the reinstall failed, but %s %s still answers: it stays in service", inst.Engine, inst.Version)
+	} else {
+		inst.Status, inst.LastError = store.DBError, cause.Error()
+		jc.Logf("the reinstall failed and the server no longer answers (%v): marked as failed until an install succeeds", err)
+	}
+	if err := s.db.UpsertDBInstance(wctx, &inst); err != nil {
+		s.log.Warn("database server record after a failed reinstall", "err", err)
+	}
+	return cause
 }

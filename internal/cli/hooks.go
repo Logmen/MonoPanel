@@ -13,14 +13,16 @@ func webhookCmd() *cobra.Command {
 	c := &cobra.Command{Use: "webhook", Short: T("webhooks для биллинга и мониторинга (HMAC-SHA256)", "webhooks for billing and monitoring (HMAC-SHA256)")}
 	var req apitypes.WebhookRequest
 	var events string
+	var secretStdin bool
 	add := &cobra.Command{Use: "add", Short: T("добавить подписчика", "add a subscriber"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
 		}
-		if events != "" {
-			req.Events = strings.Split(events, ",")
+		if err := secretFlag(cmd, "secret-stdin", "secret", T("Секрет HMAC: ", "HMAC secret: "), &req.Secret); err != nil {
+			return err
 		}
+		req.Events = commaList(events)
 		h, err := cl.WebhookCreate(cmd.Context(), req)
 		if err != nil {
 			return err
@@ -33,6 +35,7 @@ func webhookCmd() *cobra.Command {
 	}}
 	add.Flags().StringVar(&req.URL, "url", "", T("адрес приёмника", "receiver URL"))
 	add.Flags().StringVar(&req.Secret, "secret", "", T("секрет HMAC (иначе генерируется)", "HMAC secret (generated if omitted)"))
+	add.Flags().BoolVar(&secretStdin, "secret-stdin", false, T("прочитать секрет HMAC из stdin", "read the HMAC secret from stdin"))
 	add.Flags().StringVar(&events, "events", "*", T("список через запятую: job.failed, site.apply.done, cert.issue.*, backup.run.*, *", "comma-separated list: job.failed, site.apply.done, cert.issue.*, backup.run.*, *"))
 	add.MarkFlagRequired("url")
 	list := &cobra.Command{Use: "list", Short: T("список", "list webhooks"), RunE: func(cmd *cobra.Command, _ []string) error {
@@ -68,6 +71,9 @@ func webhookCmd() *cobra.Command {
 		}
 		if err := cl.WebhookTest(cmd.Context(), args[0]); err != nil {
 			return err
+		}
+		if g.json {
+			return printJSON(map[string]bool{"delivered": true})
 		}
 		fmt.Println(T("доставлено", "delivered"))
 		return nil

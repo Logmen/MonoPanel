@@ -26,6 +26,9 @@ type Server struct {
 	profile osprofile.Profile
 	log     *slog.Logger
 	pkgMu   sync.Mutex
+	// panelMu serialises edits of config.yaml: each one reads the file,
+	// changes some keys and writes it back.
+	panelMu sync.Mutex
 }
 
 // NewServer builds an agent.
@@ -46,6 +49,8 @@ func (s *Server) Handler() http.Handler {
 	r.Post("/v1/user/ensure", handle(s.ensureUnixUser))
 	r.Post("/v1/dirs/ensure", handle(s.ensureDirs))
 	r.Post("/v1/file/ensure", handle(s.ensureFile))
+	r.Post("/v1/sitelogs/ensure", handle(s.ensureSiteLogs))
+	r.Post("/v1/sitelogs/remove", handle(s.removeSiteLogs))
 	r.Post("/v1/symlink/ensure", handle(s.ensureSymlink))
 	r.Post("/v1/acl/set", handle(s.setACL))
 	r.Post("/v1/acl/site", handle(s.siteACL))
@@ -61,6 +66,7 @@ func (s *Server) Handler() http.Handler {
 	r.Post("/v1/service", handle(s.service))
 	r.Post("/v1/pkg", handle(s.pkg))
 	r.Post("/v1/panel/install", handle(s.installPanel))
+	r.Post("/v1/panel/config", handle(s.setPanelConfig))
 	r.Post("/v1/chown", handle(s.chown))
 	r.Post("/v1/user/shadow", handle(s.unixShadow))
 	// Потоки идут мимо handle(): у них тело — это данные, а не JSON.

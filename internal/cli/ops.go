@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"monopanel/internal/termsafe"
 	"os"
 	"strconv"
 	"strings"
@@ -16,7 +17,7 @@ import (
 func cronCmd() *cobra.Command {
 	c := &cobra.Command{Use: "cron", Short: T("задания cron пользователей", "users' cron jobs")}
 	var login string
-	c.PersistentFlags().StringVar(&login, "user", "", T("логин пользователя (обязателен администратору для изменений; list без него показывает всех)", "user login (required for changes by an administrator; list without it shows everyone's)"))
+	c.PersistentFlags().StringVar(&login, "user", "", T("логин аккаунта (по умолчанию свой; root на сервере указывает всегда; list без него у администратора — все аккаунты)", "account login (your own by default; root on the server always gives it; without it list shows every account to an administrator)"))
 	whose := func() (string, error) {
 		if login != "" {
 			return login, nil
@@ -34,7 +35,7 @@ func cronCmd() *cobra.Command {
 		}
 		return me.Login, nil
 	}
-	list := &cobra.Command{Use: "list", Short: T("список заданий (администратор без --user видит всех)", "list cron jobs (an administrator without --user sees everyone's)"), RunE: func(cmd *cobra.Command, _ []string) error {
+	list := &cobra.Command{Use: "list", Short: T("список заданий (администратор без --user видит задания всех аккаунтов)", "list cron jobs (an administrator without --user sees every account's)"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cmd0 = cmd
 		cl, err := newClient()
 		if err != nil {
@@ -46,7 +47,9 @@ func cronCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			u, all = me.Login, me.UserID == 0
+			// Every administrator, not only root, gets the whole server here,
+			// as GET /cron allows; --user narrows it to one account.
+			u, all = me.Login, me.Role == store.RoleAdmin
 		}
 		var jobs []*store.CronJob
 		if all {
@@ -137,7 +140,8 @@ func cronCmd() *cobra.Command {
 	}
 	var upd apitypes.CronUpdateRequest
 	var comment string
-	set := &cobra.Command{Use: "set <id>", Short: T("изменить расписание, команду или комментарий задания", "change a cron job's schedule, command or comment"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	var enableJob, disableJob bool
+	set := &cobra.Command{Use: "set <id>", Short: T("изменить расписание, команду, комментарий или состояние задания", "change a cron job's schedule, command, comment or state"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cmd0 = cmd
 		cl, err := newClient()
 		if err != nil {
@@ -154,8 +158,14 @@ func cronCmd() *cobra.Command {
 		if cmd.Flags().Changed("comment") {
 			upd.Comment = &comment
 		}
-		if upd.Schedule == "" && upd.Command == "" && upd.Comment == nil {
-			return &exitError{code: 2, msg: T("нечего менять: укажите --schedule, --command или --comment", "nothing to change: pass --schedule, --command or --comment")}
+		if enableJob && disableJob {
+			return &exitError{code: 2, msg: T("--enable и --disable вместе не задаются", "--enable and --disable cannot be used together")}
+		}
+		if enableJob || disableJob {
+			upd.Enabled = &enableJob
+		}
+		if upd.Schedule == "" && upd.Command == "" && upd.Comment == nil && upd.Enabled == nil {
+			return &exitError{code: 2, msg: T("нечего менять: укажите --schedule, --command, --comment, --enable или --disable", "nothing to change: pass --schedule, --command, --comment, --enable or --disable")}
 		}
 		j, err := cl.CronUpdate(cmd.Context(), u, id, upd)
 		if err != nil {
@@ -170,6 +180,8 @@ func cronCmd() *cobra.Command {
 	set.Flags().StringVar(&upd.Schedule, "schedule", "", T("новое расписание", "new schedule"))
 	set.Flags().StringVar(&upd.Command, "command", "", T("новая команда", "new command"))
 	set.Flags().StringVar(&comment, "comment", "", T("новый комментарий (пустой — убрать)", "new comment (empty clears it)"))
+	set.Flags().BoolVar(&enableJob, "enable", false, T("включить задание", "enable the job"))
+	set.Flags().BoolVar(&disableJob, "disable", false, T("выключить задание", "disable the job"))
 	c.AddCommand(list, add, set)
 	return c
 }
@@ -210,14 +222,17 @@ func firewallCmd() *cobra.Command {
 		}
 		if st.Fail2ban != nil {
 			fmt.Printf(T("fail2ban: установлен, running=%v\n", "fail2ban: installed, running=%v\n"), st.Fail2ban.Running)
-			if len(st.Fail2ban.Trusted) > 0 {
-				fmt.Printf(T("  доверенные адреса (не банятся): %s\n", "  trusted addresses (never banned): %s\n"), strings.Join(st.Fail2ban.Trusted, ", "))
-			}
+		} else {
+			fmt.Println(T("fail2ban: не установлен (mp stack install fail2ban)", "fail2ban: not installed (mp stack install fail2ban)"))
+		}
+		// The list is kept while fail2ban is not installed, and applies once it is.
+		if len(st.Trusted) > 0 {
+			fmt.Printf(T("  доверенные адреса (не банятся): %s\n", "  trusted addresses (never banned): %s\n"), strings.Join(st.Trusted, ", "))
+		}
+		if st.Fail2ban != nil {
 			for _, j := range st.Fail2ban.Jails {
 				fmt.Printf("  jail %-16s banned now %d, total %d %s\n", j.Name, j.Banned, j.Total, strings.Join(j.IPs, " "))
 			}
-		} else {
-			fmt.Println(T("fail2ban: не установлен (mp stack install fail2ban)", "fail2ban: not installed (mp stack install fail2ban)"))
 		}
 		return nil
 	}
@@ -256,6 +271,9 @@ func firewallCmd() *cobra.Command {
 		r, err := cl.FirewallRuleAdd(cmd.Context(), rule)
 		if err != nil {
 			return err
+		}
+		if g.json {
+			return printJSON(r)
 		}
 		fmt.Printf(T("правило #%d добавлено\n", "rule #%d added\n"), r.ID)
 		return nil
@@ -298,6 +316,9 @@ refused, so you cannot lock yourself out.`), RunE: func(cmd *cobra.Command, _ []
 		r, err := cl.FirewallRuleAdd(cmd.Context(), deny)
 		if err != nil {
 			return err
+		}
+		if g.json {
+			return printJSON(r)
 		}
 		fmt.Printf(T("правило #%d добавлено\n", "rule #%d added\n"), r.ID)
 		return nil
@@ -385,7 +406,8 @@ func logsCmd() *cobra.Command {
 			return printJSON(t)
 		}
 		for _, l := range t.Lines {
-			fmt.Println(l)
+			// Log lines carry what visitors and programs wrote.
+			fmt.Println(termsafe.Text(l))
 		}
 		return nil
 	}}
@@ -410,7 +432,8 @@ func siteLogsCmd() *cobra.Command {
 		}
 		fmt.Fprintf(os.Stderr, T("%s (%d байт)\n", "%s (%d bytes)\n"), t.Path, t.Size)
 		for _, l := range t.Lines {
-			fmt.Println(l)
+			// Log lines carry what visitors and programs wrote.
+			fmt.Println(termsafe.Text(l))
 		}
 		return nil
 	}}

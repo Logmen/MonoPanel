@@ -122,7 +122,7 @@ func (s *Server) registerFiles() {
 	})
 
 	huma.Register(s.api, huma.Operation{
-		OperationID: "files-op", Method: http.MethodPost, Path: "/files/op", Summary: "mkdir, rm, mv, chmod, extract or size", Tags: []string{"files"}, Security: secured,
+		OperationID: "files-op", Method: http.MethodPost, Path: "/files/op", Summary: "mkdir, touch, rm, mv, chmod, extract or size", Tags: []string{"files"}, Security: secured,
 	}, func(ctx context.Context, in *filesOpInput) (*filesOpOutput, error) {
 		u, err := s.filesOwner(ctx, in.Body.User)
 		if err != nil {
@@ -164,8 +164,13 @@ func (s *Server) registerFiles() {
 			res.Value, _ = strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
 		}
 		if in.Body.Op == "extract" {
-			// an archive may carry SELinux labels from another host
-			s.relabel(ctx, nil, path.Join(s.homeOf(u), in.Body.Dest), true)
+			// An archive may carry SELinux labels from another host. Only
+			// inside the account's home: dest is the caller's, and "../.."
+			// would have root relabel the whole file system.
+			home := path.Clean(s.homeOf(u))
+			if dest := path.Join(home, in.Body.Dest); dest == home || strings.HasPrefix(dest, home+"/") {
+				s.relabel(ctx, nil, dest, true)
+			}
 		}
 		s.db.Audit(ctx, store.AuditEntry{Actor: principalFrom(ctx).Login, Action: "files." + in.Body.Op, Target: u.Login + ":" + in.Body.Path, IP: requestInfo(ctx).IP})
 		return &filesOpOutput{Body: res}, nil

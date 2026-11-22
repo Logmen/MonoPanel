@@ -29,10 +29,10 @@ maxretry = 5
 enabled = true
 backend = auto
 logpath = /var/log/nginx/error.log
-          /var/www/alex/data/logs/shop.example.com.error.log
+          /var/log/monopanel/sites/alex/shop.example.com.error.log
 
 [nginx-botsearch]
 enabled = true
 backend = auto
 logpath = /var/log/nginx/access.log
-          /var/www/alex/data/logs/shop.example.com.access.log
+          /var/log/monopanel/sites/alex/shop.example.com.access.log

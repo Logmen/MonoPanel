@@ -15,9 +15,18 @@ func backupCmd() *cobra.Command {
 	target := &cobra.Command{Use: "target", Short: T("репозитории", "repositories")}
 	var req apitypes.BackupTargetRequest
 	var env []string
+	var passwordStdin, envStdin bool
 	add := &cobra.Command{Use: "add <name>", Short: T("зарегистрировать репозиторий (инициализируется при первом запуске)", "register a repository (initialised on the first run)"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
+			return err
+		}
+		// Both can come from stdin: the password on the first line, the
+		// variables on the lines after it.
+		if err := shareStdin(cmd, []string{"password-stdin"}, []string{"env-stdin"}); err != nil {
+			return err
+		}
+		if err := secretFlag(cmd, "password-stdin", "password", T("Пароль репозитория: ", "Repository password: "), &req.Password); err != nil {
 			return err
 		}
 		req.Name = args[0]
@@ -28,6 +37,11 @@ func backupCmd() *cobra.Command {
 				return &exitError{code: 2, msg: T("--env ожидает KEY=VALUE", "--env expects KEY=VALUE")}
 			}
 			req.Env[k] = v
+		}
+		if envStdin {
+			if err := readKeyValues(cmd.Context(), "env-stdin", req.Env); err != nil {
+				return err
+			}
 		}
 		res, err := cl.BackupTargetCreate(cmd.Context(), req)
 		if err != nil {
@@ -45,7 +59,9 @@ func backupCmd() *cobra.Command {
 	add.Flags().StringVar(&req.Type, "type", "local", "local, sftp, s3, b2, rest")
 	add.Flags().StringVar(&req.Repository, "repo", "", T("путь или URL репозитория restic", "path or URL of the restic repository"))
 	add.Flags().StringVar(&req.Password, "password", "", T("пароль репозитория (иначе генерируется)", "repository password (generated if omitted)"))
+	add.Flags().BoolVar(&passwordStdin, "password-stdin", false, T("прочитать пароль репозитория из первой строки stdin (с --env-stdin переменные идут следующими строками)", "read the repository password from the first line of stdin (with --env-stdin, the variables follow on the next lines)"))
 	add.Flags().StringSliceVar(&env, "env", nil, T("переменные для облака, например AWS_ACCESS_KEY_ID=…", "variables for cloud storage, for example AWS_ACCESS_KEY_ID=…"))
+	add.Flags().BoolVar(&envStdin, "env-stdin", false, T("прочитать переменные KEY=VALUE из stdin, по одной в строке, до пустой строки или конца (с --password-stdin — после строки с паролем)", "read the KEY=VALUE variables from stdin, one per line, up to an empty line or the end (with --password-stdin, after the password line)"))
 	add.Flags().IntVar(&req.KeepDaily, "keep-daily", 7, T("хранить дневных снимков", "daily snapshots to keep"))
 	add.Flags().IntVar(&req.KeepWeekly, "keep-weekly", 4, T("хранить недельных снимков", "weekly snapshots to keep"))
 	add.Flags().IntVar(&req.KeepMonthly, "keep-monthly", 3, T("хранить месячных снимков", "monthly snapshots to keep"))
@@ -99,12 +115,13 @@ func backupCmd() *cobra.Command {
 	run.Flags().StringVar(&scope, "scope", "server", "server | user:<login> | site:<domain> | db:<name>")
 	run.MarkFlagRequired("target")
 	var listTarget string
+	var listLimit int
 	runs := &cobra.Command{Use: "list", Short: T("выполненные бэкапы", "list the backups that have run"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
 		}
-		list, err := cl.Backups(cmd.Context(), listTarget, 50)
+		list, err := cl.Backups(cmd.Context(), listTarget, listLimit)
 		if err != nil {
 			return err
 		}
@@ -123,6 +140,7 @@ func backupCmd() *cobra.Command {
 		return nil
 	}}
 	runs.Flags().StringVar(&listTarget, "target", "", T("фильтр по репозиторию", "filter by repository"))
+	runs.Flags().IntVarP(&listLimit, "limit", "n", 50, T("сколько запусков показать (до 500)", "how many runs to show (up to 500)"))
 	var snapTarget string
 	snaps := &cobra.Command{Use: "snapshots", Short: T("снимки в репозитории", "list the snapshots in a repository"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
@@ -138,7 +156,11 @@ func backupCmd() *cobra.Command {
 		}
 		rows := make([][]string, 0, len(list))
 		for _, s := range list {
-			rows = append(rows, []string{s.ShortID, s.Time[:19], strings.Join(s.Tags, ","), strings.Join(s.Paths, " ")})
+			when := s.Time
+			if len(when) > 19 {
+				when = when[:19]
+			}
+			rows = append(rows, []string{s.ShortID, when, strings.Join(s.Tags, ","), strings.Join(s.Paths, " ")})
 		}
 		table([]string{"ID", "TIME", "TAGS", "PATHS"}, rows)
 		return nil

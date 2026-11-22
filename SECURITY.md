@@ -32,7 +32,7 @@ Only the latest release receives fixes; there are no maintenance branches before
 
 | Version | Supported |
 | --- | --- |
-| latest release (0.6.x) | yes |
+| latest release (0.8.x) | yes |
 | anything older | no — update first |
 
 ## What the panel considers a boundary
@@ -45,26 +45,53 @@ it gets fixed.
   root only through `monopanel agent`, over a unix socket, with a closed set of
   typed operations and a path allow-list. Anything that makes the agent run,
   write, or install something outside that set is the most serious class of bug.
+  That includes `config.yaml` and `secret.key`, which no generic agent operation
+  writes, and the directories and files under `/var/www` that the agent makes or
+  reads as root: a symlink a client plants there must not redirect such a write
+  or read.
 - **User → user, and user → administrator.** A panel account may only act on its
   own sites, databases, files and cron. Escaping that, or reaching an
-  administrator-only endpoint, is in scope.
+  administrator-only endpoint, is in scope. Migration scopes, which read a whole
+  account (password hashes, keys, files, databases), belong to administrators'
+  tokens only; one that works for an ordinary account is in scope as well. So is
+  a password or token of the panel that another local user can read on a command
+  line (`ps`): the panel hands them to installers, tools and child `mp` processes
+  on stdin or in the environment.
+- **Migration source → this panel.** An account being moved in comes from
+  another server: FASTPANEL or BitrixVM read over ssh, or a MonoPanel with an
+  administrator of its own. The receiving panel holds every value of the bundle
+  to the rules of its own API, rebuilds the database accounts instead of running
+  the source's statements, loads the dumps as the database's own account and
+  keeps only plain files, directories and links inside the tree from the file
+  stream. A bundle, a dump or an archive that gets something past that — a file
+  or a grant outside the account, a line of its own in a configuration — is in
+  scope.
 - **Client → host.** `monopanel helper` drops privileges irreversibly before
   touching client files, and SFTP-only accounts are chrooted. Escaping either is
   in scope, as is one site's php-fpm pool reading another site's files.
-- **Authentication.** Session handling, Bearer tokens, TOTP, the login rate
+- **Authentication.** Session handling (a password change ends the account's
+  other browser sessions, a suspension all of them), Bearer tokens, TOTP (setting
+  it up anew takes switching it off with the password first), the login rate
   limiter, the Origin check that stands in for CSRF tokens.
 - **Generated configuration.** Values that reach nginx, Apache, php-fpm, cron or
-  systemd templates come from user input. Anything that escapes its context there
-  — a domain name that becomes a directive, a custom snippet that survives
-  validation and rollback — is in scope.
+  systemd templates and the mail maps come from user input. Anything that escapes
+  its context there — a domain name that becomes a directive, a value that starts
+  a line of its own in a crontab, a unit or a mail map, a custom snippet that
+  survives validation and rollback — is in scope.
 - **The update chain.** The panel installs packages into itself. Making it accept
   a package the release key did not sign, or one that does not match the signed
   checksums, is in scope. So is anything that lets a panel administrator (not
-  root) change the trust anchor: the release key lives in `/etc/monopanel/config.yaml`,
-  which only root may write, precisely so that it cannot be changed from the panel.
+  root) change the trust anchor: the key built into the panel, or the one
+  `/etc/monopanel/config.yaml` names in its place (`update.public_key`).
+  The panel changes only its own five settings in that file (`web.hostname`,
+  `web.listen`, `log.level`, `log.format`, `jobs.workers`), through a dedicated
+  agent operation that refuses every other key; the key itself is changed only
+  by root on the server with `mp update trust`, and the web console refuses that
+  command.
 - **Secrets at rest.** DNS provider credentials, backup passwords and TOTP secrets
   are encrypted with the key in `/etc/monopanel/secret.key`. Recovering them
-  without that file is in scope.
+  without that file is in scope, and so is reading back through the API or a
+  webhook a secret a job carries: both show `[redacted]` in its place.
 
 ## What is not a vulnerability
 
@@ -85,11 +112,12 @@ it gets fixed.
 ## How updates are protected
 
 Releases are built by GitHub Actions from a tag. The workflow signs `SHA256SUMS`
-with an ed25519 key held as a repository secret; the public half is pinned on each
-server with `mp update trust`. Before an update is installed, the API process
-verifies the signature and the package digest, and the agent — which runs as root —
-verifies both again itself rather than trusting the unprivileged process that
-downloaded them. A panel with a pinned key refuses an unsigned release outright.
+with an ed25519 key held as a repository secret; the public half is built into the
+panel (a fork builds in its own, or pins it on each server with `mp update trust`).
+Before an update is installed, the API process verifies the signature and the
+package digest, and the agent — which runs as root — verifies both again itself
+rather than trusting the unprivileged process that downloaded them. A panel with
+a key, built in or pinned, refuses an unsigned release outright.
 
 If you believe the signing key or a published release has been tampered with,
 report it the same way as any other vulnerability.

@@ -697,6 +697,18 @@ func (c *Client) TOTPEnable(ctx context.Context, code string) (*apitypes.TOTPSta
 	return &out, c.do(ctx, http.MethodPost, "/auth/totp/enable", apitypes.TOTPCode{Code: code}, &out)
 }
 
+// TOTPStatus says whether 2FA is on for the caller's own account.
+func (c *Client) TOTPStatus(ctx context.Context) (*apitypes.TOTPStatus, error) {
+	var out apitypes.TOTPStatus
+	return &out, c.do(ctx, http.MethodGet, "/auth/totp", nil, &out)
+}
+
+// TOTPDisable turns the caller's 2FA off; the account password is required.
+func (c *Client) TOTPDisable(ctx context.Context, password string) (*apitypes.TOTPStatus, error) {
+	var out apitypes.TOTPStatus
+	return &out, c.do(ctx, http.MethodPost, "/auth/totp/disable", apitypes.TOTPDisable{Password: password}, &out)
+}
+
 // TOTPReset removes a user's 2FA (admin).
 func (c *Client) TOTPReset(ctx context.Context, login string) error {
 	return c.do(ctx, http.MethodPost, "/users/"+login+"/totp/reset", struct{}{}, nil)
@@ -1140,4 +1152,22 @@ func (c *Client) MigratePlan(ctx context.Context, req apitypes.MigrationSourceRe
 func (c *Client) MigrateRun(ctx context.Context, req apitypes.MigrationSourceRequest) (*apitypes.JobRef, error) {
 	var out apitypes.JobRef
 	return &out, c.do(ctx, http.MethodPost, "/migrate/run", req, &out)
+}
+
+// PanelConfig reads the panel's own settings from config.yaml.
+func (c *Client) PanelConfig(ctx context.Context) (*apitypes.PanelConfig, error) {
+	var out apitypes.PanelConfig
+	return &out, c.do(ctx, http.MethodGet, "/system/config", nil, &out)
+}
+
+// SetPanelConfig changes them; with Restart the API restarts right after.
+func (c *Client) SetPanelConfig(ctx context.Context, req apitypes.PanelConfigUpdate) (*apitypes.PanelConfigResult, error) {
+	var out apitypes.PanelConfigResult
+	return &out, c.do(ctx, http.MethodPut, "/system/config", req, &out)
+}
+
+// Templates lists the built-in configuration templates and their overrides.
+func (c *Client) Templates(ctx context.Context) (*apitypes.TemplateList, error) {
+	var out apitypes.TemplateList
+	return &out, c.do(ctx, http.MethodGet, "/system/templates", nil, &out)
 }

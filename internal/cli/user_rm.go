@@ -14,11 +14,8 @@ func userRmCmd() *cobra.Command {
 			if purge {
 				what = T("ВСЕ файлы будут удалены", "ALL files will be deleted")
 			}
-			fmt.Printf(T("Удалить пользователя %s вместе с сайтами и базами (%s)? [y/N] ", "Delete user %s with their sites and databases (%s)? [y/N] "), args[0], what)
-			var answer string
-			fmt.Scanln(&answer) //nolint:errcheck // best effort; the caller reports the real failure
-			if answer != "y" && answer != "Y" && answer != "yes" {
-				return &exitError{code: 1, msg: T("отменено", "cancelled")}
+			if err := confirm(cmd.Context(), fmt.Sprintf(T("Удалить пользователя %s вместе с сайтами и базами (%s)?", "Delete user %s with their sites and databases (%s)?"), args[0], what)); err != nil {
+				return err
 			}
 		}
 		cl, err := newClient()

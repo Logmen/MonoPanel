@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"monopanel/internal/agent/confcheck"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,12 +15,89 @@ import (
 	"syscall"
 	"time"
 
+	"monopanel/internal/config"
 	"monopanel/internal/systemd"
 )
 
 const historyKeep = 20
 
+// protectedFiles are config.yaml and the secret key. /etc/monopanel/ is on
+// the write allow-list for the panel's templates and SELinux module, but these
+// two are root's: config.yaml holds the release key that vouches for packages
+// installed as root, and the secret key decrypts every stored secret. Only
+// mp setup, mp update trust and mp config set --local (root, no agent) write
+// them, and the panel's own settings in config.yaml change through
+// /v1/panel/config alone. Each path is listed as configured and with its
+// directory's symlinks resolved.
+func (s *Server) protectedFiles() []string {
+	def := config.Default()
+	var out []string
+	seen := map[string]bool{}
+	for _, p := range []string{s.cfg.Path(), config.DefaultPath, filepath.Join(s.cfg.ConfigDir, "config.yaml"), s.cfg.SecretKeyFile, def.SecretKeyFile} {
+		if p == "" {
+			continue
+		}
+		if abs, err := filepath.Abs(p); err == nil {
+			p = abs
+		}
+		for _, q := range []string{filepath.Clean(p), resolveDir(filepath.Clean(p))} {
+			if !seen[q] {
+				seen[q] = true
+				out = append(out, q)
+			}
+		}
+	}
+	return out
+}
+
+// resolveDir returns p with the symlinks of its directory resolved, or p
+// itself when the directory does not exist.
+func resolveDir(p string) string {
+	if dir, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
+		return filepath.Join(dir, filepath.Base(p))
+	}
+	return p
+}
+
+// protected reports whether p is config.yaml or the secret key.
+func (s *Server) protected(p string) bool {
+	p = filepath.Clean(p)
+	alias := resolveDir(p)
+	for _, f := range s.protectedFiles() {
+		if p == f || alias == f {
+			return true
+		}
+	}
+	return false
+}
+
+// coversProtected reports whether p is config.yaml, the secret key or a
+// directory above them: removing such a directory, or creating, re-owning or
+// re-moding it, reaches the files too. A symlink as the last component is
+// not followed by any of those operations, so only the directories above it
+// are resolved.
+func (s *Server) coversProtected(p string) bool {
+	p = filepath.Clean(p)
+	cands := []string{p, resolveDir(p)}
+	for _, f := range s.protectedFiles() {
+		for _, c := range cands {
+			if c == f || c == "/" || strings.HasPrefix(f, c+"/") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// protectedErr is the refusal for a write that would reach them.
+func protectedErr(p string) *Error {
+	return &Error{Status: http.StatusForbidden, Message: "path not allowed: " + p + " is, or holds, config.yaml or the secret key; root changes them (mp config set --local, mp update trust), the panel's own settings go through PUT /system/config"}
+}
+
 func (s *Server) pathAllowed(p string) bool {
+	if s.protected(p) {
+		return false
+	}
 	for _, pre := range s.cfg.WritePrefixes() {
 		if strings.HasSuffix(pre, "/") {
 			if strings.HasPrefix(p, pre) {
@@ -39,16 +117,35 @@ func (s *Server) applyConfigSet(ctx context.Context, req *ApplyConfigSetRequest)
 	for i := range req.Files {
 		f := &req.Files[i]
 		f.Path = filepath.Clean(f.Path)
+		if s.protected(f.Path) {
+			return nil, protectedErr(f.Path)
+		}
 		if !filepath.IsAbs(f.Path) || !s.pathAllowed(f.Path) {
 			return nil, &Error{Status: http.StatusForbidden, Message: "path not allowed: " + f.Path}
 		}
 		if f.Mode == 0 {
 			f.Mode = 0o644
 		}
+		content := []byte(f.Content)
+		if f.ContentBase64 != "" {
+			b, err := base64.StdEncoding.DecodeString(f.ContentBase64)
+			if err != nil {
+				return nil, &Error{Status: http.StatusBadRequest, Message: "content_base64 of " + f.Path + ": " + err.Error()}
+			}
+			content = b
+		}
+		// Configurations of daemons that run as root must not carry what
+		// would run code or write files as root for their author.
+		if err := confcheck.Check(f.Path, content); err != nil {
+			return nil, &Error{Status: http.StatusForbidden, Message: f.Path + ": " + err.Error()}
+		}
 	}
 	for _, argv := range req.Validate {
 		if len(argv) == 0 || !filepath.IsAbs(argv[0]) {
 			return nil, &Error{Status: http.StatusBadRequest, Message: "validator must be an absolute argv"}
+		}
+		if err := s.validatorAllowed(argv); err != nil {
+			return nil, &Error{Status: http.StatusForbidden, Message: err.Error()}
 		}
 	}
 	tx := &fileTx{history: s.cfg.ConfHistoryDir()}

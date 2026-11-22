@@ -40,23 +40,19 @@ func (s *Server) stat(_ context.Context, req *StatRequest) (*StatResponse, error
 	return resp, nil
 }
 
-// readFile serves log tails: only regular files below <home>/data/logs/ or
-// well-known service logs.
+// readFile serves log tails: only regular files in the panel's log directory
+// (the site logs in <log_dir>/sites/<login>/ among them), well-known service
+// logs and the PHP configuration. Nothing in the accounts' homes: the site
+// logs left them because root must not open files there.
 func (s *Server) readFile(_ context.Context, req *ReadFileRequest) (*ReadFileResponse, error) {
 	p := filepath.Clean(req.Path)
-	allowed := false
-	if strings.HasPrefix(p, filepath.Clean(s.cfg.WWWRoot)+"/") {
-		if _, err := s.safeHomePath(p); err != nil {
-			return nil, &Error{Status: http.StatusForbidden, Message: err.Error()}
-		}
-		rel := strings.TrimPrefix(p, filepath.Clean(s.cfg.WWWRoot)+"/")
-		parts := strings.Split(rel, "/")
-		allowed = len(parts) == 4 && parts[1] == "data" && parts[2] == "logs" && strings.HasSuffix(parts[3], ".log")
-	}
+	logDir := filepath.Clean(s.cfg.LogDir)
+	inLogDir := strings.HasPrefix(p, logDir+"/")
+	allowed := inLogDir
 	// /var/log/mysqld.log is the EL server log, where the package leaves
 	// the temporary root password; the PHP configuration directories hold
 	// the extension ini files the panel switches on and off.
-	for _, pre := range []string{"/var/log/nginx/", "/var/log/apache2/", "/var/log/httpd/", "/var/log/mysql/", "/var/log/mysqld.log", "/var/log/php", "/etc/php/", "/etc/opt/remi/", s.cfg.LogDir + "/"} {
+	for _, pre := range []string{"/var/log/nginx/", "/var/log/apache2/", "/var/log/httpd/", "/var/log/mysql/", "/var/log/mysqld.log", "/var/log/php", "/etc/php/", "/etc/opt/remi/"} {
 		if strings.HasPrefix(p, pre) {
 			allowed = true
 		}
@@ -64,7 +60,20 @@ func (s *Server) readFile(_ context.Context, req *ReadFileRequest) (*ReadFileRes
 	if !allowed {
 		return nil, &Error{Status: http.StatusForbidden, Message: "not a readable log path: " + p}
 	}
-	f, err := os.Open(p)
+	var f *os.File
+	var err error
+	if inLogDir {
+		// The log directory belongs to the API's service user, who could
+		// leave a symlink on the way, or a second name of another file, for
+		// root to read: the directories are opened one by one without
+		// following a symlink, the file so too, and it must have one name.
+		f, err = openBelow(logDir, p)
+		if errors.Is(err, errSymlinkInPath) {
+			return nil, &Error{Status: http.StatusForbidden, Message: err.Error()}
+		}
+	} else {
+		f, err = os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	}
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return &ReadFileResponse{}, nil
@@ -75,6 +84,9 @@ func (s *Server) readFile(_ context.Context, req *ReadFileRequest) (*ReadFileRes
 	st, err := f.Stat()
 	if err != nil || !st.Mode().IsRegular() {
 		return nil, &Error{Status: http.StatusBadRequest, Message: "not a regular file"}
+	}
+	if inLogDir && hasOtherNames(st) {
+		return nil, &Error{Status: http.StatusForbidden, Message: p + " has other names: refusing to read it"}
 	}
 	tail := req.TailBytes
 	if tail <= 0 || tail > 4<<20 {

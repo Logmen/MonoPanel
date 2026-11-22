@@ -209,6 +209,10 @@ func (s *Server) webhookLoop(ctx context.Context) {
 				continue
 			}
 			job.Log = ""
+			// What leaves the server carries no secrets: the payload keeps
+			// encrypted passwords and a migration's source token, as GET
+			// /jobs/{id} hides them.
+			job = redactJob(job)
 			events := []string{"job." + e.Type, job.Type + "." + e.Type}
 			for _, h := range hooks {
 				for _, ev := range events {

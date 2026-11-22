@@ -141,6 +141,8 @@ body { background: transparent; }
 :focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
 /* Срезанный угол режет всё снаружи рамки, поэтому кольцо фокуса у кнопок — внутри. */
 .btn:focus-visible { outline-offset: -3px; }
+/* Полоса вкладок прокручивается и так же режет всё снаружи вкладки. */
+.tab:focus-visible { outline-offset: -2px; }
 .brand { font-family: var(--font-display); letter-spacing: 0.04em; }
 
 /* Заголовки страниц и меню — дисплейным шрифтом, капителью с разрядкой;
@@ -208,8 +210,13 @@ body { background: transparent; }
   .dot { @apply inline-block w-1.5 h-1.5 rounded-full bg-current shadow-[0_0_6px_currentColor]; }
   .dot-live { animation: pulse-dot 1.4s ease-in-out infinite; }
   .code { @apply text-xs font-mono whitespace-pre-wrap leading-5 bg-bg border border-line rounded-lg p-3 overflow-auto; }
-  .tabs { @apply flex gap-1 border-b border-line mb-4 overflow-x-auto; }
-  .tab { @apply px-3 py-2 text-xs uppercase tracking-[0.08em] text-muted border-b-2 border-transparent -mb-px cursor-pointer transition-colors duration-150 hover:text-ink whitespace-nowrap; font-family: var(--font-display); }
+  /* Линия под вкладками — внутренняя тень полосы, а не её рамка: вкладка с -mb-px
+     заходила на рамку, вылезала на 1px за область прокрутки, и overflow-x: auto
+     (он делает auto и по вертикали) рисовал классическую вертикальную полосу
+     прокрутки. Тень лежит под вкладками, так что 2px подчёркивания активной
+     вкладки по-прежнему закрывают линию. */
+  .tabs { @apply flex gap-1 mb-4 overflow-x-auto; box-shadow: inset 0 -1px 0 var(--line); }
+  .tab { @apply px-3 py-2 text-xs uppercase tracking-[0.08em] text-muted border-b-2 border-transparent cursor-pointer transition-colors duration-150 hover:text-ink whitespace-nowrap; font-family: var(--font-display); }
   .tab-on { @apply text-accent-ink border-accent; text-shadow: var(--text-glow); }
   .kpi { @apply relative bg-surface border border-line rounded-xl p-4 shadow-(--shadow) flex flex-col gap-1 min-w-0 transition-[background-color,border-color] duration-200; }
   .kpi-v { @apply text-lg xl:text-xl font-medium tracking-tight font-mono tabular-nums truncate; text-shadow: var(--text-glow); }
@@ -218,7 +225,11 @@ body { background: transparent; }
   .card, .kpi { clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px)); }
   .card::before, .kpi::before { content: ""; position: absolute; left: 0; top: 0; width: 26px; height: 2px; background: var(--accent); box-shadow: 0 0 8px var(--accent-glow); }
   .btn { clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 7px, 100% 100%, 7px 100%, 0 calc(100% - 7px)); font-family: var(--font-display); }
-  .rise { animation: rise 0.42s cubic-bezier(0.22, 1, 0.36, 1) both; animation-delay: calc(var(--i, 0) * 28ms); }
+  /* backwards, не both: на задержке элемент уже в начальном кадре, но после анимации
+     от неё ничего не остаётся. С both на каждом .rise навсегда оставался transform
+     (единичная матрица), и элемент становился containing block для position: fixed
+     внутри — окно, открытое в карточке, центровалось по карточке, а не по экрану. */
+  .rise { animation: rise 0.42s cubic-bezier(0.22, 1, 0.36, 1) backwards; animation-delay: calc(var(--i, 0) * 28ms); }
   .skel { @apply rounded-md bg-surface-2 relative overflow-hidden; }
   .skel::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, var(--accent-glow), transparent); animation: shimmer 1.3s infinite; }
   .prose-sm p { @apply text-sm text-muted; }
@@ -250,4 +261,8 @@ body { background: transparent; }
 }
 @media (prefers-contrast: more) {
   :root, :root[data-theme="dark"] { --text-glow: none; --grid: transparent; --scan: transparent; }
+}
+/* В режиме принудительных цветов тени не рисуются: линию под вкладками даёт рамка. */
+@media (forced-colors: active) {
+  .tabs { border-bottom: 1px solid CanvasText; }
 }

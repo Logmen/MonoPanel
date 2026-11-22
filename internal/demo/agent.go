@@ -155,6 +155,8 @@ func (a *Agent) Handler() http.Handler {
 	r.Post("/v1/user/ensure", handle(a.ensureUnixUser))
 	r.Post("/v1/dirs/ensure", handle(a.ensureDirs))
 	r.Post("/v1/file/ensure", handle(a.ensureFile))
+	r.Post("/v1/sitelogs/ensure", handle(a.ensureSiteLogs))
+	r.Post("/v1/sitelogs/remove", handle(a.removeSiteLogs))
 	r.Post("/v1/symlink/ensure", handle(a.ensureSymlink))
 	r.Post("/v1/acl/set", handle(ok[agent.SetACLRequest]))
 	r.Post("/v1/acl/site", handle(func(context.Context, *agent.SiteACLRequest) (*agent.SiteACLResponse, error) {
@@ -220,11 +222,64 @@ func writeErr(w http.ResponseWriter, e *agent.Error) {
 
 func ok[Req any](context.Context, *Req) (*struct{}, error) { return &struct{}{}, nil }
 
-// real tells whether a path is a site file on disk rather than a pretend one.
+// real tells whether a path is a site file on disk rather than a pretend one:
+// the accounts' homes and the site logs.
 func (a *Agent) real(p string) bool {
-	root := filepath.Clean(a.cfg.WWWRoot)
 	p = filepath.Clean(p)
-	return p == root || strings.HasPrefix(p, root+"/")
+	for _, root := range []string{filepath.Clean(a.cfg.WWWRoot), a.siteLogsRoot()} {
+		if p == root || strings.HasPrefix(p, root+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// siteLogsRoot is where the site logs live, <log_dir>/sites, on disk.
+func (a *Agent) siteLogsRoot() string { return filepath.Join(a.cfg.LogDir, "sites") }
+
+// ensureSiteLogs makes the account's directory and logs on disk, as files of
+// the demo's own user: there is nobody else to give them to.
+func (a *Agent) ensureSiteLogs(_ context.Context, req *agent.SiteLogsRequest) (*agent.SiteLogsResponse, error) {
+	dir := filepath.Join(a.siteLogsRoot(), req.Login)
+	if req.Login == "" || strings.ContainsAny(req.Login, "/.") {
+		return nil, &agent.Error{Status: http.StatusBadRequest, Message: "invalid login"}
+	}
+	resp := &agent.SiteLogsResponse{Dir: dir, Created: []string{}}
+	if _, err := os.Stat(dir); err != nil {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, err
+		}
+		resp.Created = append(resp.Created, dir)
+	}
+	for _, n := range req.Files {
+		if n == "" || strings.Contains(n, "/") || !strings.HasSuffix(n, ".log") {
+			return nil, &agent.Error{Status: http.StatusBadRequest, Message: "invalid log file name: " + n}
+		}
+		p := filepath.Join(dir, n)
+		f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		f.Close()
+		resp.Created = append(resp.Created, p)
+	}
+	return resp, nil
+}
+
+func (a *Agent) removeSiteLogs(_ context.Context, req *agent.RemoveSiteLogsRequest) (*agent.RemoveSiteLogsResponse, error) {
+	if req.Login == "" || strings.ContainsAny(req.Login, "/.") {
+		return nil, &agent.Error{Status: http.StatusBadRequest, Message: "invalid login"}
+	}
+	dir := filepath.Join(a.siteLogsRoot(), req.Login)
+	if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {
+		return &agent.RemoveSiteLogsResponse{}, nil
+	} else if err != nil {
+		return nil, err
+	}
+	return &agent.RemoveSiteLogsResponse{Removed: true}, os.RemoveAll(dir)
 }
 
 // mkdirs creates a pretend directory with its parents; the caller holds mu.

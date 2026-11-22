@@ -107,19 +107,21 @@ func firewallRestricted(rules []*store.FirewallRule, protected []int) []apitypes
 }
 
 // firewallProtected are the ports the administrator reaches the server by:
-// SSH and the panel. Closing them to everyone is the lockout the guard
-// refuses; 80/443 are open by default too, but closing them costs sites, not
-// access.
+// SSH and the panel (also the port it moves to at its next restart). Closing
+// them to everyone is the lockout the guard refuses; 80/443 are open by
+// default too, but closing them costs sites, not access.
 func (s *Server) firewallProtected(ctx context.Context) []int {
 	ports := append([]int{}, s.sshPorts(ctx)...)
-	ports = append(ports, s.panelPort())
+	ports = append(ports, s.panelPorts()...)
 	sort.Ints(ports)
 	return ports
 }
 
 func (s *Server) portName(port int) string {
-	if port == s.panelPort() {
-		return fmt.Sprintf("the panel (port %d)", port)
+	for _, p := range s.panelPorts() {
+		if port == p {
+			return fmt.Sprintf("the panel (port %d)", port)
+		}
 	}
 	return fmt.Sprintf("SSH (port %d)", port)
 }

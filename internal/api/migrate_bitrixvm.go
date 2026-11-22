@@ -13,6 +13,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
+	"monopanel/internal/acme"
 	"monopanel/internal/apitypes"
 	"monopanel/internal/store"
 )
@@ -129,16 +130,20 @@ func (b *bitrixVMSource) inventory(ctx context.Context) error {
 		site.domain, site.aliases = hostDomains(site.aliases)
 		if root == mainRoot && b.req.Domain != "" {
 			// The default site answers to server_name _ ; the person names it.
-			if site.domain != "" && site.domain != b.req.Domain {
+			named := acme.NormalizeName(b.req.Domain)
+			if site.domain != "" && site.domain != named {
 				site.aliases = append([]string{site.domain}, site.aliases...)
 			}
-			site.domain = strings.ToLower(b.req.Domain)
+			site.domain = named
 		}
 		if site.domain == "" {
 			if root == mainRoot {
 				return errors.New("the main BitrixVM site has no domain name (server_name _): set one with --domain")
 			}
-			site.domain = path.Base(root)
+			// The directory name stands in for server_name; the site's files
+			// land under data/www/<domain>, so it gets the form the panel
+			// keeps names in, or the files and the site would part ways.
+			site.domain = strings.ToLower(path.Base(root))
 		}
 		site.link = b.isSymlink(ctx, root+"/bitrix")
 		site.db = b.readDBSettings(ctx, root)
@@ -474,7 +479,7 @@ func (b *bitrixVMSource) rootCron(ctx context.Context, have []*store.CronJob) ([
 			continue
 		}
 		seen[j.Schedule+" "+j.Command] = true
-		j.Comment = strings.TrimSuffix("from root's crontab; "+j.Comment, "; ")
+		j.Comment = cronComment("from root's crontab", j.Comment)
 		jobs = append(jobs, j)
 	}
 	var notes []string

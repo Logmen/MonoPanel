@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"monopanel/internal/termsafe"
 	"net/http"
 	"time"
 
@@ -42,8 +43,14 @@ func (s *Server) registerAuth() {
 		u, err := s.db.GetUserByLogin(ctx, in.Body.Login)
 		if err != nil || u.PasswordHash == "" {
 			auth.VerifyPassword(in.Body.Password, "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA") //nolint:errcheck // dummy verification equalises the timing of a wrong login
-			s.db.Audit(ctx, store.AuditEntry{Actor: in.Body.Login, Action: "auth.login", IP: info.IP, Result: "denied"})
-			s.log.Warn("login denied", "login", in.Body.Login, "ip", info.IP)
+			// What a stranger typed, kept printable: the audit log is read on
+			// terminals too (mp audit, the TUI).
+			typed := termsafe.Line(in.Body.Login)
+			if r := []rune(typed); len(r) > 64 {
+				typed = string(r[:64]) + "…"
+			}
+			s.db.Audit(ctx, store.AuditEntry{Actor: typed, Action: "auth.login", IP: info.IP, Result: "denied"})
+			s.log.Warn("login denied", "login", typed, "ip", info.IP)
 			return nil, huma.Error401Unauthorized("invalid login or password")
 		}
 		ok, err := auth.VerifyPassword(in.Body.Password, u.PasswordHash)

@@ -85,20 +85,25 @@ mp migrate run  --source https://old:8443 --token … --scope user:alex
 mp migrate run --from bitrixvm  --source root@old.example.com --domain shop.example.com
 mp migrate run --from fastpanel --source root@old.example.com --scope user:shop
 
-mp                              # TUI-меню
+mp                              # TUI-меню: разделы как в Web UI, любое действие — формой команды mp
 ```
 
 Удалённо: `mp --server https://host:8443 --token <token> status`
-(токен: `mp token create`).
+(токен: `mp token create`); так же открывается и TUI — `mp --server … --token …`.
 
 ## Что умеет
 
-Всё перечисленное проходит через один REST API и доступно в Web UI, CLI и TUI.
+Всё перечисленное проходит через один REST API и доступно в Web UI, CLI и TUI: у каждой
+операции API есть команда `mp` и место в Web UI, а TUI предлагает каждую команду `mp`
+формой. Это проверяет `go test ./internal/parity/` в `make test` и CI. Исключений
+немного, и они намеренные: вход в браузере и консоль — только в Web UI, установка и
+служебные роли бинарника — только в `mp`, `mp update trust` и `mp config … --local` —
+только от root на сервере ([полный список](docs/04-cli-tui-api.md#1-принцип)).
 Под каждым заголовком — команды `mp` этой области.
 
 ### Сайты
 
-`mp site add|set|apply|fix|suspend|rm|logs`, `mp site nginx|php|tls`, `mp selinux`
+`mp site add|set|list|show|apply|fix|suspend|unsuspend|rm|logs|presets|move-ip`, `mp site nginx|php|tls`, `mp selinux`
 
 - Три режима: `fpm` (nginx → php-fpm), `apache` (nginx → Apache на loopback 8080 через mod_proxy_fcgi) и `proxy` (nginx → свой backend).
 - У каждого сайта свой пул php-fpm, ACL для группы `monopanel-web`, страница-заглушка и автоматический сертификат; приостановленный сайт отдаёт страницу 503.
@@ -125,7 +130,7 @@ mp                              # TUI-меню
 
 ### Базы данных
 
-`mp stack install percona|mysql`, `mp db create|list|passwd|rm`, `mp db config [set|unset]`
+`mp stack install percona|mysql`, `mp db create|list|passwd|rm`, `mp db engine [tune]`, `mp db config [set|unset]`
 
 - Percona Server или MySQL 8.4 LTS; root через `auth_socket` (на EL панель сама переводит его с временного пароля пакета), настройки под объём памяти.
 - Параметры сервера меняются в панели: значение встаёт на место панельного в `zz-monopanel.cnf`, перед перезапуском — `mysqld --validate-config`, при неудачном запуске прежние параметры возвращаются сами.
@@ -133,7 +138,7 @@ mp                              # TUI-меню
 
 ### Valkey на аккаунт
 
-`mp stack install valkey`, `mp valkey add|list|restart|rm cache|sessions --user <login> [--memory МБ]`, `mp site set <домен> --sessions valkey|files`
+`mp stack install valkey`, `mp valkey add|restart|rm cache|sessions [--user <login>] [--memory МБ]`, `mp valkey list`, `mp site set <домен> --sessions valkey|files`
 
 - У аккаунта два отдельных экземпляра: кеш (allkeys-lru, без записи на диск) и PHP-сессии (volatile-lru, снимок раз в минуту — сессии переживают перезапуск).
 - Каждый — systemd-юнит `monopanel-valkey-<login>-<cache|sessions>` от имени пользователя с лимитом памяти. Слушает только unix-сокет `/run/monopanel-valkey/<login>-<cache|sessions>/valkey.sock` с правами 600: ни другие аккаунты, ни веб-сервер к нему не подключатся, TCP-порта нет вовсе. На EL экземпляры работают в домене SELinux `redis_t`.
@@ -143,7 +148,7 @@ mp                              # TUI-меню
 
 ### TLS
 
-`mp ssl issue|list|renew|rm`, `mp site tls <домен>`, `mp ssl panel issue|import|self-signed`, `mp dns-provider add`
+`mp ssl issue|import|list|show|renew|rm`, `mp site tls <домен>`, `mp ssl panel issue|import|self-signed`, `mp web tls`, `mp dns-provider add|list|rm|types`
 
 - lego: HTTP-01 через webroot nginx, DNS-01 (Cloudflare, Hetzner, DigitalOcean, Gandi, deSEC, Namecheap, RFC2136) для wildcard, автопродление за 30 дней.
 - Сертификат самой панели и сертификаты сайтов ведутся раздельно: панель заказывает только для своего имени и подхватывает его на лету, сайт заказывает для домена с алиасами и сам переключается на HTTPS. Занятый сертификат не удалить.
@@ -151,7 +156,7 @@ mp                              # TUI-меню
 
 ### Почта
 
-`mp mail install|status|settings|domain|box|alias|webmail`
+`mp mail install|status|settings|apply|domain|box|alias|webmail`
 
 - postfix + dovecot + opendkim: домены, ящики (пароли и квоты в панели, Maildir у `vmail`), алиасы и catch-all, IMAP/POP3/submission с сертификатом панели, подпись DKIM, sieve-фильтры.
 - Домен «только отправка»: почту домена принимает провайдер, здесь — подпись DKIM и отправка писем сайтов. Домен-приёмник (`--lenient`) примет письма и от криво настроенных отправителей.
@@ -161,14 +166,14 @@ mp                              # TUI-меню
 
 ### Бэкапы
 
-`mp backup target add|run|list|snapshots|restore`
+`mp backup target add|list|rm`, `mp backup run|list|snapshots|restore`
 
 - restic в local, SFTP, S3, B2 или REST: файлы, дампы MySQL и копия panel.db.
 - Хранение по дням, неделям и месяцам, ежедневное расписание; восстановление в `<data>/restore/<snapshot>` или на место.
 
 ### Файлы
 
-`mp files ls|put|get|mkdir|rm|mv|chmod|extract|size`
+`mp files ls|put|get|mkdir|touch|rm|mv|chmod|extract|size`
 
 - Файловые операции выполняет `monopanel fsop` через helper с необратимым сбросом привилегий; пути — относительно домашнего каталога.
 - В Web UI — файловый менеджер с редактором: обзор каталога, загрузка перетаскиванием, права, распаковка архивов. Файлы правятся в редакторе VS Code (Monaco): подсветка php, html, css, js, sql, yaml и ini, поиск и замена, мультикурсор, свёртка, палитра команд по F1.
@@ -176,10 +181,11 @@ mp                              # TUI-меню
 
 ### Пользователи, SFTP и SSH
 
-`mp user add|set|list|show|totp-reset|rm`, флаги `--shell|--sftp-only --password`
+`mp user add|set|list|show|totp-reset|rm`, `mp user share list|add|entry|rm`, флаги `--shell|--sftp-only`, `--password|--password-stdin|--generate`
 
 - Аккаунт панели — это unix-пользователь. SFTP-only — chroot в `/var/www/<login>` через `sshd_config.d/monopanel.conf`; пароль общий для панели и SFTP; shell выдаётся флагом и вместе с ним — доступ к `mp` через локальный сокет (группа `monopanel-cli`); запросы к сокету из процессов php-fpm, Apache и nginx отклоняются.
-- `mp user rm <login> [--purge]` удаляет аккаунт вместе с сайтами, базами, cron, app-сервисами и сертификатами.
+- `mp user rm <login> [--purge]` удаляет аккаунт вместе с сайтами, базами, cron, app-сервисами, экземплярами Valkey и сертификатами.
+- Обычный аккаунт видит в Web UI и TUI то, что касается его самого: свои сайты, базы, почту, файлы, задачи и страницу «Аккаунт» — cron, app-сервисы, Valkey, общие папки, API-токены, пароль и 2FA.
 - Общая папка (`mp user share add <гость> --site <домен> --path <папка> [--no-php]`): каталог сайта одного аккаунта монтируется (bind, юнит systemd) в дом другого — гость видит его после входа по SFTP и ничего больше, файлы читают и пишут оба аккаунта и веб-сервер (ACL), `--no-php` запрещает сайту выполнять PHP из этой папки, `--entry` (или `mp user share entry`) делает папку точкой входа — сессия SFTP начинается сразу в ней. Дом гостя не меняется: chroot остаётся root-овым, изоляция аккаунтов — прежней. Файл, загруженный по SFTP с правами 0644, другая сторона читает и удаляет, но не переписывает на месте — так работает маска ACL; `mp site fix` снимает это ограничение с уже лежащих файлов.
 
 ### Cron
@@ -190,13 +196,13 @@ mp                              # TUI-меню
 
 ### App-сервисы
 
-`mp app add|set|start|stop|restart|logs|rm`
+`mp app add|set|list|show|start|stop|restart|logs|rm`
 
 - systemd-юнит `monopanel-app-<login>-<name>` от имени пользователя для gunicorn, node, ботов: команда, рабочий каталог и env-file внутри домашнего каталога, автозапуск, журнал через journalctl.
 
 ### Apache и расширения
 
-`mp stack install apache`, `mp stack install|remove memcached|jpegoptim|git|composer|sphinx`, `mp stack memcached --memory-mb --max-conn`
+`mp stack list`, `mp stack install apache`, `mp stack install|remove memcached|jpegoptim|git|composer|sphinx`, `mp stack memcached --memory-mb --max-conn`
 
 - Apache 2.4 на Debian/Ubuntu: mpm_event + proxy_fcgi, `conf-available/monopanel.conf`.
 - Страница «Расширения» в Web UI: memcached (только 127.0.0.1, память и число соединений настраиваются, перезапуск при смене), jpegoptim, git, composer (с getcomposer.org с проверкой контрольной суммы, работает на новейшей ветке PHP панели, повторная установка обновляет).
@@ -204,7 +210,7 @@ mp                              # TUI-меню
 
 ### Firewall и Real IP
 
-`mp firewall enable|allow|deny|ban|unban|trust|untrust`, `mp stack install fail2ban`, `mp stack real-ip --cloudflare [--from CIDR]`
+`mp firewall status|enable|disable|apply|allow|deny|rm|ban|unban|trust|untrust`, `mp stack install fail2ban`, `mp stack real-ip --cloudflare [--from CIDR]`
 
 - nftables `inet monopanel` с policy drop; SSH, 80, 443 и порт панели открыты всегда; юнит `monopanel-firewall`.
 - Allow с источником проверяются раньше deny: `deny --port 8443` + `allow --port 8443 --source <VPN>` ограничивает панель адресами VPN. Deny, который запер бы вас самих (SSH или панель без allow с источником, ваш текущий адрес), панель отклоняет.
@@ -213,10 +219,12 @@ mp                              # TUI-меню
 
 ### Метрики, логи и диагностика
 
-`mp metrics`, `mp site logs`, `mp logs <unit>`, `mp doctor`
+`mp status`, `mp metrics`, `mp site logs`, `mp logs <unit>`, `mp service`, `mp job list|show|wait`, `mp doctor`, `mp audit`
 
 - Сэмплер раз в 10 с, точки по минутам за 30 дней; хвост логов сайтов и journald через агент.
-- Логи сайтов ротируются раз в неделю или по 100 МБ от имени их аккаунта: восемь копий, сжатие со второй.
+- Службы — юниты панели и стека (агент, веб-серверы, СУБД, каждая установленная ветка PHP) и любой юнит по имени: состояние, запуск, остановка, перезапуск, `reload-or-restart`, автозапуск и журнал — `mp service`, `mp logs`, страница «Службы». Остановку и перезапуск самой панели API выполняет уже после ответа.
+- Долгие действия — задачи с журналом: `mp job list|show|wait`, страница «Задачи». Администратор видит все задачи, остальные аккаунты — свои; пароли и токены из параметров задачи в ответах скрыты.
+- Логи сайтов лежат в `/var/log/monopanel/sites/<логин>/`, вне домашнего каталога (их открывают от root nginx, Apache и php-fpm), аккаунт читает их через свою группу; ротация раз в неделю или по 100 МБ: восемь копий, сжатие со второй.
 - `mp doctor` проверяет сервисы, конфиги, диск, сертификаты, DNS, задачи и дрейф сгенерированных файлов.
 - Журнал действий — кто и откуда входил, кто выпускал токены, кто что менял: `mp audit`, страница «Журнал», `GET /system/audit`; та же лента в `/var/log/monopanel/audit.log` строками JSON с ротацией, входы и отказы — ещё и в journald.
 
@@ -225,7 +233,17 @@ mp                              # TUI-меню
 `POST /system/console`
 
 - Страница «Консоль»: команды `mp` от имени вошедшего администратора с потоковым выводом, одноразовый токен на команду.
+- Адрес панели и токен команда получает через окружение, а секреты, набранные во флагах (`--password …`), консоль передаёт ей через stdin: в списке процессов их не видно, в журнал действий строка попадает без них. Команды, которые читают или пишут файлы на сервере (`files get|put`, `ssl import`, `--cert`/`--key`, `site nginx --set`, `migrate --key`), и `mp update trust` консоль не запускает: то же содержимое Web UI принимает своими формами.
 - На дашборде у находок doctor есть кнопки «починить сайт» и «вернуть enforcing».
+
+### TUI-меню
+
+`mp` без аргументов в терминале — на сервере или удалённо (`mp --server … --token …`)
+
+- Разделы — как в навигации Web UI; в каждом — его экраны и все команды его групп `mp`. Обычному аккаунту меню показывает то же, что ему показывает Web UI.
+- Любое действие — команда `mp`: форма собирается из её аргументов и флагов, строка `mp …` видна, пока форма заполняется, и выполняется именно она — дочерним процессом, с выводом по мере появления. Секреты в строке скрыты и уходят команде через stdin.
+- Подтверждения — как в Web UI; удаление аккаунта или сайта вместе с файлами подтверждается вводом имени. Файлы и nginx-директивы сайта правятся в `$EDITOR`.
+- `?` — действия экрана и все команды раздела, `:` — любая команда `mp` с дополнением по Tab. Разделы и клавиши — в [docs/04-cli-tui-api.md](docs/04-cli-tui-api.md#3-tui-меню).
 
 ### Перенос между панелями
 
@@ -233,6 +251,7 @@ mp                              # TUI-меню
 
 - Аккаунт целиком переезжает на другой сервер с MonoPanel. Источник выдаёт токен с областью на один аккаунт и только читает; приёмник разбирает конфликты (`plan` ничего не меняет) и забирает аккаунт.
 - Файлы и дамп идут потоком насквозь; пароли панели, SFTP, MySQL и почты переезжают хешами, поэтому пользователи смены сервера не замечают.
+- Токен переезда выдаёт только администратор. В Web UI — страница «Перенос»: токен для другой панели, разбор и перенос с MonoPanel, FASTPANEL и BitrixVM.
 - Подробнее — [docs/07-migration.md](docs/07-migration.md).
 
 ### Переезд с BitrixVM и FASTPANEL
@@ -246,16 +265,26 @@ mp                              # TUI-меню
 
 ### Обновления
 
-`mp update`, `mp update apply`
+`mp update`, `mp update check|apply|settings`, `mp update trust`
 
 - Панель находит новую версию в релизах этого репозитория, скачивает пакет для своей ОС, проверяет подпись ed25519 и ставит его отдельным systemd-юнитом. Если новая версия не отвечает, возвращается прежний бинарник.
+- Ключ, которым проверяется подпись, меняет только root на сервере (`mp update trust`): через процесс панели он не проходит — ни через API, ни через консоль; Web UI показывает его только для чтения.
+
+### Настройки панели
+
+`mp config show|set|templates`
+
+- Имя и адрес панели, уровень и формат журнала и число одновременных задач (`web.hostname`, `web.listen`, `log.level`, `log.format`, `jobs.workers`) меняются через API — `mp config set` или «Настройки → Панель» в Web UI. Изменение вступает в силу после перезапуска monopanel-api, `--restart` перезапускает его сразу; порт нового адреса панель открывает в firewall до записи.
+- Если API не поднимается (например, после неудачного `web.listen`), root на сервере правит файл напрямую: `mp config set --local`.
+- `mp config templates` и та же страница показывают встроенные шаблоны конфигураций и какие из них переопределены файлами в `templates_dir`.
 
 ### Токены, 2FA и webhooks
 
-`mp token create|list|revoke`, `mp user totp-reset`, `mp webhook add`
+`mp token create|list|revoke`, `mp totp status|setup|enable|disable`, `mp user totp-reset`, `mp webhook add|list|test|rm`, `mp whoami`
 
 - Токен принадлежит аккаунту; администратор выпускает его и для другого аккаунта (`--user`), root по локальному сокету — для единственного администратора без флагов.
-- TOTP 2FA с QR-кодом в Web UI, Bearer-токены, webhooks с подписью HMAC-SHA256 на события задач.
+- TOTP 2FA с QR-кодом — в Web UI, в TUI и в терминале (`mp totp setup` рисует QR-код); настроить 2FA заново можно, только выключив её с паролем. Bearer-токены, webhooks с подписью HMAC-SHA256 на события задач.
+- Новый пароль и приостановка аккаунта завершают его сессии в браузере (кроме той, из которой он сам сменил пароль); API-токены остаются, их отзывают отдельно. `mp whoami` показывает, кем вас видит панель: аккаунт, роль, способ входа, токен и 2FA.
 
 ### Языки
 
@@ -317,7 +346,7 @@ make packages VERSION=0.8.19 # то же локально, без публика
 mp update settings --repo owner/name     # --token-stdin для приватного репозитория
 mp update                                # что установлено и что доступно
 mp update apply                          # скачать, проверить подпись, установить, перезапуститься
-mp update trust                          # каким ключом проверяется подпись
+mp update trust                          # каким ключом проверяется подпись (только root на сервере)
 mp update trust --key <ключ форка>       # свой ключ вместо встроенного; --off выключает проверку
 ```
 
@@ -443,6 +472,12 @@ make help             # все цели
 целиком: пресеты CMS, allow-list по IP, приостановку сайта, каскадное удаление
 пользователя, проверку подписи обновления.
 
+`internal/parity` сверяет три клиента с API: у каждой операции должны быть команда `mp`
+и место в Web UI, у каждой команды — место в меню TUI, у каждого поля запроса — флаг и
+поле на странице, а обычному аккаунту не должно достаться действий администратора.
+Тест называет, чего и где не хватает; намеренные исключения перечислены в нём самом и в
+[docs/04-cli-tui-api.md](docs/04-cli-tui-api.md#1-принцип).
+
 End-to-end гоняется против настоящей панели и убирает за собой всё, что создал:
 
 ```bash
@@ -471,6 +506,7 @@ internal/render/      рендер шаблонов + golden-тесты
 internal/updater/     поиск релиза, проверка подписи, установка пакета с откатом
 internal/cli/ tui/    команды mp и TUI-меню
 internal/client/      Go-клиент API (CLI, TUI, setup)
+internal/parity/      проверка, что Web UI, mp и TUI умеют одно и то же
 templates/            nginx/, apache/, php-fpm/, systemd/
 web/                  SvelteKit-приложение (build/ вшивается в бинарник)
 web/static/monaco/    редактор VS Code (Monaco), урезанная сборка — см. его README
@@ -486,7 +522,7 @@ scripts/testbed/      площадка: VM на Proxmox, bootstrap панели,
 | [docs/01-architecture.md](docs/01-architecture.md) | Цели, архитектурные решения, компоненты, модель данных, конвейер применения конфигов, безопасность, наблюдаемость, упаковка |
 | [docs/02-platform-matrix.md](docs/02-platform-matrix.md) | Поддерживаемые ОС, источники пакетов, матрица PHP и расширений, MySQL/Percona, OS Profile, SELinux, firewall |
 | [docs/03-web-stack.md](docs/03-web-stack.md) | Режимы nginx+php-fpm и nginx+Apache, файловая структура, шаблоны, изоляция и лимиты, TLS/ACME, HTTP/3, логи |
-| [docs/04-cli-tui-api.md](docs/04-cli-tui-api.md) | Команды CLI, экраны TUI, REST API, интеграция с биллингом (WHMCS) |
+| [docs/04-cli-tui-api.md](docs/04-cli-tui-api.md) | Три клиента и их намеренные различия, команды CLI, разделы и клавиши TUI, REST API, интеграция с биллингом (WHMCS) |
 | [docs/05-roadmap.md](docs/05-roadmap.md) | Этапы разработки, матрица CI, тестовые сценарии, риски |
 | [docs/06-mail.md](docs/06-mail.md) | Почта: postfix + dovecot + opendkim, путь письма, файлы и порты, DNS-записи, вебпочта, границы |
 | [docs/07-migration.md](docs/07-migration.md) | Переезд: между двумя MonoPanel и с BitrixVM/FASTPANEL по ssh — что переносится и как, порядок с переключением DNS, пакет переезда и остальные адаптеры (проект) |

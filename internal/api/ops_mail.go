@@ -20,7 +20,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
+	"github.com/danielgtaylor/huma/v2"
 	"golang.org/x/crypto/bcrypt"
 
 	"monopanel/internal/agent"
@@ -134,6 +136,55 @@ func (s *Server) mailTLS(ctx context.Context, c mailConfig) (certPath, keyPath, 
 	return cp, kp, store.CertKindSelfSigned, nil
 }
 
+// mapToken reports whether a name can go into the mail maps as one field:
+// postfix's lookup tables are "key blanks value" lines, dovecot's users file
+// separates its fields with colons, opendkim's KeyTable a value of three, an
+// alias lists its recipients with commas, and names become maildir and key
+// paths. The API lets no such character into a domain, an address or a
+// selector; a value that came another way (a migration import, a restored or
+// edited database) would otherwise add a line of its own — a password for
+// another tenant's address, a mailbox in somebody else's maildir.
+func mapToken(v string) bool {
+	if v == "" || v == "." || v == ".." {
+		return false
+	}
+	for _, r := range v {
+		if unicode.IsSpace(r) || unicode.IsControl(r) || r == ':' || r == '/' || r == ',' {
+			return false
+		}
+	}
+	return true
+}
+
+// mapHash reports whether a password hash can be the second field of
+// dovecot's users file: no colon (it would shift uid, gid and home into the
+// hash's hands), no line break or other control character. An empty one
+// stays allowed: a mailbox that arrived without a password (a migration
+// whose source could not hand it over) keeps receiving mail, and no password
+// matches an empty field — the mailbox signs in once somebody sets one.
+func mapHash(h string) bool {
+	for _, r := range h {
+		if unicode.IsControl(r) || r == ':' {
+			return false
+		}
+	}
+	return true
+}
+
+// badMapEntry is the refusal for a value that would garble the maps. It names
+// the entry, and nothing has been written when it comes.
+func badMapEntry(entry, problem string) error {
+	return fmt.Errorf("mail maps: %s %s; fix or delete it, nothing was written", entry, problem)
+}
+
+const badMapName = "is empty or has blanks, control characters, \":\", \"/\" or \",\" in it, which would change the lines of the mail maps"
+
+// badMapDomain is the refusal for a mail domain that is not a host name. Past
+// the characters mapToken refuses, opendkim's SigningTable is a pattern file
+// in which "*" matches anything: a domain "*" would sign every tenant's mail
+// with its own key.
+const badMapDomain = "is not a domain name (lower-case Latin letters, digits, hyphens, dots); anything else could change what the lines of the mail maps say"
+
 // mailMaps renders the data files: what postfix accepts, where dovecot finds
 // passwords and which keys opendkim signs with.
 func (s *Server) mailMaps(ctx context.Context, c mailConfig) ([]agent.FileSpec, []string, error) {
@@ -153,6 +204,9 @@ func (s *Server) mailMaps(ctx context.Context, c mailConfig) ([]agent.FileSpec, 
 	var domainLines, lenientLines, users, keyTable, signingTable []string
 	trusted := []string{"127.0.0.1", "::1", "localhost"}
 	if c.Hostname != "" {
+		if !mapToken(c.Hostname) {
+			return nil, nil, badMapEntry(fmt.Sprintf("the mail server hostname %q", c.Hostname), badMapName)
+		}
 		trusted = append(trusted, c.Hostname)
 	}
 	files := []agent.FileSpec{}
@@ -160,6 +214,10 @@ func (s *Server) mailMaps(ctx context.Context, c mailConfig) ([]agent.FileSpec, 
 		byID[d.ID] = d
 		if !d.Active {
 			continue
+		}
+		// The API's own rule for a domain, the same since mail came in.
+		if !mailDomainRe.MatchString(d.Name) {
+			return nil, nil, badMapEntry(fmt.Sprintf("mail domain %q", d.Name), badMapDomain)
 		}
 		// A send-only domain is not in the maps postfix receives by: mail
 		// from the sites to its addresses goes to the real MX instead of a
@@ -173,6 +231,9 @@ func (s *Server) mailMaps(ctx context.Context, c mailConfig) ([]agent.FileSpec, 
 		trusted = append(trusted, d.Name)
 		if !c.DKIM || d.DKIMSelector == "" || d.DKIMKeyEnc == "" || s.secrets == nil {
 			continue
+		}
+		if !mapToken(d.DKIMSelector) {
+			return nil, nil, badMapEntry(fmt.Sprintf("the DKIM selector %q of mail domain %q", d.DKIMSelector, d.Name), badMapName)
 		}
 		key, err := s.secrets.Decrypt(d.DKIMKeyEnc)
 		if err != nil {
@@ -194,6 +255,18 @@ func (s *Server) mailMaps(ctx context.Context, c mailConfig) ([]agent.FileSpec, 
 		if d == nil || !d.Active || !b.Active {
 			continue
 		}
+		if !mapToken(b.Address) || !mapToken(b.LocalPart) {
+			return nil, nil, badMapEntry(fmt.Sprintf("mailbox %q (local part %q)", b.Address, b.LocalPart), badMapName)
+		}
+		// Dovecot finds the maildir by the address, postfix by the domain
+		// and the local part: a mailbox of this domain that carries another
+		// domain's address would sign in to that domain's mail.
+		if b.Address != b.LocalPart+"@"+d.Name {
+			return nil, nil, badMapEntry(fmt.Sprintf("mailbox %q (local part %q) of mail domain %q", b.Address, b.LocalPart, d.Name), "is not the local part at the domain, so dovecot and postfix would take it for different mailboxes")
+		}
+		if !mapHash(b.PasswordHash) {
+			return nil, nil, badMapEntry(fmt.Sprintf("mailbox %q", b.Address), "has a password hash with a colon or a control character, which would add lines to dovecot's users file (set a new password)")
+		}
 		byAddress[b.Address] = b
 		boxLines = append(boxLines, fmt.Sprintf("%s %s/%s/", b.Address, d.Name, b.LocalPart))
 		senderLines = append(senderLines, b.Address+" "+b.Address)
@@ -205,6 +278,17 @@ func (s *Server) mailMaps(ctx context.Context, c mailConfig) ([]agent.FileSpec, 
 		d := byID[a.DomainID]
 		if d == nil || !d.Active || !a.Active {
 			continue
+		}
+		if !mapToken(a.Source) {
+			return nil, nil, badMapEntry(fmt.Sprintf("alias %q of mail domain %q", a.Source, d.Name), badMapName)
+		}
+		if len(a.Destinations()) == 0 {
+			continue // postmap would skip a line without a value anyway
+		}
+		for _, to := range a.Destinations() {
+			if !mapToken(to) {
+				return nil, nil, badMapEntry(fmt.Sprintf("the recipient %q of alias %q of mail domain %q", to, a.Source, d.Name), badMapName)
+			}
 		}
 		dest := strings.Join(a.Destinations(), ", ")
 		if a.Source == "@" {
@@ -454,13 +538,14 @@ func (s *Server) applyWebmailPort(ctx context.Context, logf func(string, ...any)
 	}
 	body, err := s.render.Render("mail/webmail.conf.tmpl", render.Webmail{
 		IP: ip, Port: c.WebmailPort, ServerName: c.Hostname, CertPath: certPath, KeyPath: keyPath,
-		Docroot: l.docroot, LogDir: path.Join(l.data, "logs"), Socket: l.socket, ClientMaxBodySize: site.ClientMaxBody,
+		Docroot: l.docroot, LogDir: s.siteLogDir(owner.Login), Socket: l.socket, ClientMaxBodySize: site.ClientMaxBody,
 	})
 	if err != nil {
 		return err
 	}
-	if err := s.ensureSiteLogs(ctx, owner.Login, path.Join(l.data, "logs"), "webmail.access.log", "webmail.error.log"); err != nil {
-		logf("warning: webmail logs: %v", err)
+	// Next to the logs of the site it lives in, made before nginx opens them.
+	if _, err := s.ensureSiteLogs(ctx, owner.Login, webmailLogNames...); err != nil {
+		return fmt.Errorf("webmail logs: %w", err)
 	}
 	res, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{
 		Files:    []agent.FileSpec{{Path: conf, Content: body, Mode: 0o644}},
@@ -594,7 +679,9 @@ func dovecot24(c mailConfig) bool {
 }
 
 // dovecotQuotaField is a mailbox's quota as an extra field of the users file,
-// in the syntax of the installed dovecot; 0 means no limit.
+// in the syntax of the installed dovecot; 0 means no limit. Dovecot 2.3 reads
+// a zero limit of the * rule as none (its quota_rule documentation: "0 means
+// unlimited"), 2.4 takes the word unlimited.
 func dovecotQuotaField(c mailConfig, quotaMB int) string {
 	if dovecot24(c) {
 		if quotaMB <= 0 {
@@ -610,20 +697,39 @@ func dovecotQuotaField(c mailConfig, quotaMB int) string {
 
 // hashMailPassword produces what dovecot's passwd-file expects. BLF-CRYPT is
 // dovecot's own blowfish implementation, so it does not depend on what the
-// host's libc crypt supports.
+// host's libc crypt supports. Bcrypt reads 72 bytes of a password and no
+// more: a longer one is the request's fault, not the server's.
 func hashMailPassword(password string) (string, error) {
 	h, err := bcrypt.GenerateFromPassword([]byte(password), 11)
+	if errors.Is(err, bcrypt.ErrPasswordTooLong) {
+		return "", huma.Error422UnprocessableEntity("password: at most 72 bytes (a Latin letter is one byte, a Cyrillic one two)")
+	}
 	if err != nil {
 		return "", err
 	}
 	return "{BLF-CRYPT}" + string(h), nil
 }
 
+// mailDomainOK reports whether a name is a domain the mail stack can use: two
+// labels or more of Latin letters, digits and hyphens, no longer than DNS
+// allows.
+func mailDomainOK(name string) bool {
+	if len(name) > 253 || !mailDomainRe.MatchString(name) {
+		return false
+	}
+	for _, label := range strings.Split(name, ".") {
+		if len(label) > 63 {
+			return false
+		}
+	}
+	return true
+}
+
 // splitAddress validates and splits user@example.com.
 func splitAddress(addr string) (local, domain string, err error) {
 	addr = strings.ToLower(strings.TrimSpace(addr))
 	local, domain, ok := strings.Cut(addr, "@")
-	if !ok || !mailDomainRe.MatchString(domain) {
+	if !ok || !mailDomainOK(domain) {
 		return "", "", errors.New("address must look like user@example.com")
 	}
 	// "@example.com" — catch-all домена; внутри он живёт под именем "@".

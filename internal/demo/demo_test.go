@@ -96,6 +96,15 @@ func TestPrepareAndServe(t *testing.T) {
 	if found["example.com"] != "active/wordpress" || found["shop.example.com"] != "active/opencart" || found["app.example.org"] != "active/" || len(sites) != 4 {
 		t.Fatalf("sites: %v", found)
 	}
+	// The site logs are where a server keeps them, in the log tree, not in
+	// the account's home.
+	var tail struct {
+		Path  string   `json:"path"`
+		Lines []string `json:"lines"`
+	}
+	if code := get("/api/v1/sites/example.com/logs/access?lines=5", &tail); code != http.StatusOK || len(tail.Lines) != 5 || tail.Path != filepath.Join(o.Dir, "log", "sites", "alex", "example.com.access.log") {
+		t.Fatalf("access log: %d %+v", code, tail)
+	}
 	var mail struct {
 		Warnings []string `json:"warnings"`
 	}

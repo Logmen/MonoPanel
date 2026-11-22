@@ -15,7 +15,7 @@ func exampleSite(mode string) Site {
 		Domain: "example.com", Aliases: []string{"www.example.com"}, Mode: mode, IP: "203.0.113.10", IPv6: "2001:db8::10",
 		TLS: true, HTTP2: true, HTTP3: true, RedirectHTTPS: true, HSTS: true, RedirectWWW: "to_root", SecurityHeaders: true, RateLimit: 10, NoPHPPaths: []string{"upload/exchange"},
 		CertPath: "/var/lib/monopanel/certs/example.com/fullchain.pem", KeyPath: "/var/lib/monopanel/certs/example.com/privkey.pem",
-		Docroot: "/var/www/alex/data/www/example.com", LogDir: "/var/www/alex/data/logs",
+		Docroot: "/var/www/alex/data/www/example.com", LogDir: "/var/log/monopanel/sites/alex",
 		IncludeDir: "monopanel/sites/example.com.d", ClientMaxBodySize: "64m", StaticByNginx: true,
 		ApacheBackend: "127.0.0.1:8080", FPMSocket: "/run/monopanel/php/example.com.sock", ProxyTimeout: 150,
 	}
@@ -25,7 +25,7 @@ func examplePool() Pool {
 	return Pool{
 		Name: "example.com", User: "alex", Group: "alex", Socket: "/run/monopanel/php/example.com.sock", ListenGroup: "monopanel-web",
 		PM: "ondemand", MaxChildren: 8, TerminateTimeout: 150, Home: "/var/www/alex", DataDir: "/var/www/alex/data",
-		TmpDir: "/var/www/alex/data/tmp", LogDir: "/var/www/alex/data/logs", BinDir: "/var/www/alex/data/bin",
+		TmpDir: "/var/www/alex/data/tmp", LogDir: "/var/log/monopanel/sites/alex", BinDir: "/var/www/alex/data/bin",
 		SendmailFrom: "noreply@example.com", DisableFunctions: DefaultDisableFunctions, OpenBasedir: true,
 		Values: []KV{{"memory_limit", "256M"}, {"upload_max_filesize", "64M"}, {"post_max_size", "64M"}, {"max_execution_time", "120"}, {"date.timezone", "Europe/Moscow"}, {"display_errors", "Off"}},
 	}
@@ -41,17 +41,17 @@ func TestGolden(t *testing.T) {
 	}{
 		{"nginx-main.conf", "nginx/nginx.conf.tmpl", NginxMain{User: "nginx"}, []string{"user  nginx;", "include /etc/nginx/monopanel/sites/*.conf;"}},
 		{"nginx-ip-default.conf", "nginx/ip-default.conf.tmpl", IPDefault{IP: "203.0.113.10", TLS: true, HTTP3: true, CertPath: "/c.pem", KeyPath: "/k.pem", PanelHost: "panel.example.com", PanelPort: 8443}, []string{"quic reuseport", "default_server"}},
-		{"nginx-site-fpm.conf", "nginx/site.conf.tmpl", exampleSite("fpm"), []string{"location ~ ^/[^/]+\\.php(?:/|$) {", "location ~ ^/upload/exchange/.*\\.(?:php|phtml|phar)(?:/|$) { return 403; }", "fastcgi_pass unix:/run/monopanel/php/example.com.sock;", "return 301 https://$host$request_uri;", "listen 203.0.113.10:443 quic;", "listen [2001:db8::10]:443 ssl;", "listen [2001:db8::10]:443 quic;", "if ($host = www.example.com)", "add_header Strict-Transport-Security \"max-age=31536000\" always;", "add_header X-Frame-Options SAMEORIGIN always;", "map $uri $mp_example_com_key", "limit_req_zone $mp_example_com_key zone=mp_example_com:2m rate=10r/s;", "limit_req zone=mp_example_com burst=20 nodelay;", "limit_req_status 429;"}},
+		{"nginx-site-fpm.conf", "nginx/site.conf.tmpl", exampleSite("fpm"), []string{"location ~ ^/[^/]+\\.php(?:/|$) {", "location ~ ^/upload/exchange/.*\\.(?:php|phtml|phar)(?:/|$) { return 403; }", "fastcgi_pass unix:/run/monopanel/php/example.com.sock;", "return 301 https://$host$request_uri;", "listen 203.0.113.10:443 quic;", "listen [2001:db8::10]:443 ssl;", "listen [2001:db8::10]:443 quic;", "if ($host = www.example.com)", "add_header Strict-Transport-Security \"max-age=31536000\" always;", "add_header X-Frame-Options SAMEORIGIN always;", "map $uri $mp_example_com_key", "limit_req_zone $mp_example_com_key zone=mp_example_com:2m rate=10r/s;", "limit_req zone=mp_example_com burst=20 nodelay;", "limit_req_status 429;", "access_log /var/log/monopanel/sites/alex/example.com.access.log main;", "error_log  /var/log/monopanel/sites/alex/example.com.error.log;"}},
 		{"nginx-site-proxy.conf", "nginx/site.conf.tmpl", func() Site { s := exampleSite("proxy"); s.Backend = "http://127.0.0.1:3000"; return s }(), []string{"proxy_pass http://127.0.0.1:3000;", "proxy-app.conf"}},
 		{"nginx-site-apache.conf", "nginx/site.conf.tmpl", exampleSite("apache"), []string{"proxy_pass http://127.0.0.1:8080;", "try_files $uri @apache;", "proxy-apache.conf"}},
-		{"apache-site.conf", "apache/site.conf.tmpl", exampleSite("apache"), []string{"<VirtualHost 127.0.0.1:8080>", "ServerAlias www.example.com", "proxy:unix:/run/monopanel/php/example.com.sock|fcgi://localhost", "ProxyTimeout 150"}},
+		{"apache-site.conf", "apache/site.conf.tmpl", exampleSite("apache"), []string{"<VirtualHost 127.0.0.1:8080>", "ServerAlias www.example.com", "proxy:unix:/run/monopanel/php/example.com.sock|fcgi://localhost", "ProxyTimeout 150", "ErrorLog  /var/log/monopanel/sites/alex/example.com.apache.error.log", "CustomLog /var/log/monopanel/sites/alex/example.com.apache.access.log combined"}},
 		{"apache-main.conf", "apache/httpd.conf.tmpl", ApacheMain{Listen: "127.0.0.1:8080", Backend: "127.0.0.1:8080", SitesDir: "/etc/apache2/monopanel/sites"}, []string{"Listen 127.0.0.1:8080", "RemoteIPHeader X-Real-IP"}},
 		{"mysql.cnf", "mysql/monopanel.cnf.tmpl", MySQLConf{RAMMB: 4096, NativePassword: true, Settings: []MySQLSetting{{Key: "bind-address", Value: "127.0.0.1"}, {Key: "innodb_buffer_pool_size", Value: "1024M"}, {Key: "innodb_strict_mode", Value: "OFF", Comment: []string{"Strict mode refuses oversized rows."}}, {Key: "disable_log_bin", Flag: true}, {Key: "sql_mode", Value: "''", Comment: []string{"set in the panel; the panel's value: NO_ENGINE_SUBSTITUTION"}}}}, []string{"innodb_buffer_pool_size = 1024M", "# Strict mode refuses oversized rows.\ninnodb_strict_mode = OFF", "\ndisable_log_bin\n", "sql_mode = ''", "mysql_native_password = ON"}},
 		{"firewall.nft", "nftables/monopanel.nft.tmpl", Firewall{Policy: "drop", Except: []string{"ip saddr 198.51.100.4 tcp dport 8443 accept"}, Deny: []string{"ip saddr 203.0.113.7 drop", "tcp dport 8443 drop"}, Allow: []string{"tcp dport { 22, 80, 443, 8443 } accept"}}, []string{"policy drop;", "tcp dport { 22, 80, 443, 8443 } accept", "ip saddr 203.0.113.7 drop", "ip saddr 198.51.100.4 tcp dport 8443 accept"}},
-		{"fail2ban-jail.local", "fail2ban/jail.local.tmpl", Fail2ban{BanTime: "1h", FindTime: "10m", MaxRetry: 5, PanelPort: "8443", Nginx: true, IgnoreIPs: []string{"198.51.100.7", "203.0.113.0/24"}, AccessLogs: []string{"/var/www/alex/data/logs/shop.example.com.access.log"}, ErrorLogs: []string{"/var/www/alex/data/logs/shop.example.com.error.log"}}, []string{"[monopanel]", "port = 8443", "enabled = true", "ignoreip = 127.0.0.1/8 ::1 198.51.100.7 203.0.113.0/24", "          /var/www/alex/data/logs/shop.example.com.access.log"}},
+		{"fail2ban-jail.local", "fail2ban/jail.local.tmpl", Fail2ban{BanTime: "1h", FindTime: "10m", MaxRetry: 5, PanelPort: "8443", Nginx: true, IgnoreIPs: []string{"198.51.100.7", "203.0.113.0/24"}, AccessLogs: []string{"/var/log/monopanel/sites/alex/shop.example.com.access.log"}, ErrorLogs: []string{"/var/log/monopanel/sites/alex/shop.example.com.error.log"}}, []string{"[monopanel]", "port = 8443", "enabled = true", "ignoreip = 127.0.0.1/8 ::1 198.51.100.7 203.0.113.0/24", "          /var/log/monopanel/sites/alex/shop.example.com.access.log"}},
 		{"crontab", "cron/crontab.tmpl", Crontab{Login: "alex", BinDir: "/var/www/alex/data/bin", Jobs: []CronLine{{Schedule: "*/5 * * * *", Command: "php cron.php", Enabled: true, Comment: "wp"}, {Schedule: "@daily", Command: "echo x", Enabled: false}}}, []string{"*/5 * * * * php cron.php  # wp", "#DISABLED# @daily echo x"}},
 		{"php-ini.conf", "php/monopanel.ini.tmpl", PHPIni{Version: "8.4", Timezone: "Asia/Almaty", OpcacheMemory: 128, Global: []KV{{Key: "max_input_vars", Value: "10000"}, {Key: "memory_limit", Value: "512M"}}}, []string{"opcache.memory_consumption = 128", "date.timezone = Asia/Almaty", "\nmax_input_vars = 10000\nmemory_limit = 512M\n"}},
-		{"nginx-site-webmail-port.conf", "mail/webmail.conf.tmpl", Webmail{IP: "127.0.0.1", Port: 2096, ServerName: "example.com", CertPath: "/var/lib/monopanel/certs/example.com/fullchain.pem", KeyPath: "/var/lib/monopanel/certs/example.com/privkey.pem", Docroot: "/var/www/alex/data/www/example.com", LogDir: "/var/www/alex/data/logs", Socket: "/run/monopanel/php/example.com.sock", ClientMaxBodySize: "64m"}, []string{"listen 127.0.0.1:2096 ssl;", "location ~ ^/[^/]+\\.php(?:/|$) {", "if (!-f $document_root$fastcgi_script_name) { return 404; }"}},
+		{"nginx-site-webmail-port.conf", "mail/webmail.conf.tmpl", Webmail{IP: "127.0.0.1", Port: 2096, ServerName: "example.com", CertPath: "/var/lib/monopanel/certs/example.com/fullchain.pem", KeyPath: "/var/lib/monopanel/certs/example.com/privkey.pem", Docroot: "/var/www/alex/data/www/example.com", LogDir: "/var/log/monopanel/sites/alex", Socket: "/run/monopanel/php/example.com.sock", ClientMaxBodySize: "64m"}, []string{"listen 127.0.0.1:2096 ssl;", "location ~ ^/[^/]+\\.php(?:/|$) {", "if (!-f $document_root$fastcgi_script_name) { return 404; }", "access_log /var/log/monopanel/sites/alex/webmail.access.log main;"}},
 		{"nginx-site-suspended.conf", "nginx/site-suspended.conf.tmpl", exampleSite("fpm"), []string{"return 503", "listen 203.0.113.10:443 ssl;", "The site is temporarily unavailable", "Сайт временно недоступен"}},
 		{"site-index.html", "site/index.html.tmpl", Welcome{Domain: "example.com"}, []string{"<html lang=\"en\">", "A website is coming soon", "Скоро здесь будет сайт", "example.com", "prefers-reduced-motion"}},
 		{"nginx-site-allow.conf", "nginx/site.conf.tmpl", func() Site {
@@ -60,7 +60,7 @@ func TestGolden(t *testing.T) {
 			return s
 		}(), []string{"allow 203.0.113.0/24;", "allow 2001:db8::1;", "deny  all;"}},
 		{"nginx-real-ip.conf", "nginx/real-ip.conf.tmpl", RealIP{Cloudflare: true, CloudflareRanges: CloudflareRanges}, []string{"set_real_ip_from 173.245.48.0/20;", "real_ip_header    CF-Connecting-IP;"}},
-		{"systemd-app.service", "systemd/app.service.tmpl", AppUnit{Login: "alex", Name: "web", Description: "gunicorn", Command: "/var/www/alex/data/venv/bin/gunicorn --bind 127.0.0.1:5000 app:app", WorkDir: "/var/www/alex/data/www/app.example.com", EnvFile: "/var/www/alex/data/.env", Env: []string{"PORT=5000"}, Restart: "always"}, []string{"User=alex", "ExecStart=/var/www/alex/data/venv/bin/gunicorn --bind 127.0.0.1:5000 app:app", "EnvironmentFile=/var/www/alex/data/.env", "Environment=\"PORT=5000\"", "Restart=always"}},
+		{"systemd-app.service", "systemd/app.service.tmpl", AppUnit{Login: "alex", Name: "web", Description: "gunicorn", Command: "/var/www/alex/data/venv/bin/gunicorn --bind 127.0.0.1:5000 app:app", WorkDir: "/var/www/alex/data/www/app.example.com", EnvFile: "/var/www/alex/data/.env", PanelEnvFile: "/etc/monopanel/apps/monopanel-app-alex-web.env", Env: []string{"PORT=5000"}, Restart: "always", Binary: "/usr/bin/monopanel"}, []string{"User=alex", "ExecStart=/usr/bin/monopanel app-exec --env-file /var/www/alex/data/.env -- /var/www/alex/data/venv/bin/gunicorn --bind 127.0.0.1:5000 app:app", "EnvironmentFile=/etc/monopanel/apps/monopanel-app-alex-web.env", "Restart=always"}},
 		{"systemd-valkey-cache.service", "systemd/valkey.service.tmpl", ValkeyUnit{Login: "alex", Purpose: "cache", Name: "alex-cache", Engine: "valkey", Binary: "/usr/bin/valkey-server", Socket: "/run/monopanel-valkey/alex-cache/valkey.sock", DataDir: "/var/lib/monopanel-valkey/alex-cache", MemoryMB: 128, MemoryMax: 320}, []string{"User=alex", "ExecStart=/usr/bin/valkey-server --supervised systemd --daemonize no --port 0 \\", "--maxmemory-policy allkeys-lru --save \"\"", "RuntimeDirectory=monopanel-valkey/alex-cache", "MemoryMax=320M"}},
 		{"systemd-valkey-sessions.service", "systemd/valkey.service.tmpl", ValkeyUnit{Login: "alex", Purpose: "sessions", Name: "alex-sessions", Engine: "redis", Binary: "/usr/bin/redis-server", Socket: "/run/monopanel-valkey/alex-sessions/valkey.sock", DataDir: "/var/lib/monopanel-valkey/alex-sessions", MemoryMB: 64, MemoryMax: 192, Sessions: true}, []string{"ExecStart=/usr/bin/redis-server --supervised systemd --daemonize no --port 0 \\", "--maxmemory-policy volatile-lru --save 60 1", "StateDirectory=monopanel-valkey/alex-sessions"}},
 		{"php-fpm-pool-valkey.conf", "php-fpm/pool.conf.tmpl", func() Pool {
@@ -68,8 +68,12 @@ func TestGolden(t *testing.T) {
 			p.SessionSocket = "/run/monopanel-valkey/alex-sessions/valkey.sock"
 			return p
 		}(), []string{"php_admin_value[session.save_handler] = redis", "php_admin_value[session.save_path] = \"unix:///run/monopanel-valkey/alex-sessions/valkey.sock\""}},
-		{"logrotate-sites", "logrotate/sites.tmpl", SiteLogrotate{NginxPID: "/run/nginx.pid", ApachePID: "/run/apache2/apache2.pid", Accounts: []LogrotateAccount{{Login: "alex", LogDir: "/var/www/alex/data/logs"}, {Login: "shop", LogDir: "/var/www/shop/data/logs"}}}, []string{"/var/www/alex/data/logs/*.access.log /var/www/alex/data/logs/*.error.log /var/www/alex/data/logs/*.php.slow.log {", "su alex alex", "su shop shop", "kill -USR1 \"$(cat /run/nginx.pid)\"", "kill -USR1 \"$(cat /run/apache2/apache2.pid)\"", "/var/www/shop/data/logs/*.access.log /var/www/shop/data/logs/*.error.log /var/www/shop/data/logs/*.php.slow.log {", "create 0660 shop shop"}},
-		{"php-fpm-pool.conf", "php-fpm/pool.conf.tmpl", examplePool(), []string{"[example.com]", "listen.group = monopanel-web", "php_value[memory_limit] = 256M", "pm = ondemand"}},
+		{"logrotate-sites", "logrotate/sites.tmpl", SiteLogrotate{NginxPID: "/run/nginx.pid", ApachePID: "/run/apache2/apache2.pid", Accounts: []LogrotateAccount{{Login: "alex", LogDir: "/var/log/monopanel/sites/alex"}, {Login: "shop", LogDir: "/var/log/monopanel/sites/shop"}}}, []string{
+			"/var/log/monopanel/sites/alex/*.access.log /var/log/monopanel/sites/alex/*[!p].error.log /var/log/monopanel/sites/alex/*[!h]p.error.log /var/log/monopanel/sites/alex/*[!p]hp.error.log /var/log/monopanel/sites/alex/*[!.]php.error.log /var/log/monopanel/sites/alex/*.php.slow.log {",
+			"create 0640 root alex", "\n/var/log/monopanel/sites/alex/*.php.error.log {", "create 0660 alex alex",
+			"create 0640 root shop", "\n/var/log/monopanel/sites/shop/*.php.error.log {", "create 0660 shop shop",
+			"kill -USR1 \"$(cat /run/nginx.pid)\"", "kill -USR1 \"$(cat /run/apache2/apache2.pid)\""}},
+		{"php-fpm-pool.conf", "php-fpm/pool.conf.tmpl", examplePool(), []string{"[example.com]", "listen.group = monopanel-web", "php_value[memory_limit] = 256M", "pm = ondemand", "slowlog = /var/log/monopanel/sites/alex/example.com.php.slow.log", "php_admin_value[error_log]         = /var/log/monopanel/sites/alex/example.com.php.error.log"}},
 	}
 	presets := []string{"nginx/presets/wordpress.conf.tmpl", "nginx/presets/joomla.conf.tmpl", "nginx/presets/bitrix.conf.tmpl", "nginx/presets/opencart.conf.tmpl"}
 	for _, pr := range []struct{ id, must string }{{"wordpress", "location = /xmlrpc.php"}, {"joomla", "location /api/ { try_files $uri $uri/ /api/index.php?$args; }"}, {"bitrix", "SCRIPT_FILENAME $document_root/bitrix/urlrewrite.php"}, {"opencart", "rewrite ^/(.+)$ /index.php?_route_=$1 last;"}} {
@@ -134,5 +138,45 @@ func TestOverrideAndList(t *testing.T) {
 	}
 	if _, err := r.Render("nginx/site.conf.tmpl", map[string]any{"Domain": "x"}); err == nil {
 		t.Fatal("missing keys must error")
+	}
+}
+
+// A value with a line break never reaches a configuration file: in each
+// format the panel renders it would start a directive of its own. The error
+// names the field.
+func TestRenderRefusesLineBreaks(t *testing.T) {
+	r := New("")
+	presets := []string{"nginx/presets/wordpress.conf.tmpl", "nginx/presets/joomla.conf.tmpl", "nginx/presets/bitrix.conf.tmpl", "nginx/presets/opencart.conf.tmpl"}
+	site := func(edit func(*Site)) Site { s := exampleSite("fpm"); edit(&s); return s }
+	pool := func(edit func(*Pool)) Pool { p := examplePool(); edit(&p); return p }
+	for _, c := range []struct {
+		tmpl  string
+		data  any
+		field string
+	}{
+		{"nginx/site.conf.tmpl", site(func(s *Site) { s.ClientMaxBodySize = "1m;\naccess_log /etc/cron.d/x main" }), "Site.ClientMaxBodySize"},
+		{"nginx/site.conf.tmpl", site(func(s *Site) { s.Aliases = []string{"www.example.com", "x.example.com;\r\nlisten 1"} }), "Site.Aliases[1]"},
+		{"nginx/site.conf.tmpl", site(func(s *Site) { s.Docroot = "/var/www/alex/data/www/example.com\x00" }), "Site.Docroot"},
+		{"apache/site.conf.tmpl", site(func(s *Site) { s.Domain = "example.com\nInclude /etc/shadow" }), "Site.Domain"},
+		{"php-fpm/pool.conf.tmpl", pool(func(p *Pool) { p.Values = append(p.Values, KV{"memory_limit", "1G\nslowlog = /etc/cron.d/x"}) }), "Pool.Values[6].Value"},
+		{"systemd/app.service.tmpl", &AppUnit{Login: "alex", Name: "web", Command: "/bin/true", WorkDir: "/var/www/alex/data", Restart: "always", Env: []string{"A=1\nExecStartPre=+/bin/sh"}}, "AppUnit.Env[0]"},
+		{"cron/crontab.tmpl", Crontab{Login: "alex", BinDir: "/var/www/alex/data/bin", Jobs: []CronLine{{Schedule: "@daily", Command: "true", Comment: "x\n* * * * * id"}}}, "Crontab.Jobs[0].Comment"},
+		{"mail/dovecot.conf.tmpl", Dovecot{Hostname: "mail.example.com\r", MailBase: "/var/mail", UsersFile: "/etc/dovecot/users", VmailUser: "vmail"}, "Dovecot.Hostname"},
+	} {
+		_, err := r.RenderSet(c.tmpl, c.data, presets...)
+		if err == nil || !strings.Contains(err.Error(), c.field+" holds a line break") || !strings.Contains(err.Error(), c.tmpl) {
+			t.Errorf("%s with a line break in %s: %v", c.tmpl, c.field, err)
+		}
+		if _, err := r.Render(c.tmpl, c.data); err == nil {
+			t.Errorf("Render %s let %s through", c.tmpl, c.field)
+		}
+	}
+	// Maps are walked too, keys included.
+	if err := oneLineValues(map[string]string{"ok": "x", "bad\nkey": "y"}); err == nil || !strings.Contains(err.Error(), `data["bad\nkey"]`) {
+		t.Errorf("map key: %v", err)
+	}
+	// Tabs and ordinary values stay as they were.
+	if err := oneLineValues(CronLine{Schedule: "@daily", Command: "printf 'a\tb'", Enabled: true}); err != nil {
+		t.Errorf("a tab is not a line break: %v", err)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"monopanel/internal/termsafe"
 	"os"
 	"os/signal"
 	"strings"
@@ -58,11 +59,11 @@ func Main(args []string) int {
 		var ee *exitError
 		if errors.As(err, &ee) {
 			if ee.msg != "" {
-				fmt.Fprintln(os.Stderr, "error:", ee.msg)
+				fmt.Fprintln(os.Stderr, "error:", termsafe.Text(ee.msg))
 			}
 			return ee.code
 		}
-		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, "error:", termsafe.Text(err.Error()))
 		if errors.Is(err, fs.ErrPermission) {
 			fmt.Fprintln(os.Stderr, T("сокет панели открыт root и аккаунтам с shell-доступом (группа monopanel-cli); остальным — --server и --token", "the panel socket is open to root and to accounts with shell access (group monopanel-cli); everyone else uses --server and --token"))
 			return 4
@@ -91,11 +92,21 @@ func newRoot() *cobra.Command {
 		Short: T("MonoPanel — панель управления веб-сервером", "MonoPanel — a web hosting control panel"),
 		Long: T(`MonoPanel — панель управления веб-сервером (nginx + php-fpm, nginx + Apache, PHP 5.6–8.5, MySQL/Percona 8.4).
 
-Без аргументов в терминале открывается TUI-меню. Все команды работают через REST API панели:
-локально — через /run/monopanel/api.sock (root = администратор), удалённо — через --server и --token.`, `MonoPanel — a web hosting control panel (nginx + php-fpm, nginx + Apache, PHP 5.6–8.5, MySQL/Percona 8.4).
+Без аргументов в терминале открывается TUI-меню. Команды работают через REST API панели — с теми же
+правами и проверками, что и веб-интерфейс: локально — через /run/monopanel/api.sock (root = администратор,
+аккаунт с shell-доступом — он сам), удалённо — через --server и --token ($MP_SERVER, $MP_TOKEN).
 
-Without arguments in a terminal it opens the TUI menu. Every command goes through the panel's REST API:
-locally over /run/monopanel/api.sock (root = administrator), remotely with --server and --token.`),
+Без API работают только help, completion и version, а от root на сервере — ещё setup (первичная
+настройка), config show --local и config set --local (восстановление, когда API не запускается) и
+update trust (ключ подписи релизов: самой панели он нарочно недоступен).`, `MonoPanel — a web hosting control panel (nginx + php-fpm, nginx + Apache, PHP 5.6–8.5, MySQL/Percona 8.4).
+
+Without arguments in a terminal it opens the TUI menu. Commands go through the panel's REST API, with the
+same rights and checks as the web interface: locally over /run/monopanel/api.sock (root = administrator,
+an account with shell access = that account), remotely with --server and --token ($MP_SERVER, $MP_TOKEN).
+
+Only help, completion and version work without the API, and, as root on the server, also setup (the
+initial setup), config show --local and config set --local (recovery when the API does not start) and
+update trust (the release signing key, kept out of the panel's reach on purpose).`),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -104,7 +115,7 @@ locally over /run/monopanel/api.sock (root = administrator), remotely with --ser
 				if err != nil {
 					return err
 				}
-				return tui.Run(cmd.Context(), cl)
+				return tui.Run(cmd.Context(), cl, cmd.Root(), tui.Options{Server: g.server, Token: panelToken(), Insecure: g.insecure, Config: g.config})
 			}
 			return cmd.Help()
 		},
@@ -114,33 +125,53 @@ locally over /run/monopanel/api.sock (root = administrator), remotely with --ser
 	pf := root.PersistentFlags()
 	pf.StringVar(&g.config, "config", "", T("путь к config.yaml (по умолчанию /etc/monopanel/config.yaml или $MONOPANEL_CONFIG)", "path to config.yaml (default /etc/monopanel/config.yaml or $MONOPANEL_CONFIG)"))
 	pf.StringVar(&g.server, "server", os.Getenv("MP_SERVER"), T("адрес панели для удалённого доступа, например https://host:8443 ($MP_SERVER)", "panel address for remote access, e.g. https://host:8443 ($MP_SERVER)"))
-	pf.StringVar(&g.token, "token", os.Getenv("MP_TOKEN"), T("API-токен для --server ($MP_TOKEN)", "API token for --server ($MP_TOKEN)"))
-	pf.BoolVar(&g.insecure, "insecure", false, T("не проверять TLS-сертификат панели", "do not verify the panel's TLS certificate"))
+	// No default from $MP_TOKEN here: cobra prints a flag's default in every
+	// --help, and the token would be on screen (and in the console's output).
+	// panelToken reads the variable when the flag is not given.
+	pf.StringVar(&g.token, "token", "", T("API-токен для --server ($MP_TOKEN)", "API token for --server ($MP_TOKEN)"))
+	pf.BoolVar(&g.insecure, "insecure", os.Getenv("MP_INSECURE") == "1", T("не проверять TLS-сертификат панели ($MP_INSECURE=1)", "do not verify the panel's TLS certificate ($MP_INSECURE=1)"))
 	pf.BoolVar(&g.json, "json", false, T("машинный вывод JSON", "machine-readable JSON output"))
 	pf.BoolVar(&g.noWait, "no-wait", false, T("не ждать завершения задач", "do not wait for jobs to finish"))
 	for _, extra := range extraCommands {
 		root.AddCommand(extra())
 	}
-	root.AddCommand(versionCmd(), apiCmd(), agentCmd(), helperCmd(), fsopCmd(), setupCmd(), statusCmd(), userCmd(), jobCmd(), auditCmd(), tokenCmd(), serviceCmd(), stackCmd(), configCmd(), sslCmd(), webCmd(), phpCmd(), siteCmd(), cmsCmd(), dbCmd(), cronCmd(), firewallCmd(), doctorCmd(), selinuxCmd(), logsCmd(), metricsCmd(), backupCmd(), webhookCmd(), filesCmd(), dnsProviderCmd(), appCmd(), valkeyCmd(), updateCmd(), updateRunCmd(), mailCmd(), migrateCmd())
+	root.AddCommand(versionCmd(), apiCmd(), agentCmd(), helperCmd(), fsopCmd(), setupCmd(), statusCmd(), userCmd(), jobCmd(), auditCmd(), tokenCmd(), serviceCmd(), stackCmd(), configCmd(), sslCmd(), webCmd(), phpCmd(), siteCmd(), cmsCmd(), dbCmd(), cronCmd(), firewallCmd(), doctorCmd(), selinuxCmd(), logsCmd(), metricsCmd(), backupCmd(), webhookCmd(), filesCmd(), dnsProviderCmd(), appCmd(), valkeyCmd(), updateCmd(), updateRunCmd(), mailCmd(), migrateCmd(), totpCmd(), whoamiCmd(), appExecCmd())
 	return root
 }
 
 func loadConfig() (config.Config, error) { return config.Load(g.config) }
 
+// panelToken is the token for --server: the flag, else $MP_TOKEN.
+func panelToken() string {
+	if g.token != "" {
+		return g.token
+	}
+	return os.Getenv("MP_TOKEN")
+}
+
 func newClient() (*client.Client, error) {
 	if g.server != "" {
-		return client.NewRemote(g.server, g.token, g.insecure), nil
+		return client.NewRemote(g.server, panelToken(), g.insecure), nil
 	}
+	sock, err := apiSocket()
+	if err != nil {
+		return nil, err
+	}
+	return client.NewUnix(sock), nil
+}
+
+// apiSocket is the panel socket mp talks to without --server.
+func apiSocket() (string, error) {
 	cfg, err := loadConfig()
 	if err != nil {
 		if !errors.Is(err, fs.ErrPermission) {
-			return nil, err
+			return "", err
 		}
 		// config.yaml is root:monopanel 0640; other local users still reach the
 		// socket at the default path and are authenticated by their uid.
 		cfg = config.Default()
 	}
-	return client.NewUnix(cfg.APISocket()), nil
+	return cfg.APISocket(), nil
 }
 
 func printJSON(v any) error {
@@ -153,7 +184,14 @@ func table(header []string, rows [][]string) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, strings.Join(header, "\t"))
 	for _, r := range rows {
-		fmt.Fprintln(w, strings.Join(r, "\t"))
+		// The cells are the server's values (names, comments, a login a
+		// stranger typed): no escape sequence of theirs reaches the terminal,
+		// and a tab or a line break cannot shift the columns.
+		cells := make([]string, len(r))
+		for i, c := range r {
+			cells[i] = strings.ReplaceAll(termsafe.Line(c), "\t", " ")
+		}
+		fmt.Fprintln(w, strings.Join(cells, "\t"))
 	}
 	w.Flush() //nolint:errcheck // best effort; the caller reports the real failure
 }

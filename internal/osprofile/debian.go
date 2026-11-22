@@ -39,8 +39,16 @@ func (aptManager) Env() []string {
 // a job that dies on "Could not get lock" looks like a broken installer.
 const aptLockWait = "DPkg::Lock::Timeout=600"
 
+// aptLabelChange lets apt-get update accept a repository whose Release file
+// changed its Label. apt refuses that by default until someone confirms it
+// interactively, and then every index update fails — as on every Ubuntu with
+// ppa:ondrej/php when the PPA was relabelled "PPA for PHP (deprecated)" in
+// November 2026. The label is cosmetic (unlike Origin, Suite or Codename,
+// which apt keeps guarding).
+const aptLabelChange = "Acquire::AllowReleaseInfoChange::Label=true"
+
 func (aptManager) UpdateIndexArgv() []string {
-	return []string{"apt-get", "-q", "-o", aptLockWait, "update"}
+	return []string{"apt-get", "-q", "-o", aptLockWait, "-o", aptLabelChange, "update"}
 }
 func (aptManager) InstallArgv(pkgs []string) []string {
 	return append([]string{"apt-get", "-q", "-y", "-o", aptLockWait, "-o", "Dpkg::Options::=--force-confold", "--no-install-recommends", "install"}, pkgs...)

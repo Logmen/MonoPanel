@@ -1,8 +1,9 @@
 package cli
 
 import (
-	"bufio"
 	"fmt"
+	"monopanel/internal/termsafe"
+	"monopanel/internal/tui"
 	"os"
 	"sort"
 	"strconv"
@@ -15,7 +16,6 @@ import (
 	"monopanel/internal/auth"
 	"monopanel/internal/client"
 	"monopanel/internal/jobs"
-	"monopanel/internal/render"
 	"monopanel/internal/store"
 )
 
@@ -96,9 +96,9 @@ func followJob(cmd *cobra.Command, cl *client.Client, id int64) error {
 		}
 		switch e.Type {
 		case "log":
-			fmt.Fprintln(os.Stderr, "   ", e.Line)
+			fmt.Fprintln(os.Stderr, "   ", termsafe.Text(e.Line))
 		case "progress":
-			fmt.Fprintf(os.Stderr, "  [%3d%%] %s\n", e.Progress, e.Message)
+			fmt.Fprintf(os.Stderr, "  [%3d%%] %s\n", e.Progress, termsafe.Line(e.Message))
 		}
 	})
 	if err != nil {
@@ -118,15 +118,23 @@ func userCmd() *cobra.Command {
 	c := &cobra.Command{Use: "user", Short: T("аккаунты панели и unix-пользователи", "panel accounts and unix users")}
 	var req apitypes.CreateUserRequest
 	var passwordStdin, generate bool
+	var quota int
 	add := &cobra.Command{Use: "add <login>", Short: T("создать пользователя (unix-пользователь и каталоги создаются задачей)", "create a user (the unix user and the directories are created by a job)"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		for _, other := range []string{"password", "password-stdin"} {
+			if err := apart(cmd, "generate", other); err != nil {
+				return err
+			}
+		}
 		cl, err := newClient()
 		if err != nil {
 			return err
 		}
 		req.Login = args[0]
-		if passwordStdin {
-			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-			req.Password = strings.TrimRight(line, "\r\n")
+		if err := secretFlag(cmd, "password-stdin", "password", T("Пароль: ", "Password: "), &req.Password); err != nil {
+			return err
+		}
+		if cmd.Flags().Changed("quota") {
+			req.QuotaMB = &quota
 		}
 		var shown string
 		if generate && req.Password == "" {
@@ -166,6 +174,7 @@ func userCmd() *cobra.Command {
 	add.Flags().StringVar(&req.Email, "email", "", "e-mail")
 	add.Flags().StringVar(&req.Role, "role", "user", T("роль: user или admin", "role: user or admin"))
 	add.Flags().BoolVar(&req.Shell, "shell", false, T("разрешить SSH-shell (иначе только SFTP)", "allow an SSH shell (otherwise SFTP only)"))
+	add.Flags().IntVar(&quota, "quota", 0, T("квота диска в МБ (хранится в аккаунте)", "disk quota in MB (kept with the account)"))
 	list := &cobra.Command{Use: "list", Short: T("список пользователей", "list users"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
@@ -205,13 +214,42 @@ func userCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		return cl.TOTPReset(cmd.Context(), args[0])
+		if err := cl.TOTPReset(cmd.Context(), args[0]); err != nil {
+			return err
+		}
+		if g.json {
+			return printJSON(apitypes.TOTPStatus{Enabled: false})
+		}
+		fmt.Printf(T("2FA аккаунта %s сброшена: вход снова только по паролю\n", "2FA of %s is reset: signing in takes only the password again\n"), args[0])
+		return nil
 	}}
 	var upd apitypes.UserUpdateRequest
-	var shell, sftpOnly, genPw bool
+	var shell, sftpOnly, genPw, setPasswordStdin bool
 	set := &cobra.Command{Use: "set <login>", Short: T("изменить e-mail, пароль (панель + SFTP/SSH), режим shell/SFTP-only, статус", "change the e-mail, password (panel + SFTP/SSH), shell/SFTP-only mode or status"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		for _, pair := range [][2]string{{"shell", "sftp-only"}, {"generate", "password"}, {"generate", "password-stdin"}} {
+			if err := apart(cmd, pair[0], pair[1]); err != nil {
+				return err
+			}
+		}
 		cl, err := newClient()
 		if err != nil {
+			return err
+		}
+		// Your own password over --server needs the current one; on stdin it
+		// comes first, before the new one (--password-stdin).
+		if cmd.Flags().Changed("password") || setPasswordStdin || genPw {
+			if err := secretFlag(cmd, "current-password-stdin", "current-password", T("Текущий пароль: ", "Current password: "), &upd.CurrentPassword); err != nil {
+				return err
+			}
+			if upd.CurrentPassword == "" && g.server != "" && stdinIsTerminal() {
+				if me, err := cl.Me(cmd.Context()); err == nil && me.Login == args[0] {
+					if upd.CurrentPassword, err = readSecret(cmd.Context(), "current-password-stdin", T("Текущий пароль: ", "Current password: ")); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		if err := secretFlag(cmd, "password-stdin", "password", T("Новый пароль: ", "New password: "), &upd.Password); err != nil {
 			return err
 		}
 		if shell {
@@ -231,7 +269,30 @@ func userCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		if shown != "" && !g.json {
+		if shown != "" && g.json {
+			// The generated password is shown only here, so it goes into the
+			// JSON too, as with user add.
+			out := map[string]any{"user": res.User, "password": shown}
+			if res.JobID == 0 || g.noWait {
+				if res.JobID != 0 {
+					out["job_id"] = res.JobID
+				}
+				return printJSON(out)
+			}
+			job, jerr := cl.WaitJob(cmd.Context(), res.JobID, nil)
+			out["job"] = job
+			if err := printJSON(out); err != nil {
+				return err
+			}
+			if jerr != nil {
+				return jerr
+			}
+			if job.Status == store.JobFailed {
+				return &exitError{code: 3, msg: job.Error}
+			}
+			return nil
+		}
+		if shown != "" {
 			fmt.Println(T("пароль:", "password:"), shown)
 		}
 		if res.JobID != 0 {
@@ -243,8 +304,14 @@ func userCmd() *cobra.Command {
 		fmt.Println(T("обновлено", "updated"))
 		return nil
 	}}
+	// Both secrets may come on stdin, the current password first: the TUI
+	// pipes them in this order.
+	set.Annotations = map[string]string{tui.StdinOrderAnnotation: "current-password-stdin,password-stdin"}
 	set.Flags().StringVar(&upd.Email, "email", "", "e-mail")
+	set.Flags().StringVar(&upd.CurrentPassword, "current-password", "", T("текущий пароль (нужен, чтобы сменить свой пароль через --server)", "the current password (changing your own password over --server needs it)"))
+	set.Flags().Bool("current-password-stdin", false, T("прочитать текущий пароль из stdin; на stdin он идёт первой строкой, до нового", "read the current password from stdin; it comes first on stdin, before the new one"))
 	set.Flags().StringVar(&upd.Password, "password", "", T("новый пароль", "new password"))
+	set.Flags().BoolVar(&setPasswordStdin, "password-stdin", false, T("прочитать новый пароль из stdin", "read the new password from stdin"))
 	set.Flags().BoolVar(&genPw, "generate", false, T("сгенерировать пароль", "generate a password"))
 	set.Flags().BoolVar(&shell, "shell", false, T("разрешить SSH shell", "allow an SSH shell"))
 	set.Flags().BoolVar(&sftpOnly, "sftp-only", false, T("только SFTP в chroot домашнего каталога", "SFTP only, chrooted to the home directory"))
@@ -286,7 +353,7 @@ func auditCmd() *cobra.Command {
 		table([]string{"TIME", "WHO", "ACTION", "TARGET", "IP", "RESULT", "DETAILS"}, rows)
 		return nil
 	}}
-	c.Flags().IntVarP(&limit, "limit", "n", 50, T("сколько записей показать", "how many entries to show"))
+	c.Flags().IntVarP(&limit, "limit", "n", 50, T("сколько записей показать (до 1000)", "how many entries to show (up to 1000)"))
 	c.Flags().StringVar(&actor, "actor", "", T("только записи этого аккаунта", "only this account's entries"))
 	c.Flags().StringVar(&action, "action", "", T("префикс действия: auth. — входы, token. — токены, site. — сайты", "action prefix: auth. — sign-ins, token. — tokens, site. — sites"))
 	return c
@@ -315,8 +382,8 @@ func jobCmd() *cobra.Command {
 		table([]string{"ID", "TYPE", "STATUS", "PROGRESS", "BY", "CREATED", "MESSAGE"}, rows)
 		return nil
 	}}
-	list.Flags().IntVar(&limit, "limit", 30, T("сколько задач показать", "how many jobs to show"))
-	list.Flags().StringVar(&status, "status", "", T("фильтр: queued running done failed", "filter: queued running done failed"))
+	list.Flags().IntVar(&limit, "limit", 30, T("сколько задач показать (до 500)", "how many jobs to show (up to 500)"))
+	list.Flags().StringVar(&status, "status", "", T("только в этом состоянии: queued, running, done, failed или cancelled", "only in this state: queued, running, done, failed or cancelled"))
 	show := &cobra.Command{Use: "show <id>", Short: T("задача с журналом", "a job with its log"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
@@ -333,11 +400,23 @@ func jobCmd() *cobra.Command {
 		if g.json {
 			return printJSON(j)
 		}
-		fmt.Printf("#%d %s — %s (%d%%) %s\n", j.ID, j.Type, j.Status, j.Progress, j.Message)
-		if j.Error != "" {
-			fmt.Println(T("ошибка:", "error:"), j.Error)
+		fmt.Printf("#%d %s — %s (%d%%) %s\n", j.ID, j.Type, j.Status, j.Progress, termsafe.Line(j.Message))
+		when := func(t *time.Time) string {
+			if t == nil {
+				return "-"
+			}
+			return t.Local().Format("2006-01-02 15:04:05")
 		}
-		fmt.Print(j.Log)
+		created := j.CreatedAt.Std()
+		fmt.Printf(T("кто: %s · создана %s · начата %s · завершена %s\n", "by: %s · created %s · started %s · finished %s\n"), j.RequestedBy, when(&created), when(j.StartedAt), when(j.FinishedAt))
+		if p := strings.TrimSpace(string(j.Payload)); p != "" && p != "null" && p != "{}" {
+			// the API has already hidden the secrets a payload may carry
+			fmt.Println(T("параметры:", "payload:"), termsafe.Line(p))
+		}
+		if j.Error != "" {
+			fmt.Println(T("ошибка:", "error:"), termsafe.Text(j.Error))
+		}
+		fmt.Print(termsafe.Text(j.Log))
 		return nil
 	}}
 	wait := &cobra.Command{Use: "wait <id>", Short: T("дождаться завершения и показать журнал", "wait for the job to finish and show its log"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
@@ -370,6 +449,44 @@ func firstLine(a, b string) string {
 	return s
 }
 
+// apart refuses two flags that ask for opposite things (--shell and
+// --sftp-only): which one won would otherwise be up to the code. A switch
+// counts when it is on, any other flag when it is given a value: an emptied
+// list asks for what --allow-all or --clear-from ask for (a TUI form sends
+// --allow= when the field is cleared), an empty --password for no password.
+func apart(cmd *cobra.Command, a, b string) error {
+	on := func(name string) bool {
+		f := cmd.Flags().Lookup(name)
+		if f == nil || !f.Changed {
+			return false
+		}
+		switch v := f.Value.String(); f.Value.Type() {
+		case "bool":
+			return v == "true"
+		case "stringSlice", "stringArray":
+			return v != "[]"
+		default:
+			return v != ""
+		}
+	}
+	if on(a) && on(b) {
+		return &exitError{code: 2, msg: fmt.Sprintf(T("--%s и --%s вместе не задаются", "--%s and --%s cannot be used together"), a, b)}
+	}
+	return nil
+}
+
+// commaList splits a comma-separated flag value the way the web forms do:
+// every item trimmed, empty ones dropped, so "a, b," is a and b.
+func commaList(s string) []string {
+	var out []string
+	for _, item := range strings.Split(s, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
 func tokenCmd() *cobra.Command {
 	c := &cobra.Command{Use: "token", Short: T("API-токены для скриптов и биллинга", "API tokens for scripts and billing")}
 	var req apitypes.CreateTokenRequest
@@ -379,9 +496,7 @@ func tokenCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		if scopes != "" {
-			req.Scopes = strings.Split(scopes, ",")
-		}
+		req.Scopes = commaList(scopes)
 		res, err := cl.CreateToken(cmd.Context(), req)
 		if err != nil {
 			return err
@@ -472,9 +587,13 @@ func serviceCmd() *cobra.Command {
 		return nil
 	}}
 	c.AddCommand(status)
-	for _, action := range []string{"start", "stop", "reload", "restart", "enable", "disable"} {
+	for _, action := range []string{"start", "stop", "reload", "restart", "reload-or-restart", "enable", "disable"} {
 		action := action
-		c.AddCommand(&cobra.Command{Use: action + " <unit>", Short: action + T(" сервиса", " a service"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		short := action + T(" сервиса", " a service")
+		if action == "reload-or-restart" {
+			short = T("reload сервиса, а если он не умеет — restart", "reload a service, or restart it when it cannot reload")
+		}
+		c.AddCommand(&cobra.Command{Use: action + " <unit>", Short: short, Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 			cl, err := newClient()
 			if err != nil {
 				return err
@@ -482,6 +601,24 @@ func serviceCmd() *cobra.Command {
 			st, err := cl.ServiceAction(cmd.Context(), args[0], action)
 			if err != nil {
 				return err
+			}
+			if panelUnit(st.Unit) && (action == "stop" || action == "restart" || action == "reload-or-restart") {
+				// The API answers first and acts half a second later: the
+				// state in the answer is the one before the action.
+				if action == "stop" {
+					if g.json {
+						return printJSON(st)
+					}
+					fmt.Printf(T("%s останавливается; запустить снова: systemctl start %s\n", "%s is stopping; start it again with systemctl start %s\n"), st.Unit, st.Unit)
+					return nil
+				}
+				if g.json {
+					if err := waitRestarted(cmd.Context(), cl); err != nil {
+						return err
+					}
+					return printJSON(st)
+				}
+				return waitRestarted(cmd.Context(), cl)
 			}
 			if g.json {
 				return printJSON(st)
@@ -491,6 +628,16 @@ func serviceCmd() *cobra.Command {
 		}})
 	}
 	return c
+}
+
+// panelUnit tells the panel's own units: stopping or restarting them takes
+// the API (which requires the agent) down with them.
+func panelUnit(unit string) bool {
+	switch strings.TrimSuffix(unit, ".service") {
+	case "monopanel-api", "monopanel-agent":
+		return true
+	}
+	return false
 }
 
 func stackCmd() *cobra.Command {
@@ -581,52 +728,5 @@ func stackCmd() *cobra.Command {
 	memcached.Flags().IntVar(&mem.MemoryMB, "memory-mb", 128, T("размер кеша в МБ", "cache size in MB"))
 	memcached.Flags().IntVar(&mem.MaxConnections, "max-conn", 1024, T("одновременных соединений", "concurrent connections"))
 	c.AddCommand(list, install, remove, memcached, stackRealIPCmd())
-	return c
-}
-
-func configCmd() *cobra.Command {
-	c := &cobra.Command{Use: "config", Short: T("конфигурация и шаблоны", "configuration and templates")}
-	show := &cobra.Command{Use: "show", Short: T("эффективная конфигурация", "effective configuration"), RunE: func(cmd *cobra.Command, _ []string) error {
-		cfg, err := loadConfig()
-		if err != nil {
-			return err
-		}
-		if g.json {
-			return printJSON(cfg)
-		}
-		fmt.Println(T("# файл:", "# file:"), cfg.Path())
-		tmp := os.TempDir() + "/mp-config-show.yaml"
-		if err := cfg.Save(tmp); err != nil {
-			return err
-		}
-		defer os.Remove(tmp)
-		b, _ := os.ReadFile(tmp)
-		fmt.Print(string(b))
-		return nil
-	}}
-	templates := &cobra.Command{Use: "templates", Short: T("список встроенных шаблонов", "list the built-in templates"), RunE: func(cmd *cobra.Command, _ []string) error {
-		cfg, err := loadConfig()
-		if err != nil {
-			return err
-		}
-		r := render.New(cfg.TemplatesDir)
-		list, err := r.List()
-		if err != nil {
-			return err
-		}
-		if g.json {
-			return printJSON(list)
-		}
-		for _, name := range list {
-			_, overridden, _ := r.Source(name)
-			mark := ""
-			if overridden {
-				mark = fmt.Sprintf(T("  (переопределён в %s)", "  (overridden in %s)"), cfg.TemplatesDir)
-			}
-			fmt.Println(name + mark)
-		}
-		return nil
-	}}
-	c.AddCommand(show, templates, configSetCmd())
 	return c
 }

@@ -28,15 +28,34 @@ A limitation of mode B: `php_value` / `php_flag` directives in `.htaccess` work 
 /var/www/<user>/                         0710 <user>:<user>  + ACL g:monopanel-web:x   (traverse only)
 └── data/                                0750
     ├── www/<domain>/                    docroot; default ACL g:monopanel-web:rX
-    ├── logs/                            access/error/php-error/php-slow per site; ACL g:monopanel-web:x
     ├── tmp/                             0700; upload_tmp_dir / session.save_path / sys_temp_dir
     ├── bin/php -> /opt/monopanel/php/8.4/bin/php
     └── .ssh/ .composer/ .wp-cli/ …
+
+/var/log/monopanel/                      0751 monopanel:monopanel   (log_dir; the panel's audit.log is here too)
+└── sites/                               0711 root:root             traverse, no listing
+    └── <user>/                          0751 root:<user>           the client reads through its group
+        ├── <domain>.access.log          0640 root:<user>           nginx; after USR1 owned by its user
+        ├── <domain>.error.log           0640 root:<user>
+        ├── <domain>.apache.{access,error}.log  0640 root:<user>    apache mode
+        ├── <domain>.php.slow.log        0640 root:<user>           written by the php-fpm master
+        ├── <domain>.php.error.log       0660 <user>:<user>         written by PHP itself, as the client
+        └── webmail.{access,error}.log   0640 root:<user>           the webmail on its own port
 ```
 
 The `monopanel-web` group = { `nginx`, `www-data` | `apache` }. The web servers read static files through the ACL, FPM sockets are created with `listen.group = monopanel-web`, `listen.mode = 0660`. Clients cannot see each other. Files that PHP creates (uploads, cache) belong to the client and inherit the default ACL — no manual `chown`/`chmod 777` is needed.
 
-Site logs are rotated by `/etc/logrotate.d/monopanel-sites` — a block per account with `su <login> <login>`: the directory belongs to the client, and whatever the client puts there, logrotate acts with the client's rights, not root's. Weekly, or on the daily run if a log has grown past 100 MB; eight copies (`example.com.access.log.1`, `.2.gz` …), compressed from the second one on. All of a site's logs belong to the account, with mode 0660: the panel creates them when it applies the site, before nginx, Apache and php-fpm open them, hands the ones that already exist over to the account through the agent (by the open file, not by name), and after rotation `create 0660` makes the new ones the same. This is what logrotate before 3.19 (EL9) needs: when rotating it opens the log, and when compressing it opens it for writing as well, and the account could not open a file that nginx created as root or a slow log that php-fpm creates with mode 0600; nginx, when it reopens a log, changes only the owner, and php-fpm leaves a slow log it finds as it is. After rotation nginx gets USR1 and Apache a graceful restart, both through pid files (SELinux does not let logrotate ask systemd). After USR1 the new files are opened by the nginx worker processes, not the master, so the `monopanel-web` group can traverse `data/logs` (ACL `x`): without that the workers would keep writing to the renamed file — and would after the nightly rotation of nginx's own logs as well. The PHP error log and the php-fpm slow log reopen the file on every write, so they need no signal. php-fpm takes the trace for the slow log through `ptrace` on the worker process; on EL this is allowed by the panel's policy module ([02](02-platform-matrix.md#6-selinux-el9--el10)), and without it the slow logs had nothing in them.
+Site logs do not live in the home but in `/var/log/monopanel/sites/<login>/` (`log_dir` in `config.yaml`). They are opened as root by the nginx master (at start, reload and USR1; when it reopens a log it also changes the log's owner by name), the Apache master and the php-fpm master (the slow log, on every write). Up to and including 0.8.19 the logs were in `data/logs`, and that directory and `data/` above it belong to the client: by swapping a log for a symlink to `/etc/ld.so.preload` or `/etc/cron.d/…`, the client or any PHP code of its sites made the servers write there as root — and so got root. In `sites/` only root creates, renames and removes entries. The client reads its logs through its group (over SSH; an SFTP-only account is locked in its home and reads them in the panel), the panel and `mp site logs` through the agent.
+
+The agent makes the directories and the files before nginx, Apache and php-fpm open them (nginx creates a missing log itself, but not a missing directory, and php-fpm does not start when it cannot open its slow log). It walks the tree through opened directories without following symlinks, refuses to work in a directory that anyone but root may write to, changes owner and mode through the opened file, and decides by the name whom a file belongs to. The servers' logs (nginx, Apache, the php-fpm slow log) are `root:<login>` 0640; nginx, when it reopens a log, hands it to its own user but keeps the group and the mode, so the client can still read it. The PHP error log is written by PHP itself, as the client, which opens the file on every write, so it belongs to the client: `<login>:<login>` 0660; the client still cannot replace it, the directory is not the client's.
+
+Site logs are rotated by `/etc/logrotate.d/monopanel-sites`: two blocks per account, as root, without `su` — the directory belongs to root, and nothing the client controls is in logrotate's way. Weekly, or on the daily run if a log has grown past 100 MB; eight copies (`example.com.access.log.1`, `.2.gz` …), compressed from the second one on. The first block is the servers' logs with `create 0640 root <login>`, the second the PHP error logs with `create 0660 <login> <login>`. logrotate refuses a file that two blocks name, so instead of `*.error.log` the first block has four masks that take every error log but `*.php.error.log`.
+
+After rotation nginx gets USR1 and Apache a graceful restart, both through pid files (SELinux does not let logrotate ask systemd). After USR1 the new files are opened by the nginx worker processes, not the master, so `/var/log/monopanel` and the account's directory can be traversed by everyone (`x` without the right to list); without that the workers would keep writing to the renamed file. The PHP error log and the php-fpm slow log reopen the file on every write, so they need no signal.
+
+A panel upgraded from 0.8.19 or earlier makes the directories and logs of every account with sites once, at its first start, and queues `site.apply` for every site (and `mail.apply` when the webmail is published on its own port): the servers switch to the new paths. The old files in `data/logs` stay where they are: they are the client's files now, and nothing writes, rotates or shows them. On EL the tree gets the `httpd_log_t` label (an `fcontext` rule for `/var/log/monopanel/sites(/.*)?`, [02](02-platform-matrix.md#6-selinux-el9--el10)).
+
+php-fpm takes the trace for the slow log through `ptrace` on the worker process; on EL this is allowed by the panel's policy module ([02](02-platform-matrix.md#6-selinux-el9--el10)), and without it the slow logs had nothing in them.
 
 Configs:
 
@@ -79,8 +98,8 @@ server {
 
     root  /var/www/alex/data/www/example.com;
     index index.php index.html;
-    access_log /var/www/alex/data/logs/example.com.access.log main;
-    error_log  /var/www/alex/data/logs/example.com.error.log;
+    access_log /var/log/monopanel/sites/alex/example.com.access.log main;
+    error_log  /var/log/monopanel/sites/alex/example.com.error.log;
     client_max_body_size 64m;                          # = the pool's post_max_size
     disable_symlinks if_not_owner from=$document_root;
 
@@ -128,8 +147,8 @@ The default server on each address (`http.d/ip-<address>.conf`) accepts ACME val
     ProxyTimeout 150
     RemoteIPHeader X-Real-IP
     RemoteIPInternalProxy 127.0.0.1
-    ErrorLog  /var/www/alex/data/logs/example.com.apache.error.log
-    CustomLog /var/www/alex/data/logs/example.com.apache.access.log combined
+    ErrorLog  /var/log/monopanel/sites/alex/example.com.apache.error.log
+    CustomLog /var/log/monopanel/sites/alex/example.com.apache.access.log combined
     IncludeOptional /etc/apache2/monopanel/sites/example.com.d/*.conf
 </VirtualHost>
 ```
@@ -151,7 +170,7 @@ pm.max_children = 8
 pm.process_idle_timeout = 10s
 pm.max_requests = 500
 request_terminate_timeout = 150s ; max_execution_time + 30
-slowlog = /var/www/alex/data/logs/example.com.php.slow.log
+slowlog = /var/log/monopanel/sites/alex/example.com.php.slow.log
 request_slowlog_timeout = 10s
 catch_workers_output = yes
 clear_env = no                   ; composer/wp-cli need PATH/HOME
@@ -161,7 +180,7 @@ php_admin_value[open_basedir]      = /var/www/alex/data
 php_admin_value[upload_tmp_dir]    = /var/www/alex/data/tmp
 php_admin_value[session.save_path] = /var/www/alex/data/tmp/sess
 php_admin_value[sys_temp_dir]      = /var/www/alex/data/tmp
-php_admin_value[error_log]         = /var/www/alex/data/logs/example.com.php.error.log
+php_admin_value[error_log]         = /var/log/monopanel/sites/alex/example.com.php.error.log
 php_admin_value[sendmail_path]     = /usr/sbin/sendmail -t -i -f noreply@example.com
 php_admin_value[disable_functions] = passthru,shell_exec,system,proc_open,popen,pcntl_exec,pcntl_fork
 ; edited from the UI/CLI; php_value can be overridden in .user.ini
@@ -216,7 +235,8 @@ The site's PHP branch needs the redis extension. The socket, with mode 600, belo
 
 ## 8. Logs and rotation
 
-- Rotation — `/etc/logrotate.d/monopanel-sites`, a block per account with `su <login> <login>`: weekly, or sooner if a log has grown past 100 MB; eight copies, compressed from the second one on; after rotation nginx gets USR1 and Apache a graceful restart, both through their pid files. In detail — [section 2](#2-file-layout-on-the-server).
+- Site logs live in `/var/log/monopanel/sites/<login>/`, outside the home: nginx, Apache and php-fpm open them as root.
+- Rotation — `/etc/logrotate.d/monopanel-sites`, two blocks per account, as root (the servers' logs with `create 0640 root <login>`, the PHP error logs with `create 0660 <login> <login>`): weekly, or sooner if a log has grown past 100 MB; eight copies, compressed from the second one on; after rotation nginx gets USR1 and Apache a graceful restart, both through their pid files. In detail — [section 2](#2-file-layout-on-the-server).
 - The `main` format records `$request_time`, `$upstream_response_time`, `$host` and `$server_protocol`. Parsing access logs for per-site metrics (incrementally, remembering the file position) is planned.
 - In the UI — the tail of access/error/php-error/php-slow (the site's "Logs" tab, `mp site logs`); live follow and filtering by response code and path are planned.
 
@@ -239,7 +259,7 @@ The site's PHP branch needs the redis extension. The socket, with mode 600, belo
 2. The docroot must be empty; with `--force` its contents are deleted (as the client).
 3. A database `<login>_<cms>` is created (on a repeat install — `<login>_<cms>2`) with its own user and a generated password.
 4. The distribution is downloaded from the vendor (WordPress from wordpress.org, Joomla and OpenCart as the latest release on GitHub, without the API, Bitrix as the trial edition from 1c-bitrix.ru) and, streamed without buffering in memory, unpacked by the agent with `tar` straight into the docroot (the OpenCart zip is re-encoded to tar on the fly); the files are handed over to the client and the SELinux labels are restored.
-5. The CMS installer runs as the client through `fsop run`, which executes only the PHP interpreter (the site's branch) inside the home directory: wp-cli (`/usr/local/lib/monopanel/wp-cli.phar`, verified against the published sha512), `installation/joomla.php install`, `install/cli_install.php`. Bitrix has no CLI installer: the panel walks through its web wizard over HTTP via the site itself (the site's name is resolved to its address), including the AJAX steps that install the modules, updates and the solution, and the trial registration on 1c-bitrix.ru on behalf of the site administrator. Edition (`--edition`): the trial `start`, `standard`, `small_business`, `business` from 1c-bitrix.ru; the license key is entered later in the Bitrix settings, and the edition must match the key. Solution (`--solution`): by default `clean`, the Marketplace's "1C-Bitrix clean install" (an empty site with the standard modules and no demo content); `demo`, the demo site bundled with the distribution; or the id of any Marketplace solution (`vendor.solution`), which the wizard downloads and installs; the panel walks through the solution's wizard the same way as through the main one.
+5. The CMS installer runs as the client through `fsop run`, which executes only the PHP interpreter (the site's branch) inside the home directory: wp-cli (`/usr/local/lib/monopanel/wp-cli.phar`, verified against the published sha512), `installation/joomla.php install`, `install/cli_install.php`. The database and administrator passwords never go on the command line, which every local user can read (`ps`): they reach the installer on stdin, and a short bootstrap (`php -r`) appends them to `$argv` and runs the script itself. Bitrix has no CLI installer: the panel walks through its web wizard over HTTP via the site itself (the site's name is resolved to its address), including the AJAX steps that install the modules, updates and the solution, and the trial registration on 1c-bitrix.ru on behalf of the site administrator. Edition (`--edition`): the trial `start`, `standard`, `small_business`, `business` from 1c-bitrix.ru; the license key is entered later in the Bitrix settings, and the edition must match the key. Solution (`--solution`): by default `clean`, the Marketplace's "1C-Bitrix clean install" (an empty site with the standard modules and no demo content); `demo`, the demo site bundled with the distribution; or the id of any Marketplace solution (`vendor.solution`), which the wizard downloads and installs; the panel walks through the solution's wizard the same way as through the main one.
 6. The site record keeps the CMS, its version and the time of installation; the administrator password is returned once in the API response and never gets into the job log (in the payload it is encrypted with the panel's key).
 
 The administrator password is 12–20 characters, to satisfy all four CMSs at once; without one, a 16-character password is generated. The e-mail is the site owner's, otherwise `admin@<domain>`.

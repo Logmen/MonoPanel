@@ -18,18 +18,22 @@ import { databases } from './msgs/databases';
 import { sites } from './msgs/sites';
 import { firewall } from './msgs/firewall';
 import { audit } from './msgs/audit';
+import { services } from './msgs/services';
+import { migrate } from './msgs/migrate';
 
 export type { Locale } from './detect';
 export type LangMode = 'auto' | Locale;
 
 const en = {
   ...common.en, ...shell.en, ...dashboard.en, ...consolePage.en, ...jobs.en, ...mail.en, ...files.en, ...settings.en,
-  ...site.en, ...users.en, ...ssl.en, ...stack.en, ...php.en, ...backups.en, ...databases.en, ...sites.en, ...firewall.en, ...audit.en
+  ...site.en, ...users.en, ...ssl.en, ...stack.en, ...php.en, ...backups.en, ...databases.en, ...sites.en, ...firewall.en, ...audit.en,
+  ...services.en, ...migrate.en
 };
 export type MsgKey = keyof typeof en;
 const ru: Record<MsgKey, string> = {
   ...common.ru, ...shell.ru, ...dashboard.ru, ...consolePage.ru, ...jobs.ru, ...mail.ru, ...files.ru, ...settings.ru,
-  ...site.ru, ...users.ru, ...ssl.ru, ...stack.ru, ...php.ru, ...backups.ru, ...databases.ru, ...sites.ru, ...firewall.ru, ...audit.ru
+  ...site.ru, ...users.ru, ...ssl.ru, ...stack.ru, ...php.ru, ...backups.ru, ...databases.ru, ...sites.ru, ...firewall.ru, ...audit.ru,
+  ...services.ru, ...migrate.ru
 };
 const dict: Record<Locale, Record<string, string>> = { en, ru };
 

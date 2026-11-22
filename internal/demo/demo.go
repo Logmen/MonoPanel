@@ -405,6 +405,7 @@ type refusal struct {
 var refusals = []refusal{
 	{http.MethodPost, regexp.MustCompile(`^/api/v1/system/update/(apply|check)$`), "updating the panel"},
 	{http.MethodPut, regexp.MustCompile(`^/api/v1/system/update$`), "update settings"},
+	{http.MethodPut, regexp.MustCompile(`^/api/v1/system/config$`), "changing the panel's own address, logging and workers"},
 	{http.MethodPost, regexp.MustCompile(`^/api/v1/sites/[^/]+/cms$`), "installing a CMS downloads it from its vendor, and the demo has no internet access"},
 	{http.MethodPost, regexp.MustCompile(`^/api/v1/(sites/[^/]+/tls/issue|certificates(/[0-9]+/renew)?|ssl/panel/issue)$`), "Let's Encrypt needs a real domain and internet access"},
 	{http.MethodPost, regexp.MustCompile(`^/api/v1/migrate/(plan|run)$`), "a move needs a source server"},

@@ -32,7 +32,8 @@ log "source $src ($src_url) → target $dst ($dst_ip): account $login, site $dom
 
 # ---------------------------------------------------------- source side ----
 set -e
-S "mp user add $login --password '$password' --shell" >/dev/null
+# secrets on stdin: a command line is readable by every local user
+S "mp user add $login --password-stdin --shell" <<<"$password" >/dev/null
 S "mp site add $domain --user $login --ssl none" >/dev/null
 S "install -o $login -g $login -m 0644 /dev/stdin /var/www/$login/data/www/$domain/probe.php" <<<'<?php echo "migrated-ok ", PHP_VERSION;'
 db_json=$(S "mp db create shop --user $login --json")
@@ -46,11 +47,11 @@ check "source serves probe.php" grep -q migrated-ok <(curl -s -m 10 -H "Host: $d
 # ---------------------------------------------------------------- move ----
 token=$(S "mp migrate grant user:$login --json" | sed -n 's/.*"token": *"\([^"]*\)".*/\1/p')
 [ -n "$token" ] || { log "no token from $src"; exit 1; }
-plan=$(D "mp migrate plan --source $src_url --token $token --scope user:$login --insecure --json")
+plan=$(D "mp migrate plan --source $src_url --token-stdin --scope user:$login --insecure --json" <<<"$token")
 check "plan is ok" grep -q '"ok": *true' <<<"$plan"
 log "plan: $(grep -o '"text": *"[^"]*"' <<<"$plan" | sed 's/"text": *//' | tr '\n' ' ')"
 log "mp migrate run on $dst"
-if ! D "mp migrate run --source $src_url --token $token --scope user:$login --insecure"; then
+if ! D "mp migrate run --source $src_url --token-stdin --scope user:$login --insecure" <<<"$token"; then
 	results+=("FAIL  migrate run")
 fi
 

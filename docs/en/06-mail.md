@@ -23,7 +23,7 @@ Mail users are **not** unix accounts: all mailboxes belong to the system user `v
 | `/etc/postfix/monopanel/domains`\|`mailboxes`\|`aliases`\|`senders` | Maps (`hash:`), built with `postmap` after being written |
 | `/etc/postfix/monopanel/submission_header_checks` | Strips `Received` and `X-Originating-IP` from messages sent through 587/465 |
 | `/etc/dovecot/dovecot.conf` | Generated whole; the distribution's `conf.d` is deliberately not included. The template is chosen by the installed dovecot version: 2.3 (Debian 12, Ubuntu 22.04/24.04) or 2.4 (Debian 13, Ubuntu 26.04) |
-| `/etc/dovecot/monopanel/users` | passwd file: address, `{BLF-CRYPT}` hash, `userdb_quota_rule` |
+| `/etc/dovecot/monopanel/users` | passwd file: address, `{BLF-CRYPT}` hash, the quota (`userdb_quota_rule` for dovecot 2.3, `userdb_quota_storage_size` for 2.4) |
 | `/etc/opendkim.conf`, `/etc/opendkim/KeyTable`, `SigningTable`, `TrustedHosts` | Signing tables |
 | `/etc/opendkim/keys/<domain>/<selector>.private` | Private key (0600, opendkim); a copy is kept encrypted in the panel database |
 | `/var/mail/monopanel/<domain>/<mailbox>/` | Maildir, owned by `vmail` |
@@ -76,15 +76,19 @@ mp mail domain add example.com --user alex    # + a DKIM key
 mp mail domain add shop.example.com --user alex --send-only   # a provider receives the mail; only DKIM and sending here
 mp mail domain dns example.com                # what to publish in DNS and what is already published
 mp mail domain dkim example.com               # a new key
+mp mail domain set example.com --active false # switch the whole domain off
 mp mail box add ivan@example.com --quota 2048 # the password is generated and shown once
-mp mail box set ivan@example.com --password … # or with no flags — generate a new one
+mp mail box add info@example.com --quota 0    # no limit; without --quota — 1024 MB
+mp mail box set ivan@example.com --password-stdin   # a new password from stdin; with no flags — generate one
 mp mail alias add info@example.com ivan@example.com
 mp mail alias add @example.com ivan@example.com   # catch-all
 mp mail webmail webmail.example.com --user alex   # Roundcube as a separate site
 mp mail apply                                  # regenerate the configuration
 ```
 
-A disabled mailbox (`--active false`) disappears both from the postfix map and from the dovecot passwords: mail to it is not accepted, logging in is impossible, the messages on disk stay.
+A disabled mailbox (`--active false`) disappears both from the postfix map and from the dovecot passwords: mail to it is not accepted, logging in is impossible, the messages on disk stay. A disabled domain drops out of all the maps at once: its mail is not accepted, its mailboxes cannot log in over IMAP, POP3 or SMTP, and outgoing messages are not signed with DKIM; the messages on disk stay here too.
+
+The same can be done on the "Mail" page of the web UI ([09](09-web-ui.md#mail)). There an administrator installs the mail server, changes its settings (the name, the message size, the blocklists, the webmail port, POP3, DKIM signing, receiving on port 25), applies the configuration again ("Apply now" — `mp mail apply`) and installs the webmail — the domain, the owner, the PHP version and the port — or reinstalls it ("Reinstall / update", §10); the services, the certificate and the ports are shown there too. An ordinary account sees and edits only its own domains, mailboxes and aliases. Adding a domain has the "Send only" and "Lenient domain" boxes and, while DKIM signing is on for the server, "DKIM key" (unticked, it is `--no-dkim`); a domain's row has DNS, a new DKIM key, the send-only and lenient toggles, switching off and deletion. A mailbox is created with a password of your own or without one — then the password is generated and shown once; later its name, quota (0 — no limit), password and state are edited, and the "Password" button issues a new random one; a mailbox is deleted with its messages if you choose. An alias — the catch-all `@domain` too — is created with a list of destinations, edited and deleted. Mailboxes and aliases can be shown for one domain. Before anything that changes how mail is received or signed, the page asks and explains the consequences.
 
 ## 8. Send-only domain
 
@@ -102,6 +106,8 @@ This is how the mail server and mail-tester coexist on the panel's dev host: pos
 
 `mp mail webmail <domain>` creates a regular panel site, downloads the official Roundcube archive (the version and sha256 are built into the panel), unpacks it as root (the code does not belong to the site owner and cannot be rewritten over the web), creates a MySQL database, loads the schema and writes `config/config.inc.php`: IMAP and SMTP go to the mail host over TLS, the plugins `archive`, `zipdownload`, `managesieve`, `newmail_notifier`, and the `installer` directory is removed. From then on it is a regular site: its own certificate, its own php-fpm pool, its own PHP version.
 
+**Reinstalling and updating.** `mp mail webmail <domain>` over an installed webmail ("Reinstall / update" in the web UI) runs the installation again: Roundcube of the version that comes with the panel is unpacked over the site's files, and `config/config.inc.php` is written from the mail server's current settings (name, certificate, port). Everything the webmail keeps stays: the database with the users' contacts, identities and settings, its password and the DES key — a new key would sign everybody out of the webmail — and plugins added to the configuration by hand stay enabled. A database of an older Roundcube has its schema brought up to date by Roundcube's own `bin/updatedb.sh`; a database of a Roundcube newer than the one the panel installs stops the job before a single file is touched. Other manual edits in `config.inc.php` are replaced. An existing site keeps its owner; the webmail does not go into a site that already holds files of its own — only into a new site, an empty one, one with the panel's placeholder page or one with an earlier Roundcube.
+
 **A port instead of a domain.** `--port 2096` (or `mp mail settings --webmail-port 2096`) publishes the same installation on a port of the mail host: `https://<mail host>:2096/`. The panel writes a separate nginx server block to `http.d/monopanel-webmail.conf` with the mail server's name and certificate, opens the port in the firewall and also listens on loopback, so that checks from the host itself work. No separate DNS record and no separate certificate for webmail are needed then — handy when mail is set up on a server that already has a name. `--port 0` removes the publication.
 
 ## 11. Limitations
@@ -113,6 +119,7 @@ This is how the mail server and mail-tester coexist on the panel's dev host: pos
   - the panel's certificate directory is labelled `cert_t`, otherwise smtpd cannot read the certificate and STARTTLS answers "TLS not available";
   - the webmail port (`--port`) is labelled `http_port_t` and opened in firewalld.
 - **Anti-spam** — only postfix's own tools: HELO/sender checks, connection limits and optional RBLs. There is no full content filter (rspamd) yet; incoming messages go through DKIM verification, but nothing is rejected based on its result.
-- **Quotas** are counted by dovecot (`maildir:User quota`); going over is reported to the sender as `552 5.2.2 Mailbox is full`.
-- There is no mailbox password change from webmail: passwords are changed in the panel.
+- **Quotas** are counted by dovecot (`maildir:User quota` on 2.3, the `count` driver on 2.4); going over is reported to the sender as `552 5.2.2 Mailbox is full`. A quota of 0 means no limit (in the passwd file it is `userdb_quota_rule=*:storage=0` for dovecot 2.3 and `userdb_quota_storage_size=unlimited` for 2.4); a mailbox created without a quota gets 1024 MB.
+- There is no mailbox password change from webmail: passwords are changed in the panel. A mailbox password is at most 72 bytes, and the panel refuses a longer one: bcrypt reads no further (a Latin letter is one byte, a Cyrillic one two).
+- **The maps are checked on every write.** A domain that does not follow the DNS name rules; the mail server's hostname, a mailbox's address or local part, a DKIM selector, an alias's address or recipient that is empty or has a blank, a control character, `:`, `/` or `,`; a mailbox whose address is not "local part@domain"; a password hash with a colon or a control character — any of these stops the apply: the panel names the entry, and no file is written. So a value that got into the panel database past the API (a move from another server, a hand edit of the database) cannot add lines of its own to the maps — a password for somebody else's address or a mailbox in somebody else's Maildir — and deleting such a mailbox with its messages leaves the Maildir in place.
 - The DKIM key starts signing messages at once, while recipients verify it against the DNS record — until that record is published, the signature will show as "not matching". Publish the TXT record right after adding the domain (`mp mail domain dns`) or add the domain with `--no-dkim` if there is nowhere to put the key yet.

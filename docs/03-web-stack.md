@@ -28,19 +28,32 @@
 /var/www/<user>/                         0710 <user>:<user>  + ACL g:monopanel-web:x   (только проход)
 └── data/                                0750
     ├── www/<domain>/                    docroot; default ACL g:monopanel-web:rX
-    ├── logs/                            access/error/php-error/php-slow по сайтам; ACL g:monopanel-web:x
     ├── tmp/                             0700; upload_tmp_dir / session.save_path / sys_temp_dir
     ├── bin/php -> /opt/monopanel/php/8.4/bin/php
     └── .ssh/ .composer/ .wp-cli/ …
+
+/var/log/monopanel/                      0751 monopanel:monopanel   (log_dir; там же audit.log панели)
+└── sites/                               0711 root:root             проход есть, список не виден
+    └── <user>/                          0751 root:<user>           клиент читает через свою группу
+        ├── <domain>.access.log          0640 root:<user>           nginx; после USR1 владелец — его пользователь
+        ├── <domain>.error.log           0640 root:<user>
+        ├── <domain>.apache.{access,error}.log  0640 root:<user>    режим apache
+        ├── <domain>.php.slow.log        0640 root:<user>           пишет мастер php-fpm
+        ├── <domain>.php.error.log       0660 <user>:<user>         пишет сам PHP от имени клиента
+        └── webmail.{access,error}.log   0640 root:<user>           вебпочта на своём порту
 ```
 
 Группа `monopanel-web` = { `nginx`, `www-data` | `apache` }. Веб-серверы читают статику через ACL, сокеты FPM создаются с `listen.group = monopanel-web`, `listen.mode = 0660`. Клиенты не видят друг друга. Файлы, которые создаёт PHP (uploads, cache), принадлежат клиенту и наследуют default ACL — ручной `chown`/`chmod 777` не нужен.
 
-Логи сайтов ротирует `/etc/logrotate.d/monopanel-sites`: по блоку на аккаунт с `su <логин> <логин>`. Каталог логов принадлежит клиенту, и что бы он туда ни положил, logrotate действует с его правами, а не с правами root. Ротация раз в неделю или на ежедневном прогоне, если лог перевалил за 100 МБ; хранится восемь копий (`example.com.access.log.1`, `.2.gz` …), сжатие начиная со второй.
+Логи сайтов лежат не в домашнем каталоге, а в `/var/log/monopanel/sites/<логин>/` (`log_dir` в `config.yaml`). Их открывают от root мастер nginx (при старте, reload и USR1; переоткрывая лог, он ещё и меняет его владельца по имени), мастер Apache и мастер php-fpm (slow-лог — на каждую запись). До 0.8.19 включительно логи были в `data/logs`, а этот каталог и `data/` над ним принадлежат клиенту: подменив лог символьной ссылкой на `/etc/ld.so.preload` или `/etc/cron.d/…`, клиент или любой PHP-код его сайтов заставлял серверы писать туда от root — и получал root. В `sites/` создаёт, переименовывает и удаляет записи только root. Клиент читает свои логи через свою группу (по SSH; SFTP-only-аккаунт заперт в домашнем каталоге и смотрит их в панели), панель и `mp site logs` — через агент.
 
-Все логи сайта принадлежат аккаунту и имеют права 0660. Панель создаёт их при применении сайта — до того, как их откроют nginx, Apache и php-fpm; уже созданные передаёт аккаунту через агент (по открытому файлу, а не по имени), а после ротации `create 0660` делает новые такими же. Это нужно logrotate до 3.19 (EL9): ротируя, он открывает лог, а сжимая — ещё и на запись, и файл, который nginx создал от root, или slow-лог, который php-fpm создаёт с правами 0600, аккаунт открыть не смог бы. Сам nginx, переоткрывая лог, меняет только владельца, а php-fpm оставляет найденный slow-лог как есть.
+Каталоги и файлы делает агент — до того, как их откроют nginx, Apache и php-fpm (nginx сам создаёт недостающий лог, но не каталог, а php-fpm не стартует, если не может открыть slow-лог). Он проходит дерево через открытые каталоги, не следуя символьным ссылкам, отказывается работать в каталоге, куда может писать кто-то кроме root, и меняет владельца и права через открытый файл; кому принадлежит файл, решает сам по имени. Логи серверов (nginx, Apache, slow-лог php-fpm) — `root:<логин>` 0640; nginx, переоткрывая лог, отдаёт его своему пользователю, но группу и права оставляет, так что клиент читает его и дальше. Журнал ошибок PHP пишет сам PHP от имени клиента, открывая файл на каждую запись, поэтому он клиента — `<логин>:<логин>` 0660; заменить его клиент не может, каталог не его.
 
-После ротации nginx получает USR1, Apache — graceful restart, оба через pid-файлы: спрашивать systemd из logrotate SELinux не разрешает. Новые файлы после USR1 открывают рабочие процессы nginx, а не мастер, поэтому у группы `monopanel-web` есть проход через `data/logs` (ACL `x`); без него рабочие продолжали бы писать в переименованный файл — и после ночной ротации самого nginx тоже. Журнал ошибок PHP и slow-лог php-fpm открывают файл заново на каждую запись, им сигнал не нужен.
+Логи сайтов ротирует `/etc/logrotate.d/monopanel-sites`: по два блока на аккаунт, от root, без `su` — каталог принадлежит root, и на пути logrotate нет ничего, что контролирует клиент. Ротация раз в неделю или на ежедневном прогоне, если лог перевалил за 100 МБ; хранится восемь копий (`example.com.access.log.1`, `.2.gz` …), сжатие начиная со второй. Первый блок — логи серверов с `create 0640 root <логин>`, второй — журналы ошибок PHP с `create 0660 <логин> <логин>`. Файл, который называют два блока, logrotate не принимает, поэтому вместо `*.error.log` в первом блоке четыре маски, которые берут все логи ошибок, кроме `*.php.error.log`.
+
+После ротации nginx получает USR1, Apache — graceful restart, оба через pid-файлы: спрашивать systemd из logrotate SELinux не разрешает. Новые файлы после USR1 открывают рабочие процессы nginx, а не мастер, поэтому и `/var/log/monopanel`, и каталог аккаунта открыты всем на проход (`x` без права читать список); без него рабочие продолжали бы писать в переименованный файл. Журнал ошибок PHP и slow-лог php-fpm открывают файл заново на каждую запись, им сигнал не нужен.
+
+Панель, обновлённая с 0.8.19 или раньше, при первом старте один раз создаёт каталоги и логи всех аккаунтов с сайтами и ставит в очередь `site.apply` для каждого сайта (и `mail.apply`, если вебпочта опубликована на своём порту) — серверы переходят на новые пути. Старые файлы в `data/logs` остаются на месте: теперь это файлы клиента, их никто не пишет, не ротирует и не показывает. На EL каталог получает метку `httpd_log_t` (правило `fcontext` для `/var/log/monopanel/sites(/.*)?`, [02](02-platform-matrix.md#6-selinux-el9--el10)).
 
 Трассировку в slow-лог php-fpm снимает через `ptrace` рабочего процесса; на EL это разрешает модуль политики панели ([02](02-platform-matrix.md#6-selinux-el9--el10)), без него slow-логи оставались пустыми.
 
@@ -85,8 +98,8 @@ server {
 
     root  /var/www/alex/data/www/example.com;
     index index.php index.html;
-    access_log /var/www/alex/data/logs/example.com.access.log main;
-    error_log  /var/www/alex/data/logs/example.com.error.log;
+    access_log /var/log/monopanel/sites/alex/example.com.access.log main;
+    error_log  /var/log/monopanel/sites/alex/example.com.error.log;
     client_max_body_size 64m;                          # = post_max_size пула
     disable_symlinks if_not_owner from=$document_root;
 
@@ -134,8 +147,8 @@ HTTP/3: `listen … quic reuseport` допускается один раз на 
     ProxyTimeout 150
     RemoteIPHeader X-Real-IP
     RemoteIPInternalProxy 127.0.0.1
-    ErrorLog  /var/www/alex/data/logs/example.com.apache.error.log
-    CustomLog /var/www/alex/data/logs/example.com.apache.access.log combined
+    ErrorLog  /var/log/monopanel/sites/alex/example.com.apache.error.log
+    CustomLog /var/log/monopanel/sites/alex/example.com.apache.access.log combined
     IncludeOptional /etc/apache2/monopanel/sites/example.com.d/*.conf
 </VirtualHost>
 ```
@@ -157,7 +170,7 @@ pm.max_children = 8
 pm.process_idle_timeout = 10s
 pm.max_requests = 500
 request_terminate_timeout = 150s ; max_execution_time + 30
-slowlog = /var/www/alex/data/logs/example.com.php.slow.log
+slowlog = /var/log/monopanel/sites/alex/example.com.php.slow.log
 request_slowlog_timeout = 10s
 catch_workers_output = yes
 clear_env = no                   ; PATH/HOME нужны composer/wp-cli
@@ -167,7 +180,7 @@ php_admin_value[open_basedir]      = /var/www/alex/data
 php_admin_value[upload_tmp_dir]    = /var/www/alex/data/tmp
 php_admin_value[session.save_path] = /var/www/alex/data/tmp/sess
 php_admin_value[sys_temp_dir]      = /var/www/alex/data/tmp
-php_admin_value[error_log]         = /var/www/alex/data/logs/example.com.php.error.log
+php_admin_value[error_log]         = /var/log/monopanel/sites/alex/example.com.php.error.log
 php_admin_value[sendmail_path]     = /usr/sbin/sendmail -t -i -f noreply@example.com
 php_admin_value[disable_functions] = passthru,shell_exec,system,proc_open,popen,pcntl_exec,pcntl_fork
 ; редактируются из UI/CLI; php_value допускает переопределение в .user.ini
@@ -225,7 +238,8 @@ php_admin_value[session.save_path]    = "unix:///run/monopanel-valkey/alex-sessi
 
 ## 8. Логи и ротация
 
-- Ротация — `/etc/logrotate.d/monopanel-sites`, блок на аккаунт с `su <логин> <логин>`: раз в неделю или раньше, если лог перевалил за 100 МБ, восемь копий, сжатие со второй; после ротации nginx получает USR1, Apache — graceful restart, оба через pid-файлы. Подробно — в [разделе 2](#2-файловая-структура-на-сервере).
+- Логи сайтов — в `/var/log/monopanel/sites/<логин>/`, вне домашнего каталога: их открывают от root nginx, Apache и php-fpm.
+- Ротация — `/etc/logrotate.d/monopanel-sites`, по два блока на аккаунт, от root (логи серверов — `create 0640 root <логин>`, журналы ошибок PHP — `create 0660 <логин> <логин>`): раз в неделю или раньше, если лог перевалил за 100 МБ, восемь копий, сжатие со второй; после ротации nginx получает USR1, Apache — graceful restart, оба через pid-файлы. Подробно — в [разделе 2](#2-файловая-структура-на-сервере).
 - Формат `main` пишет `$request_time`, `$upstream_response_time`, `$host` и `$server_protocol`. Разбор access-логов для метрик по сайтам (инкрементальный, с запоминанием позиции в файле) — планируется.
 - В UI — хвост логов access/error/php-error/php-slow (вкладка «Логи» сайта, `mp site logs`); слежение за логом вживую и фильтры по коду ответа и пути — планируются.
 
@@ -248,7 +262,7 @@ php_admin_value[session.save_path]    = "unix:///run/monopanel-valkey/alex-sessi
 2. Docroot должен быть пуст; с `--force` его содержимое удаляется (от имени клиента).
 3. Создаётся база `<login>_<cms>` (при повторной установке — `<login>_<cms>2`) с отдельным пользователем и сгенерированным паролем.
 4. Дистрибутив скачивается у производителя (WordPress — wordpress.org, Joomla и OpenCart — последний релиз на GitHub без API, Битрикс — пробная редакция с 1c-bitrix.ru) и потоком, без буфера в памяти, распаковывается агентом через `tar` прямо в docroot (zip OpenCart перекодируется в tar на лету); файлы отдаются клиенту, метки SELinux восстанавливаются.
-5. Установщик CMS запускается от имени клиента через `fsop run` — он исполняет только интерпретатор PHP (ветка сайта) внутри домашнего каталога: wp-cli (`/usr/local/lib/monopanel/wp-cli.phar`, проверяется по опубликованной sha512), `installation/joomla.php install`, `install/cli_install.php`. У Битрикса CLI-установщика нет: панель проходит его веб-мастер по HTTP через сам сайт (имя сайта резолвится в его адрес), включая AJAX-шаги установки модулей, обновлений и решения, и пробную регистрацию на 1c-bitrix.ru от имени администратора сайта. Редакция (`--edition`): пробные `start`, `standard`, `small_business`, `business` с 1c-bitrix.ru; лицензионный ключ вводится потом в настройках Битрикса, и редакция должна совпадать с ключом. Решение (`--solution`): по умолчанию `clean` — «Чистая установка «1С-Битрикс»» из Маркетплейса (пустой сайт со стандартными модулями, без демо-контента), `demo` — демо-сайт, встроенный в дистрибутив, или id любого решения из Маркетплейса (`vendor.solution`), которое мастер скачает и поставит; мастер решения панель проходит так же, как основной.
+5. Установщик CMS запускается от имени клиента через `fsop run` — он исполняет только интерпретатор PHP (ветка сайта) внутри домашнего каталога: wp-cli (`/usr/local/lib/monopanel/wp-cli.phar`, проверяется по опубликованной sha512), `installation/joomla.php install`, `install/cli_install.php`. Пароли базы и администратора в командную строку не попадают — её видит любой локальный пользователь (`ps`): они приходят установщику на stdin, а короткий загрузчик (`php -r`) дописывает их в `$argv` и запускает сам скрипт. У Битрикса CLI-установщика нет: панель проходит его веб-мастер по HTTP через сам сайт (имя сайта резолвится в его адрес), включая AJAX-шаги установки модулей, обновлений и решения, и пробную регистрацию на 1c-bitrix.ru от имени администратора сайта. Редакция (`--edition`): пробные `start`, `standard`, `small_business`, `business` с 1c-bitrix.ru; лицензионный ключ вводится потом в настройках Битрикса, и редакция должна совпадать с ключом. Решение (`--solution`): по умолчанию `clean` — «Чистая установка «1С-Битрикс»» из Маркетплейса (пустой сайт со стандартными модулями, без демо-контента), `demo` — демо-сайт, встроенный в дистрибутив, или id любого решения из Маркетплейса (`vendor.solution`), которое мастер скачает и поставит; мастер решения панель проходит так же, как основной.
 6. В записи сайта остаются CMS, версия и время установки; пароль администратора возвращается один раз в ответе API и не попадает в журнал задачи (в payload он зашифрован ключом панели).
 
 Пароль администратора — 12–20 символов, чтобы устроить все четыре CMS сразу; без него генерируется 16-символьный. E-mail — владельца сайта, иначе `admin@<домен>`.

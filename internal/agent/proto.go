@@ -175,6 +175,38 @@ type EnsureFileResponse struct {
 	Written bool `json:"written"`
 }
 
+// SiteLogsRequest prepares an account's site logs in <log_dir>/sites/<login>/,
+// a tree only root writes: nginx, Apache and the php-fpm master open these
+// files as root, so no account may be able to swap one for a symlink. The
+// agent makes <log_dir>/sites (root:root 0711) and the account's directory
+// (root:<login> 0751), and the files: the servers' logs root:<login> 0640,
+// a PHP error log (*.php.error.log, which the account's PHP workers open for
+// every write) <login>:<login> 0660. Files that exist get that owner and mode
+// back. Files are plain names ending in .log.
+type SiteLogsRequest struct {
+	Login string   `json:"login"`
+	Files []string `json:"files,omitempty"`
+}
+
+// SiteLogsResponse names the account's directory and what was made in it or
+// set anew.
+type SiteLogsResponse struct {
+	Dir     string   `json:"dir"`
+	Created []string `json:"created"`
+	Changed int      `json:"changed"`
+}
+
+// RemoveSiteLogsRequest deletes an account's directory of site logs with
+// everything in it (the account is purged).
+type RemoveSiteLogsRequest struct {
+	Login string `json:"login"`
+}
+
+// RemoveSiteLogsResponse tells whether there was a directory to remove.
+type RemoveSiteLogsResponse struct {
+	Removed bool `json:"removed"`
+}
+
 // EnsureSymlinkRequest creates or updates a symlink (below WWWRoot).
 type EnsureSymlinkRequest struct {
 	Path          string `json:"path"`
@@ -278,7 +310,9 @@ type StatResponse struct {
 	Entries []StatEntry `json:"entries"`
 }
 
-// ReadFileRequest returns the tail of a file inside a client's home (logs).
+// ReadFileRequest returns the tail of a log: a site log or another file in
+// the panel's log directory, a service log the agent knows, or a PHP
+// configuration file.
 type ReadFileRequest struct {
 	Path      string `json:"path"`
 	TailBytes int64  `json:"tail_bytes,omitempty"`
@@ -354,6 +388,23 @@ type InstallPanelResponse struct {
 	// Signed is false when the panel has no release key and the package was
 	// accepted on its digest alone.
 	Signed bool `json:"signed"`
+}
+
+// PanelConfigRequest changes the panel's own settings in config.yaml: the
+// keys of config.PanelKeys (web.hostname, web.listen, log.level, log.format,
+// jobs.workers) and nothing else. The release key, the paths and the write
+// allow-list stay root's to edit by hand — the panel must not move its own
+// trust anchor. Path is the file the API process reads: the agent writes only
+// its own configuration file and refuses when the two differ.
+type PanelConfigRequest struct {
+	Path string            `json:"path,omitempty"`
+	Set  map[string]string `json:"set"`
+}
+
+// PanelConfigResponse names the file and the keys whose value changed.
+type PanelConfigResponse struct {
+	Path    string   `json:"path"`
+	Changed []string `json:"changed"`
 }
 
 // ListDirRequest lists the names in a directory. Only a few configuration

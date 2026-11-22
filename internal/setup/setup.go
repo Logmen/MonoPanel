@@ -121,13 +121,19 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	// --hostname and --listen are checked by the rules PUT /system/config and
+	// mp config set apply.
 	if opts.Hostname != "" {
-		cfg.Web.Hostname = opts.Hostname
+		if cfg.Web.Hostname, err = config.NormalizePanelValue(config.KeyHostname, opts.Hostname); err != nil {
+			return nil, err
+		}
 	} else if cfg.Web.Hostname == "" {
 		cfg.Web.Hostname, _ = os.Hostname()
 	}
 	if opts.Listen != "" {
-		cfg.Web.Listen = opts.Listen
+		if cfg.Web.Listen, err = config.NormalizePanelValue(config.KeyListen, opts.Listen); err != nil {
+			return nil, err
+		}
 	}
 	res := &Result{ConfigPath: cfg.Path(), DBPath: cfg.DBPath()}
 
@@ -149,7 +155,7 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 		{Path: cfg.DataDir, Mode: 0o751, Owner: cfg.ServiceUser, Group: cfg.ServiceGroup}, // o+x: nginx must traverse to acme/webroot
 		{Path: filepath.Join(cfg.DataDir, "tls"), Mode: 0o700, Owner: cfg.ServiceUser, Group: cfg.ServiceGroup},
 		{Path: cfg.ConfHistoryDir(), Mode: 0o700, Owner: "root", Group: "root"},
-		{Path: cfg.LogDir, Mode: 0o750, Owner: cfg.ServiceUser, Group: cfg.ServiceGroup},
+		{Path: cfg.LogDir, Mode: 0o751, Owner: cfg.ServiceUser, Group: cfg.ServiceGroup}, // o+x: the accounts and nginx pass to their site logs in sites/
 		{Path: cfg.RunDir, Mode: 0o771, Owner: "root", Group: cfg.ServiceGroup},
 		{Path: cfg.WWWRoot, Mode: 0o711, Owner: "root", Group: "root"},
 	}
@@ -170,7 +176,16 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 	} else {
 		step(T("конфигурация уже есть: %s", "configuration already exists: %s"), cfg.Path())
 		if opts.Hostname != "" || opts.Listen != "" {
-			if err := cfg.Save(cfg.Path()); err != nil {
+			// Only these keys change: the administrator's comments, other
+			// settings and the release key stay as they are.
+			set := map[string]string{}
+			if opts.Hostname != "" {
+				set[config.KeyHostname] = cfg.Web.Hostname
+			}
+			if opts.Listen != "" {
+				set[config.KeyListen] = cfg.Web.Listen
+			}
+			if _, err := config.WriteFileKeys(cfg.Path(), set, -1); err != nil {
 				return nil, err
 			}
 			step(T("обновлено: hostname=%s listen=%s", "updated: hostname=%s listen=%s"), cfg.Web.Hostname, cfg.Web.Listen)

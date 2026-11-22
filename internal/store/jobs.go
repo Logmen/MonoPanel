@@ -132,16 +132,35 @@ func (d *DB) GetJob(ctx context.Context, id int64) (*Job, error) {
 
 // ListJobs returns recent jobs (newest first), optionally filtered by status.
 func (d *DB) ListJobs(ctx context.Context, limit int, status string) ([]*Job, error) {
+	return d.ListJobsFiltered(ctx, JobFilter{Limit: limit, Status: status})
+}
+
+// JobFilter narrows ListJobsFiltered; an empty field matches every job.
+type JobFilter struct {
+	Limit       int
+	Status      string
+	RequestedBy string
+}
+
+// ListJobsFiltered returns the newest jobs that match. The filters are part
+// of the query, so Limit counts matching jobs: an account that sees only its
+// own jobs gets as many of them as it asked for, however many other jobs
+// are newer.
+func (d *DB) ListJobsFiltered(ctx context.Context, f JobFilter) ([]*Job, error) {
+	limit := f.Limit
 	if limit <= 0 {
 		limit = 50
 	}
-	var rows *sql.Rows
-	var err error
-	if status != "" {
-		rows, err = d.sql.QueryContext(ctx, `SELECT `+jobCols+` FROM jobs WHERE status=? ORDER BY id DESC LIMIT ?`, status, limit)
-	} else {
-		rows, err = d.sql.QueryContext(ctx, `SELECT `+jobCols+` FROM jobs ORDER BY id DESC LIMIT ?`, limit)
+	q, args := `SELECT `+jobCols+` FROM jobs WHERE 1=1`, []any{}
+	if f.Status != "" {
+		q += ` AND status=?`
+		args = append(args, f.Status)
 	}
+	if f.RequestedBy != "" {
+		q += ` AND requested_by=?`
+		args = append(args, f.RequestedBy)
+	}
+	rows, err := d.sql.QueryContext(ctx, q+` ORDER BY id DESC LIMIT ?`, append(args, limit)...)
 	if err != nil {
 		return nil, err
 	}

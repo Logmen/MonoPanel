@@ -31,7 +31,9 @@ log "$PRETTY_NAME, kernel $(uname -r)"
 case "$pkg" in
 *.deb)
 	log "installing $(basename "$pkg")"
-	apt-get -q update >/dev/null
+	# The ondrej PPA changed its Label ("PPA for PHP (deprecated)"); apt
+	# refuses such a change until it is accepted.
+	apt-get -q -o Acquire::AllowReleaseInfoChange::Label=true update >/dev/null
 	# A development build (0.7.0~3-g…) sorts below the release it follows;
 	# on a test VM any direction is fine.
 	apt-get -q -y --allow-downgrades install "$pkg" >/dev/null
@@ -105,7 +107,9 @@ done
 if [ -n "${TB_CF_TOKEN:-}" ]; then
 	if ! mp dns-provider list --json 2>/dev/null | tr -d ' \n' | grep -q '"name":"cf"'; then
 		log "mp dns-provider add cf (cloudflare)"
-		mp dns-provider add cf --type cloudflare --cred "CLOUDFLARE_DNS_API_TOKEN=$TB_CF_TOKEN" >/dev/null
+		# on stdin, as testbed.sh handed it over: a command line is readable
+		# by every local user (printf is a builtin, no process of its own)
+		printf 'CLOUDFLARE_DNS_API_TOKEN=%s\n' "$TB_CF_TOKEN" | mp dns-provider add cf --type cloudflare --cred-stdin >/dev/null
 	fi
 	# A panel with a public name gets a real certificate, so the browser and
 	# the migration tests talk to it without --insecure. Not fatal: the panel

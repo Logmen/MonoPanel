@@ -25,6 +25,10 @@
         error = j.error || '';
         lines = (j.log || '').split('\n').filter(Boolean);
         if (j.status === 'done' || j.status === 'failed') onfinish?.(j.status);
+      } else if (type === 'started') {
+        // Задача, открытая ещё в очереди: снимок сказал queued, а начало работы
+        // приходит отдельным событием.
+        status = 'running';
       } else if (type === 'progress') {
         progress = data.progress;
         message = data.message;

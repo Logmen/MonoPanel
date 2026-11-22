@@ -279,9 +279,9 @@ func TestForeignHelpers(t *testing.T) {
 	if main != "shop.example.com" || strings.Join(aliases, ",") != "alias.example.com" {
 		t.Errorf("hostDomains: %s %v", main, aliases)
 	}
-	got := portableCreateUser("CREATE USER 'a'@'localhost' IDENTIFIED BY PASSWORD '*94BDCEBE19083CE2A1F959FD02F964C7AF4CFC29'")
-	if got != "CREATE USER 'a'@'localhost' IDENTIFIED WITH mysql_native_password AS '*94BDCEBE19083CE2A1F959FD02F964C7AF4CFC29'" {
-		t.Errorf("mariadb: %s", got)
+	maria, err := parseCreateUser("CREATE USER 'a'@'localhost' IDENTIFIED BY PASSWORD '*94BDCEBE19083CE2A1F959FD02F964C7AF4CFC29'")
+	if err != nil || maria.clause(false) != "IDENTIFIED WITH mysql_native_password AS '*94BDCEBE19083CE2A1F959FD02F964C7AF4CFC29'" {
+		t.Errorf("mariadb: %+v %v", maria, err)
 	}
 	f := &foreignSource{rewrites: [][2]string{{"/home/bitrix/www/", "/var/www/bitrix/data/www/main.example.com/"}, {"/home/bitrix/", "/var/www/bitrix/"}}}
 	jobs := f.parseCrontab("PATH=/usr/bin\n# agents\n*/5 * * * * /usr/bin/php -f /home/bitrix/www/bitrix/modules/main/tools/cron_events.php\n@daily rm -rf /home/bitrix/.bx_temp/*\n")
@@ -326,19 +326,62 @@ func TestForeignHelpers(t *testing.T) {
 	}
 }
 
-// A plain password gets its plugin named: the server default would lock
-// PHP below 7.4 out.
-func TestPinAuthPlugin(t *testing.T) {
-	plain := "CREATE USER IF NOT EXISTS 'a'@'localhost' IDENTIFIED BY 'p''w'"
-	if got := pinAuthPlugin(plain, true); got != "CREATE USER IF NOT EXISTS 'a'@'localhost' IDENTIFIED WITH mysql_native_password BY 'p''w'" || createUserPlugin(got) != "mysql_native_password" {
+// The CREATE USER of a source is taken apart, never replayed: a plain
+// password gets its plugin named (the server default would lock PHP below 7.4
+// out), a hash keeps its plugin, and whatever else the statement says stays
+// out of what runs as root here.
+func TestParseCreateUser(t *testing.T) {
+	plain, err := parseCreateUser("CREATE USER IF NOT EXISTS 'a'@'localhost' IDENTIFIED BY 'p''w'")
+	if err != nil || plain.plain != "p'w" {
+		t.Fatalf("plain: %+v %v", plain, err)
+	}
+	// The quote is doubled, not backslashed: with NO_BACKSLASH_ESCAPES in the
+	// server's sql_mode \' would end the literal.
+	if got := plain.clause(true); got != `IDENTIFIED WITH mysql_native_password BY 'p''w'` || plain.effectivePlugin(true) != "mysql_native_password" {
 		t.Errorf("legacy: %s", got)
 	}
-	if got := pinAuthPlugin(plain, false); createUserPlugin(got) != "caching_sha2_password" || !strings.Contains(got, "IDENTIFIED WITH caching_sha2_password BY 'p''w'") {
+	if got := plain.clause(false); got != `IDENTIFIED WITH caching_sha2_password BY 'p''w'` || plain.effectivePlugin(false) != "caching_sha2_password" {
 		t.Errorf("modern: %s", got)
 	}
-	hash := "CREATE USER 'a'@'localhost' IDENTIFIED WITH 'mysql_native_password' AS '*94BDCEBE19083CE2A1F959FD02F964C7AF4CFC29' REQUIRE NONE"
-	if got := pinAuthPlugin(hash, false); got != hash || createUserPlugin(got) != "mysql_native_password" {
-		t.Errorf("hash: %s", got)
+	tricky, err := parseCreateUser(`CREATE USER 'a'@'localhost' IDENTIFIED BY 'x\\''; GRANT ALL ON *.* TO a; -- '`)
+	if err != nil || tricky.plain != `x\'; GRANT ALL ON *.* TO a; -- ` || tricky.clause(false) != `IDENTIFIED WITH caching_sha2_password BY 'x\\''; GRANT ALL ON *.* TO a; -- '` {
+		t.Errorf("a password with a backslash and a quote: %+v %v -> %s", tricky, err, tricky.clause(false))
+	}
+	native, err := parseCreateUser("CREATE USER 'a'@'localhost' IDENTIFIED WITH 'mysql_native_password' AS '*94bdcebe19083ce2a1f959fd02f964c7af4cfc29' REQUIRE NONE PASSWORD EXPIRE DEFAULT ACCOUNT UNLOCK")
+	if err != nil || native.clause(false) != "IDENTIFIED WITH mysql_native_password AS '*94BDCEBE19083CE2A1F959FD02F964C7AF4CFC29'" || native.effectivePlugin(false) != "mysql_native_password" {
+		t.Errorf("native: %+v %v", native, err)
+	}
+	via, err := parseCreateUser("CREATE USER `a`@`localhost` IDENTIFIED VIA mysql_native_password USING '*94BDCEBE19083CE2A1F959FD02F964C7AF4CFC29'")
+	if err != nil || via.plugin != "mysql_native_password" {
+		t.Errorf("mariadb via: %+v %v", via, err)
+	}
+	// caching_sha2_password: a binary salt, printed as a hex literal by the
+	// source and written back as one here.
+	hash := append([]byte("$A$005$"), []byte{1, '\'', 2, '\\', 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18}...)
+	hash = append(hash, []byte(strings.Repeat("aB3./", 8)+"xyz")...)
+	sha2, err := parseCreateUser(fmt.Sprintf("CREATE USER `a`@`localhost` IDENTIFIED WITH 'caching_sha2_password' AS 0x%X REQUIRE NONE PASSWORD EXPIRE DEFAULT ACCOUNT LOCK", hash))
+	if err != nil || sha2.clause(false) != fmt.Sprintf("IDENTIFIED WITH caching_sha2_password AS 0x%X ACCOUNT LOCK", hash) {
+		t.Errorf("caching_sha2: %+v %v", sha2, err)
+	}
+	// What a statement adds after the password never runs.
+	inj, err := parseCreateUser("CREATE USER 'a'@'localhost' IDENTIFIED BY 'x'; GRANT ALL ON *.* TO 'a'@'localhost' WITH GRANT OPTION")
+	if err != nil || strings.Contains(inj.clause(false), "GRANT") {
+		t.Errorf("trailing statement: %+v %v", inj, err)
+	}
+	for _, bad := range []string{
+		"CREATE USER 'a'@'localhost' IDENTIFIED WITH 'sha256_password' AS '$5$abc'",
+		"CREATE USER 'a'@'localhost' IDENTIFIED WITH 'mysql_native_password' AS '*94BD'' OR ''1'",
+		"CREATE USER 'a'@'localhost' IDENTIFIED WITH 'mysql_native_password' AS ''",
+		"CREATE USER 'a'@'localhost' IDENTIFIED WITH 'caching_sha2_password' AS '$A$005$short'",
+		"CREATE USER 'a'@'localhost' IDENTIFIED BY ''",
+		"CREATE USER 'a'@'localhost' IDENTIFIED BY 'line\nbreak'",
+		"CREATE USER 'a'@'localhost' IDENTIFIED BY 'unterminated",
+		"ALTER USER 'root'@'localhost' ACCOUNT UNLOCK",
+		"DROP DATABASE victim",
+	} {
+		if a, err := parseCreateUser(bad); err == nil {
+			t.Errorf("%q must be refused, got %+v", bad, a)
+		}
 	}
 	if v := legacyPHP([]*store.Site{{PHPVersion: "8.3"}, {PHPVersion: "7.0"}, {PHPVersion: "5.6"}, {}}); v != "5.6" {
 		t.Errorf("legacyPHP: %q", v)
@@ -353,6 +396,7 @@ func TestPinAuthPlugin(t *testing.T) {
 // full of old paths. Everything must land here under one account with the
 // paths rewritten and the database recreated with its plain password.
 func TestMigrationFromBitrixVM(t *testing.T) {
+	fakeUnixAccounts(t)
 	remote := newFakeSSH(t)
 	remote.dirs["/etc/nginx/bx"] = true
 	remote.dirs["/home/bitrix"] = true
@@ -510,14 +554,18 @@ func TestMigrationFromBitrixVM(t *testing.T) {
 	if err != nil || site.Preset != "bitrix" || site.UserID != u.ID || site.ClientMaxBody != "256m" {
 		t.Errorf("сайт: %+v %v", site, err)
 	}
-	// The database comes back with its plain password, not a hash.
-	var created bool
+	// The dump is loaded as the database's own account (auth_socket for root
+	// while it loads), which then gets its plain password, not a hash.
+	var loader, restored bool
 	for _, sql := range mysqlSQL {
-		if strings.Contains(sql, "CREATE USER IF NOT EXISTS 'shop_u'@'localhost' IDENTIFIED WITH caching_sha2_password BY 'pl4in-P@ss'") && strings.Contains(sql, "GRANT ALL PRIVILEGES ON `sitemanager`.*") {
-			created = true
+		if strings.Contains(sql, "CREATE USER 'shop_u'@'localhost' IDENTIFIED WITH auth_socket AS 'root'") && strings.Contains(sql, "GRANT ALL PRIVILEGES ON `sitemanager`.*") {
+			loader = true
+		}
+		if strings.Contains(sql, "ALTER USER 'shop_u'@'localhost' IDENTIFIED WITH caching_sha2_password BY 'pl4in-P@ss'") {
+			restored = true
 		}
 	}
-	if !created {
+	if !loader || !restored {
 		t.Errorf("аккаунт базы не заведён паролем: %q", mysqlSQL)
 	}
 	tarCmd := remote.command("tar -C '/home/bitrix'")
@@ -536,6 +584,9 @@ func TestMigrationFromBitrixVM(t *testing.T) {
 		}
 		if st.Direction == "in" && st.Name == "mysql" && st.Bytes > 0 {
 			mysqlIn = true
+			if args := strings.Join(st.Args, " "); args != "--protocol=socket --binary-mode --local-infile=0 --user=shop_u sitemanager" {
+				t.Errorf("дамп грузится не учёткой базы или без --binary-mode: %s", args)
+			}
 		}
 	}
 	if !tarIn || !mysqlIn {
@@ -556,6 +607,7 @@ func TestMigrationFromBitrixVM(t *testing.T) {
 // A FASTPANEL server: its SQLite database says who owns what; the files and
 // the MySQL hashes come from the machine itself.
 func TestMigrationFromFastpanel(t *testing.T) {
+	fakeUnixAccounts(t)
 	dbFile := filepath.Join(t.TempDir(), "fastpanel2.db")
 	fp, err := sql.Open("sqlite", dbFile)
 	if err != nil {
@@ -737,7 +789,7 @@ func TestMigrationFromFastpanel(t *testing.T) {
 	}
 	var hashed bool
 	for _, sql := range mysqlSQL {
-		if strings.Contains(sql, "CREATE USER IF NOT EXISTS 'shop_u'@'localhost' IDENTIFIED WITH 'mysql_native_password' AS '*94BDCEBE") {
+		if strings.Contains(sql, "ALTER USER 'shop_u'@'localhost' IDENTIFIED WITH mysql_native_password AS '*94BDCEBE19083CE2A1F959FD02F964C7AF4CFC29'") {
 			hashed = true
 		}
 	}

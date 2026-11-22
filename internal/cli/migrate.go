@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -38,12 +37,13 @@ func migrateCmd() *cobra.Command {
 	grantCmd.Flags().IntVar(&grant.Hours, "hours", 24, T("срок жизни токена в часах", "token lifetime in hours"))
 
 	var src apitypes.MigrationSourceRequest
-	var passwordStdin bool
+	var passwordStdin, tokenStdin bool
 	var keyFile string
 	addSourceFlags := func(cmd *cobra.Command) {
 		cmd.Flags().StringVar(&src.Panel, "from", "monopanel", T("откуда переносим: monopanel | fastpanel | bitrixvm", "the panel to move from: monopanel | fastpanel | bitrixvm"))
 		cmd.Flags().StringVar(&src.Source, "source", "", T("MonoPanel: https://old.example.com:8443; чужая панель: root@old.example.com[:22]", "MonoPanel: https://old.example.com:8443; a foreign panel: root@old.example.com[:22]"))
 		cmd.Flags().StringVar(&src.Token, "token", "", T("токен, выданный источником (mp migrate grant) — только для MonoPanel", "the token issued by the source (mp migrate grant) — MonoPanel only"))
+		cmd.Flags().BoolVar(&tokenStdin, "token-stdin", false, T("прочитать токен источника из stdin", "read the source's token from stdin"))
 		cmd.Flags().StringVar(&src.Scope, "scope", "", T("что переносим: user:<логин> (BitrixVM: всегда user:bitrix)", "what to move: user:<login> (BitrixVM: always user:bitrix)"))
 		cmd.Flags().StringVar(&src.As, "as", "", T("принять под другим логином", "take the account under another login"))
 		cmd.Flags().BoolVar(&src.Insecure, "insecure", false, T("не проверять сертификат источника (MonoPanel)", "do not verify the source's certificate (MonoPanel)"))
@@ -54,7 +54,13 @@ func migrateCmd() *cobra.Command {
 	}
 	// prepareSource reads the ssh credentials for a foreign source and
 	// checks the flags that only make sense for a MonoPanel one.
-	prepareSource := func() error {
+	prepareSource := func(cmd *cobra.Command) error {
+		if err := shareStdin(cmd, []string{"token-stdin", "password-stdin"}, nil); err != nil {
+			return err
+		}
+		if err := secretFlag(cmd, "token-stdin", "token", T("Токен источника: ", "Source token: "), &src.Token); err != nil {
+			return err
+		}
 		switch src.Panel {
 		case "", "monopanel":
 			if src.Token == "" || src.Scope == "" {
@@ -65,9 +71,8 @@ func migrateCmd() *cobra.Command {
 		default:
 			return &exitError{code: 2, msg: T("--from: monopanel, fastpanel или bitrixvm", "--from: monopanel, fastpanel or bitrixvm")}
 		}
-		if passwordStdin {
-			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-			src.Password = strings.TrimRight(line, "\r\n")
+		if err := secretFlag(cmd, "password-stdin", "", T("Пароль ssh источника: ", "The source's ssh password: "), &src.Password); err != nil {
+			return err
 		}
 		if keyFile == "" && src.Password == "" {
 			home, _ := os.UserHomeDir()
@@ -91,12 +96,12 @@ func migrateCmd() *cobra.Command {
 		return nil
 	}
 
-	planCmd := &cobra.Command{Use: "plan", Short: T("разбор: что приедет и что этому мешает (ничего не меняет)", "dry run: what will arrive and what stands in the way (changes nothing)"), RunE: func(cmd *cobra.Command, _ []string) error {
+	planCmd := &cobra.Command{Use: "plan", Short: T("разбор: что приедет и что этому мешает (ничего не меняет)", "dry run: what will arrive and what stands in the way (changes nothing)"), Long: migrateSourceNote(T("Разбор переезда: что приедет и что этому мешает. Ничего не меняет ни здесь, ни на источнике.", "A dry run of the move: what will arrive and what stands in the way. Changes nothing, here or on the source.")), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
 		}
-		if err := prepareSource(); err != nil {
+		if err := prepareSource(cmd); err != nil {
 			return err
 		}
 		if src.Panel != "" && src.Panel != "monopanel" {
@@ -144,10 +149,10 @@ func migrateCmd() *cobra.Command {
 			fmt.Println("·", n)
 		}
 		for _, w := range plan.Warnings {
-			fmt.Printf("! %s%s\n", w.Text, fixHint(w.Fix))
+			fmt.Printf("! %s%s\n", issueText(w), fixHint(w.Fix))
 		}
 		for _, c := range plan.Conflicts {
-			fmt.Printf("✗ %s%s\n", c.Text, fixHint(c.Fix))
+			fmt.Printf("✗ %s%s\n", issueText(c), fixHint(c.Fix))
 		}
 		if plan.OK {
 			fmt.Println(T("\nПрепятствий нет: mp migrate run …", "\nNothing stands in the way: mp migrate run …"))
@@ -158,12 +163,12 @@ func migrateCmd() *cobra.Command {
 	}}
 	addSourceFlags(planCmd)
 
-	runCmd := &cobra.Command{Use: "run", Short: T("перенести аккаунт сюда", "move the account here"), RunE: func(cmd *cobra.Command, _ []string) error {
+	runCmd := &cobra.Command{Use: "run", Short: T("перенести аккаунт сюда", "move the account here"), Long: migrateSourceNote(T("Переносит аккаунт с источника сюда задачей: файлы, сайты, базы, почту, сертификаты, cron, app-сервисы и Valkey. Сначала — mp migrate plan с теми же флагами.", "Moves the account from the source here in a job: its files, sites, databases, mail, certificates, cron, app services and Valkey. Run mp migrate plan with the same flags first.")), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
 		}
-		if err := prepareSource(); err != nil {
+		if err := prepareSource(cmd); err != nil {
 			return err
 		}
 		res, err := cl.MigrateRun(cmd.Context(), src)
@@ -176,6 +181,23 @@ func migrateCmd() *cobra.Command {
 
 	c.AddCommand(grantCmd, planCmd, runCmd)
 	return c
+}
+
+// migrateSourceNote is the long help of plan and run: what the command does,
+// then the flags that look like the global ones but describe the source panel.
+func migrateSourceNote(what string) string {
+	return what + "\n\n" + T(`Флаги --token и --insecure здесь относятся к источнику. Свой токен и проверку сертификата для --server
+эта команда берёт из окружения: $MP_TOKEN и $MP_INSECURE=1.`, `The --token and --insecure flags here belong to the source. For --server, this command takes its own token
+and certificate check from the environment: $MP_TOKEN and $MP_INSECURE=1.`)
+}
+
+// issueText names what an issue is about: two sites already served here give
+// two lines that differ only by the domain.
+func issueText(i apitypes.MigrationIssue) string {
+	if i.Target == "" {
+		return i.Text
+	}
+	return i.Target + ": " + i.Text
 }
 
 func fixHint(fix string) string {

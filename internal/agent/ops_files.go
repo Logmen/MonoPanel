@@ -12,6 +12,9 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
+	"time"
+
+	"golang.org/x/sys/unix"
 
 	"monopanel/internal/osprofile"
 	"monopanel/internal/systemd"
@@ -25,6 +28,9 @@ func (s *Server) safeHomePath(p string) (string, error) {
 	root := filepath.Clean(s.cfg.WWWRoot)
 	if !filepath.IsAbs(p) || !strings.HasPrefix(p, root+"/") {
 		return "", fmt.Errorf("path %s is outside %s", p, root)
+	}
+	if s.coversProtected(p) { // only a www_root set to / or /etc gets here
+		return "", errors.New(protectedErr(p).Message)
 	}
 	rel := strings.TrimPrefix(p, root+"/")
 	cur := root
@@ -88,10 +94,127 @@ func (s *Server) ensureFile(_ context.Context, req *EnsureFileRequest) (*EnsureF
 	if mode == 0 {
 		mode = 0o644
 	}
-	if err := atomicWrite(p, content, mode, uid, gid); err != nil {
+	if err := writeHomeFile(filepath.Clean(s.cfg.WWWRoot), p, content, mode, uid, gid); err != nil {
+		if errors.Is(err, errSymlinkInPath) {
+			return nil, &Error{Status: http.StatusForbidden, Message: err.Error()}
+		}
 		return nil, &Error{Message: "write " + p, Output: err.Error()}
 	}
 	return &EnsureFileResponse{Written: true}, nil
+}
+
+// openBelow opens p (below root, a directory someone else may write to, such
+// as the panel's log directory) for reading through directories opened one by
+// one without following a symlink, the file itself with O_NOFOLLOW (and
+// O_NONBLOCK, so a FIFO planted there cannot hang the agent): whoever swaps a
+// component for a symlink makes the call fail instead of having root read the
+// link's target.
+func openBelow(root, p string) (*os.File, error) {
+	rel, err := filepath.Rel(root, p)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
+		return nil, fmt.Errorf("%s is not below %s", p, root)
+	}
+	dir, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: root, Err: err}
+	}
+	defer func() { unix.Close(dir) }() //nolint:errcheck // a directory opened for reading
+	parts := strings.Split(rel, "/")
+	cur := root
+	for i, name := range parts {
+		cur = filepath.Join(cur, name)
+		flags := unix.O_RDONLY | unix.O_NOFOLLOW | unix.O_CLOEXEC
+		if i < len(parts)-1 {
+			flags |= unix.O_DIRECTORY
+		} else {
+			flags |= unix.O_NONBLOCK
+		}
+		fd, err := unix.Openat(dir, name, flags, 0)
+		if errors.Is(err, unix.ELOOP) || i < len(parts)-1 && errors.Is(err, unix.ENOTDIR) {
+			return nil, fmt.Errorf("%w: refusing %s", errSymlinkInPath, cur)
+		}
+		if errors.Is(err, unix.ENOENT) {
+			return nil, &os.PathError{Op: "open", Path: cur, Err: os.ErrNotExist}
+		}
+		if err != nil {
+			return nil, &os.PathError{Op: "open", Path: cur, Err: err}
+		}
+		if i == len(parts)-1 {
+			return os.NewFile(uintptr(fd), p), nil
+		}
+		unix.Close(dir) //nolint:errcheck // a directory opened for reading
+		dir = fd
+	}
+	return nil, fmt.Errorf("%s: nothing to open", p)
+}
+
+// writeHomeFile replaces p (below root, the web root) atomically like
+// atomicWrite, but reaches its directory through directories opened one by
+// one without following a symlink, and makes, re-owns and renames the file
+// relative to that directory: safeHomePath only checks the path, and a client
+// could swap a component for a symlink right after, turning a root write into
+// one of /etc/cron.d or /root/.ssh. Every directory on the way must exist.
+func writeHomeFile(root, p string, data []byte, mode os.FileMode, uid, gid int) (err error) {
+	rel, err := filepath.Rel(root, filepath.Dir(p))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
+		return fmt.Errorf("%s is not below %s", p, root)
+	}
+	dir, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return &os.PathError{Op: "open", Path: root, Err: err}
+	}
+	defer func() { unix.Close(dir) }() //nolint:errcheck // a directory opened for reading
+	if rel != "." {
+		cur := root
+		for _, name := range strings.Split(rel, "/") {
+			cur = filepath.Join(cur, name)
+			next, err := unix.Openat(dir, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+			if errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR) {
+				return fmt.Errorf("%w: refusing %s", errSymlinkInPath, cur)
+			}
+			if err != nil {
+				return &os.PathError{Op: "open", Path: cur, Err: err}
+			}
+			unix.Close(dir) //nolint:errcheck // a directory opened for reading
+			dir = next
+		}
+	}
+	base := filepath.Base(p)
+	tmp := fmt.Sprintf(".%s.mp-%d-%d", base, os.Getpid(), time.Now().UnixNano())
+	fd, err := unix.Openat(dir, tmp, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		return &os.PathError{Op: "create", Path: filepath.Join(filepath.Dir(p), tmp), Err: err}
+	}
+	f := os.NewFile(uintptr(fd), tmp)
+	defer func() {
+		if err != nil {
+			f.Close()
+			unix.Unlinkat(dir, tmp, 0) //nolint:errcheck // best effort: the temporary file of a failed write
+		}
+	}()
+	if _, err = f.Write(data); err != nil {
+		return err
+	}
+	if err = f.Chmod(mode); err != nil {
+		return err
+	}
+	if uid >= 0 || gid >= 0 {
+		if err = f.Chown(uid, gid); err != nil {
+			return err
+		}
+	}
+	if err = f.Sync(); err != nil {
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	// renameat replaces whatever entry has that name (a symlink planted there
+	// is replaced itself, its target stays untouched).
+	if err = unix.Renameat(dir, tmp, dir, base); err != nil {
+		return &os.PathError{Op: "rename", Path: p, Err: err}
+	}
+	return nil
 }
 
 func primaryGID(login string) int {
@@ -280,10 +403,24 @@ func fileACL(mode fs.FileMode) [2]string {
 }
 
 func (s *Server) removePaths(ctx context.Context, req *RemovePathsRequest) (*RemovePathsResponse, error) {
+	// The checks to run afterwards are vetted before anything is removed.
+	for _, argv := range req.Validate {
+		if len(argv) == 0 || !filepath.IsAbs(argv[0]) {
+			return nil, &Error{Status: http.StatusBadRequest, Message: "validator must be an absolute argv"}
+		}
+		if err := s.validatorAllowed(argv); err != nil {
+			return nil, &Error{Status: http.StatusForbidden, Message: err.Error()}
+		}
+	}
 	resp := &RemovePathsResponse{Removed: []string{}}
 	root := filepath.Clean(s.cfg.WWWRoot)
 	for _, raw := range req.Paths {
 		p := filepath.Clean(raw)
+		// /etc/monopanel/ is on the allow-list, and a recursive removal of it
+		// would take config.yaml and the secret key along.
+		if s.coversProtected(p) {
+			return nil, protectedErr(p)
+		}
 		inHome := strings.HasPrefix(p, root+"/")
 		switch {
 		case inHome:
@@ -332,9 +469,6 @@ func (s *Server) removePaths(ctx context.Context, req *RemovePathsRequest) (*Rem
 		resp.Removed = append(resp.Removed, p)
 	}
 	for _, argv := range req.Validate {
-		if len(argv) == 0 || !filepath.IsAbs(argv[0]) {
-			return nil, &Error{Status: http.StatusBadRequest, Message: "validator must be an absolute argv"}
-		}
 		if out, err := runArgv(ctx, nil, argv...); err != nil {
 			return nil, &Error{Status: http.StatusUnprocessableEntity, Message: "validation failed after removal: " + strings.Join(argv, " "), Output: out}
 		}

@@ -11,8 +11,8 @@ server {
 
     root  /var/www/alex/data/www/example.com;
     index index.php;
-    access_log /var/www/alex/data/logs/webmail.access.log main;
-    error_log  /var/www/alex/data/logs/webmail.error.log;
+    access_log /var/log/monopanel/sites/alex/webmail.access.log main;
+    error_log  /var/log/monopanel/sites/alex/webmail.error.log;
     client_max_body_size 64m;
     disable_symlinks if_not_owner from=$document_root;
     add_header Strict-Transport-Security "max-age=31536000" always;

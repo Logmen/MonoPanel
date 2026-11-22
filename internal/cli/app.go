@@ -2,11 +2,14 @@ package cli
 
 import (
 	"fmt"
+	"monopanel/internal/termsafe"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"monopanel/internal/apitypes"
+	"monopanel/internal/store"
 )
 
 // appOwner resolves --user or falls back to the caller's own login.
@@ -31,9 +34,9 @@ func appOwner(cmd *cobra.Command, login string) (string, error) {
 func appCmd() *cobra.Command {
 	c := &cobra.Command{Use: "app", Short: T("app-сервисы пользователей: gunicorn, node, боты (systemd-юнит от имени пользователя)", "users' app services: gunicorn, node, bots (a systemd unit running as the user)")}
 	var login string
-	c.PersistentFlags().StringVar(&login, "user", "", T("логин владельца (обязателен для администратора)", "owner's login (required for an administrator)"))
+	c.PersistentFlags().StringVar(&login, "user", "", T("логин владельца (по умолчанию свой аккаунт; root на сервере указывает всегда; list без него у администратора — все аккаунты)", "the owner's login (your own account by default; root on the server always gives it; without it list shows every account to an administrator)"))
 
-	list := &cobra.Command{Use: "list", Short: T("список app-сервисов (администратор без --user видит все)", "list app services (an administrator without --user sees everyone's)"), RunE: func(cmd *cobra.Command, _ []string) error {
+	list := &cobra.Command{Use: "list", Short: T("список app-сервисов (администратор без --user видит сервисы всех аккаунтов)", "list app services (an administrator without --user sees every account's)"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -44,7 +47,8 @@ func appCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if me.UserID == 0 {
+			// any administrator sees the whole server, as GET /apps allows
+			if me.Role == store.RoleAdmin {
 				apps, err = cl.AllApps(cmd.Context())
 			} else {
 				apps, err = cl.Apps(cmd.Context(), me.Login)
@@ -75,7 +79,7 @@ func appCmd() *cobra.Command {
 	}}
 
 	var req apitypes.AppRequest
-	var disabled bool
+	var disabled, addEnvStdin bool
 	add := &cobra.Command{Use: "add <name>", Short: T("создать app-сервис и запустить его", "create an app service and start it"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
@@ -89,6 +93,11 @@ func appCmd() *cobra.Command {
 		if disabled {
 			f := false
 			req.Enabled = &f
+		}
+		if addEnvStdin {
+			if req.Env, err = envWithStdin(cmd, req.Env); err != nil {
+				return err
+			}
 		}
 		res, err := cl.CreateApp(cmd.Context(), u, req)
 		if err != nil {
@@ -104,6 +113,7 @@ func appCmd() *cobra.Command {
 	add.Flags().StringVar(&req.WorkDir, "workdir", "", T("рабочий каталог (по умолчанию ~/data)", "working directory (defaults to ~/data)"))
 	add.Flags().StringVar(&req.EnvFile, "env-file", "", T("EnvironmentFile внутри домашнего каталога", "EnvironmentFile inside the home directory"))
 	add.Flags().StringSliceVar(&req.Env, "env", nil, T("переменная KEY=value (можно несколько раз)", "variable KEY=value (can be repeated)"))
+	add.Flags().BoolVar(&addEnvStdin, "env-stdin", false, T("прочитать переменные KEY=value из stdin, по одной в строке (не видны в ps)", "read the KEY=value variables from stdin, one per line (kept out of ps)"))
 	add.Flags().StringVar(&req.Description, "description", "", T("описание", "description"))
 	add.Flags().StringVar(&req.Restart, "restart", "", T("always (по умолчанию), on-failure или no", "always (default), on-failure or no"))
 	add.Flags().BoolVar(&disabled, "disabled", false, T("создать, но не запускать и не включать автозапуск", "create, but neither start it nor enable autostart"))
@@ -112,8 +122,11 @@ func appCmd() *cobra.Command {
 	var upd apitypes.AppUpdateRequest
 	var updWorkDir, updEnvFile, updDesc string
 	var updEnv []string
-	var enable, disable bool
+	var enable, disable, updEnvStdin bool
 	set := &cobra.Command{Use: "set <name>", Short: T("изменить app-сервис и перезапустить", "change an app service and restart it"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		if err := apart(cmd, "enable", "disable"); err != nil {
+			return err
+		}
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -131,7 +144,12 @@ func appCmd() *cobra.Command {
 		if cmd.Flags().Changed("description") {
 			upd.Description = &updDesc
 		}
-		if cmd.Flags().Changed("env") {
+		if cmd.Flags().Changed("env") || updEnvStdin {
+			if updEnvStdin {
+				if updEnv, err = envWithStdin(cmd, updEnv); err != nil {
+					return err
+				}
+			}
 			upd.Env = &updEnv
 		}
 		if enable {
@@ -156,6 +174,7 @@ func appCmd() *cobra.Command {
 	set.Flags().StringVar(&updWorkDir, "workdir", "", T("рабочий каталог", "working directory"))
 	set.Flags().StringVar(&updEnvFile, "env-file", "", T("EnvironmentFile (пустая строка — убрать)", "EnvironmentFile (an empty string removes it)"))
 	set.Flags().StringSliceVar(&updEnv, "env", nil, T("заменить список переменных KEY=value", "replace the list of KEY=value variables"))
+	set.Flags().BoolVar(&updEnvStdin, "env-stdin", false, T("заменить список переменными KEY=value из stdin, по одной в строке (не видны в ps)", "replace the list with KEY=value variables from stdin, one per line (kept out of ps)"))
 	set.Flags().StringVar(&updDesc, "description", "", T("описание", "description"))
 	set.Flags().StringVar(&upd.Restart, "restart", "", T("always, on-failure или no", "always, on-failure or no"))
 	set.Flags().BoolVar(&enable, "enable", false, T("включить автозапуск и запустить", "enable autostart and start"))
@@ -218,7 +237,7 @@ func appCmd() *cobra.Command {
 		if g.json {
 			return printJSON(res)
 		}
-		fmt.Println(strings.Join(res.Lines, "\n"))
+		fmt.Println(termsafe.Text(strings.Join(res.Lines, "\n")))
 		return nil
 	}}
 	logs.Flags().IntVarP(&lines, "lines", "n", 100, T("сколько строк", "number of lines"))
@@ -257,6 +276,11 @@ func stackRealIPCmd() *cobra.Command {
 	var cloudflare, noCloudflare, clear bool
 	var from []string
 	c := &cobra.Command{Use: "real-ip", Short: T("доверенные прокси для реального IP клиента (Cloudflare, свои балансировщики)", "trusted proxies for the client's real IP (Cloudflare, your own load balancers)"), Long: T("Без флагов показывает текущие настройки. С флагами переписывает /etc/nginx/monopanel/http.d/10-real-ip.conf и перезагружает nginx.", "Without flags, shows the current settings. With flags, rewrites /etc/nginx/monopanel/http.d/10-real-ip.conf and reloads nginx."), RunE: func(cmd *cobra.Command, _ []string) error {
+		for _, pair := range [][2]string{{"cloudflare", "no-cloudflare"}, {"clear-from", "from"}} {
+			if err := apart(cmd, pair[0], pair[1]); err != nil {
+				return err
+			}
+		}
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -300,4 +324,31 @@ func stackRealIPCmd() *cobra.Command {
 	c.Flags().StringSliceVar(&from, "from", nil, T("свои прокси IP/CIDR (заменяет список; X-Forwarded-For)", "your own proxies, IP/CIDR (replaces the list; X-Forwarded-For)"))
 	c.Flags().BoolVar(&clear, "clear-from", false, T("очистить список своих прокси", "clear the list of your own proxies"))
 	return c
+}
+
+// envWithStdin adds the KEY=value lines of stdin (--env-stdin) to the --env
+// list; a key given in both takes the value from stdin. Values of an app's
+// environment are often API keys, and the command line is readable by every
+// local user in ps.
+func envWithStdin(cmd *cobra.Command, list []string) ([]string, error) {
+	pairs := map[string]string{}
+	if err := readKeyValues(cmd.Context(), "env-stdin", pairs); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(list)+len(pairs))
+	for _, e := range list {
+		k, _, _ := strings.Cut(e, "=")
+		if _, dup := pairs[strings.TrimSpace(k)]; !dup {
+			out = append(out, e)
+		}
+	}
+	keys := make([]string, 0, len(pairs))
+	for k := range pairs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		out = append(out, k+"="+pairs[k])
+	}
+	return out, nil
 }

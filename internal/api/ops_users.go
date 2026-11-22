@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -76,6 +79,9 @@ func (s *Server) registerUsers() {
 		Security: secured, Metadata: adminOnly, DefaultStatus: http.StatusAccepted,
 	}, func(ctx context.Context, in *createUserInput) (*createUserOutput, error) {
 		p := principalFrom(ctx)
+		if err := reservedLogin(in.Body.Login); err != nil {
+			return nil, huma.Error422UnprocessableEntity(err.Error())
+		}
 		u := &store.User{Login: in.Body.Login, Role: in.Body.Role, Email: in.Body.Email, Shell: in.Body.Shell, QuotaMB: in.Body.QuotaMB, Status: store.UserPending}
 		if u.Role == "" {
 			u.Role = store.RoleUser
@@ -127,6 +133,21 @@ func (s *Server) registerUserUpdate() {
 		if b.Email != "" {
 			u.Email = b.Email
 		}
+		if b.Password != "" && p.UserID == u.ID && p.Via != "peercred" && u.PasswordHash != "" {
+			// Your own password needs the current one: whoever holds a stolen
+			// session or token could otherwise set a new password and, with
+			// it, turn two-factor sign-in off. Over the local socket the system
+			// has already authenticated the account. Guessing is held back
+			// like sign-ins.
+			info := requestInfo(ctx)
+			if !s.limiter.allow(info.IP) {
+				return nil, huma.Error429TooManyRequests("too many attempts; try again in a minute")
+			}
+			if ok, _ := auth.VerifyPassword(b.CurrentPassword, u.PasswordHash); b.CurrentPassword == "" || !ok {
+				s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "user.password", Target: u.Login, IP: info.IP, Result: "denied"})
+				return nil, huma.Error403Forbidden("changing your own password needs your current password (current_password)")
+			}
+		}
 		if b.Password != "" {
 			h, err := auth.HashPassword(b.Password)
 			if err != nil {
@@ -143,6 +164,20 @@ func (s *Server) registerUserUpdate() {
 		}
 		if b.Status != "" {
 			u.Status = b.Status
+		}
+		// A new password or a suspension ends the account's browser sessions;
+		// whoever changes their own password keeps the session they did it from.
+		// API tokens stay: they are separate credentials, revoked explicitly.
+		if b.Password != "" || b.Status == store.UserSuspended {
+			keep := ""
+			if p.UserID == u.ID && b.Status != store.UserSuspended {
+				keep = p.SessionID
+			}
+			if n, err := s.db.DeleteUserSessions(ctx, u.ID, keep); err != nil {
+				s.log.Warn("users: cannot end sessions", "account", u.Login, "err", err)
+			} else if n > 0 {
+				s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "user.sessions.end", Target: u.Login, IP: requestInfo(ctx).IP, Details: map[string]any{"sessions": n}})
+			}
 		}
 		reprovision := false
 		if b.Shell != nil && *b.Shell != u.Shell {
@@ -350,7 +385,6 @@ func (s *Server) provisionUser(ctx context.Context, p userProvisionPayload, logf
 		sshDirSpec(home, p.Login),
 		{Path: data, Mode: 0o750, Owner: p.Login, Group: p.Login},
 		{Path: filepath.Join(data, "www"), Mode: 0o750, Owner: p.Login, Group: p.Login},
-		{Path: filepath.Join(data, "logs"), Mode: 0o750, Owner: p.Login, Group: p.Login},
 		{Path: filepath.Join(data, "tmp"), Mode: 0o700, Owner: p.Login, Group: p.Login},
 		{Path: filepath.Join(data, "tmp", "sess"), Mode: 0o700, Owner: p.Login, Group: p.Login},
 		{Path: filepath.Join(data, "bin"), Mode: 0o750, Owner: p.Login, Group: p.Login},
@@ -372,4 +406,45 @@ func (s *Server) provisionUser(ctx context.Context, p userProvisionPayload, logf
 	}
 	progress(100, "user ready")
 	return nil
+}
+
+// panelActors are names the panel writes as the author of its own jobs and
+// audit entries: an account by that name would see them as its own.
+var panelActors = map[string]bool{"scheduler": true, "system": true}
+
+// lookupSystemUser finds a unix account by name (a variable for tests).
+var lookupSystemUser = user.Lookup
+
+// reservedLogin refuses a login an account must not take: the names the
+// panel signs its own jobs and audit entries with, and the system accounts
+// of this server (root, www-data, mysql, postfix…) — provisioning would
+// adopt such an account and change its shell, home and groups.
+func reservedLogin(login string) error {
+	if panelActors[login] {
+		return fmt.Errorf("%s is reserved: the panel signs its own jobs and audit entries with it", login)
+	}
+	if u, err := lookupSystemUser(login); err == nil {
+		if uid, err := strconv.Atoi(u.Uid); err == nil && uid < systemUIDMax() {
+			return fmt.Errorf("%s is a system account of this server (uid %d); choose another login", login, uid)
+		}
+	}
+	return nil
+}
+
+// systemUIDMax is the first uid of ordinary accounts (UID_MIN of
+// /etc/login.defs, 1000 by default): below it live the system's own.
+func systemUIDMax() int {
+	b, err := os.ReadFile("/etc/login.defs")
+	if err != nil {
+		return 1000
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) == 2 && f[0] == "UID_MIN" {
+			if n, err := strconv.Atoi(f[1]); err == nil && n > 0 {
+				return n
+			}
+		}
+	}
+	return 1000
 }

@@ -12,7 +12,7 @@
         SetHandler "proxy:unix:/run/monopanel/php/example.com.sock|fcgi://localhost"
     </FilesMatch>
     ProxyTimeout 150
-    ErrorLog  /var/www/alex/data/logs/example.com.apache.error.log
-    CustomLog /var/www/alex/data/logs/example.com.apache.access.log combined
+    ErrorLog  /var/log/monopanel/sites/alex/example.com.apache.error.log
+    CustomLog /var/log/monopanel/sites/alex/example.com.apache.access.log combined
     IncludeOptional monopanel/sites/example.com.d/*.conf
 </VirtualHost>

@@ -35,6 +35,74 @@ type listTokensInput struct {
 	User string `query:"user" doc:"Account whose tokens to list (administrators only)"`
 }
 
+// checkTokenScopes keeps migration scopes with administrators. Such a scope
+// opens /migrate/state, /migrate/files and /migrate/dump of the named account —
+// password hashes, private keys, the home directory and the databases — so an
+// ordinary account must not be able to write one into its own token. Other
+// scopes are labels and stay free-form.
+func checkTokenScopes(scopes []string, owner *store.User) error {
+	for _, sc := range scopes {
+		if isMigrationScope(sc) && owner.Role != store.RoleAdmin {
+			return huma.Error403Forbidden("migration scopes belong to administrators: issue them with mp migrate grant")
+		}
+	}
+	return nil
+}
+
+// isMigrationScope tells a migration scope however it is spelled: with
+// blanks around it or in capitals it must restrict the token just the same,
+// not leave an unrestricted one behind a label that looks like it.
+func isMigrationScope(sc string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(sc)), migrateScopePrefix)
+}
+
+// normalizeScopes stores scopes trimmed, and a migration scope in the one
+// spelling the handlers compare with.
+func normalizeScopes(scopes []string) []string {
+	out := make([]string, 0, len(scopes))
+	for _, sc := range scopes {
+		sc = strings.TrimSpace(sc)
+		if isMigrationScope(sc) {
+			sc = strings.ToLower(sc)
+		}
+		out = append(out, sc)
+	}
+	return out
+}
+
+// revokeForgedMigrationTokens removes migration-scoped tokens of accounts that
+// are not administrators. Before 0.8.20 POST /tokens accepted any scope, so
+// such a token may exist on an upgraded panel; it is useless now (the handlers
+// require the administrator role) but should not linger.
+func (s *Server) revokeForgedMigrationTokens(ctx context.Context) {
+	users, err := s.db.ListUsers(ctx)
+	if err != nil {
+		s.log.Warn("tokens: cannot list accounts to check migration scopes", "err", err)
+		return
+	}
+	for _, u := range users {
+		if u.Role == store.RoleAdmin {
+			continue
+		}
+		list, err := s.db.ListAPITokens(ctx, u.ID)
+		if err != nil {
+			s.log.Warn("tokens: cannot list tokens", "account", u.Login, "err", err)
+			continue
+		}
+		for _, t := range list {
+			if checkTokenScopes(t.Scopes, u) == nil {
+				continue
+			}
+			if err := s.db.DeleteAPIToken(ctx, t.ID, u.ID); err != nil {
+				s.log.Warn("tokens: cannot revoke a migration-scoped token", "account", u.Login, "token", t.ID, "err", err)
+				continue
+			}
+			s.log.Warn("tokens: revoked a migration-scoped token of an account that is not an administrator", "account", u.Login, "token", t.ID, "name", t.Name)
+			s.db.Audit(ctx, store.AuditEntry{Actor: "system", Action: "token.revoke", Target: t.Name, Details: map[string]any{"account": u.Login, "reason": "migration scope on a non-administrator account", "scopes": t.Scopes}})
+		}
+	}
+}
+
 // tokenOwner resolves which account a token belongs to. A normal user always
 // gets their own; an administrator may name another account. Root on the local
 // socket has no account at all, so it must name one — unless the panel has a
@@ -105,11 +173,15 @@ func (s *Server) registerTokens() {
 		if err != nil {
 			return nil, err
 		}
+		scopes := normalizeScopes(in.Body.Scopes)
+		if err := checkTokenScopes(scopes, owner); err != nil {
+			return nil, err
+		}
 		plain, err := auth.NewToken(32)
 		if err != nil {
 			return nil, err
 		}
-		rec := &store.APIToken{UserID: owner.ID, Name: in.Body.Name, Hash: auth.HashToken(plain), Scopes: in.Body.Scopes}
+		rec := &store.APIToken{UserID: owner.ID, Name: in.Body.Name, Hash: auth.HashToken(plain), Scopes: scopes}
 		if in.Body.ExpiresInDays > 0 {
 			t := time.Now().Add(time.Duration(in.Body.ExpiresInDays) * 24 * time.Hour)
 			rec.ExpiresAt = &t

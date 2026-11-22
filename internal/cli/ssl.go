@@ -11,9 +11,7 @@ import (
 
 	"monopanel/internal/apitypes"
 	"monopanel/internal/client"
-	"monopanel/internal/config"
 	"monopanel/internal/store"
-	"monopanel/internal/systemd"
 )
 
 func resolveCert(ctx context.Context, cl *client.Client, ref string) (*store.Certificate, error) {
@@ -116,7 +114,12 @@ func sslCmd() *cobra.Command {
 		return printJSON(c)
 	}}
 	var all bool
-	renew := &cobra.Command{Use: "renew <id|hostname>", Short: T("продлить (перевыпустить) сертификат сейчас", "renew (reissue) a certificate now"), Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	renew := &cobra.Command{Use: "renew [id|hostname]", Short: T("продлить (перевыпустить) сертификат сейчас (--all — все ACME-сертификаты)", "renew (reissue) a certificate now (--all: every ACME certificate)"), Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		// One certificate named and --all asked for: renewing every one of
+		// them would be the surprise (and may run into the CA's rate limits).
+		if all && len(args) == 1 {
+			return &exitError{code: 2, msg: T("укажите id/hostname или --all, но не то и другое", "specify an id/hostname or --all, not both")}
+		}
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -195,60 +198,11 @@ func webCmd() *cobra.Command {
 	return c
 }
 
-func configSetCmd() *cobra.Command {
-	var restart bool
-	c := &cobra.Command{Use: "set <key> <value>", Short: T("изменить параметр config.yaml (root)", "change a config.yaml setting (root)"), Long: T("Ключи: web.hostname, web.listen, log.level, log.format, jobs.workers", "Keys: web.hostname, web.listen, log.level, log.format, jobs.workers"), Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := loadConfig()
-		if err != nil {
-			return err
-		}
-		key, val := args[0], args[1]
-		switch key {
-		case "web.hostname":
-			cfg.Web.Hostname = strings.ToLower(strings.TrimSpace(val))
-		case "web.listen":
-			cfg.Web.Listen = val
-		case "log.level":
-			cfg.Log.Level = val
-		case "log.format":
-			cfg.Log.Format = val
-		case "jobs.workers":
-			n, err := strconv.Atoi(val)
-			if err != nil || n < 1 {
-				return &exitError{code: 2, msg: T("jobs.workers должен быть положительным числом", "jobs.workers must be a positive number")}
-			}
-			cfg.Jobs.Workers = n
-		default:
-			return &exitError{code: 2, msg: T("неизвестный ключ: ", "unknown key: ") + key}
-		}
-		if err := cfg.Save(cfg.Path()); err != nil {
-			return err
-		}
-		fmt.Printf("%s = %s → %s\n", key, val, cfg.Path())
-		if restart {
-			sd, err := systemd.Connect(cmd.Context())
-			if err != nil {
-				return err
-			}
-			defer sd.Close()
-			if err := sd.Restart(cmd.Context(), "monopanel-api.service"); err != nil {
-				return err
-			}
-			fmt.Println(T("monopanel-api перезапущен", "monopanel-api restarted"))
-		} else {
-			fmt.Println(T("применится после перезапуска: systemctl restart monopanel-api (или --restart)", "takes effect after a restart: systemctl restart monopanel-api (or --restart)"))
-		}
-		return nil
-	}}
-	c.Flags().BoolVar(&restart, "restart", false, T("перезапустить monopanel-api после изменения", "restart monopanel-api after the change"))
-	_ = config.DefaultPath
-	return c
-}
-
 func dnsProviderCmd() *cobra.Command {
 	c := &cobra.Command{Use: "dns-provider", Short: T("DNS-провайдеры для DNS-01 (wildcard-сертификаты)", "DNS providers for DNS-01 (wildcard certificates)")}
 	var req apitypes.DNSProviderRequest
 	var creds []string
+	var credStdin bool
 	add := &cobra.Command{Use: "add <name>", Short: T("добавить провайдера (учётные данные шифруются)", "add a provider (credentials are stored encrypted)"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
@@ -263,6 +217,11 @@ func dnsProviderCmd() *cobra.Command {
 			}
 			req.Credentials[k] = v
 		}
+		if credStdin {
+			if err := readKeyValues(cmd.Context(), "cred-stdin", req.Credentials); err != nil {
+				return err
+			}
+		}
 		p, err := cl.DNSProviderCreate(cmd.Context(), req)
 		if err != nil {
 			return err
@@ -275,7 +234,8 @@ func dnsProviderCmd() *cobra.Command {
 		return nil
 	}}
 	add.Flags().StringVar(&req.Type, "type", "cloudflare", "cloudflare, hetzner, digitalocean, gandiv5, desec, namecheap, rfc2136")
-	add.Flags().StringSliceVar(&creds, "cred", nil, T("KEY=VALUE, например CLOUDFLARE_DNS_API_TOKEN=…", "KEY=VALUE, e.g. CLOUDFLARE_DNS_API_TOKEN=…"))
+	add.Flags().StringSliceVar(&creds, "cred", nil, T("KEY=VALUE, например CLOUDFLARE_DNS_API_TOKEN=… (ключи типа: mp dns-provider types)", "KEY=VALUE, e.g. CLOUDFLARE_DNS_API_TOKEN=… (a type's keys: mp dns-provider types)"))
+	add.Flags().BoolVar(&credStdin, "cred-stdin", false, T("прочитать учётные данные KEY=VALUE из stdin, по одному в строке", "read the KEY=VALUE credentials from stdin, one per line"))
 	list := &cobra.Command{Use: "list", Short: T("список", "list the providers"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {

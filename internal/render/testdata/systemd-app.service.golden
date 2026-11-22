@@ -9,9 +9,10 @@ Type=simple
 User=alex
 Group=alex
 WorkingDirectory=/var/www/alex/data/www/app.example.com
-ExecStart=/var/www/alex/data/venv/bin/gunicorn --bind 127.0.0.1:5000 app:app
-EnvironmentFile=/var/www/alex/data/.env
-Environment="PORT=5000"
+# The account's own env file is read as the account (mp app-exec), not by
+# systemd as root: a symlink there must not reach other files.
+ExecStart=/usr/bin/monopanel app-exec --env-file /var/www/alex/data/.env -- /var/www/alex/data/venv/bin/gunicorn --bind 127.0.0.1:5000 app:app
+EnvironmentFile=/etc/monopanel/apps/monopanel-app-alex-web.env
 Restart=always
 RestartSec=5
 TimeoutStopSec=30

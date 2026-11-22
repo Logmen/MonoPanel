@@ -27,11 +27,27 @@
     if (cur || has) out.push(cur);
     return out;
   }
+  // Values of the secret flags never stay in the history (kept in the
+  // browser's storage) or in the echo: the panel passes them to the command on
+  // stdin and hides them in the audit log as well.
+  const secretFlags = ['--password', '--current-password', '--admin-password', '--token', '--secret', '--cred', '--env'];
+  function masked(args: string[]): string {
+    const out: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      const eq = a.indexOf('=');
+      if (eq > 0 && secretFlags.includes(a.slice(0, eq))) { out.push(a.slice(0, eq) + '=[redacted]'); continue; }
+      out.push(/\s/.test(a) || a === '' ? JSON.stringify(a) : a);
+      if (secretFlags.includes(a) && i + 1 < args.length) { out.push('[redacted]'); i++; }
+    }
+    return out.join(' ');
+  }
   async function run(cmd?: string) {
-    const text = (cmd ?? line).trim().replace(/^mp\s+/, '');
-    if (!text || running) return;
-    let args = split(text);
+    const raw = (cmd ?? line).trim().replace(/^mp\s+/, '');
+    if (!raw || running) return;
+    let args = split(raw);
     if (!args.length) return;
+    const text = masked(args);
     line = ''; cursor = -1;
     history = [text, ...history.filter((h) => h !== text)].slice(0, 100);
     try { localStorage.setItem('mp.console.history', JSON.stringify(history)); } catch { /* ignore */ }

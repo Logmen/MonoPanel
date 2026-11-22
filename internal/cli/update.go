@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -55,7 +53,14 @@ func updateCmd() *cobra.Command {
 	var hours int
 	var auto bool
 	var tokenStdin bool
-	settings := &cobra.Command{Use: "settings", Short: T("репозиторий, канал, токен и расписание проверок", "repository, channel, token and check schedule"), RunE: func(cmd *cobra.Command, _ []string) error {
+	settings := &cobra.Command{Use: "settings", Short: T("репозиторий, канал, токен и расписание проверок", "repository, channel, token and check schedule"), Long: T("Где панель ищет новые версии: репозиторий, канал, токен доступа и расписание проверок; что не задано флагами, остаётся как было.\n\nФлаг --token здесь — токен репозитория с релизами. Свой токен для --server эта команда берёт из $MP_TOKEN.", "Where the panel looks for new versions: the repository, the channel, the access token and the check schedule; whatever no flag sets stays as it is.\n\nThe --token flag here is the release repository's token. For --server, this command takes its own token from $MP_TOKEN."), RunE: func(cmd *cobra.Command, _ []string) error {
+		// The API would drop the new token in favour of --clear-token without
+		// a word.
+		for _, other := range []string{"token", "token-stdin"} {
+			if err := apart(cmd, "clear-token", other); err != nil {
+				return err
+			}
+		}
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -66,9 +71,8 @@ func updateCmd() *cobra.Command {
 		if cmd.Flags().Changed("auto-apply") {
 			req.AutoApply = &auto
 		}
-		if tokenStdin {
-			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-			req.Token = strings.TrimRight(line, "\r\n")
+		if err := secretFlag(cmd, "token-stdin", "token", T("Токен репозитория: ", "Repository token: "), &req.Token); err != nil {
+			return err
 		}
 		st, err := cl.SetUpdateSettings(cmd.Context(), req)
 		if err != nil {
@@ -93,6 +97,11 @@ func updateCmd() *cobra.Command {
 	var key string
 	var restart, clear, off bool
 	trust := &cobra.Command{Use: "trust", Short: T("ключ, которым подписаны релизы (пишется в config.yaml)", "the key releases are signed with (written to config.yaml)"), RunE: func(cmd *cobra.Command, _ []string) error {
+		for _, pair := range [][2]string{{"key", "clear"}, {"key", "off"}, {"clear", "off"}} {
+			if err := apart(cmd, pair[0], pair[1]); err != nil {
+				return err
+			}
+		}
 		cfg, err := loadConfig()
 		if err != nil {
 			return err
@@ -102,9 +111,12 @@ func updateCmd() *cobra.Command {
 			if off {
 				cfg.Update.PublicKey = updater.KeyOff
 			}
-			if err := cfg.Save(cfg.Path()); err != nil {
+			// Only the key changes in config.yaml: comments and the other
+			// settings stay as they are, and so do its owner and mode.
+			if _, err := config.WriteFileKeys(cfg.Path(), map[string]string{config.KeyPublicKey: cfg.Update.PublicKey}, serviceGID(cfg)); err != nil {
 				return err
 			}
+			restoreconFile(cmd.Context(), cfg.Path())
 			if off {
 				fmt.Println(T("проверка подписи выключена: релизы будут приниматься по контрольной сумме", "signature check switched off: releases will be accepted by their checksum"))
 			} else {
@@ -129,9 +141,10 @@ func updateCmd() *cobra.Command {
 				return err
 			}
 			cfg.Update.PublicKey = key
-			if err := cfg.Save(cfg.Path()); err != nil {
+			if _, err := config.WriteFileKeys(cfg.Path(), map[string]string{config.KeyPublicKey: key}, serviceGID(cfg)); err != nil {
 				return err
 			}
+			restoreconFile(cmd.Context(), cfg.Path())
 			fmt.Println(T("ключ сохранён в", "key saved to"), cfg.Path())
 		}
 		// Both daemons read the key at startup: the API to check a release

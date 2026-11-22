@@ -4,43 +4,64 @@
 
 Один API. Web UI, CLI, TUI и внешние интеграции (биллинг, скрипты) ходят в одни и те же эндпоинты `/api/v1`. CLI и TUI — тонкие клиенты: Go-клиент `internal/client` с типами из `internal/apitypes`, из тех же типов `huma` генерирует описание OpenAPI 3.1; Web UI обращается к тем же эндпоинтам через небольшую обёртку над `fetch`. Функция реализуется один раз — в API — и поэтому доступна везде.
 
+Три клиента умеют одно и то же. У каждой операции API есть команда `mp` и место в Web UI, каждую команду `mp` предлагает меню TUI, каждое поле запроса задаётся флагом или аргументом `mp` (а значит, и полем формы TUI) и есть в запросе, который собирает страница Web UI. Обычному аккаунту ни Web UI, ни TUI не предлагают действий и флагов администратора. Это проверяет `go test ./internal/parity/` — он входит в `make test` и CI: тест сравнивает OpenAPI-описание сервера, дерево команд `mp`, меню TUI для администратора и для обычного аккаунта и исходники `web/src` с манифестом `internal/parity/manifest_*.go` и называет, чего и где не хватает.
+
+Исключения намеренные, и их немного (`internal/parity/exempt.go` и списки в самом тесте):
+
+- вход и выход в браузере (`POST /auth/login`, `/auth/logout`) — только Web UI: `mp` и TUI авторизуют каждый запрос по uid процесса на сокете или API-токеном;
+- консоль (`POST /system/console`) — только Web UI: она сама запускает `mp`, а в терминале есть `mp` и TUI;
+- справочник API (`/api/v1/docs`, `openapi.json`, `/schemas`) — страницы, а не операции; `GET /health` — проба самих клиентов (экран входа, `mp setup`), версию показывают `mp status` и шапка TUI;
+- серверная половина переезда (`GET /migrate/plan`, `state`, `files`, `dump`) — её вызывает задача принимающей панели по токену переезда, а не человек;
+- `mp update trust` — только от root на сервере: ключ подписи релизов не проходит через процесс панели, Web UI показывает его состояние только для чтения; `mp config show|set --local` — путь восстановления от root, когда API не запускается, обычный путь идёт через API и есть в Web UI;
+- установка и служебные роли бинарника (`mp setup`, `api`, `agent`, `helper`, `fsop`, `update-run`, `demo`) и удобства оболочки (`completion`, `help`, `version`);
+- три чтения, которые API разрешает и обычному аккаунту, — `mp php list`, `mp web tls` и `mp dns-provider types` — в его меню TUI не входят: Web UI показывает их только администратору (ветки PHP обычный аккаунт видит как варианты в форме сайта).
+
+Флагам `mp`, которые не задают поля запроса, — выводу (`--json`, `--no-wait`), передаче секретов (`--…-stdin`) и путям к локальным файлам (`--cert`, `--key`, `--chain`, `--set`, `mp files get|put`) — пара в Web UI не нужна: секреты и содержимое файлов он принимает своими полями, выбором файла и загрузкой.
+
 ## 2. CLI — `monopanel` (alias `mp`)
 
-Подключение: локально — `/run/monopanel/api.sock` (авторизация по uid процесса: root — администратор, uid клиента — его аккаунт, так что клиент с SSH-доступом управляет своим хозяйством тем же `mp`; сокет открыт только root и группе `monopanel-cli`, куда панель добавляет аккаунты с shell, а запросы из процессов php-fpm, Apache и nginx отклоняются); удалённо — `--server https://host:8443 --token …` или переменные `MP_SERVER` / `MP_TOKEN`, `--insecure` — для самоподписанного сертификата.
+Подключение: локально — `/run/monopanel/api.sock` (авторизация по uid процесса: root — администратор, uid клиента — его аккаунт, так что клиент с SSH-доступом управляет своим хозяйством тем же `mp`; сокет открыт только root и группе `monopanel-cli`, куда панель добавляет аккаунты с shell, а запросы из процессов php-fpm, Apache и nginx отклоняются); удалённо — `--server https://host:8443 --token …` или переменные `MP_SERVER` / `MP_TOKEN`, `--insecure` или `MP_INSECURE=1` — для самоподписанного сертификата. Без API работают только `help`, `completion` и `version`, а от root на сервере — ещё `setup`, `config show|set --local` и `update trust`.
 
-Глобальные флаги: `--json` (машинный вывод), `--no-wait` (не ждать задачу), `--server`, `--token`, `--insecure`, `--config` (путь к `config.yaml`), `--version`.
+Глобальные флаги: `--json` (машинный вывод), `--no-wait` (не ждать задачу), `--server`, `--token`, `--insecure`, `--config` (путь к `config.yaml`, по умолчанию `/etc/monopanel/config.yaml` или `$MONOPANEL_CONFIG`), `--version`.
 
 ```
 mp                                   # TUI-меню (в интерактивном терминале; иначе — справка)
 mp setup [--hostname …] [--listen …] [--admin-login …] [--admin-password …|--password-stdin]
+         [--no-start] [--install-units] [--binary …]   # от root; повторный запуск создаёт только недостающее
 mp status                            # панель, хост, сервисы, задачи
 mp doctor                            # диагностика
+mp whoami                            # кто вы для панели: аккаунт, роль, способ входа, токен, 2FA
 mp version
 mp update                            # что стоит и что вышло
 mp update check | apply [--version v0.8.19]
-mp update settings [--repo owner/name] [--channel …] [--check-hours 24] [--auto-apply] [--token-stdin|--clear-token]
-mp update trust [--key <ключ форка>] [--restart] | --clear | --off   # без флагов — какой ключ проверяет подпись
+mp update settings [--repo owner/name] [--channel stable|beta] [--check-hours 24] [--auto-apply] [--api …]
+                   [--token …|--token-stdin|--clear-token]   # --repo "-" выключает обновления
+mp update trust [--key <ключ форка>] [--restart] | --clear | --off   # только root на сервере; без флагов — какой ключ проверяет подпись
+mp config show [--local]             # имя, адрес HTTPS-порта, журнал, число задач, каталоги
+mp config set <ключ> <значение> [--restart] [--local]   # web.hostname, web.listen, log.level, log.format, jobs.workers
+mp config templates                  # встроенные шаблоны конфигураций и их переопределения
 
-mp user add <login> [--password …|--password-stdin|--generate] [--email …] [--role user|admin] [--shell]
-mp user set <login> [--password …|--generate] [--email …] [--shell|--sftp-only] [--status active|suspended]
+mp user add <login> [--password …|--password-stdin|--generate] [--email …] [--role user|admin] [--shell] [--quota МБ]   # квота пока только хранится
+mp user set <login> [--password …|--password-stdin|--generate] [--email …] [--shell|--sftp-only] [--status active|suspended]
 mp user list | show <login> | totp-reset <login>
 mp user rm <login> [--purge] [--yes]
 mp user share list <login> | add <login> --site <домен> --path <папка> [--name …] [--no-php] [--entry] | entry <login> <name> [--off] | rm <login> <name>   # папка сайта другого аккаунта по SFTP; entry — сессия начинается в ней
+mp totp status | setup [--qr] | enable <код> | disable [--password-stdin]   # 2FA своего аккаунта; настроить заново — после disable
 
 mp site add <domain> --user <login> [--php 8.4] [--mode fpm|apache|proxy] [--backend http://127.0.0.1:3000]
-            [--alias www.<domain>] [--www] [--preset wordpress|joomla|opencart|bitrix] [--ssl auto|none]
-            [--ip …] [--ipv6 …|none] [--docroot public] [--ini key=value] [--allow CIDR] [--pm …] [--max-children 8]
-            [--security-headers] [--rate-limit 10]
-mp site set <domain> [--php …] [--mode …] [--alias …] [--rm-alias …] [--www|--no-www] [--redirect-www …]
-            [--https-redirect=false] [--ini key=value] [--allow CIDR|--allow-all] [--preset …]
-            [--sessions files|valkey] [--ssl auto|none] [--http2=false] [--http3] [--max-body 64m] [--allow-exec]
+            [--alias www.<domain>] [--www] [--redirect-www none|to_www|to_root] [--preset wordpress|joomla|opencart|bitrix]
+            [--ssl auto|none] [--no-https-redirect] [--http2=false] [--http3] [--ip …] [--ipv6 …|none] [--docroot public]
+            [--ini key=value] [--allow CIDR] [--pm ondemand|dynamic|static] [--max-children 8] [--max-body 64m]
+            [--static-by-nginx=false] [--allow-exec] [--security-headers] [--rate-limit 10]
+mp site set <domain> [флаги site add, кроме --user и --no-https-redirect] [--rm-alias …] [--no-www]
+            [--https-redirect=false] [--allow-all] [--sessions files|valkey]   # --docroot '' — корень, --preset '' — универсальный
 mp site list | show <domain> | presets
 mp site apply | fix | suspend | unsuspend <domain>   # fix — владелец, права, ACL и метки SELinux файлов сайта
 mp site rm <domain> [--purge]
 mp site logs <domain> [--type access|error|php|slow|apache-access|apache-error] [-n 100]
 mp site nginx <domain> [--set файл | --clear | --generated]   # свои директивы в server {} с проверкой nginx -t и откатом
 mp site php <domain>                 # действующие PHP-параметры и откуда каждый взялся
-mp site tls <domain> [--dns <провайдер>] [--staging]          # сертификат на домен с алиасами, сайт переходит на HTTPS
+mp site tls <domain> [--dns <провайдер>] [--staging] [--email …]   # сертификат на домен с алиасами, сайт переходит на HTTPS
 mp site move-ip <новый-адрес> [--from <прежний>]   # после смены IP хоста: все сайты пропавших адресов разом
 mp selinux [enforcing|permissive] [--yes]
 mp cms list
@@ -53,82 +74,143 @@ mp php ext list <версия> | enable <версия> <расширение> | 
 mp php ini [set key=value … | unset key …]   # PHP-параметры для всех сайтов
 
 mp stack list
-mp stack install|remove nginx|apache|percona|mysql|fail2ban|memcached|valkey|jpegoptim|git|composer|sphinx
+mp stack install nginx|apache|percona|mysql|fail2ban|memcached|valkey|jpegoptim|git|composer|sphinx
+mp stack remove memcached|valkey|jpegoptim|git|composer|sphinx
 mp stack memcached [--memory-mb 256] [--max-conn 2048]    # без флагов — показать
 mp stack real-ip [--cloudflare|--no-cloudflare] [--from CIDR] [--clear-from]
-mp valkey add cache|sessions --user <login> [--memory 128]   # экземпляр аккаунта: создать или сменить память (с перезапуском)
-mp valkey list [--user <login>] | restart | rm cache|sessions --user <login>   # restart опустошает кеш
+mp valkey add cache|sessions [--user <login>] [--memory 128]   # экземпляр аккаунта: создать или сменить память (с перезапуском)
+mp valkey list [--user <login>] | restart cache|sessions | rm cache|sessions   # restart опустошает кеш
 
-mp db create <name> --user <login> [--password …] [--legacy-auth]   # база и пользователь <login>_<name>; пароль сгенерируется
-mp db list | passwd <name> [--password …] | rm <name>
+mp db create <name> --user <login> [--password …|--password-stdin] [--legacy-auth] [--remote]   # база и пользователь <login>_<name>; пароль сгенерируется; --remote API пока отклоняет
+mp db list | passwd <name> [--password …|--password-stdin] | rm <name>
 mp db engine                         # сервер СУБД; tune — пересчитать настройки под память
 mp db engine tune
+mp db config [set key=value … | unset key …]   # параметры сервера MySQL; при неудачном запуске вернутся прежние
 
 mp ssl list | show <id|имя> | rm <id|имя>
 mp ssl renew <id|имя> | --all
-mp ssl issue <имя> [имя…] [--dns <провайдер>] [--staging] [--rsa] [--email …]
-mp ssl import [имя] --cert f --key f [--chain f]
+mp ssl issue <имя> [имя…] [--dns <провайдер>] [--staging] [--rsa] [--email …] [--no-auto-renew] [--directory URL]
+mp ssl import [имя] --cert f --key f [--chain f] [--no-auto-renew]
 mp ssl panel                         # сертификат самой панели и запись за ним
-mp ssl panel issue [--dns …] [--staging] | import --cert f --key f | self-signed
+mp ssl panel issue [--dns …] [--staging] [--rsa] [--email …] | import --cert f --key f | self-signed
 mp web tls                           # какой сертификат панель отдаёт прямо сейчас
 mp dns-provider types | list
-mp dns-provider add <имя> --type cloudflare --cred CLOUDFLARE_DNS_API_TOKEN=… | rm <имя>
+mp dns-provider add <имя> --type cloudflare --cred CLOUDFLARE_DNS_API_TOKEN=…|--cred-stdin | rm <имя>
 
-mp backup target add <имя> --type local|sftp|s3|b2|rest --repo … [--password …] [--env KEY=…] [--schedule daily]
-                   [--keep-daily 7] [--keep-weekly 4] [--keep-monthly 3]
+mp backup target add <имя> --type local|sftp|s3|b2|rest --repo … [--password …|--password-stdin] [--env KEY=…|--env-stdin]
+                   [--schedule daily] [--keep-daily 7] [--keep-weekly 4] [--keep-monthly 3]
 mp backup target list | rm <имя>
 mp backup run [--target …] [--scope server|user:<login>|site:<domain>|db:<name>]
-mp backup list | snapshots [--target …]
+mp backup list [--target …] [-n 50] | snapshots [--target …]
 mp backup restore <snapshot> [--target …] [--include путь…] [--in-place]
 
-mp cron list | add | set <id> [--schedule …] [--command …] | enable <id> | disable <id> | rm <id> --user <login>
-            [--schedule "*/5 * * * *" --command "…" --comment … --disabled]   # list без --user у администратора — задания всех
-mp app list | show | add | set | start | stop | restart | logs | rm <name> --user <login>
-            [--command … --workdir … --env KEY=… --env-file … --restart … --description …]
-mp files ls|get|put|mkdir|rm|mv|chmod|extract|size --user <login> <путь…>   # через helper от имени клиента
+mp cron list | add --schedule "*/5 * * * *" --command "…" [--comment …] [--disabled]
+mp cron set <id> [--schedule …] [--command …] [--comment …] [--enable|--disable] | enable <id> | disable <id> | rm <id>
+mp app add <name> --command … [--workdir …] [--env KEY=…|--env-stdin] [--env-file …] [--restart always|on-failure|no]
+           [--description …] [--disabled]
+mp app set <name> [--command …] [--workdir …] [--env …|--env-stdin] [--env-file …] [--restart …] [--description …]
+           [--enable|--disable]
+mp app list | show | start | stop | restart | logs [-n 100] | rm <name>   # у cron, app и valkey: [--user <login>], без него — свой аккаунт
+mp files ls|get|put|mkdir|touch|rm|mv|chmod|extract|size --user <login> <путь…>   # через helper от имени клиента; touch --force опустошает файл
 
 mp firewall status | enable | disable | apply
 mp firewall allow|deny --port 8443 [--proto tcp] [--source CIDR] [--comment …]
 mp firewall rm <id> | ban <ip> | unban <ip> | trust <ip|cidr> | untrust <ip|cidr>
 
-mp mail install | status | settings | apply | domain … | box … | alias … | webmail …   # подробно — 06-mail.md
-mp migrate grant user:<login> | plan | run                                             # подробно — 07-migration.md
+mp mail install [--hostname …] [--no-pop3] | status | apply   # подробно — 06-mail.md
+mp mail settings [--hostname …] [--max-size МБ] [--pop3 true|false] [--port25 true|false] [--dkim true|false]
+                 [--rbl …] [--webmail-port 2096]
+mp mail domain list | add <домен> --user <login> [--send-only] [--lenient] [--no-dkim] | dkim <домен> | dns <домен> | rm <домен>
+mp mail domain set <домен> [--active true|false] [--send-only true|false] [--lenient true|false]
+mp mail box list [--domain …] | add <ящик> [--password …|--password-stdin] [--name …] [--quota 1024] | rm <ящик> [--purge]
+mp mail box set <ящик> [--password …|--password-stdin] [--name …] [--quota …] [--active true|false]   # без флагов — новый пароль; --quota 0 — без ограничения
+mp mail alias list [--domain …] | add <алиас> <куда> [куда…] | rm <алиас>   # @example.com — catch-all
+mp mail webmail <домен> --user <login> [--php …] [--port 2096]   # Roundcube отдельным сайтом
 
-mp service status [unit] | start | stop | reload | restart | enable | disable <unit>
+mp migrate grant user:<login> [--hours 24]   # на источнике: токен на один аккаунт, только чтение; подробно — 07-migration.md
+mp migrate plan | run --source https://old:8443 --token …|--token-stdin --scope user:<login> [--as <login>] [--insecure]
+mp migrate plan | run --from fastpanel|bitrixvm --source root@old.example.com[:22] [--key …|--password-stdin]
+                      [--scope user:<login>] [--domain …] [--as <login>]   # --domain — основной сайт BitrixVM
+
+mp service status [unit] | start | stop | reload | restart | reload-or-restart | enable | disable <unit>
 mp logs <unit> [-n 100]              # журнал юнита через агент
 mp metrics [--range 1h|6h|24h|7d|30d]
 mp job list [--status …] [--limit …] | show <id> | wait <id>
 mp audit [-n 50] [--actor <login>] [--action auth.|token.|site.]   # журнал действий: входы, токены, изменения
-mp config show | templates
-mp config set <ключ> <значение> [--restart]   # web.hostname, web.listen, log.level, log.format, jobs.workers
 mp token create [--name …] [--scopes …] [--expires <дней>] [--user <login>]
 mp token list [--user …] | revoke <id>
-mp webhook add --url … [--events job.failed,backup.run.*] [--secret …]
+mp webhook add --url … [--events job.failed,backup.run.*] [--secret …|--secret-stdin]
 mp webhook list | test <id> | rm <id>
-mp completion bash|zsh|fish          # скрипт автодополнения
+mp completion bash|zsh|fish|powershell   # скрипт автодополнения
 ```
 
 Соглашения:
 - Команды, за которыми стоит задача, по умолчанию ждут её завершения и печатают прогресс и лог (`--no-wait` — вернуть номер задачи сразу).
-- Коды выхода: 0 — ok, 1 — ошибка, 2 — неверные аргументы, 3 — задача завершилась с ошибкой, 4 — нет прав.
+- Коды выхода: 0 — ok, 1 — ошибка (в том числе неизвестная команда или флаг и нехватка аргументов), 2 — неверный ввод (значение отклонила команда или API с 400/422, на stdin пусто, на вопрос нет ответа), 3 — задача завершилась с ошибкой (так же — `mp doctor` с проваленной проверкой и `mp migrate plan`, когда переезд пока невозможен), 4 — нет прав (сокет закрыт, API ответил 401/403, `--local` не от root).
 - `--json` печатает один JSON-объект (или массив), без прогресса и подсказок.
+- Секрет не обязательно писать в командную строку, где его видно в `ps` и в истории: у каждого пароля, токена, секрета webhook, учётных данных DNS-провайдера и переменных репозитория бэкапов и app-сервиса есть пара `--…-stdin` (`--password-stdin`, `--token-stdin`, `--secret-stdin`, `--cred-stdin`, `--env-stdin`). Значение берётся из первой строки stdin, а в терминале спрашивается без эха; списки `KEY=VALUE` идут по строке на значение, до пустой строки или конца — после строки с паролем, если команда читает и его. Свой API-токен для `--server` передаётся в `MP_TOKEN`.
+- `--user <login>` — чей объект. Администратор называет аккаунт (у `site add`, `db create`, `mail domain add`, `mail webmail` и `files` — обязательно), обычный аккаунт работает со своим. У `cron`, `app` и `valkey` без `--user` — свой аккаунт, а `list` администратора показывает все; у root на сокете аккаунта панели нет, и кроме `list` он указывает `--user` всегда.
+- Команды, которые спрашивают подтверждение (`user rm`, `selinux permissive`), принимают `--yes`; если ответить некому (stdin закрыт), они завершаются с кодом 2.
+- У `migrate plan|run` флаги `--token` и `--insecure` относятся к источнику, у `update settings` `--token` — токен репозитория с релизами; поэтому свой токен для `--server` этим командам передают в `MP_TOKEN`, а `migrate plan|run` — и `MP_INSECURE=1` вместо `--insecure`.
 - Язык CLI и TUI — по локали терминала, как язык Web UI по браузеру: язык стран СНГ в `LC_ALL`, `LC_MESSAGES`, `LANG` или `LANGUAGE` — русский, любой другой, в том числе `C`/`POSIX`, — английский; `MP_LANG=ru` или `MP_LANG=en` задаёт язык явно. Сообщения самого сервера — на английском.
 - Автодополнение печатает `mp completion <shell>`; в пакет оно пока не входит.
 
 ## 3. TUI-меню
 
-- Запуск: `mp` без аргументов в интерактивном терминале (иначе — справка).
-- Меню: сайты, пользователи, PHP, базы данных, SSL, firewall, сервисы и задачи — таблицами для просмотра, через тот же API, что и CLI. «Бэкапы» и «Настройки» подсказывают команды `mp backup` и `mp config`.
-- Клавиши: ↑/↓ или j/k, Enter — открыть, r — обновить, q или Esc — назад, Ctrl+C — выход.
-- Планируется: формы с валидацией теми же правилами, что в API, дашборд, прогресс задач и подсказка эквивалентной CLI-команды к каждому действию.
+- Запуск: `mp` без аргументов в интерактивном терминале (иначе — справка), в том числе по SSH. TUI — клиент того же API: локально — через сокет с правами процесса (root — администратор, аккаунт с shell — он сам), удалённо — `mp --server https://host:8443 --token …` (или `MP_SERVER` / `MP_TOKEN`, `--insecure`).
+- Шапка: версия панели, хост, нагрузка и память, кто вошёл (логин и роль, удалённо — и адрес панели); обновляется раз в 15 секунд и говорит, если панель или агент недоступны.
+
+Разделы — как в навигации Web UI и в том же порядке. В каждом — свои экраны и все команды его групп `mp` (`*`), так что в меню есть каждая команда. Консоли в TUI нет: в терминале команды и так под рукой — палитра `:`. Группа команд, которой нет ни в одном разделе, попала бы в раздел «Другое»; сейчас таких нет, и этого раздела в меню нет.
+
+| Раздел | Что в нём | Группы `mp` |
+|---|---|---|
+| Дашборд | сводка, диагностика с действиями «починить сайт», «починить все сайты», «включить enforcing», метрики, SELinux | `status`, `metrics`, `doctor`, `selinux` |
+| Сайты | список сайтов; страница сайта: настройки, PHP-параметры, сертификат, CMS, логи, свои и сгенерированные nginx-директивы, apply, fix, приостановка, удаление, файлы сайта | `site`, `cms` |
+| Пользователи | список аккаунтов; страница аккаунта: изменение, пароль, shell или только SFTP, сброс 2FA, удаление; его cron, app-сервисы, Valkey, общие папки, API-токены и файлы | `user`, `cron`, `app`, `valkey`, `token` |
+| PHP | ветки: установка, удаление, расширения; php.ini сервера | `php` |
+| Расширения | компоненты стека: установка, переустановка, удаление; memcached, real-ip | `stack` |
+| Базы данных | базы и их пароли, сервер БД и его параметры | `db` |
+| Почта | состояние, домены, ящики, алиасы, настройки, вебпочта | `mail` |
+| Файлы | файловый менеджер аккаунта | `files` |
+| SSL | сертификаты, сертификат панели, DNS-провайдеры | `ssl`, `web`, `dns-provider` |
+| Задачи | задачи с фильтром, журнал задачи, ожидание | `job` |
+| Журнал | журнал действий с фильтром | `audit` |
+| Firewall | состояние, правила, баны, доверенные адреса | `firewall` |
+| Службы | юниты панели и стека: запуск, остановка, перезапуск, автозапуск, журнал; любой юнит по имени | `service`, `logs` |
+| Бэкапы | репозитории, запуски, снимки, восстановление | `backup` |
+| Перенос | токен для другой панели, разбор, перенос | `migrate` |
+| Настройки | API-токены, 2FA, `whoami`; у администратора — webhooks, обновления, конфигурация панели, шаблоны | `token`, `totp`, `whoami`, `webhook`, `update`, `config` |
+
+- Экраны — таблицы и карточки с данными API, их читает `internal/client`, как и CLI. Действия привязаны к выбранной строке и вызываются буквой (подсказки внизу), Enter открывает строку.
+- Каждое действие — команда `mp`. Форма строится из её аргументов и флагов, значения выбранной строки уже подставлены; у флага с перечнем значений — выбор, у `--php` — установленные ветки. Форма изменения открывается с текущими значениями, и в команду попадает только изменённое — такие поля отмечены ●. Пока форма заполняется, под ней видна строка `mp …`, которая выполнится, с секретами под `•••`.
+- Пароли, токены и учётные данные форма передаёт команде через stdin (`--password-stdin` и другие пары), а не в командной строке; для флага без такой пары она предупреждает, что значение видно в `ps`.
+- Команда запускается дочерним процессом того же бинарника: адрес панели и токен он получает через окружение (`MP_SERVER`, `MP_TOKEN`, `MP_INSECURE`), не в аргументах. Вывод идёт в окно по мере появления, команды с задачей ждут её, как в CLI. Просмотры (`show`, `status`, логи) выполняются сразу, без формы, если всё нужное известно.
+- Подтверждения — там же, где их спрашивает Web UI, и перед всем, что удаляет, останавливает или прерывает: команда целиком, пояснение, что произойдёт, и `y/N`. Удаление аккаунта, удаление сайта с файлами (`--purge`) и восстановление снимка поверх файлов (`--in-place`) требуют ввести логин, домен или номер снимка. Команде, которая спрашивает сама (`user rm`), TUI после своего вопроса передаёт `--yes`.
+- Файлы и свои nginx-директивы сайта правятся в `$VISUAL` или `$EDITOR` (без них — `editor`, nano или vi): `mp files get` → редактор → `mp files put` (или `mp site nginx --set` с проверкой `nginx -t`). Если сохранить не удалось, `e` открывает правку снова; копию, которая могла не сохраниться, главное меню покажет при следующем запуске, через сутки она удаляется. `mp totp setup` выполняется прямо в терминале, чтобы показать QR-код. После `mp migrate plan` окно вывода предлагает `mp migrate run` с теми же значениями.
+- `?` или F1 — справка: действия экрана с их командами `mp`, все команды раздела и клавиши; Enter выполняет выбранное. В форме F1 — справка по команде и каждому полю. `*` — все команды раздела. `:` — палитра: любая строка `mp` с дополнением команд и флагов по Tab; чего в строке не хватает, спросит форма, а группа (`site`) открывает список своих команд.
+- Роли: обычный аккаунт видит разделы, которые ему показывает Web UI, — Дашборд, Сайты, Аккаунт (свои cron, app-сервисы, Valkey, общие папки, токены, пароль и 2FA), Базы данных, Почта, Файлы, Задачи, Журнал и Настройки; команд и флагов администратора (`--user` и других) в его меню и формах нет. Решает всё равно API.
+- Локально и удалённо: с `--server` меню не предлагает того, что меняет машину напрямую, в обход API, — `mp update trust` и флаг `--local` у `mp config show|set`.
+
+Клавиши:
+
+| Где | Клавиши |
+|---|---|
+| Меню и списки | ↑/↓ или j/k, Home/End, в списках и PgUp/PgDn — выбор; Enter — открыть (в файлах — войти в каталог, Backspace — на уровень выше); буква — действие; `/` — поиск по списку; `f` — фильтр (задачи, журнал, метрики); `r` — обновить; `*` — все команды раздела; Esc или q — назад, в главном меню — выход |
+| Форма | Tab, Shift+Tab, ↑/↓ — поля; пробел, ←/→ — переключатель и выбор; Enter — следующее поле, на последнем — выполнить; Ctrl+S — выполнить; Ctrl+R — показать секрет; Ctrl+P — передать флаг, даже если значение не менялось; F1 — справка по команде; Esc — отмена. Буквы в форме — текст, поэтому `?`, `:` и `q` там не действуют |
+| Вывод | ↑/↓, PgUp/PgDn, Home/End — прокрутка; Ctrl+C — прервать команду (задачу на сервере это не отменяет); r — ещё раз (просмотры); e — править снова; n — следующая команда (`migrate run` после `plan`); Esc, q или Enter — назад, к форме, если команда не удалась |
+| Подтверждение | y или Enter — да, n или Esc — нет; где просят ввести логин, домен или номер снимка — ввести и Enter |
+| Справка и палитра | ↑/↓ — выбор, Enter — выполнить; в палитре Tab или Enter на подсказке дополняют строку; Esc — закрыть |
+| Везде | `?` или F1 — справка, `:` — палитра, Ctrl+C — выход (в окне работающей команды — прервать её) |
 
 ## 4. REST API
 
 - Базовый путь `/api/v1`, спецификация `/api/v1/openapi.json`, интерактивная документация `/api/v1/docs` (Stoplight Elements, вшит в бинарник). Документация, спецификация и `/schemas/*` отдаются только вошедшим (сессия или API-токен; токен переезда — нет): `curl -H "Authorization: Bearer $TOKEN" https://host:8443/api/v1/openapi.json`.
-- Аутентификация: `Authorization: Bearer <token>`, cookie-сессия для UI (+ CSRF), unix peer-cred для CLI на локальном сокете. Токен действует с правами своего аккаунта (`admin` или `user`); scope `migrate:user:<login>` ограничивает его чтением переезда одного аккаунта, остальные scope — пометки.
-- Мутации, которым нужна работа на сервере, асинхронны: `202 Accepted` и `job_id` в ответе; `GET /jobs/{id}`, `GET /jobs/{id}/events` (SSE: прогресс, строки лога, завершение). Быстрые операции (токен, настройка, экземпляр Valkey) — синхронные `200/201/204`.
+- Аутентификация: `Authorization: Bearer <token>`, cookie-сессия для UI (+ CSRF), unix peer-cred для CLI на локальном сокете. Токен действует с правами своего аккаунта (`admin` или `user`); scope `migrate:user:<login>` ограничивает его чтением переезда одного аккаунта, остальные scope — пометки. Scope переезда бывает только у токена администратора (обычно его выдаёт `mp migrate grant`); такие токены обычных аккаунтов панель отзывает при запуске.
+- Мутации, которым нужна работа на сервере, асинхронны: `202 Accepted` и `job_id` в ответе; `GET /jobs/{id}`, `GET /jobs/{id}/events` (SSE: прогресс, строки лога, завершение). Быстрые операции (токен, настройка, экземпляр Valkey) — синхронные `200/201/204`. Администратор видит все задачи, другой аккаунт — те, что запускал он; секреты из параметров задачи (пароли, токены, секреты, зашифрованные поля `*_enc`) в ответах заменены на `[redacted]`.
+- Действия, которые перезапускают саму панель, выполняются после ответа: `PUT /system/config` с `restart: true`, остановка и перезапуск `monopanel-api` и `monopanel-agent` через `POST /services/{unit}`. Клиенту нужно переподключиться через несколько секунд — по новому адресу, если сменился `web.listen`.
+- `PUT /system/config` меняет пять ключей `config.yaml` — `web.hostname`, `web.listen`, `log.level`, `log.format`, `jobs.workers`; файл пишет агент, ключ подписи релизов сюда не входит. Новый `web.listen` должен быть адресом, который сервер может слушать, и его порт открывается в firewall до записи. Изменения действуют после перезапуска monopanel-api, `restart_pending` в `GET /system/config` говорит, что файл уже не совпадает с тем, что загрузил работающий процесс.
 - Ошибки — RFC 9457 `application/problem+json` с полем `errors[]` для валидации по полям.
-- Списки отдаются целиком; у задач есть `?limit` и `?status`. Курсорная пагинация, фильтры, выбор полей и `Idempotency-Key` — планируются.
+- Списки отдаются целиком; у задач есть `?limit` и `?status`, у журнала действий — `?limit`, `?actor` и `?action`, у бэкапов — `?limit` и `?target`. Курсорная пагинация, фильтры, выбор полей и `Idempotency-Key` — планируются.
 - Webhooks: `POST` JSON на URL при завершении задач — события `job.done`, `job.failed` и `<тип задачи>.done|failed` (`site.apply.done`, `cert.issue.failed`, `backup.run.*`, `*`), заголовки `X-MonoPanel-Event` и `X-MonoPanel-Signature: sha256=<HMAC тела>`, три попытки. События вне задач (`service.down`, истекающий сертификат) — планируются.
 
 Ресурсы:
@@ -150,7 +232,7 @@ GET             /cms
 GET/POST        /php/versions                     DELETE /php/versions/{version}     GET/PUT /php/settings
 GET/POST        /php/versions/{version}/extensions
 GET/POST        /databases                        DELETE /databases/{name}           POST /databases/{name}/password
-GET             /db/engine                        POST /db/engine/tune
+GET             /db/engine                        POST /db/engine/tune               GET/PUT /db/engine/config
 GET             /stack                            POST /stack/install                DELETE /stack/{component}
 GET/PUT         /stack/memcached | /stack/nginx/real-ip
 GET/POST        /certificates                     GET/DELETE /certificates/{id}      POST /certificates/import | /{id}/renew
@@ -165,12 +247,13 @@ GET/POST        /mail/domains | mailboxes | aliases    PATCH/DELETE /mail/domain
 POST            /mail/domains/{name}/dkim         GET /mail/domains/{name}/dns        DELETE /mail/aliases/{address}
 GET             /files?user=&path=                GET/PUT /files/content              POST /files/op   (через helper)
 POST            /migrate/grant | plan | run       GET /migrate/plan | state | files | dump   (источник — только по токену переезда)
-GET             /services                         GET/POST /services/{unit}
+GET             /services                         GET/POST /services/{unit}   (start | stop | reload | restart | reload-or-restart | enable | disable)
 GET             /jobs | /jobs/{id} | /jobs/{id}/events
 GET/POST        /tokens                           DELETE /tokens/{id}
 GET/POST        /webhooks                         DELETE /webhooks/{id}               POST /webhooks/{id}/test
 GET             /system/status | doctor | metrics | logs/{unit} | audit    GET/PUT /system/selinux
 GET/PUT         /system/update                    POST /system/update/check | apply
+GET/PUT         /system/config                    GET /system/templates   (настройки панели в config.yaml, шаблоны и их переопределения)
 POST            /system/console                   (команды mp с потоковым выводом, только администратор)
 GET             /health
 ```
@@ -182,9 +265,9 @@ GET             /health
 | Действие WHMCS | Вызовы API |
 |---|---|
 | `CreateAccount` | `POST /users` → `POST /sites` (+ `POST /databases` по пакету) |
-| `SuspendAccount` / `UnsuspendAccount` | `PATCH /users/{login}` со `status: suspended\|active` (вход в панель и SFTP/SSH); заглушка 503 на сайтах — `POST /sites/{domain}/suspend` / `unsuspend` |
+| `SuspendAccount` / `UnsuspendAccount` | `PATCH /users/{login}` со `status: suspended\|active` (вход в панель и SFTP/SSH; приостановка завершает сессии аккаунта в браузере); заглушка 503 на сайтах — `POST /sites/{domain}/suspend` / `unsuspend` |
 | `TerminateAccount` | `DELETE /users/{login}?purge=true` |
-| `ChangePassword` | `PATCH /users/{login}` с `password` |
+| `ChangePassword` | `PATCH /users/{login}` с `password` (сессии аккаунта в браузере завершаются, API-токены остаются) |
 | `ChangePackage` | `PATCH /sites/{domain}` (ветка PHP, `php_ini`, `fpm_max_children`…); квоты и лимиты пакета — планируются |
 | `ServiceSingleSignOn` | планируется (одноразовая ссылка входа) |
 | `UsageUpdate` | планируется (учёт диска и трафика по аккаунту) |

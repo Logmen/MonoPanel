@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"monopanel/internal/apitypes"
+	"monopanel/internal/store"
 )
 
 var valkeyPurposes = []string{"cache", "sessions"}
@@ -31,9 +32,9 @@ func valkeyHint(st *apitypes.ValkeyStatus) string {
 func valkeyCmd() *cobra.Command {
 	c := &cobra.Command{Use: "valkey", Short: T("Valkey аккаунта: отдельные экземпляры для кеша и для PHP-сессий (unix-сокет, только для владельца)", "the account's Valkey: separate instances for the cache and for PHP sessions (a unix socket, for the owner only)")}
 	var login string
-	c.PersistentFlags().StringVar(&login, "user", "", T("логин владельца (обязателен для администратора)", "the owner's login (required for an administrator)"))
+	c.PersistentFlags().StringVar(&login, "user", "", T("логин владельца (по умолчанию свой аккаунт; root на сервере указывает всегда; list без него у администратора — все аккаунты)", "the owner's login (your own account by default; root on the server always gives it; without it list shows every account to an administrator)"))
 
-	list := &cobra.Command{Use: "list", Short: T("экземпляры (администратор без --user видит все)", "list instances (an administrator without --user sees them all)"), RunE: func(cmd *cobra.Command, _ []string) error {
+	list := &cobra.Command{Use: "list", Short: T("экземпляры (администратор без --user видит экземпляры всех аккаунтов)", "list instances (an administrator without --user sees every account's)"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -44,7 +45,8 @@ func valkeyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if me.UserID == 0 {
+			// any administrator sees the whole server, as GET /valkey allows
+			if me.Role == store.RoleAdmin {
 				res, err = cl.ValkeyAll(cmd.Context())
 			} else {
 				res, err = cl.Valkey(cmd.Context(), me.Login)
@@ -120,7 +122,14 @@ func valkeyCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("%s: %s\n", st.Instance.Name(), st.Service.ActiveState)
+		if g.json {
+			return printJSON(st)
+		}
+		state := st.Instance.Status
+		if st.Service != nil {
+			state = st.Service.ActiveState
+		}
+		fmt.Printf("%s: %s\n", st.Instance.Name(), state)
 		return nil
 	}}
 

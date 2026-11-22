@@ -43,6 +43,18 @@ func (s *Server) panelCertName() string {
 	return acme.NormalizeName(s.cfg.Web.Hostname)
 }
 
+// noPanelHostname says why there is no name to certify. A web.hostname saved
+// without a restart is in config.yaml already, but the running panel (and the
+// certificate it loads) still goes by the old one.
+func (s *Server) noPanelHostname() error {
+	if file, err := s.panelConfigFile(); err == nil {
+		if h := acme.NormalizeName(file.Web.Hostname); h != "" && net.ParseIP(h) == nil && h != s.panelCertName() {
+			return huma.Error422UnprocessableEntity(fmt.Sprintf("web.hostname %s is in config.yaml but takes effect when monopanel-api restarts: restart it first (PUT /system/config with restart, e.g. mp config set web.hostname %s --restart)", h, h))
+		}
+	}
+	return huma.Error422UnprocessableEntity("the panel has no hostname to certify: set one first (mp config set web.hostname panel.example.com --restart)")
+}
+
 // certUsers reports which sites serve each certificate: by reference, and by
 // name for auto-SSL sites that have not been re-applied since their
 // certificate arrived.
@@ -122,7 +134,7 @@ func (s *Server) registerPanelTLS() {
 	}, func(ctx context.Context, in *panelTLSIssueInput) (*certJobOutput, error) {
 		host := s.panelCertName()
 		if host == "" || net.ParseIP(host) != nil {
-			return nil, huma.Error422UnprocessableEntity("the panel has no hostname to certify: set one first (mp config set web.hostname panel.example.com --restart)")
+			return nil, s.noPanelHostname()
 		}
 		c, jobID, err := s.issueCertificate(ctx, principalFrom(ctx), apitypes.IssueCertificateRequest{
 			Names: []string{host}, Email: in.Body.Email, Staging: in.Body.Staging, DNS: in.Body.DNS, KeyType: in.Body.KeyType,
@@ -139,7 +151,7 @@ func (s *Server) registerPanelTLS() {
 	}, func(ctx context.Context, in *panelTLSImportInput) (*certImportOutput, error) {
 		host := s.panelCertName()
 		if host == "" || net.ParseIP(host) != nil {
-			return nil, huma.Error422UnprocessableEntity("the panel has no hostname to certify: set one first (mp config set web.hostname panel.example.com --restart)")
+			return nil, s.noPanelHostname()
 		}
 		c, err := s.importCertificatePEM(ctx, principalFrom(ctx), apitypes.ImportCertificateRequest{Name: host, Certificate: in.Body.Certificate, PrivateKey: in.Body.PrivateKey})
 		if err != nil {

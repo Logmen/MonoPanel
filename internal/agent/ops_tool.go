@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -111,17 +112,29 @@ func (s *Server) tool(ctx context.Context, req *ToolRequest) (*ToolResponse, err
 	cmd.Stderr = out
 	if req.OutputFile != "" {
 		p := filepath.Clean(req.OutputFile)
+		if s.protected(p) {
+			return nil, protectedErr(p)
+		}
 		if !s.pathAllowed(p) && !s.dirAllowed(filepath.Dir(p)) {
 			return nil, &Error{Status: http.StatusForbidden, Message: "output path not allowed: " + p}
 		}
 		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
 			return nil, err
 		}
-		f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		// The directories on the allow-list belong to the API process, which
+		// could leave a symlink or a second name of another file there: open
+		// the name itself, and truncate only a plain file with one name.
+		f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|syscall.O_NOFOLLOW, 0o600)
 		if err != nil {
-			return nil, err
+			return nil, &Error{Status: http.StatusForbidden, Message: "output path " + p + ": " + err.Error()}
 		}
 		defer f.Close()
+		if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() || hasOtherNames(st) {
+			return nil, &Error{Status: http.StatusForbidden, Message: "output path " + p + " is not a plain file of its own"}
+		}
+		if err := f.Truncate(0); err != nil {
+			return nil, err
+		}
 		cmd.Stdout = f
 	} else {
 		cmd.Stdout = out
@@ -137,4 +150,10 @@ func (s *Server) tool(ctx context.Context, req *ToolRequest) (*ToolResponse, err
 		return nil, &Error{Message: req.Name + ": " + err.Error(), Output: out.String()}
 	}
 	return resp, nil
+}
+
+// hasOtherNames reports whether the file has more than one name (a hard link).
+func hasOtherNames(st os.FileInfo) bool {
+	sys, ok := st.Sys().(*syscall.Stat_t)
+	return ok && sys.Nlink > 1
 }

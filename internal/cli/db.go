@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -38,10 +39,13 @@ func dbCmd() *cobra.Command {
 		return nil
 	}}
 	var req apitypes.DatabaseRequest
-	var legacy bool
+	var legacy, createPasswordStdin bool
 	create := &cobra.Command{Use: "create <name>", Short: T("создать базу <login>_<name> и пользователя с тем же именем", "create the database <login>_<name> and a user with the same name"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
+			return err
+		}
+		if err := secretFlag(cmd, "password-stdin", "password", T("Пароль базы: ", "Database password: "), &req.Password); err != nil {
 			return err
 		}
 		req.Name = args[0]
@@ -67,6 +71,8 @@ func dbCmd() *cobra.Command {
 	}}
 	create.Flags().StringVar(&req.User, "user", "", T("владелец (логин); обязателен для администратора", "owner (login); required for an administrator"))
 	create.Flags().StringVar(&req.Password, "password", "", T("пароль (иначе генерируется)", "password (generated if omitted)"))
+	create.Flags().BoolVar(&createPasswordStdin, "password-stdin", false, T("прочитать пароль из stdin", "read the password from stdin"))
+	create.Flags().BoolVar(&req.Remote, "remote", false, T("разрешить подключение и с других хостов (панель пока его не даёт и ответит отказом)", "also allow connections from other hosts (the panel does not offer it yet and refuses)"))
 	create.Flags().BoolVar(&legacy, "legacy-auth", false, T("mysql_native_password для PHP < 7.4 (по умолчанию определяется по сайтам владельца)", "mysql_native_password for PHP < 7.4 (by default chosen from the owner's sites)"))
 	list := &cobra.Command{Use: "list", Short: T("список баз", "list databases"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
@@ -99,9 +105,13 @@ func dbCmd() *cobra.Command {
 		return cl.DeleteDatabase(cmd.Context(), args[0])
 	}}
 	var newPassword string
+	var passwdStdin bool
 	passwd := &cobra.Command{Use: "passwd <name>", Short: T("сменить пароль пользователя базы", "change the database user's password"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
+			return err
+		}
+		if err := secretFlag(cmd, "password-stdin", "password", T("Новый пароль: ", "New password: "), &newPassword); err != nil {
 			return err
 		}
 		res, err := cl.DatabasePassword(cmd.Context(), args[0], newPassword)
@@ -119,6 +129,7 @@ func dbCmd() *cobra.Command {
 		return nil
 	}}
 	passwd.Flags().StringVar(&newPassword, "password", "", T("новый пароль (иначе генерируется)", "new password (generated if omitted)"))
+	passwd.Flags().BoolVar(&passwdStdin, "password-stdin", false, T("прочитать новый пароль из stdin", "read the new password from stdin"))
 	tune := &cobra.Command{Use: "tune", Short: T("перегенерировать zz-monopanel.cnf под этот хост и текущие умолчания панели и перезапустить сервер БД", "regenerate zz-monopanel.cnf for this host and the panel's current defaults, then restart the database server"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
 		if err != nil {
@@ -179,14 +190,17 @@ func dbConfigCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		fmt.Println(T("проверяю конфигурацию и перезапускаю MySQL…", "validating the configuration and restarting MySQL…"))
+		if !g.json {
+			// stdout may be a JSON document
+			fmt.Fprintln(os.Stderr, T("проверяю конфигурацию и перезапускаю MySQL…", "validating the configuration and restarting MySQL…"))
+		}
 		cfg, err := cl.DBConfigSet(cmd.Context(), settings)
 		if err != nil {
 			return err
 		}
 		return show(cmd, cfg)
 	}
-	set := &cobra.Command{Use: "set key=value ...", Short: T("задать параметры и перезапустить MySQL (при ошибке вернутся прежние)", "set parameters and restart MySQL (the previous ones come back on failure)"), Args: cobra.MinimumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	set := &cobra.Command{Use: "set <key=value>...", Short: T("задать параметры и перезапустить MySQL (при ошибке вернутся прежние)", "set parameters and restart MySQL (the previous ones come back on failure)"), Args: cobra.MinimumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		settings := map[string]string{}
 		for _, a := range args {
 			k, v, ok := strings.Cut(a, "=")
@@ -197,7 +211,7 @@ func dbConfigCmd() *cobra.Command {
 		}
 		return change(cmd, settings)
 	}}
-	unset := &cobra.Command{Use: "unset key ...", Short: T("вернуть значения панели и перезапустить MySQL", "return to the panel's values and restart MySQL"), Args: cobra.MinimumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	unset := &cobra.Command{Use: "unset <key>...", Short: T("вернуть значения панели и перезапустить MySQL", "return to the panel's values and restart MySQL"), Args: cobra.MinimumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		settings := map[string]string{}
 		for _, k := range args {
 			settings[strings.TrimSpace(k)] = ""

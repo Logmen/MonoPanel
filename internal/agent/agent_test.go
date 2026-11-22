@@ -151,6 +151,13 @@ func TestPathAllowed(t *testing.T) {
 		"/etc/passwd":                              false,
 		"/etc/monopanel/../shadow":                 false,
 		"/var/lib/monopanel/certs/x/fullchain.pem": true,
+		// The panel's templates and SELinux module, but not its trust anchor
+		// and not the key of its secrets.
+		"/etc/monopanel/templates/nginx/site.conf.tmpl": true,
+		"/etc/monopanel/selinux/monopanel.cil":          true,
+		"/etc/monopanel/config.yaml":                    false,
+		"/etc/monopanel/secret.key":                     false,
+		"/etc/monopanel/templates/../config.yaml":       false,
 	} {
 		if got := s.pathAllowed(filepath.Clean(p)); got != want {
 			t.Errorf("%s: got %v want %v", p, got, want)

@@ -38,8 +38,10 @@
 
   type Entry = { name: string; type: string; size: number; mode: string; mtime: string; target?: string };
 
-  let cwd = $state(start);
+  let cwd = $state('/');
   let entries = $state<Entry[]>([]);
+  // Домашний каталог владельца — из ответа API, а не угаданный по логину.
+  let home = $state('');
   let loading = $state(false);
   let error = $state('');
   let selected = $state<string[]>([]);
@@ -157,11 +159,18 @@
   // Расширения, которые точно не текст: не тратим запрос на попытку открыть.
   const binaryExt = /\.(png|jpe?g|gif|webp|avif|ico|bmp|tiff?|svgz|pdf|zip|gz|tgz|bz2|xz|7z|rar|tar|mp[34]|m4a|mov|avi|mkv|webm|woff2?|ttf|eot|otf|so|bin|exe|dll|class|jar|db|sqlite3?|psd)$/i;
   const archiveExt = /\.(zip|tar|tgz|gz|bz2|xz)$/i;
+  // Распаковать сервер умеет только zip, tar и tar.gz (по суффиксу имени, с учётом регистра).
+  const extractExt = /\.(zip|tar|tgz|tar\.gz)$/;
+  const isLink = (e: Entry) => e.type === 'symlink' || e.type === 'link';
   const editLimit = 1000000;
 
   const clean = (p: string) => '/' + p.split('/').filter(Boolean).join('/');
   const join = (dir: string, name: string) => clean(dir + '/' + name);
   const parent = (p: string) => clean(p.split('/').filter(Boolean).slice(0, -1).join('/'));
+  // start — каталог, в котором менеджер открывается; новый start (ссылка
+  // /files?path=…, другой docroot сайта) переносит туда же. Предэффект
+  // выполняется сразу, поэтому стоит после clean.
+  $effect.pre(() => { cwd = clean(start); });
   const crumbs = $derived(
     cwd.split('/').filter(Boolean).map((part, i, all) => ({ name: part, path: clean(all.slice(0, i + 1).join('/')) }))
   );
@@ -172,8 +181,10 @@
     loading = true;
     error = '';
     selected = [];
+    sizes = {};
     try {
       const res: any = await api(`/files?${q(cwd)}`);
+      home = res.home || '';
       const list: Entry[] = res.entries || [];
       // Каталоги сверху, дальше по алфавиту.
       entries = list.sort((a, b) =>
@@ -218,6 +229,11 @@
   async function open(e: Entry) {
     if (e.type === 'dir') { go(join(cwd, e.name)); return; }
     if (dirty) { leaveEditor(() => open(e)); return; }
+    // Ссылка может вести на каталог: если он читается как каталог — заходим,
+    // иначе открываем как файл.
+    if (isLink(e)) {
+      try { await api(`/files?${q(join(cwd, e.name))}`); go(join(cwd, e.name)); return; } catch { /* not a directory */ }
+    }
     if (binaryExt.test(e.name)) { notify(t('files.binaryFile'), 'err'); return; }
     if (e.size > editLimit) { notify(t('files.tooLarge', { size: bytes(editLimit) }), 'err'); return; }
     closeEditor();
@@ -269,13 +285,26 @@
 
   function syncGutter() { if (gutter && area) gutter.scrollTop = area.scrollTop; }
 
-  async function op(body: Record<string, unknown>, done: string) {
+  async function op(body: Record<string, unknown>, done: string | ((r: any) => string)) {
     try {
-      await api('/files/op', { method: 'POST', json: { user, ...body } });
-      notify(done);
+      const r: any = await api('/files/op', { method: 'POST', json: { user, ...body } });
+      notify(typeof done === 'function' ? done(r) : done);
       await load();
     } catch (e) { fail(e); }
   }
+
+  // mp files size: сколько весит каталог (обходит его целиком, поэтому по запросу).
+  let sizes = $state<Record<string, number>>({});
+  let sizing = $state('');
+  async function measure(path: string) {
+    if (sizing) return;
+    sizing = path;
+    try {
+      const r: any = await api('/files/op', { method: 'POST', json: { user, op: 'size', path } });
+      sizes = { ...sizes, [path]: r?.value ?? 0 };
+    } catch (e) { fail(e); } finally { sizing = ''; }
+  }
+  const goTo = () => request(t('files.goToTitle'), t('files.goToLabel'), cwd, async (v) => go(v));
 
   function request(title: string, label: string, value: string, run: (v: string) => Promise<void>) {
     askTitle = title;
@@ -301,7 +330,7 @@
   const chmod = (e: Entry) => request(t('files.permsTitle', { name: e.name }), t('files.permsLabel'), modeOctal(e.mode), (v) =>
     op({ op: 'chmod', path: join(cwd, e.name), mode: v }, t('files.permsChanged')));
   const extract = (e: Entry) => request(t('files.extractTitle', { name: e.name }), t('files.extractLabel'), cwd, (v) =>
-    op({ op: 'extract', path: join(cwd, e.name), dest: clean(v) }, t('files.extracted')));
+    op({ op: 'extract', path: join(cwd, e.name), dest: clean(v) }, (r) => tn('files.extractedN', r?.value ?? 0)));
 
   function remove(names: string[]) {
     if (!names.length) return;
@@ -349,8 +378,10 @@
     upload(e.dataTransfer?.files ?? null);
   }
 
-  // Права приходят строкой вида "-rw-r--r--"; для chmod нужно восьмеричное.
+  // Права приходят восьмеричной строкой ("0644", "2755"); для chmod лишний
+  // ведущий ноль не нужен. Символьная запись ("-rw-r--r--") тоже понимается.
   function modeOctal(mode: string): string {
+    if (/^[0-7]{3,4}$/.test(mode)) return mode.length === 4 && mode[0] === '0' ? mode.slice(1) : mode;
     const m = mode.slice(-9);
     if (m.length !== 9) return '644';
     let out = '';
@@ -361,7 +392,7 @@
   }
 
   const icon = (e: Entry) =>
-    e.type === 'dir' ? 'box' : archiveExt.test(e.name) ? 'archive' : binaryExt.test(e.name) ? 'file' : 'code';
+    e.type === 'dir' ? 'box' : isLink(e) ? 'external' : archiveExt.test(e.name) ? 'archive' : binaryExt.test(e.name) ? 'file' : 'code';
   const toggle = (name: string) =>
     (selected = selected.includes(name) ? selected.filter((n) => n !== name) : [...selected, name]);
 </script>
@@ -373,11 +404,12 @@
     <div class="flex items-center gap-1 text-sm min-w-0 w-full sm:w-auto sm:flex-1 flex-wrap">
       <button class="btn btn-ghost btn-sm" onclick={() => go('/')} title={t('files.homeDir')}><Icon name="home" size={14} /></button>
       {#if cwd !== '/'}<button class="btn btn-ghost btn-sm" onclick={() => go(parent(cwd))} title={t('files.up')}>..</button>{/if}
-      <span class="text-muted font-mono text-xs">/var/www/{user}</span>
+      <span class="text-muted font-mono text-xs">{home || user}</span>
       {#each crumbs as c}
         <span class="text-muted">/</span>
         <button class="font-mono text-xs hover:text-accent-ink transition-colors" onclick={() => go(c.path)}>{c.name}</button>
       {/each}
+      <button class="btn btn-ghost btn-sm" onclick={goTo} title={t('files.goToTitle')} aria-label={t('files.goToTitle')}><Icon name="pencil" size={12} /></button>
     </div>
     {#if sites.length}
       <select
@@ -396,6 +428,7 @@
       <button class="btn btn-sm" onclick={mkdir}><Icon name="plus" size={13} /> {t('files.folderBtn')}</button>
       <button class="btn btn-sm" onclick={touch}><Icon name="file" size={13} /> {t('files.fileBtn')}</button>
       <button class="btn btn-sm" onclick={pick}><Icon name="archive" size={13} /> {t('files.upload')}</button>
+      <button class="btn btn-ghost btn-sm font-mono" onclick={() => measure(cwd)} disabled={!!sizing} title={t('files.sizeDirTitle')} aria-label={t('files.sizeDirTitle')}>Σ{#if sizing === cwd}<span>…</span>{:else if sizes[cwd] !== undefined}<span>{bytes(sizes[cwd])}</span>{/if}</button>
       <button class="btn btn-ghost btn-sm" onclick={load} title={t('files.refresh')}><Icon name="refresh" size={14} /></button>
     </div>
   </div>
@@ -444,16 +477,20 @@
                 <button class="inline-flex items-center gap-2 text-left max-w-full" onclick={() => open(e)}>
                   <Icon name={icon(e)} size={15} class="shrink-0 text-muted" />
                   <span class="truncate {e.type === 'dir' ? 'font-medium' : ''}">{e.name}</span>
-                  {#if e.type === 'link'}<span class="text-xs text-muted">→ {e.target}</span>{/if}
+                  {#if isLink(e) && e.target}<span class="text-xs text-muted font-mono truncate">→ {e.target}</span>{/if}
                 </button>
               </td>
-              <td data-label={t('files.colSize')} class="text-right text-muted tabular-nums whitespace-nowrap">{e.type === 'dir' ? '—' : bytes(e.size)}</td>
+              <td data-label={t('files.colSize')} class="text-right text-muted tabular-nums whitespace-nowrap">
+                {#if e.type !== 'dir'}{bytes(e.size)}
+                {:else if sizes[join(cwd, e.name)] !== undefined}{bytes(sizes[join(cwd, e.name)])}
+                {:else}<button class="hover:text-accent-ink transition-colors disabled:opacity-50" disabled={!!sizing} onclick={() => measure(join(cwd, e.name))} title={t('files.sizeTitle', { name: e.name })}>{sizing === join(cwd, e.name) ? '…' : t('files.sizeBtn')}</button>{/if}
+              </td>
               <td data-label={t('files.colMode')} class="font-mono text-xs text-muted hidden sm:table-cell">{e.mode}</td>
               <td data-label={t('files.colModified')} class="text-muted text-xs hidden md:table-cell whitespace-nowrap">{(e.mtime || '').replace('T', ' ').slice(0, 16)}</td>
               <td data-label="" class="text-right whitespace-nowrap">
                 {#if e.type !== 'dir'}
                   <button class="btn btn-ghost btn-sm" onclick={() => download(e)} title={t('files.download')}><Icon name="download" size={13} /></button>
-                  {#if archiveExt.test(e.name)}<button class="btn btn-ghost btn-sm" onclick={() => extract(e)} title={t('files.extractBtn')}><Icon name="archive" size={13} /></button>{/if}
+                  {#if extractExt.test(e.name)}<button class="btn btn-ghost btn-sm" onclick={() => extract(e)} title={t('files.extractBtn')}><Icon name="archive" size={13} /></button>{/if}
                 {/if}
                 <button class="btn btn-ghost btn-sm" onclick={() => rename(e)} title={t('files.renameBtn')}><Icon name="pencil" size={13} /></button>
                 <button class="btn btn-ghost btn-sm" onclick={() => chmod(e)} title={t('files.permsBtn')}><Icon name="lock" size={13} /></button>

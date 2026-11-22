@@ -1,9 +1,7 @@
 package cli
 
 import (
-	"bufio"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -47,9 +45,8 @@ func cmsCmd() *cobra.Command {
 			return err
 		}
 		req.CMS = args[1]
-		if passwordStdin {
-			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-			req.AdminPassword = strings.TrimRight(line, "\r\n")
+		if err := secretFlag(cmd, "password-stdin", "admin-password", T("Пароль администратора CMS: ", "CMS administrator password: "), &req.AdminPassword); err != nil {
+			return err
 		}
 		res, err := cl.CMSInstall(cmd.Context(), args[0], req)
 		if err != nil {

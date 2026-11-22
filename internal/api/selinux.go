@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -38,8 +39,10 @@ const (
 
 // selinuxFileContexts are the labels the hosting layout needs beyond what
 // the targeted policy already knows (/var/www is httpd_sys_content_t by
-// default): php-fpm sockets that nginx connects to, and per-site logs that
-// nginx writes.
+// default): php-fpm sockets that nginx connects to, and the per-site logs of
+// panels up to 0.8.19 in data/logs (harmless now, an old directory keeps its
+// label). The tree the site logs live in now follows log_dir and has a rule of
+// its own: selinuxSiteLogsContext.
 var selinuxFileContexts = [][2]string{
 	// Everything under a site's docroot is web content, whatever the base
 	// policy thinks of directories named logs or cgi-bin inside it: OpenCart
@@ -60,6 +63,18 @@ var selinuxFileContexts = [][2]string{
 // under /home. A file made inside an existing ~/.ssh inherits the label, which
 // is why the panel creates the directory with the account (sshDirSpec).
 var selinuxSSHContext = [2]string{`/var/www/[^/]+/\.ssh(/.*)?`, "ssh_home_t"}
+
+// settingSELinuxSiteLogs is the rule of the site log tree in place, so that
+// it is added once per log_dir (refreshSELinuxSiteLogs).
+const settingSELinuxSiteLogs = "selinux.site_logs"
+
+// selinuxSiteLogsContext labels the site log tree the way the policy labels
+// the web servers' own logs: nginx and php-fpm run in httpd_t and may append
+// to httpd_log_t, not to the var_log_t a directory made under /var/log
+// inherits.
+func (s *Server) selinuxSiteLogsContext() [2]string {
+	return [2]string{s.siteLogsRoot() + "(/.*)?", "httpd_log_t"}
+}
 
 // selinuxBooleans is the usual shared-hosting set: PHP writes into the
 // document root, connects to MySQL and to the network, sends mail.
@@ -83,7 +98,7 @@ func (s *Server) selinuxHostingPolicy(ctx context.Context, jc *jobs.Context) err
 	if _, err := s.agent.Pkg(ctx, "install", "policycoreutils-python-utils"); err != nil {
 		return fmt.Errorf("install semanage: %w", err)
 	}
-	for _, fc := range selinuxFileContexts {
+	for _, fc := range append(slices.Clone(selinuxFileContexts), s.selinuxSiteLogsContext()) {
 		if err := s.selinuxFileContext(ctx, fc[0], fc[1]); err != nil {
 			return err
 		}
@@ -96,14 +111,60 @@ func (s *Server) selinuxHostingPolicy(ctx context.Context, jc *jobs.Context) err
 		return fmt.Errorf("setsebool: %s", strings.TrimSpace(res.Output))
 	}
 	// Relabel what is there already; a missing path is not an error.
-	if _, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "restorecon", Args: []string{"-RF", s.cfg.WWWRoot, s.cfg.RunDir, "/etc/nginx", "/var/log/nginx"}}); err != nil {
+	if _, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "restorecon", Args: []string{"-RF", s.cfg.WWWRoot, s.cfg.RunDir, "/etc/nginx", "/var/log/nginx", s.siteLogsRoot()}}); err != nil {
 		return fmt.Errorf("restorecon: %w", err)
 	}
-	jc.Logf("selinux: file contexts for %s and per-site logs, booleans %s", s.cfg.RunDir, strings.Join(selinuxBooleans, " "))
+	jc.Logf("selinux: file contexts for %s and the site logs in %s, booleans %s", s.cfg.RunDir, s.siteLogsRoot(), strings.Join(selinuxBooleans, " "))
 	if err := s.ensureSELinuxModule(ctx); err != nil {
 		return err
 	}
+	s.db.SetSetting(ctx, settingSELinuxSiteLogs, s.selinuxSiteLogsContext()[0]) //nolint:errcheck // only spares refreshSELinuxSiteLogs a repeat
 	return s.db.SetSetting(ctx, settingSELinux, selinuxPolicyVersion)
+}
+
+// refreshSELinuxSiteLogs gives the host the rule of the site log tree at
+// start, once (and again should log_dir change), and relabels the tree: a
+// panel up to 0.8.19 kept the site logs in data/logs, and moveSiteLogs right
+// after switches the sites to the tree, which nginx and php-fpm could not
+// write with the var_log_t it inherits. A host never prepared for hosting and
+// without sites gets the rule with the whole policy, when nginx or PHP is
+// installed.
+func (s *Server) refreshSELinuxSiteLogs(ctx context.Context) {
+	if s.profile.MAC() != "selinux" {
+		return
+	}
+	fc := s.selinuxSiteLogsContext()
+	if v, _ := s.db.GetSetting(ctx, settingSELinuxSiteLogs); v == fc[0] {
+		return
+	}
+	if v, _ := s.db.GetSetting(ctx, settingSELinux); v == "" {
+		// SELinux came on after the sites: the base policy labels a
+		// data/logs under /var/www itself, nothing labels the tree. The
+		// rule cannot wait for a site fix, and semanage may be missing.
+		if sites, err := s.db.ListSites(ctx, 0); err != nil || len(sites) == 0 {
+			return
+		}
+		if _, err := s.agent.Pkg(ctx, "install", "policycoreutils-python-utils"); err != nil {
+			s.log.Warn("selinux: semanage for the site logs context", "err", err)
+			return
+		}
+	}
+	if err := s.selinuxFileContext(ctx, fc[0], fc[1]); err != nil {
+		s.log.Warn("selinux: site logs context", "err", err)
+		return
+	}
+	// -i: the tree may not be there yet; the agent labels what it makes.
+	res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "restorecon", Args: []string{"-R", "-i", s.siteLogsRoot()}, TimeoutSeconds: 120})
+	if err != nil {
+		s.log.Warn("selinux: site logs relabel", "err", err)
+		return
+	}
+	if res.ExitCode != 0 {
+		s.log.Warn("selinux: site logs relabel", "output", strings.TrimSpace(res.Output))
+		return
+	}
+	s.db.SetSetting(ctx, settingSELinuxSiteLogs, fc[0]) //nolint:errcheck // retried at the next start
+	s.log.Info("selinux: the site logs are httpd_log_t", "dir", s.siteLogsRoot())
 }
 
 // ensureSELinuxModule installs the panel's policy module once per version.

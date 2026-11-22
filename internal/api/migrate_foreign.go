@@ -178,12 +178,21 @@ func (f *foreignSource) tarStream(ctx context.Context, dir string, members, tran
 
 // rewriteText replaces every old path inside a text (a config file, a cron
 // command).
-func (f *foreignSource) rewriteText(text string) string {
-	for _, r := range f.rewrites {
+func (f *foreignSource) rewriteText(text string) string { return rewritePaths(text, f.rewrites) }
+
+// rewritePaths replaces old absolute paths with new ones in a text: a path
+// followed by a slash, a quote, a blank, ; or : — not a longer name that
+// merely starts the same way. The import uses it too, for the home of an
+// account that arrives under another login.
+func rewritePaths(text string, rewrites [][2]string) string {
+	for _, r := range rewrites {
 		old := strings.TrimSuffix(r[0], "/")
 		to := strings.TrimSuffix(r[1], "/")
 		text = strings.ReplaceAll(text, old+"/", to+"/")
 		text = regexp.MustCompile(regexp.QuoteMeta(old)+`(["'\s;:])`).ReplaceAllString(text, to+"$1")
+		if strings.HasSuffix(text, old) {
+			text = strings.TrimSuffix(text, old) + to
+		}
 	}
 	return text
 }
@@ -234,11 +243,13 @@ func (f *foreignSource) settle(ctx context.Context, jc *jobs.Context, u *store.U
 		if text == string(raw) {
 			continue
 		}
+		// The names come from the old server's site list: one line each in
+		// the log, whatever they hold.
 		if _, err := f.s.fsop(ctx, u, []byte(text), "write", rel); err != nil {
-			jc.Logf("%s: paths not rewritten: %v", rel, err)
+			jc.Logf("%s: paths not rewritten: %s", shown(rel), shown(err.Error()))
 			continue
 		}
-		fixed = append(fixed, rel)
+		fixed = append(fixed, shown(rel))
 	}
 	if len(fixed) > 0 {
 		jc.Logf("old server paths rewritten in: %s", strings.Join(fixed, ", "))
@@ -321,15 +332,37 @@ func (f *foreignSource) parseCrontab(text string) []*store.CronJob {
 // cronJob turns an old line into a job here: paths rewritten, and a line
 // that looks like a planted payload arrives switched off.
 func (f *foreignSource) cronJob(e cronEntry) *store.CronJob {
-	j := &store.CronJob{Schedule: e.schedule, Command: f.rewriteText(e.command), Comment: e.comment, Enabled: true}
+	j := &store.CronJob{Schedule: e.schedule, Command: f.rewriteText(e.command), Comment: cronComment(e.comment), Enabled: true}
 	if suspiciousCron(e.command) {
 		j.Enabled = false
-		j.Comment = strings.TrimSuffix(cronSuspectMark+"; "+e.comment, "; ")
+		j.Comment = cronComment(cronSuspectMark, e.comment)
 	}
 	return j
 }
 
 const cronSuspectMark = "disabled during migration: looks like a planted backdoor"
+
+// cronCommentMax is the length the API allows a cron comment (CronRequest).
+const cronCommentMax = 120
+
+// cronComment joins the notes the adapters put on a job with what the old
+// crontab said above it, and keeps the result within what the panel takes
+// for a comment: one line, at most cronCommentMax characters. The comment is
+// only a label, so it is shortened rather than the job refused for it; the
+// mark the adapter adds comes first and survives the cut.
+func cronComment(parts ...string) string {
+	var kept []string
+	for _, p := range parts {
+		if p = strings.TrimSpace(cleanText(p, false)); p != "" {
+			kept = append(kept, p)
+		}
+	}
+	s := strings.Join(kept, "; ")
+	if r := []rune(s); len(r) > cronCommentMax {
+		s = string(r[:cronCommentMax-1]) + "…"
+	}
+	return s
+}
 
 var (
 	// A binary run straight from a world-writable directory.

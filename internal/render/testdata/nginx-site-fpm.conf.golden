@@ -30,8 +30,8 @@ server {
     if ($host = www.example.com) { return 301 $scheme://example.com$request_uri; }
     root  /var/www/alex/data/www/example.com;
     index index.php index.html index.htm;
-    access_log /var/www/alex/data/logs/example.com.access.log main;
-    error_log  /var/www/alex/data/logs/example.com.error.log;
+    access_log /var/log/monopanel/sites/alex/example.com.access.log main;
+    error_log  /var/log/monopanel/sites/alex/example.com.error.log;
     client_max_body_size 64m;
     disable_symlinks if_not_owner from=$document_root;
     limit_req zone=mp_example_com burst=20 nodelay;

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"monopanel/internal/agent"
+	"monopanel/internal/agent/agenttest"
 	"monopanel/internal/config"
 	"monopanel/internal/store"
 )
@@ -201,7 +202,7 @@ func TestNginxInstallOnELPreparesSELinux(t *testing.T) {
 	if job := f.waitJob(ref.JobID); job.Status != store.JobDone {
 		t.Fatalf("nginx install on EL: %s %s", job.Status, job.Error)
 	}
-	var fcontext, docroot, ssh, booleans, relabel bool
+	var fcontext, docroot, ssh, siteLogs, booleans, relabel bool
 	for _, tool := range f.agent.Tools() {
 		args := strings.Join(tool.Args, " ")
 		switch tool.Name {
@@ -215,18 +216,24 @@ func TestNginxInstallOnELPreparesSELinux(t *testing.T) {
 			if strings.Contains(args, `ssh_home_t /var/www/[^/]+/\.ssh(/.*)?`) {
 				ssh = true
 			}
+			if strings.Contains(args, "httpd_log_t /var/log/monopanel/sites(/.*)?") {
+				siteLogs = true
+			}
 		case "setsebool":
 			if strings.Contains(args, "-P") && strings.Contains(args, "httpd_unified=1") {
 				booleans = true
 			}
 		case "restorecon":
-			if strings.Contains(args, "/var/www") {
+			if strings.Contains(args, "/var/www") && strings.Contains(args, "/var/log/monopanel/sites") {
 				relabel = true
 			}
 		}
 	}
-	if !fcontext || !docroot || !ssh || !booleans || !relabel {
-		t.Fatalf("selinux policy incomplete: fcontext=%v docroot=%v ssh=%v booleans=%v relabel=%v (%+v)", fcontext, docroot, ssh, booleans, relabel, f.agent.Tools())
+	if !fcontext || !docroot || !ssh || !siteLogs || !booleans || !relabel {
+		t.Fatalf("selinux policy incomplete: fcontext=%v docroot=%v ssh=%v site logs=%v booleans=%v relabel=%v (%+v)", fcontext, docroot, ssh, siteLogs, booleans, relabel, f.agent.Tools())
+	}
+	if v, _ := f.db.GetSetting(f.ctx, settingSELinuxSiteLogs); v != "/var/log/monopanel/sites(/.*)?" {
+		t.Fatalf("the site logs rule is not remembered: %q", v)
 	}
 	restore := false
 	for _, c := range f.agent.Calls() {
@@ -342,6 +349,71 @@ func TestSELinuxSSHReachesPreparedHosts(t *testing.T) {
 	old.s.refreshSELinuxSSH(old.ctx)
 	if len(old.agent.Tools()) != 0 {
 		t.Fatalf("refreshed twice: %+v", old.agent.Tools())
+	}
+}
+
+// A host an older panel prepared for hosting gets the rule of the site log
+// tree at start, and the tree relabelled — not the sites — once; the policy
+// version stays. So does a host never prepared that has sites (SELinux came
+// on after them), semanage installed first; one without sites waits for the
+// whole policy, which carries the rule too.
+func TestSELinuxSiteLogsReachPreparedHosts(t *testing.T) {
+	withOSRelease(t, "ID=almalinux\nVERSION_ID=9.6\nID_LIKE=\"rhel centos fedora\"\n")
+	touched := func(f *siteFixture) (fcontext, relabel bool) {
+		for _, tool := range f.agent.Tools() {
+			args := strings.Join(tool.Args, " ")
+			switch tool.Name {
+			case "semanage":
+				if args != "fcontext -a -t httpd_log_t /var/log/monopanel/sites(/.*)?" {
+					t.Fatalf("another rule: %q", args)
+				}
+				fcontext = true
+			case "restorecon":
+				if args != "-R -i /var/log/monopanel/sites" {
+					t.Fatalf("relabel beyond the log tree: %q", args)
+				}
+				relabel = true
+			}
+		}
+		return fcontext, relabel
+	}
+	fresh := newSiteFixture(t)
+	fresh.s.refreshSELinuxSiteLogs(fresh.ctx)
+	if fc, rl := touched(fresh); fc || rl {
+		t.Fatal("a host never prepared for hosting got the rule")
+	}
+
+	old := newSiteFixture(t)
+	if err := old.db.SetSetting(old.ctx, settingSELinux, "v3"); err != nil {
+		t.Fatal(err)
+	}
+	old.s.refreshSELinuxSiteLogs(old.ctx)
+	if fc, rl := touched(old); !fc || !rl {
+		t.Fatalf("v3 host: fcontext=%v relabel=%v (%+v)", fc, rl, old.agent.Tools())
+	}
+	if v, _ := old.db.GetSetting(old.ctx, settingSELinuxSiteLogs); v != "/var/log/monopanel/sites(/.*)?" {
+		t.Fatalf("the rule is not remembered: %q", v)
+	}
+	if v, _ := old.db.GetSetting(old.ctx, settingSELinux); v != "v3" {
+		t.Fatalf("the policy version changed: %q", v)
+	}
+	old.agent.Reset()
+	old.s.refreshSELinuxSiteLogs(old.ctx)
+	if len(old.agent.Tools()) != 0 {
+		t.Fatalf("refreshed twice: %+v", old.agent.Tools())
+	}
+
+	late := newSiteFixture(t)
+	late.createSite(map[string]any{"domain": "example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	late.agent.Reset()
+	late.s.refreshSELinuxSiteLogs(late.ctx)
+	if fc, rl := touched(late); !fc || !rl {
+		t.Fatalf("a host with sites but without the policy: fcontext=%v relabel=%v (%+v)", fc, rl, late.agent.Tools())
+	}
+	if !slices.ContainsFunc(late.agent.Calls(), func(c agenttest.Call) bool {
+		return c.Path == "/v1/pkg" && strings.Contains(string(c.Body), "policycoreutils-python-utils")
+	}) {
+		t.Fatal("semanage was not installed first")
 	}
 }
 

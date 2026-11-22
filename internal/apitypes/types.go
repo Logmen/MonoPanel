@@ -27,6 +27,10 @@ type Principal struct {
 	Role   string   `json:"role"`
 	Via    string   `json:"via"` // peercred | token | session
 	Scopes []string `json:"scopes,omitempty"`
+	// The API token the request came with (via token), as GET /tokens lists
+	// it: mp whoami names it, so a script's token can be found and revoked.
+	TokenID   int64  `json:"token_id,omitempty" doc:"ID of the API token the request came with (via token)"`
+	TokenName string `json:"token_name,omitempty" doc:"Name of that API token"`
 }
 
 // PanelStatus describes the panel process.
@@ -313,17 +317,17 @@ type DBEngineStatus struct {
 
 // CronRequest adds a cron job.
 type CronRequest struct {
-	Schedule string `json:"schedule" minLength:"1" maxLength:"64" doc:"5-field cron expression or @daily/@hourly/@weekly/@monthly/@reboot"`
-	Command  string `json:"command" minLength:"1" maxLength:"1000"`
-	Comment  string `json:"comment,omitempty" maxLength:"120"`
+	Schedule string `json:"schedule" minLength:"1" maxLength:"64" doc:"5-field cron expression (minute hour day-of-month month day-of-week: numbers, jan-dec, sun-sat, *, ranges, lists, steps after * or a range) or @reboot, @yearly, @annually, @monthly, @weekly, @daily, @midnight, @hourly"`
+	Command  string `json:"command" minLength:"1" maxLength:"1000" doc:"One line, without control characters"`
+	Comment  string `json:"comment,omitempty" maxLength:"120" doc:"One line, without control characters"`
 	Enabled  *bool  `json:"enabled,omitempty"`
 }
 
 // CronUpdateRequest edits a cron job.
 type CronUpdateRequest struct {
-	Schedule string  `json:"schedule,omitempty" maxLength:"64"`
-	Command  string  `json:"command,omitempty" maxLength:"1000"`
-	Comment  *string `json:"comment,omitempty"`
+	Schedule string  `json:"schedule,omitempty" maxLength:"64" doc:"As in cron-create"`
+	Command  string  `json:"command,omitempty" maxLength:"1000" doc:"One line, without control characters"`
+	Comment  *string `json:"comment,omitempty" maxLength:"120" doc:"One line, without control characters; empty removes it"`
 	Enabled  *bool   `json:"enabled,omitempty"`
 }
 
@@ -354,7 +358,7 @@ type Fail2banStatus struct {
 	Installed bool         `json:"installed"`
 	Running   bool         `json:"running"`
 	Jails     []JailStatus `json:"jails"`
-	Trusted   []string     `json:"trusted" doc:"Addresses and networks fail2ban never bans (ignoreip), besides loopback"`
+	Trusted   []string     `json:"trusted" doc:"Addresses and networks fail2ban never bans (ignoreip), besides loopback; the same list as the top-level trusted"`
 }
 
 // FirewallStatus is the firewall page.
@@ -365,7 +369,10 @@ type FirewallStatus struct {
 	SSHPorts   []int                 `json:"ssh_ports"`
 	Rules      []*store.FirewallRule `json:"rules"`
 	Restricted []RestrictedPort      `json:"restricted,omitempty" doc:"always-open ports a source-less deny closes to everyone but the listed sources"`
-	Fail2ban   *Fail2banStatus       `json:"fail2ban,omitempty"`
+	// Trusted is here as well as in Fail2ban: the list is kept while fail2ban
+	// is not installed and applies once it is, and fail2ban is absent then.
+	Trusted  []string        `json:"trusted" doc:"Addresses and networks fail2ban never bans (ignoreip), besides loopback; kept and shown also while fail2ban is not installed (mp firewall trust)"`
+	Fail2ban *Fail2banStatus `json:"fail2ban,omitempty"`
 }
 
 // RestrictedPort is an always-open port (SSH, 80, 443, the panel) that a deny
@@ -543,7 +550,10 @@ type UserUpdateRequest struct {
 	Email    string `json:"email,omitempty" format:"email"`
 	Shell    *bool  `json:"shell,omitempty" doc:"SSH shell (true) or SFTP-only chroot (false)"`
 	Password string `json:"password,omitempty" minLength:"8" maxLength:"1024" doc:"panel and SFTP/SSH password"`
-	Status   string `json:"status,omitempty" enum:"active,suspended"`
+	// CurrentPassword guards your own password: a stolen browser session or
+	// token must not set a new one (and with it turn two-factor sign-in off).
+	CurrentPassword string `json:"current_password,omitempty" maxLength:"1024" doc:"Your current password: required when you change your own password over a browser session or an API token (not over the local socket, where the system already knows who you are)"`
+	Status          string `json:"status,omitempty" enum:"active,suspended"`
 }
 
 // ShareRequest gives an account a folder of another account's site over
@@ -572,9 +582,9 @@ type ShareStatus struct {
 
 // AppRequest creates an app service: a systemd unit that runs a long-lived
 // program (gunicorn, a Node server, a bot) under the user's unix account.
+// The owner is the account in the path (/users/{login}/apps).
 type AppRequest struct {
 	Name        string   `json:"name" pattern:"^[a-z0-9][a-z0-9_-]{0,31}$"`
-	User        string   `json:"user,omitempty" doc:"Owner login (admins only; users create their own)"`
 	Description string   `json:"description,omitempty" maxLength:"120"`
 	Command     string   `json:"command" minLength:"1" maxLength:"1000" doc:"Absolute path of the executable followed by its arguments"`
 	WorkDir     string   `json:"workdir,omitempty" doc:"Working directory inside the home (default ~/data)"`
@@ -870,7 +880,7 @@ type MailboxRequest struct {
 	Address  string `json:"address" doc:"user@example.com"`
 	Password string `json:"password,omitempty" minLength:"8" maxLength:"1024" doc:"Generated when empty"`
 	Name     string `json:"name,omitempty" maxLength:"128"`
-	QuotaMB  int    `json:"quota_mb,omitempty" minimum:"0" maximum:"1048576" doc:"0 means no limit"`
+	QuotaMB  *int   `json:"quota_mb,omitempty" minimum:"0" maximum:"1048576" doc:"Quota in MB; 0 means no limit, omitted means 1024"`
 }
 
 // MailboxUpdateRequest patches a mailbox.
@@ -1081,4 +1091,60 @@ type CMSInstallResult struct {
 type ConsoleRequest struct {
 	Args []string `json:"args" minItems:"1" maxItems:"64" doc:"The arguments after mp, e.g. [\"site\", \"list\"]"`
 	Lang string   `json:"lang,omitempty" doc:"Language of the command's own texts, ru or en (the interface's); English by default"`
+}
+
+// PanelConfig is the part of /etc/monopanel/config.yaml the panel shows and
+// lets an administrator change from any client (GET/PUT /system/config). The
+// release trust anchor (update.public_key) is deliberately not here: it is
+// changed only with `mp update trust` as root on the server.
+type PanelConfig struct {
+	Path        string `json:"path" doc:"The configuration file"`
+	Hostname    string `json:"hostname" doc:"web.hostname: the panel's own name (certificate, links)"`
+	Listen      string `json:"listen" doc:"web.listen: address and port of the panel's HTTPS listener, e.g. :8443"`
+	LogLevel    string `json:"log_level" enum:"debug,info,warn,error" doc:"log.level"`
+	LogFormat   string `json:"log_format" enum:"text,json" doc:"log.format"`
+	JobsWorkers int    `json:"jobs_workers" doc:"jobs.workers: how many jobs run at once"`
+	// Read-only context.
+	DataDir      string `json:"data_dir"`
+	TemplatesDir string `json:"templates_dir"`
+	KeyPinned    bool   `json:"key_pinned" doc:"A release key is set (change it with mp update trust on the server)"`
+	// RestartPending: the file differs from what the running API process
+	// loaded, so the change takes effect after monopanel-api restarts.
+	RestartPending bool `json:"restart_pending"`
+	// What the running API process uses, which differs from hostname and
+	// listen while a change waits for the restart.
+	RunningHostname string `json:"running_hostname" doc:"web.hostname of the running API process"`
+	RunningListen   string `json:"running_listen" doc:"web.listen of the running API process"`
+}
+
+// PanelConfigUpdate changes config.yaml; omitted fields keep their value.
+type PanelConfigUpdate struct {
+	Hostname    *string `json:"hostname,omitempty" maxLength:"253" doc:"web.hostname; empty clears it (the panel is then reached by IP)"`
+	Listen      *string `json:"listen,omitempty" maxLength:"64" doc:"web.listen, e.g. :8443 or 203.0.113.5:8443"`
+	LogLevel    *string `json:"log_level,omitempty" enum:"debug,info,warn,error"`
+	LogFormat   *string `json:"log_format,omitempty" enum:"text,json"`
+	JobsWorkers *int    `json:"jobs_workers,omitempty" minimum:"1" maximum:"64"`
+	// Restart restarts monopanel-api right after the answer, so the change
+	// takes effect; the client should reconnect a few seconds later.
+	Restart bool `json:"restart,omitempty"`
+}
+
+// PanelConfigResult is the configuration after a change.
+type PanelConfigResult struct {
+	Config    PanelConfig `json:"config"`
+	Restarted bool        `json:"restarted" doc:"monopanel-api restarts right after this answer"`
+}
+
+// TemplateInfo is one configuration template the panel renders, and whether an
+// administrator overrides it with a file in templates_dir.
+type TemplateInfo struct {
+	Name     string `json:"name" doc:"e.g. nginx/site.conf.tmpl"`
+	Override bool   `json:"override" doc:"A file with this name in templates_dir replaces the built-in template"`
+	Path     string `json:"path,omitempty" doc:"The override file, when there is one"`
+}
+
+// TemplateList is GET /system/templates.
+type TemplateList struct {
+	Dir       string         `json:"dir" doc:"templates_dir"`
+	Templates []TemplateInfo `json:"templates"`
 }

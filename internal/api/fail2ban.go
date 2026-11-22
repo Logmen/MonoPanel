@@ -41,6 +41,9 @@ func (s *Server) fail2banTrusted(ctx context.Context) []string {
 	if raw, err := s.db.GetSetting(ctx, settingFail2banTrusted); err == nil && raw != "" {
 		_ = json.Unmarshal([]byte(raw), &out)
 	}
+	if out == nil { // a stored "null": GET /firewall promises a list
+		out = []string{}
+	}
 	return out
 }
 
@@ -67,8 +70,8 @@ func normalizeSource(src string) (string, bool) {
 }
 
 // fail2banSiteLogs lists the nginx logs of every site, and of the webmail
-// published on a port. The files exist: a site's logs are made before its
-// configuration is applied.
+// published on a port, in their accounts' directories of the log tree. The
+// files exist: a site's logs are made before its configuration is applied.
 func (s *Server) fail2banSiteLogs(ctx context.Context) (access, errs []string) {
 	sites, err := s.db.ListSites(ctx, 0)
 	if err != nil {
@@ -79,12 +82,12 @@ func (s *Server) fail2banSiteLogs(ctx context.Context) (access, errs []string) {
 		if err != nil {
 			continue
 		}
-		logs := path.Join(s.layoutFor(site, owner).data, "logs")
+		logs := s.siteLogDir(owner.Login)
 		access = append(access, path.Join(logs, site.Domain+".access.log"))
 		errs = append(errs, path.Join(logs, site.Domain+".error.log"))
 		if c := s.loadMailConfig(ctx); c.Webmail == site.Domain && c.WebmailPort > 0 {
-			access = append(access, path.Join(logs, "webmail.access.log"))
-			errs = append(errs, path.Join(logs, "webmail.error.log"))
+			access = append(access, path.Join(logs, webmailLogNames[0]))
+			errs = append(errs, path.Join(logs, webmailLogNames[1]))
 		}
 	}
 	sort.Strings(access)

@@ -125,7 +125,7 @@ func (s *Server) authenticateWith(rctx context.Context, authorization string, se
 			return nil
 		}
 		go s.db.TouchAPIToken(context.Background(), tok.ID) //nolint:errcheck // last-used bookkeeping must not fail the request
-		return &principal{Principal: apitypes.Principal{UserID: u.ID, Login: u.Login, Role: u.Role, Via: "token", Scopes: tok.Scopes}}
+		return &principal{Principal: apitypes.Principal{UserID: u.ID, Login: u.Login, Role: u.Role, Via: "token", Scopes: tok.Scopes, TokenID: tok.ID, TokenName: tok.Name}}
 	}
 	if v := sessionCookie(); v != "" {
 		sess, err := s.db.GetSession(rctx, v)
@@ -148,7 +148,9 @@ func (s *Server) authenticateWith(rctx context.Context, authorization string, se
 // stay what they always were — a label on the token.
 func hasMigrationScope(scopes []string) bool {
 	for _, sc := range scopes {
-		if strings.HasPrefix(sc, migrateScopePrefix) {
+		// Any spelling restricts: a token stored before scopes were
+		// normalized must not pass for an unrestricted one.
+		if isMigrationScope(sc) {
 			return true
 		}
 	}

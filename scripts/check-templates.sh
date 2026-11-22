@@ -68,7 +68,7 @@ for f in "$golden"/nginx-site-*.golden; do
 		-e "s#/var/lib/monopanel/certs/example.com/privkey.pem#$work/certs/privkey.pem#" \
 		-e "s#/run/monopanel/php/example.com.sock#$work/run/php/example.com.sock#" \
 		-e "s#/var/www/alex/data/www/example.com#$work/docroot#" \
-		-e "s#/var/www/alex/data/logs#$work/logs#" \
+		-e "s#/var/log/monopanel/sites/alex#$work/logs#" \
 		-e "s#include monopanel/snippets/#include $work/snippets/#" \
 		-e "s#include monopanel/sites/example.com.d/\*.conf;##" \
 		-e "s#listen 203.0.113.10:80#listen 127.0.0.1:18080#g" \
@@ -94,7 +94,7 @@ vhost="$golden/apache-site.conf.golden"
 if [ -n "$apachectl" ] && [ -f "$vhost" ]; then
 	mkdir -p "$work/apache/sites" "$work/apache/include" "$work/apache/run"
 	sed -e "s#/var/www/alex/data/www/example.com#$work/docroot#" \
-		-e "s#/var/www/alex/data/logs#$work/logs#" \
+		-e "s#/var/log/monopanel/sites/alex#$work/logs#" \
 		-e "s#/etc/apache2/monopanel/sites/example.com.d#$work/apache/include#" \
 		"$vhost" > "$work/apache/sites/site.conf"
 	modules=$(dirname "$(dirname "$apachectl")")/lib/apache2/modules

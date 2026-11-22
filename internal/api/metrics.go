@@ -233,9 +233,8 @@ func (s *Server) registerMetrics() {
 		if err != nil {
 			return nil, err
 		}
-		l := s.layoutFor(site, user)
 		suffix := map[string]string{"access": ".access.log", "error": ".error.log", "php": ".php.error.log", "slow": ".php.slow.log", "apache-access": ".apache.access.log", "apache-error": ".apache.error.log"}[in.Type]
-		p := path.Join(l.data, "logs", site.Domain+suffix)
+		p := path.Join(s.siteLogDir(user.Login), site.Domain+suffix)
 		res, err := s.agent.ReadFile(ctx, p, int64(in.Lines)*400)
 		if err != nil {
 			return nil, huma.Error502BadGateway(err.Error())

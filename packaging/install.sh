@@ -38,18 +38,27 @@ case "${ID_LIKE:-} ${ID:-}" in
 *) echo "unsupported distribution: ${PRETTY_NAME:-unknown}" >&2; exit 1 ;;
 esac
 
+# A bearer token is letters, digits and -._~+/= (RFC 6750); anything else
+# would not survive the curl config line below either.
+case "$TOKEN" in
+*[!A-Za-z0-9._~+/=-]*) echo "MONOPANEL_TOKEN is not a bearer token" >&2; exit 1 ;;
+esac
+
 # fetch <url> <output-file|-> [accept]. A variable assignment in front of a
 # function call persists in POSIX sh, so the accept header is an argument.
+# The token reaches curl as a config line on its stdin (-K -): on curl's
+# command line every local user could read it in ps. printf is a shell
+# builtin, so no other process gets it on a command line either.
 fetch() {
 	accept="${3:-application/vnd.github+json}"
 	if [ "$2" = "-" ]; then
 		if [ -n "$TOKEN" ]; then
-			curl -fsSL -H "Authorization: Bearer $TOKEN" -H "Accept: $accept" "$1"
+			printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" | curl -fsSL -K - -H "Accept: $accept" "$1"
 		else
 			curl -fsSL -H "Accept: $accept" "$1"
 		fi
 	elif [ -n "$TOKEN" ]; then
-		curl -fsSL -H "Authorization: Bearer $TOKEN" -H "Accept: $accept" -o "$2" "$1"
+		printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" | curl -fsSL -K - -H "Accept: $accept" -o "$2" "$1"
 	else
 		curl -fsSL -H "Accept: $accept" -o "$2" "$1"
 	fi

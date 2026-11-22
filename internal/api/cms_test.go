@@ -10,10 +10,16 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -112,10 +118,104 @@ func (f *siteFixture) installCMS(t *testing.T, domain string, body map[string]an
 	return res, f.waitJob(res.JobID)
 }
 
+// cmsJobPasswords returns the administrator and database passwords a CMS job
+// carried (encrypted in its payload).
+func (f *siteFixture) cmsJobPasswords(t *testing.T, job *store.Job) (admin, db string) {
+	t.Helper()
+	var p cmsPayload
+	if err := json.Unmarshal(job.Payload, &p); err != nil {
+		t.Fatal(err)
+	}
+	admin, err := f.s.secrets.Decrypt(p.AdminPasswordEnc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if db, err = f.s.secrets.Decrypt(p.DBPasswordEnc); err != nil {
+		t.Fatal(err)
+	}
+	return admin, db
+}
+
+// installerRun is one run of a CMS installer the fake agent was asked for:
+// fsop run's arguments, what follows the PHP binary on the command line, the
+// arguments that came on stdin, and the $argv the installer gets from both.
+type installerRun struct {
+	argv, php, stdin, effective []string
+}
+
+// installerRuns decodes every fsop run the fake agent saw. A run with the
+// bootstrap must bring its arguments on stdin, each ended by NUL; a run
+// without it must have nothing there.
+func (f *siteFixture) installerRuns(t *testing.T) []installerRun {
+	t.Helper()
+	var runs []installerRun
+	for _, r := range f.agent.RunAs() {
+		if len(r.Args) == 0 || r.Args[0] != "run" {
+			continue
+		}
+		i := slices.Index(r.Args, "--")
+		if i < 0 || len(r.Args) < i+3 {
+			t.Fatalf("fsop run without -- <php> <script>: %q", r.Args)
+		}
+		run := installerRun{argv: r.Args, php: r.Args[i+2:]}
+		in, err := base64.StdEncoding.DecodeString(r.StdinBase64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case run.php[0] == "-r":
+			if len(run.php) < 4 || run.php[1] != cmsArgvBootstrap || run.php[2] != "--" {
+				t.Fatalf("php -r must run the bootstrap, then -- <script>: %q", run.php)
+			}
+			if len(in) == 0 || in[len(in)-1] != 0 {
+				t.Fatalf("the bootstrap's arguments must come on stdin, each ended by NUL: %q", in)
+			}
+			run.stdin = strings.Split(string(in[:len(in)-1]), "\x00")
+			run.effective = append(slices.Clone(run.php[3:]), run.stdin...)
+		case len(in) > 0:
+			t.Fatalf("stdin for an installer run without the bootstrap: %q", r.Args)
+		default:
+			run.effective = run.php
+		}
+		runs = append(runs, run)
+	}
+	return runs
+}
+
+// assertOffArgv fails when a secret sits on any command line the fake agent
+// was asked to run — a tool, a stream, an fsop run as a client: every local
+// user can read those in ps.
+func (f *siteFixture) assertOffArgv(t *testing.T, secrets ...string) {
+	t.Helper()
+	var lines [][]string
+	for _, r := range f.agent.RunAs() {
+		lines = append(lines, r.Args)
+	}
+	for _, tc := range f.agent.Tools() {
+		lines = append(lines, append([]string{tc.Name}, tc.Args...))
+	}
+	for _, st := range f.agent.Streams() {
+		lines = append(lines, append([]string{st.Name}, st.Args...))
+	}
+	for _, secret := range secrets {
+		if secret == "" {
+			t.Fatal("an empty secret proves nothing")
+		}
+		for _, line := range lines {
+			for _, a := range line {
+				if strings.Contains(a, secret) {
+					t.Fatalf("a secret is on a command line: %q", line)
+				}
+			}
+		}
+	}
+}
+
 // WordPress: the preset is applied, the database made, the tarball streamed
 // into tar with its top-level folder dropped, wp-cli fetched and verified,
 // the installer run as the client with the generated credentials — which
-// come back once and never land in the job.
+// come back once, never land in the job and reach wp-cli on stdin, not on a
+// command line.
 func TestCMSInstallWordPress(t *testing.T) {
 	f := cmsFixture(t, map[string][]byte{"https://wordpress.org/latest.tar.gz": tarGz(t, map[string]string{"wordpress/index.php": "<?php", "wordpress/wp-config-sample.php": "<?php"})})
 	site := f.createSite(map[string]any{"domain": "wp.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
@@ -142,18 +242,36 @@ func TestCMSInstallWordPress(t *testing.T) {
 	if !tarred {
 		t.Fatalf("the tarball must be streamed into tar with its folder stripped: %+v", f.agent.Streams())
 	}
-	config, install, chown, wpcli := false, false, false, false
+	adminPassword, dbPassword := f.cmsJobPasswords(t, job)
+	if adminPassword != res.AdminPassword {
+		t.Fatal("the job's administrator password is not the one shown")
+	}
 	for _, r := range f.agent.RunAs() {
-		a := strings.Join(r.Args, " ")
-		if r.Login == "alex" && strings.HasPrefix(a, "run --cwd data/www/wp.example.com -- /usr/bin/php8.4 "+wpCLIPhar) {
-			if strings.Contains(a, "config create --dbname=alex_wordpress --dbuser=alex_wordpress --dbpass=") {
-				config = true
-			}
-			if strings.Contains(a, "core install --url=http://wp.example.com --title=My blog --admin_user=admin --admin_password="+res.AdminPassword+" --admin_email=admin@wp.example.com --skip-email") {
-				install = true
-			}
+		if r.Args[0] == "run" && (r.Login != "alex" || !strings.HasPrefix(strings.Join(r.Args, " "), "run --cwd data/www/wp.example.com -- /usr/bin/php8.4 ")) {
+			t.Fatalf("wp-cli must run as the client with the site's PHP, in the docroot: %s %q", r.Login, r.Args)
 		}
 	}
+	// wp-cli gets every argument it got before, the passwords from stdin
+	wp := func(args ...string) []string {
+		return append([]string{wpCLIPhar, "--path=/var/www/alex/data/www/wp.example.com"}, args...)
+	}
+	config, install, version, chown, wpcli := false, false, false, false, false
+	for _, run := range f.installerRuns(t) {
+		switch {
+		case slices.Equal(run.effective, wp("config", "create", "--dbname=alex_wordpress", "--dbuser=alex_wordpress", "--dbhost=localhost", "--skip-check", "--dbpass="+dbPassword)):
+			config = slices.Equal(run.stdin, []string{"--dbpass=" + dbPassword})
+		case slices.Equal(run.effective, wp("core", "install", "--url=http://wp.example.com", "--title=My blog", "--admin_user=admin", "--admin_email=admin@wp.example.com", "--skip-email", "--admin_password="+res.AdminPassword)):
+			install = slices.Equal(run.stdin, []string{"--admin_password=" + res.AdminPassword})
+		case slices.Equal(run.effective, wp("core", "version")):
+			version = run.stdin == nil // nothing secret: no bootstrap
+		default:
+			t.Fatalf("unexpected wp-cli run: %q", run.effective)
+		}
+	}
+	if !config || !install || !version {
+		t.Fatalf("config=%v install=%v version=%v; runs: %+v", config, install, version, f.agent.RunAs())
+	}
+	f.assertOffArgv(t, adminPassword, dbPassword)
 	for _, c := range f.agent.Calls() {
 		switch {
 		case c.Path == "/v1/chown" && strings.Contains(string(c.Body), `"recursive":true`) && strings.Contains(string(c.Body), "wp.example.com"):
@@ -162,11 +280,47 @@ func TestCMSInstallWordPress(t *testing.T) {
 			wpcli = true
 		}
 	}
-	if !config || !install || !chown || !wpcli {
-		t.Fatalf("config=%v install=%v chown=%v wpcli=%v; runs: %+v", config, install, chown, wpcli, f.agent.RunAs())
+	if !chown || !wpcli {
+		t.Fatalf("chown=%v wpcli=%v", chown, wpcli)
 	}
 	if _, err := f.db.GetDatabaseByName(f.ctx, "alex_wordpress"); err != nil {
 		t.Fatalf("database record: %v", err)
+	}
+}
+
+// Joomla: the release tarball from GitHub, its own CLI installer run as the
+// client — the two passwords on stdin, every other option where it was — and
+// installation/ removed afterwards.
+func TestCMSInstallJoomla(t *testing.T) {
+	src := tarGz(t, map[string]string{"index.php": "<?php", "installation/joomla.php": "<?php"})
+	f := cmsFixture(t, map[string][]byte{"https://github.com/joomla/joomla-cms/releases/download/6.1.3/Joomla_6.1.3-Stable-Full_Package.tar.gz": src})
+	site := f.createSite(map[string]any{"domain": "club.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	res, job := f.installCMS(t, site.Domain, map[string]any{"cms": "joomla", "title": "Our club", "admin_login": "chief", "admin_email": "chief@example.com"})
+	if job.Status != store.JobDone {
+		t.Fatalf("install: %s %s", job.Status, job.Error)
+	}
+	adminPassword, dbPassword := f.cmsJobPasswords(t, job)
+	if len(res.AdminPassword) != 16 || adminPassword != res.AdminPassword || res.Database != "alex_joomla" || res.AdminURL != "http://club.example.com/administrator/" {
+		t.Fatalf("result: %+v", res)
+	}
+	runs := f.installerRuns(t)
+	want := []string{"installation/joomla.php", "install", "--site-name=Our club", "--admin-user=Administrator", "--admin-username=chief", "--admin-email=chief@example.com",
+		"--db-type=mysqli", "--db-host=localhost", "--db-user=alex_joomla", "--db-name=alex_joomla", "--db-prefix=j_", "--db-encryption=0", "--no-interaction",
+		"--admin-password=" + adminPassword, "--db-pass=" + dbPassword}
+	if len(runs) != 1 || !slices.Equal(runs[0].effective, want) || !slices.Equal(runs[0].stdin, []string{"--admin-password=" + adminPassword, "--db-pass=" + dbPassword}) ||
+		!strings.HasPrefix(strings.Join(runs[0].argv, " "), "run --cwd data/www/club.example.com -- /usr/bin/php8.4 -r ") {
+		t.Fatalf("installer runs: %+v", runs)
+	}
+	f.assertOffArgv(t, adminPassword, dbPassword)
+	removed := slices.ContainsFunc(f.agent.RunAs(), func(r agent.RunAsUserRequest) bool {
+		return strings.Join(r.Args, " ") == "rm data/www/club.example.com/installation"
+	})
+	if !removed {
+		t.Fatalf("installation/ must be removed after the install: %+v", f.agent.RunAs())
+	}
+	stored, _ := f.db.GetSiteByDomain(f.ctx, site.Domain)
+	if stored.CMS != "joomla" || stored.CMSVersion != "6.1.3" || stored.Preset != "joomla" || stored.CMSDatabase != "alex_joomla" {
+		t.Fatalf("site record: %+v", stored)
 	}
 }
 
@@ -194,19 +348,24 @@ func TestCMSInstallOpenCartAndForce(t *testing.T) {
 	if !stripped {
 		t.Fatalf("zip must arrive as a tar stream, upload/ only, one component stripped: %+v", f.agent.Streams())
 	}
-	wrote, ran := 0, false
+	wrote := 0
 	for _, r := range f.agent.RunAs() {
 		a := strings.Join(r.Args, " ")
 		if strings.HasPrefix(a, "write data/www/shop.example.com/") && strings.HasSuffix(a, "config.php") {
 			wrote++
 		}
-		if strings.Contains(a, "install/cli_install.php install --username owner --email o@example.com --password Sup3rSecretPass! --http_server http://shop.example.com/ --db_driver mysqli") {
-			ran = true
-		}
 	}
-	if wrote != 2 || !ran {
-		t.Fatalf("configs written=%d installer=%v: %+v", wrote, ran, f.agent.RunAs())
+	// the installer reads "--option value" pairs: both password pairs come
+	// on stdin, after the rest
+	_, dbPassword := f.cmsJobPasswords(t, job)
+	runs := f.installerRuns(t)
+	want := []string{"install/cli_install.php", "install", "--username", "owner", "--email", "o@example.com", "--http_server", "http://shop.example.com/",
+		"--db_driver", "mysqli", "--db_hostname", "localhost", "--db_username", "alex_opencart", "--db_database", "alex_opencart", "--db_port", "3306", "--db_prefix", "oc_",
+		"--password", "Sup3rSecretPass!", "--db_password", dbPassword}
+	if wrote != 2 || len(runs) != 1 || !slices.Equal(runs[0].effective, want) || !slices.Equal(runs[0].stdin, []string{"--password", "Sup3rSecretPass!", "--db_password", dbPassword}) {
+		t.Fatalf("configs written=%d; installer runs: %+v", wrote, runs)
 	}
+	f.assertOffArgv(t, "Sup3rSecretPass!", dbPassword)
 	stored, _ := f.db.GetSiteByDomain(f.ctx, site.Domain)
 	if stored.CMSVersion != "4.1.0.4" || stored.Preset != "opencart" {
 		t.Fatalf("site record: %+v", stored)
@@ -228,6 +387,16 @@ func TestCMSInstallOpenCartAndForce(t *testing.T) {
 	if job.Status != store.JobDone || res.Database != "alex_opencart" {
 		t.Fatalf("force reuses the database: %s %s; database %s", job.Status, job.Error, res.Database)
 	}
+	// the reinstall's new passwords take the same way
+	adminPassword, dbPassword := f.cmsJobPasswords(t, job)
+	if adminPassword != res.AdminPassword {
+		t.Fatal("the job's administrator password is not the one shown")
+	}
+	runs = f.installerRuns(t)
+	if len(runs) != 2 || !slices.Equal(runs[1].stdin, []string{"--password", adminPassword, "--db_password", dbPassword}) {
+		t.Fatalf("the reinstall's passwords must reach the installer on stdin: %+v", runs)
+	}
+	f.assertOffArgv(t, adminPassword, dbPassword)
 	dropped := false
 	for _, tc := range f.agent.Tools() {
 		if tc.Name == "mysql" && strings.Contains(tc.Stdin, "DROP DATABASE IF EXISTS `alex_opencart`") {
@@ -392,11 +561,160 @@ func TestCMSInstallRefusals(t *testing.T) {
 	f.call(http.MethodPost, "/sites/"+site.Domain+"/cms", map[string]any{"cms": "drupal"}, http.StatusUnprocessableEntity, nil)
 	f.call(http.MethodPost, "/sites/"+site.Domain+"/cms", map[string]any{"cms": "wordpress", "admin_password": "short"}, http.StatusUnprocessableEntity, nil)
 	f.call(http.MethodPost, "/sites/"+site.Domain+"/cms", map[string]any{"cms": "joomla", "edition": "start"}, http.StatusUnprocessableEntity, nil)
+	// a NUL ends an installer argument: refused before any job
+	f.call(http.MethodPost, "/sites/"+site.Domain+"/cms", map[string]any{"cms": "wordpress", "admin_password": "Sup3rSecret\x00Pass"}, http.StatusUnprocessableEntity, nil)
+	f.call(http.MethodPost, "/sites/"+site.Domain+"/cms", map[string]any{"cms": "joomla", "title": "a\x00b"}, http.StatusUnprocessableEntity, nil)
 	var list []apitypes.CMSInfo
 	f.call(http.MethodGet, "/cms", nil, http.StatusOK, &list)
 	if len(list) != 4 || list[3].ID != "bitrix" || len(list[3].Editions) != 4 {
 		t.Fatalf("catalogue: %+v", list)
 	}
+}
+
+// On stdin a NUL would split a secret into two arguments: cmsRun refuses it
+// before the agent is asked to run anything.
+func TestCMSRunRefusesNUL(t *testing.T) {
+	f := cmsFixture(t, nil)
+	site := f.createSite(map[string]any{"domain": "shop.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	owner, err := f.db.GetUserByID(f.ctx, site.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(f.agent.RunAs())
+	in := cmsInstall{site: site, owner: owner, layout: f.s.layoutFor(site, owner), rel: "data/www/shop.example.com"}
+	if _, err := f.s.cmsRun(f.ctx, in, "install/cli_install.php", []string{"install"}, "--password", "Sup3r\x00Secret"); err == nil || !strings.Contains(err.Error(), "NUL") {
+		t.Fatalf("a NUL in a secret must be refused: %v", err)
+	}
+	if runs := f.agent.RunAs(); len(runs) != before {
+		t.Fatalf("nothing may run: %+v", runs[before:])
+	}
+}
+
+// The bootstrap under a real PHP: the installer sees what it saw with the
+// passwords on its command line — $argv, $argc, $_SERVER, its own path, an
+// empty stdin, the same exit code — while that command line, which every
+// local user can read, does not hold them. A phar (wp-cli) included this way
+// runs as when executed. Missing stdin stops it before the installer starts.
+// Needs php on PATH (the CI runners have it).
+func TestCMSArgvBootstrapPHP(t *testing.T) {
+	php, err := exec.LookPath("php")
+	if err != nil {
+		t.Skip("php is not installed")
+	}
+	if exec.Command(php, "-r", `exit(function_exists("json_encode") ? 0 : 1);`).Run() != nil {
+		t.Skip("this php has no json_encode to report what the installer sees")
+	}
+	// the real path: PHP reports the scripts' paths with symlinks resolved
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// what an installer may look at; /proc/self/cmdline is what ps shows
+	const view = `$s = $_SERVER; unset($s['REQUEST_TIME'], $s['REQUEST_TIME_FLOAT']); ksort($s);
+$g = array_keys($GLOBALS); sort($g);
+$cmd = @file_get_contents('/proc/self/cmdline');
+echo json_encode(array('argv' => $argv, 'argc' => $argc, 'globals' => $g, 'global_argv' => $GLOBALS['argv'], 'server' => $s, 'file' => __FILE__,
+	'included' => get_included_files(), 'stdin' => stream_get_contents(STDIN), 'exposed' => $cmd === false ? null : strpos($cmd, 'Pa55-w0rd') !== false));
+exit(3);`
+	if err := os.MkdirAll(filepath.Join(dir, "installation"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "installation", "joomla.php"), []byte("<?php\n"+view+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		view   map[string]any
+		code   int
+		stdout string
+		stderr string
+	}
+	run := func(stdin []byte, args ...string) result {
+		t.Helper()
+		// no prepend/append file: -r skips them, a direct run would not
+		cmd := exec.Command(php, append([]string{"-d", "auto_prepend_file=", "-d", "auto_append_file="}, args...)...)
+		cmd.Dir, cmd.Env = dir, []string{"PATH=/usr/bin:/bin", "HOME=" + dir, "LANG=C.UTF-8"}
+		if stdin != nil {
+			cmd.Stdin = bytes.NewReader(stdin)
+		}
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		var res result
+		var ee *exec.ExitError
+		if err := cmd.Run(); errors.As(err, &ee) {
+			res.code = ee.ExitCode()
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		res.stdout, res.stderr = stdout.String(), stderr.String()
+		// PHP before 7.4 prints the shebang of an included phar's stub; wp-cli's
+		// output is not read where the bootstrap is used
+		out := res.stdout
+		if strings.HasPrefix(out, "#!") {
+			_, out, _ = strings.Cut(out, "\n")
+		}
+		if out != "" {
+			if err := json.Unmarshal([]byte(out), &res.view); err != nil {
+				t.Fatalf("installer output: %v\n%s\n%s", err, res.stdout, res.stderr)
+			}
+		}
+		return res
+	}
+	nul := func(args ...string) []byte {
+		var b []byte
+		for _, a := range args {
+			b = append(append(b, a...), 0)
+		}
+		return b
+	}
+	same := func(name string, direct, boot result) {
+		t.Helper()
+		if direct.code != 3 || boot.code != 3 {
+			t.Fatalf("%s: exit codes direct=%d bootstrap=%d\n%s\n%s", name, direct.code, boot.code, direct.stderr, boot.stderr)
+		}
+		if direct.view["exposed"] != nil && (direct.view["exposed"] != true || boot.view["exposed"] != false) {
+			t.Fatalf("%s: the secret on the command line: direct=%v bootstrap=%v", name, direct.view["exposed"], boot.view["exposed"])
+		}
+		delete(direct.view, "exposed")
+		delete(boot.view, "exposed")
+		if !reflect.DeepEqual(direct.view, boot.view) {
+			t.Fatalf("%s: the installer sees another world through the bootstrap\ndirect:    %v\nbootstrap: %v", name, direct.view, boot.view)
+		}
+	}
+
+	// Joomla/OpenCart: a script relative to the docroot; values with spaces,
+	// a newline, a pair of separate arguments and an empty one
+	secrets := []string{"--admin-password=Pa55-w0rd x", "--db_password", "Pa55-w0rd\nline", ""}
+	args := []string{"install", "--site-name=Our club"}
+	same("script", run(nil, append(append([]string{"installation/joomla.php"}, args...), secrets...)...),
+		run(nul(secrets...), append([]string{"-r", cmsArgvBootstrap, "--", "installation/joomla.php"}, args...)...))
+
+	// No arguments on stdin: an error, and the installer never starts.
+	for _, stdin := range [][]byte{nil, {}, []byte("--db-pass=Pa55-w0rd")} {
+		res := run(stdin, "-r", cmsArgvBootstrap, "--", "installation/joomla.php", "install")
+		if res.code != 1 || res.stdout != "" || !strings.Contains(res.stderr, "secret arguments did not arrive on stdin") {
+			t.Fatalf("stdin %q: exit %d, stdout %q, stderr %q", stdin, res.code, res.stdout, res.stderr)
+		}
+	}
+
+	// wp-cli: an absolute path to a phar whose stub maps itself and
+	// includes its boot file, as wp-cli.phar's does.
+	pharPath := filepath.Join(dir, "wp-cli.phar")
+	build := `$p = new Phar($argv[1], 0, 'wp-cli.phar'); $p->addFromString('php/boot-phar.php', '<?php include "phar://wp-cli.phar/php/main.php";'); ` +
+		`$p->addFromString('php/main.php', file_get_contents($argv[2])); $p->setStub("#!/usr/bin/env php\n<?php\nPhar::mapPhar();\ninclude 'phar://wp-cli.phar/php/boot-phar.php';\n__HALT_COMPILER(); ?>");`
+	viewFile := filepath.Join(dir, "view.php")
+	if err := os.WriteFile(viewFile, []byte("<?php\n"+view+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(php, "-d", "phar.readonly=0", "-r", build, "--", pharPath, viewFile).CombinedOutput(); err != nil {
+		t.Logf("no phar support to build a test phar (%v: %s); the phar case is skipped", err, out)
+		return
+	}
+	wp := []string{pharPath, "--path=" + dir, "config", "create", "--dbname=alex_wordpress"}
+	boot := run(nul("--dbpass=Pa55-w0rd"), append([]string{"-r", cmsArgvBootstrap, "--"}, wp...)...)
+	if file, _ := boot.view["file"].(string); !strings.HasPrefix(file, "phar://"+pharPath+"/") {
+		t.Fatalf("the phar's own code must have run: %v\n%s", boot.view["file"], boot.stderr)
+	}
+	same("phar", run(nil, append(wp, "--dbpass=Pa55-w0rd")...), boot)
 }
 
 // zipToTar keeps names, sizes and contents.

@@ -16,6 +16,7 @@ import (
 
 	"monopanel/internal/agent"
 	"monopanel/internal/apitypes"
+	"monopanel/internal/config"
 	"monopanel/internal/jobs"
 	"monopanel/internal/render"
 	"monopanel/internal/store"
@@ -140,8 +141,30 @@ func (s *Server) panelPort() int {
 	return n
 }
 
-// applyFirewall renders and loads the nftables table.
-func (s *Server) applyFirewall(ctx context.Context) (*apitypes.FirewallStatus, error) {
+// panelPorts is the panel's port and, while a new web.listen in config.yaml
+// waits for monopanel-api to restart, the port it moves to. The firewall
+// keeps both open and guards both against a lockout: a rule change in
+// between must not close the new port, or the panel is shut out the moment
+// it restarts — from the panel, after an update or at the next boot.
+func (s *Server) panelPorts() []int {
+	ports := []int{s.panelPort()}
+	if s.cfg.Path() == "" {
+		return ports
+	}
+	file, err := config.Load(s.cfg.Path())
+	if err != nil {
+		return ports
+	}
+	if p := listenPort(file.Web.Listen); p != 0 && p != ports[0] {
+		ports = append(ports, p)
+	}
+	return ports
+}
+
+// applyFirewall renders and loads the nftables table. extraPorts are opened
+// along with the always-open ones: the port the panel moves to after a change
+// of web.listen, before config.yaml says so.
+func (s *Server) applyFirewall(ctx context.Context, extraPorts ...int) (*apitypes.FirewallStatus, error) {
 	if err := s.ensurePackages(ctx, nil, "nftables"); err != nil {
 		return nil, err
 	}
@@ -149,7 +172,10 @@ func (s *Server) applyFirewall(ctx context.Context) (*apitypes.FirewallStatus, e
 	if err != nil {
 		return nil, err
 	}
-	base := map[int]bool{80: true, 443: true, s.panelPort(): true}
+	base := map[int]bool{80: true, 443: true}
+	for _, p := range append(s.panelPorts(), extraPorts...) {
+		base[p] = true
+	}
 	for _, p := range s.sshPorts(ctx) {
 		base[p] = true
 	}
@@ -241,12 +267,16 @@ func (s *Server) firewallStatus(ctx context.Context) (*apitypes.FirewallStatus, 
 	actx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	st.SSHPorts = s.sshPorts(actx)
-	st.Restricted = firewallRestricted(st.Rules, append(append([]int{}, st.SSHPorts...), 80, 443, s.panelPort()))
+	st.Restricted = firewallRestricted(st.Rules, append(append(append([]int{}, st.SSHPorts...), 80, 443), s.panelPorts()...))
 	if res, err := s.agent.Tool(actx, &agent.ToolRequest{Name: "nft", Args: []string{"list", "table", "inet", "monopanel"}}); err == nil && res.ExitCode == 0 {
 		st.Active = true
 	}
+	// The trusted list is kept while fail2ban is not installed (it goes into
+	// ignoreip once it is), so it is shown either way: mp firewall trust must
+	// be readable back.
+	st.Trusted = s.fail2banTrusted(ctx)
 	if f, _ := s.db.GetSetting(ctx, settingFail2ban); f == "installed" {
-		st.Fail2ban = &apitypes.Fail2banStatus{Installed: true, Jails: []apitypes.JailStatus{}, Trusted: s.fail2banTrusted(ctx)}
+		st.Fail2ban = &apitypes.Fail2banStatus{Installed: true, Jails: []apitypes.JailStatus{}, Trusted: st.Trusted}
 		if res, err := s.agent.Tool(actx, &agent.ToolRequest{Name: "fail2ban-client", Args: []string{"status"}}); err == nil && res.ExitCode == 0 {
 			st.Fail2ban.Running = true
 			for _, line := range strings.Split(res.Output, "\n") {

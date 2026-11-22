@@ -194,6 +194,17 @@ func (s *Server) jobUserDelete(ctx context.Context, jc *jobs.Context) error {
 		default:
 			jc.Logf("unix user %s removed; files kept in %s (%d processes stopped)", u.Login, home, res.Killed)
 		}
+		// The site logs are not in the home: a purge takes them along, or a
+		// later account by the same name would find them in its directory.
+		if p.Purge {
+			if res, err := s.agent.RemoveSiteLogs(ctx, &agent.RemoveSiteLogsRequest{Login: u.Login}); err != nil {
+				jc.Logf("warning: site logs in %s not removed: %v", s.siteLogDir(u.Login), err)
+			} else if res.Removed {
+				jc.Logf("site logs removed: %s", s.siteLogDir(u.Login))
+			}
+		} else {
+			jc.Logf("site logs, if any, kept in %s", s.siteLogDir(u.Login))
+		}
 	}
 
 	jc.Progress(95, "panel account")

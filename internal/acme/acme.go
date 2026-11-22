@@ -29,6 +29,7 @@ import (
 
 	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/go-acme/lego/v4/certificate"
+	"github.com/go-acme/lego/v4/challenge"
 	"github.com/go-acme/lego/v4/challenge/dns01"
 	"github.com/go-acme/lego/v4/lego"
 	legolog "github.com/go-acme/lego/v4/log"
@@ -141,6 +142,23 @@ func (m *Manager) accountDir(directory, email string) string {
 	return filepath.Join(m.Dir, "accounts", sanitize(host), sanitize(email))
 }
 
+// accountLocks holds one mutex per account directory. The setup of an
+// account — read or make its key, register it with the CA, save the
+// registration — runs under it: parallel orders (renew all, the renewal
+// loop, two clicks) would otherwise each find no key, write their own and
+// register it, and the key left on disk could end up next to the
+// registration of another one, which the CA refuses from then on. The
+// directory is the key, so two Managers on the same files share the lock.
+var accountLocks sync.Map // account dir -> *sync.Mutex
+
+func lockAccount(dir string) (unlock func()) {
+	mu, _ := accountLocks.LoadOrStore(dir, &sync.Mutex{})
+	mu.(*sync.Mutex).Lock()
+	return mu.(*sync.Mutex).Unlock
+}
+
+// loadOrCreateAccount reads the account of (directory, email), making its
+// key on first use. Callers hold the account's lock.
 func (m *Manager) loadOrCreateAccount(directory, email string) (*account, bool, error) {
 	dir := m.accountDir(directory, email)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -168,7 +186,9 @@ func (m *Manager) loadOrCreateAccount(directory, email string) (*account, bool, 
 		if err != nil {
 			return nil, false, err
 		}
-		if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}), 0o600); err != nil {
+		// Written whole or not at all: a key cut short by a crash would
+		// fail every later order with "not PEM".
+		if err := atomicWrite(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}), 0o600); err != nil {
 			return nil, false, err
 		}
 		acct.key = k
@@ -188,7 +208,43 @@ func (m *Manager) saveRegistration(directory, email string, reg *registration.Re
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(m.accountDir(directory, email), "registration.json"), b, 0o600)
+	return atomicWrite(filepath.Join(m.accountDir(directory, email), "registration.json"), b, 0o600)
+}
+
+// accountClient returns a lego client acting for the account of (directory,
+// email), registered with the CA: loaded from disk, or made and registered
+// on first use. The whole setup holds the account's lock (see accountLocks);
+// the orders the client places afterwards run in parallel.
+func (m *Manager) accountClient(directory, email string, keyType certcrypto.KeyType, logf func(string, ...any)) (*lego.Client, error) {
+	unlock := lockAccount(m.accountDir(directory, email))
+	defer unlock()
+	acct, created, err := m.loadOrCreateAccount(directory, email)
+	if err != nil {
+		return nil, err
+	}
+	cfg := lego.NewConfig(acct)
+	cfg.CADirURL = directory
+	cfg.Certificate.KeyType = keyType
+	cfg.UserAgent = m.UserAgent
+	cfg.HTTPClient.Timeout = 90 * time.Second
+	client, err := lego.NewClient(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("acme client: %w", err)
+	}
+	if acct.Registration != nil {
+		logf("ACME account: %s", acct.Registration.URI)
+		return client, nil
+	}
+	reg, err := client.Registration.Register(registration.RegisterOptions{TermsOfServiceAgreed: true})
+	if err != nil {
+		return nil, fmt.Errorf("acme registration: %w", err)
+	}
+	acct.Registration = reg
+	if err := m.saveRegistration(directory, email, reg); err != nil {
+		return nil, err
+	}
+	logf("ACME account registered at %s (new key: %v)", directory, created)
+	return client, nil
 }
 
 // IssueRequest describes an order.
@@ -252,27 +308,24 @@ func (m *Manager) Issue(ctx context.Context, req IssueRequest) (*Result, error) 
 	if err := m.ensureWebroot(); err != nil {
 		return nil, err
 	}
-
-	acct, created, err := m.loadOrCreateAccount(directory, req.Email)
-	if err != nil {
-		return nil, err
-	}
-	cfg := lego.NewConfig(acct)
-	cfg.CADirURL = directory
-	cfg.Certificate.KeyType = keyType
-	cfg.UserAgent = m.UserAgent
-	cfg.HTTPClient.Timeout = 90 * time.Second
-	client, err := lego.NewClient(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("acme client: %w", err)
-	}
+	// The challenge's provider first: wrong DNS credentials fail the order
+	// before anything is registered.
+	var dnsChallenge challenge.Provider
 	if req.DNSProviderType != "" {
 		p, release, err := dnsProvider(req.DNSProviderType, req.DNSCredentials)
 		if err != nil {
 			return nil, err
 		}
 		defer release()
-		if err := client.Challenge.SetDNS01Provider(p, dns01.AddRecursiveNameservers([]string{"1.1.1.1:53", "8.8.8.8:53"})); err != nil {
+		dnsChallenge = p
+	}
+
+	client, err := m.accountClient(directory, req.Email, keyType, logf)
+	if err != nil {
+		return nil, err
+	}
+	if dnsChallenge != nil {
+		if err := client.Challenge.SetDNS01Provider(dnsChallenge, dns01.AddRecursiveNameservers([]string{"1.1.1.1:53", "8.8.8.8:53"})); err != nil {
 			return nil, err
 		}
 		logf("challenge: DNS-01 via %s", req.DNSProviderType)
@@ -284,19 +337,6 @@ func (m *Manager) Issue(ctx context.Context, req IssueRequest) (*Result, error) 
 		if err := client.Challenge.SetHTTP01Provider(provider); err != nil {
 			return nil, err
 		}
-	}
-	if acct.Registration == nil {
-		reg, err := client.Registration.Register(registration.RegisterOptions{TermsOfServiceAgreed: true})
-		if err != nil {
-			return nil, fmt.Errorf("acme registration: %w", err)
-		}
-		acct.Registration = reg
-		if err := m.saveRegistration(directory, req.Email, reg); err != nil {
-			return nil, err
-		}
-		logf("ACME account registered at %s (new key: %v)", directory, created)
-	} else {
-		logf("ACME account: %s", acct.Registration.URI)
 	}
 
 	logf("ordering certificate for %s (%s)", strings.Join(names, ", "), keyType)

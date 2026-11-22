@@ -27,6 +27,12 @@ export async function logout() {
     /* ignore */
   }
   auth.me = null;
+  // The console's history is the signed-in administrator's, not the browser's.
+  try {
+    localStorage.removeItem('mp.console.history');
+  } catch {
+    /* storage unavailable */
+  }
 }
 
 /* ── toasts ─────────────────────────────────────────────────────────────── */

@@ -9,12 +9,15 @@ Type=simple
 User={{ .Login }}
 Group={{ .Login }}
 WorkingDirectory={{ .WorkDir }}
-ExecStart={{ .Command }}
 {{- if .EnvFile }}
-EnvironmentFile={{ .EnvFile }}
+# The account's own env file is read as the account (mp app-exec), not by
+# systemd as root: a symlink there must not reach other files.
+ExecStart={{ .Binary }} app-exec --env-file {{ .EnvFile }} -- {{ .Command }}
+{{- else }}
+ExecStart={{ .Command }}
 {{- end }}
-{{- range .Env }}
-Environment="{{ . }}"
+{{- if .PanelEnvFile }}
+EnvironmentFile={{ .PanelEnvFile }}
 {{- end }}
 Restart={{ .Restart }}
 RestartSec=5

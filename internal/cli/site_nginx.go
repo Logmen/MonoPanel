@@ -13,6 +13,9 @@ func siteNginxCmd() *cobra.Command {
 	var setFile string
 	var clear, generated bool
 	c := &cobra.Command{Use: "nginx <domain>", Short: T("свои nginx-директивы сайта (sites/<domain>.d/custom.conf): показать, --set файл|-, --clear", "the site's custom nginx directives (sites/<domain>.d/custom.conf): show, --set file|-, --clear"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		if err := apart(cmd, "set", "clear"); err != nil {
+			return err
+		}
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -20,9 +23,14 @@ func siteNginxCmd() *cobra.Command {
 		if clear || setFile != "" {
 			content := ""
 			if setFile == "-" {
-				b, err := io.ReadAll(os.Stdin)
+				b, err := io.ReadAll(stdin)
 				if err != nil {
 					return err
+				}
+				// A closed stdin (the TUI, a script) must not remove the
+				// directives: that is what --clear is for.
+				if len(b) == 0 {
+					return &exitError{code: 2, msg: T("на stdin пусто; убрать свои директивы: --clear", "nothing on stdin; to remove the custom directives: --clear")}
 				}
 				content = string(b)
 			} else if setFile != "" {

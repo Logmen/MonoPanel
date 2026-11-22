@@ -83,6 +83,9 @@ type siteJobOutput struct {
 type sitePayload struct {
 	SiteID int64 `json:"site_id"`
 	Purge  bool  `json:"purge,omitempty"`
+	// LogsMoved marks the site.apply that switches an upgraded site to the
+	// root-owned log tree (moveSiteLogs); its log says so.
+	LogsMoved bool `json:"logs_moved,omitempty"`
 }
 
 func (s *Server) loadSiteFor(ctx context.Context, domain string) (*store.Site, error) {
@@ -112,7 +115,10 @@ func validateIni(ini map[string]string) error {
 	return nil
 }
 
-func (s *Server) validateNames(ctx context.Context, domain string, aliases []string, selfID int64) ([]string, error) {
+// validateNames checks a site's names (selfID: the site itself when it
+// changes; ownerID: the account the site belongs to, 0 for one not created
+// yet) and returns the aliases in canonical form.
+func (s *Server) validateNames(ctx context.Context, domain string, aliases []string, selfID, ownerID int64) ([]string, error) {
 	if err := acme.ValidateName(domain); err != nil {
 		return nil, err
 	}
@@ -128,6 +134,25 @@ func (s *Server) validateNames(ctx context.Context, domain string, aliases []str
 		}
 		seen[a] = true
 		out = append(out, a)
+	}
+	// The panel's own names (its hostname, its mail server's) are not an
+	// ordinary account's to serve: cookies do not keep to a port, so a site
+	// on the panel's name would receive the administrators' panel session
+	// with every visit, and the certificate store is keyed by name.
+	if p := principalFrom(ctx); p == nil || p.Role != store.RoleAdmin {
+		own := s.panelNames(ctx)
+		for name := range seen {
+			if own[name] {
+				return nil, fmt.Errorf("%s is a hostname of this panel itself (the panel or its mail server)", name)
+			}
+			if other, err := s.foreignDomain(ctx, ownerID, name); err != nil {
+				return nil, err
+			} else if other != "" && other != name {
+				// The name itself, when another account's site has it, is
+				// reported below as taken.
+				return nil, fmt.Errorf("%s is under %s, which belongs to another account", name, other)
+			}
+		}
 	}
 	for name := range seen {
 		others, err := s.db.FindSitesByName(ctx, name)
@@ -221,7 +246,7 @@ func (s *Server) registerSites() {
 		if b.WWW {
 			aliases = append(aliases, "www."+domain)
 		}
-		names, err := s.validateNames(ctx, domain, aliases, 0)
+		names, err := s.validateNames(ctx, domain, aliases, 0, owner.ID)
 		if err != nil {
 			return nil, huma.Error422UnprocessableEntity(err.Error())
 		}
@@ -351,7 +376,7 @@ func (s *Server) registerSites() {
 		}
 		b := in.Body
 		if b.Aliases != nil {
-			names, err := s.validateNames(ctx, site.Domain, *b.Aliases, site.ID)
+			names, err := s.validateNames(ctx, site.Domain, *b.Aliases, site.ID, site.UserID)
 			if err != nil {
 				return nil, huma.Error422UnprocessableEntity(err.Error())
 			}
@@ -646,7 +671,8 @@ func (s *Server) certForSite(ctx context.Context, site *store.Site) *store.Certi
 // jobSiteApply renders and applies the pool, nginx (and Apache) configuration.
 // siteTree makes the client's directories with their modes and gives the
 // web group its ACLs: on creation, and again by site.fix after someone
-// reshaped the tree by hand.
+// reshaped the tree by hand. The site logs are not in the home any more
+// (ensureSiteLogs); an old data/logs stays as the account left it.
 func (s *Server) siteTree(ctx context.Context, jc *jobs.Context, l *siteLayout, user *store.User) error {
 	login := user.Login
 	dirs := []agent.DirSpec{
@@ -654,7 +680,6 @@ func (s *Server) siteTree(ctx context.Context, jc *jobs.Context, l *siteLayout, 
 		{Path: l.data, Mode: 0o750, Owner: login, Group: login},
 		{Path: path.Join(l.data, "www"), Mode: 0o750, Owner: login, Group: login},
 		{Path: l.siteRoot, Mode: 0o750, Owner: login, Group: login},
-		{Path: path.Join(l.data, "logs"), Mode: 0o750, Owner: login, Group: login},
 		{Path: path.Join(l.data, "tmp"), Mode: 0o700, Owner: login, Group: login},
 		{Path: path.Join(l.data, "tmp", "sess"), Mode: 0o700, Owner: login, Group: login},
 		{Path: path.Join(l.data, "bin"), Mode: 0o750, Owner: login, Group: login},
@@ -670,10 +695,7 @@ func (s *Server) siteTree(ctx context.Context, jc *jobs.Context, l *siteLayout, 
 		return err
 	}
 	webACL := "g:" + s.cfg.WebGroup
-	// data/logs too: after USR1 the nginx workers, not the master, reopen the
-	// site logs, and without passing through the directory they keep writing
-	// into the rotated files.
-	for _, d := range []string{l.home, l.data, path.Join(l.data, "www"), path.Join(l.data, "logs")} {
+	for _, d := range []string{l.home, l.data, path.Join(l.data, "www")} {
 		entries := []string{webACL + ":x"}
 		if d == l.home && !user.Shell {
 			entries = append(entries, sftpHomeGroupACL)
@@ -694,8 +716,9 @@ func (s *Server) siteTree(ctx context.Context, jc *jobs.Context, l *siteLayout, 
 
 // jobSiteFix puts a site's files back in order after someone worked on them
 // as root: directories and ACLs as on creation, the client as the owner of
-// the whole site tree, SELinux labels the policy expects (files copied with
-// cp -a from /root keep admin_home_t and nginx answers 403 for them).
+// the whole site tree, the site's logs with their owners and modes, SELinux
+// labels the policy expects (files copied with cp -a from /root keep
+// admin_home_t and nginx answers 403 for them).
 func (s *Server) jobSiteFix(ctx context.Context, jc *jobs.Context) error {
 	var p sitePayload
 	if err := jc.Unmarshal(&p); err != nil {
@@ -723,12 +746,18 @@ func (s *Server) jobSiteFix(ctx context.Context, jc *jobs.Context) error {
 		return err
 	}
 	jc.Logf("owner %s under %s: %d objects changed", user.Login, l.siteRoot, ch.Changed)
+	logs, err := s.ensureSiteLogs(ctx, user.Login, s.siteLogsOf(ctx, site)...)
+	if err != nil {
+		return fmt.Errorf("site logs: %w", err)
+	}
+	jc.Logf("logs in %s: %d made, %d set back", s.siteLogDir(user.Login), len(logs.Created), logs.Changed)
 	jc.Progress(70, "SELinux labels")
 	// the rules first: a host that applied an older policy gets the current one
 	if err := s.selinuxHostingPolicy(ctx, jc); err != nil {
 		jc.Logf("warning: SELinux policy: %v", err)
 	}
 	s.relabel(ctx, jc, l.data, true)
+	s.relabel(ctx, jc, s.siteLogDir(user.Login), true)
 	// The tree-wide ACL pass above knows nothing about guests' entries.
 	s.reapplyShareACLs(ctx, jc, site.ID)
 	jc.Progress(100, "fixed")
@@ -825,7 +854,7 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 	pool := render.Pool{
 		Name: site.Domain, User: login, Group: login, Socket: l.socket, ListenGroup: s.cfg.WebGroup, PM: site.FPMPM, MaxChildren: maxChildren,
 		StartServers: max(2, maxChildren/4), MinSpare: max(1, maxChildren/4), MaxSpare: max(2, maxChildren/2), TerminateTimeout: terminate,
-		Home: l.home, DataDir: l.data, TmpDir: path.Join(l.data, "tmp"), LogDir: path.Join(l.data, "logs"), BinDir: path.Join(l.data, "bin"),
+		Home: l.home, DataDir: l.data, TmpDir: path.Join(l.data, "tmp"), LogDir: s.siteLogDir(login), BinDir: path.Join(l.data, "bin"),
 		SendmailFrom: "noreply@" + site.Domain, DisableFunctions: disable, Values: values,
 		OpenBasedir: site.Preset != presetBitrix,
 	}
@@ -840,7 +869,7 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 	}
 	rs := render.Site{
 		Domain: site.Domain, Aliases: site.Aliases, Mode: site.Mode, IP: site.IP, TLS: tls, HTTP2: site.HTTP2, HTTP3: site.HTTP3 && tls,
-		RedirectHTTPS: site.RedirectHTTPS, RedirectWWW: site.RedirectWWW, Docroot: l.docroot, LogDir: path.Join(l.data, "logs"),
+		RedirectHTTPS: site.RedirectHTTPS, RedirectWWW: site.RedirectWWW, Docroot: l.docroot, LogDir: s.siteLogDir(login),
 		IncludeDir: "monopanel/sites/" + site.Domain + ".d", ClientMaxBodySize: strings.ToLower(site.ClientMaxBody), StaticByNginx: site.StaticByNginx,
 		ApacheBackend: "127.0.0.1:8080", FPMSocket: l.socket, ProxyTimeout: terminate, Backend: site.Backend, AllowFrom: site.AllowFrom,
 		HSTS: tls && site.RedirectHTTPS, Preset: site.Preset, IPv6: site.IPv6, SecurityHeaders: site.SecurityHeaders, RateLimit: site.RateLimit,
@@ -935,9 +964,18 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 			jc.Logf("%s released the pool socket", unit)
 		}
 	}
-	// The logs belong to the account before nginx or Apache opens them.
-	if err := s.ensureSiteLogs(ctx, login, path.Join(l.data, "logs"), siteLogNames(site)...); err != nil {
-		jc.Logf("warning: site logs: %v", err)
+	// The logs exist, in the root-owned tree, before nginx, Apache or php-fpm
+	// opens them: nginx -t fails on a missing directory, php-fpm on a slow log
+	// it cannot make, and a tree the agent refuses is not one to apply over.
+	logs, err := s.ensureSiteLogs(ctx, login, siteLogNames(site)...)
+	if err != nil {
+		return s.siteFail(ctx, site, fmt.Errorf("site logs: %w", err))
+	}
+	if len(logs.Created) > 0 || p.LogsMoved {
+		jc.Logf("logs: %s", s.siteLogDir(login))
+	}
+	if p.LogsMoved {
+		jc.Logf("the servers write the logs there from now on, not into %s: root opens them, and that directory is the account's; the old files stay there as the account's own, nothing writes or rotates them any more", path.Join(l.data, "logs"))
 	}
 	// A default server of an address the host lost fails the check below.
 	if gone := s.pruneDefaultServers(ctx); len(gone) > 0 {
@@ -1279,4 +1317,32 @@ func waitNginxHost(ctx context.Context, ip, host string, timeout time.Duration) 
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
+}
+
+// foreignDomain names the site or mail domain of another account that name
+// is, or lies under ("" when there is none). Ordinary accounts keep to their
+// own names: mail for a domain the server handles is delivered here, whatever
+// DNS says, so a mailbox under another account's domain would receive what
+// this server's sites send there, and a site under it would share its
+// cookies' parent domain.
+func (s *Server) foreignDomain(ctx context.Context, ownerID int64, name string) (string, error) {
+	for n := name; strings.Contains(n, "."); n = n[strings.Index(n, ".")+1:] {
+		sites, err := s.db.FindSitesByName(ctx, n)
+		if err != nil {
+			return "", err
+		}
+		for _, o := range sites {
+			if o.UserID != ownerID {
+				return n, nil
+			}
+		}
+		md, err := s.db.GetMailDomain(ctx, n)
+		if err == nil && md.UserID != ownerID {
+			return n, nil
+		}
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return "", err
+		}
+	}
+	return "", nil
 }

@@ -50,6 +50,17 @@ func (d *DB) DeleteSession(ctx context.Context, id string) error {
 	return err
 }
 
+// DeleteUserSessions signs an account out everywhere except the session keep
+// (empty keeps none): a changed password or a suspension must end the browser
+// sessions that were opened with the old state.
+func (d *DB) DeleteUserSessions(ctx context.Context, userID int64, keep string) (int64, error) {
+	res, err := d.sql.ExecContext(ctx, `DELETE FROM sessions WHERE user_id=? AND id<>?`, userID, keep)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // DeleteExpiredSessions purges old sessions.
 func (d *DB) DeleteExpiredSessions(ctx context.Context) (int64, error) {
 	res, err := d.sql.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at <= ?`, now())

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"text/template"
@@ -58,6 +59,9 @@ func (r *Renderer) Source(name string) ([]byte, bool, error) {
 
 // Render executes a template by name (e.g. "nginx/site.conf.tmpl").
 func (r *Renderer) Render(name string, data any) (string, error) {
+	if err := oneLineValues(data); err != nil {
+		return "", fmt.Errorf("render %s: %w", name, err)
+	}
 	src, _, err := r.Source(name)
 	if err != nil {
 		return "", err
@@ -77,6 +81,9 @@ func (r *Renderer) Render(name string, data any) (string, error) {
 // named blocks (e.g. nginx/presets/*.conf.tmpl), so the main template can
 // {{ template "preset-wordpress" . }}.
 func (r *Renderer) RenderSet(name string, data any, extra ...string) (string, error) {
+	if err := oneLineValues(data); err != nil {
+		return "", fmt.Errorf("render %s: %w", name, err)
+	}
 	src, _, err := r.Source(name)
 	if err != nil {
 		return "", err
@@ -99,6 +106,70 @@ func (r *Renderer) RenderSet(name string, data any, extra ...string) (string, er
 		return "", fmt.Errorf("render %s: %w", name, err)
 	}
 	return buf.String(), nil
+}
+
+// oneLineValues refuses data with a string that holds a line break, a
+// carriage return or NUL, and names the field. The templates use text/template,
+// which escapes nothing, and in every format the panel renders — nginx and
+// Apache, php-fpm pools, systemd units, postfix and dovecot, the crontab — a
+// new line starts a new directive: such a value would add one of its author's
+// choosing (an access_log the nginx master opens as root, a php-fpm slowlog, an
+// ExecStartPre=+). The API validates the values long before they get here; this
+// is the last word for one that slips past it, from any caller.
+func oneLineValues(data any) error {
+	v := reflect.ValueOf(data)
+	if !v.IsValid() {
+		return nil
+	}
+	root := v.Type().Name()
+	if v.Kind() == reflect.Pointer && !v.IsNil() {
+		root = v.Elem().Type().Name()
+	}
+	if root == "" {
+		root = "data"
+	}
+	return checkOneLine(v, root)
+}
+
+func checkOneLine(v reflect.Value, at string) error {
+	switch v.Kind() {
+	case reflect.String:
+		if strings.ContainsAny(v.String(), "\n\r\x00") {
+			return fmt.Errorf("%s holds a line break, a carriage return or NUL, which would add a line of its own to the file", at)
+		}
+	case reflect.Pointer, reflect.Interface:
+		if !v.IsNil() {
+			return checkOneLine(v.Elem(), at)
+		}
+	case reflect.Struct:
+		t := v.Type()
+		for i := 0; i < t.NumField(); i++ {
+			if f := t.Field(i); f.IsExported() {
+				if err := checkOneLine(v.Field(i), at+"."+f.Name); err != nil {
+					return err
+				}
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < v.Len(); i++ {
+			if err := checkOneLine(v.Index(i), fmt.Sprintf("%s[%d]", at, i)); err != nil {
+				return err
+			}
+		}
+	case reflect.Map:
+		keys := v.MapKeys()
+		sort.Slice(keys, func(i, j int) bool { return fmt.Sprint(keys[i]) < fmt.Sprint(keys[j]) })
+		for _, k := range keys {
+			at := fmt.Sprintf("%s[%q]", at, fmt.Sprint(k.Interface()))
+			if err := checkOneLine(k, at); err != nil {
+				return err
+			}
+			if err := checkOneLine(v.MapIndex(k), at); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // ListDir returns the file names of an embedded template directory.

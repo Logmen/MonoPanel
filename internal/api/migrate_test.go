@@ -12,6 +12,7 @@ import (
 // Перенос — это две панели: одна отдаёт, другая принимает. Обе поднимаются
 // фикстурой с собственным фейковым агентом, между ними ходит настоящий HTTP.
 func TestMigrationMovesAccountBetweenPanels(t *testing.T) {
+	fakeUnixAccounts(t)
 	source := newSiteFixture(t)
 	source.agent.Shadow["alex"] = "$y$j9T$sourcehash"
 	owner, err := source.db.GetUserByLogin(source.ctx, "alex")

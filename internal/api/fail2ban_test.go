@@ -22,7 +22,8 @@ func (f *siteFixture) installFail2ban(t *testing.T) {
 }
 
 // The sites write their own nginx logs, so the nginx jails list them — each by
-// name, never the PHP error logs — and follow the sites as they come and go.
+// name, in the account's directory of the log tree, never the PHP error logs —
+// and follow the sites as they come and go.
 func TestFail2banReadsSiteLogs(t *testing.T) {
 	f := newSiteFixture(t)
 	f.createSite(map[string]any{"domain": "shop.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
@@ -32,7 +33,7 @@ func TestFail2banReadsSiteLogs(t *testing.T) {
 	if !ok {
 		t.Fatal("jail file not written")
 	}
-	logs := "/var/www/alex/data/logs/"
+	logs := "/var/log/monopanel/sites/alex/"
 	for _, want := range []string{
 		"logpath = /var/log/nginx/access.log\n          " + logs + "shop.example.com.access.log\n",
 		"logpath = /var/log/nginx/error.log\n          " + logs + "shop.example.com.error.log\n",

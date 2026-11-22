@@ -144,8 +144,16 @@ func (s *Server) registerCMS() {
 		if owner.UnixUID == nil {
 			return nil, huma.Error422UnprocessableEntity("the owner has no unix account yet")
 		}
-		if _, err := s.dbInstance(ctx); err != nil {
+		inst, err := s.dbInstance(ctx)
+		if err != nil {
 			return nil, huma.Error422UnprocessableEntity("a database server is required: " + err.Error())
+		}
+		// The installer's database follows the owner's sites: one on PHP
+		// below 7.4 needs mysql_native_password, and switching that on
+		// restarts MySQL for every site — the administrators' call, as in
+		// POST /databases.
+		if err := s.legacyAuthAllowed(ctx, p, inst, owner, nil); err != nil {
+			return nil, err
 		}
 		if s.secrets == nil {
 			return nil, huma.Error500InternalServerError("the encryption key is unavailable")
@@ -155,6 +163,12 @@ func (s *Server) registerCMS() {
 		}
 		if in.Body.Solution != "" && !cmsSolutionRe.MatchString(in.Body.Solution) {
 			return nil, huma.Error422UnprocessableEntity("solution: clean, demo or a marketplace id like vendor.solution")
+		}
+		// the installers take these as arguments, and no argument holds a NUL
+		for _, v := range []string{in.Body.Title, in.Body.AdminPassword, in.Body.AdminEmail} {
+			if strings.ContainsRune(v, 0) {
+				return nil, huma.Error422UnprocessableEntity("title, admin_password and admin_email cannot contain a NUL character")
+			}
 		}
 		login := in.Body.AdminLogin
 		if login == "" {
@@ -240,7 +254,15 @@ func (s *Server) freeDatabaseName(ctx context.Context, owner *store.User, cms st
 			name = fmt.Sprintf("%s%d", base, i+1)
 		}
 		if _, err := s.db.GetDatabaseByName(ctx, name); errors.Is(err, store.ErrNotFound) {
-			return name, nil
+			// Nor a database account of another account by that name
+			// (migrations keep the source's account names).
+			taken, err := s.dbNameTaken(ctx, owner, name)
+			if err != nil {
+				return "", err
+			}
+			if !taken {
+				return name, nil
+			}
 		} else if err != nil {
 			return "", err
 		}
@@ -508,12 +530,53 @@ type cmsInstall struct {
 	rel, url, title, login, password, email, db, dbPassword, edition, solution string
 }
 
-// run executes the CMS's own installer as the client, in the docroot.
-func (s *Server) cmsRun(ctx context.Context, in cmsInstall, argv ...string) (string, error) {
-	args := append([]string{"run", "--cwd", in.rel, "--", in.layout.php.CLIBinary}, argv...)
-	out, err := s.fsop(ctx, in.owner, nil, args...)
+// cmsRun executes the CMS's own installer script as the client, in the
+// docroot, with args on its command line and the secret arguments (the
+// passwords) appended after them on stdin.
+//
+// A command line is no place for a password: every local user — every hosting
+// customer — can read any process's /proc/<pid>/cmdline, and these arguments
+// would sit in three of them (the helper, fsop, PHP) for as long as the
+// installer runs. Stdin reaches only the installer, a pipe that nobody but
+// root and the client's own processes can open; the environment cannot carry
+// them, the helper replaces it on the way. php -r runs cmsArgvBootstrap, which
+// appends them to $argv and then runs the script.
+func (s *Server) cmsRun(ctx context.Context, in cmsInstall, script string, args []string, secret ...string) (string, error) {
+	argv := []string{"run", "--cwd", in.rel, "--", in.layout.php.CLIBinary}
+	var stdin []byte
+	if len(secret) > 0 {
+		argv = append(argv, "-r", cmsArgvBootstrap, "--")
+		for _, a := range secret {
+			// NUL ends an argument there, as on a command line, where such a
+			// value could not have gone either
+			if strings.ContainsRune(a, 0) {
+				return "", errors.New("an installer argument contains a NUL byte")
+			}
+			stdin = append(append(stdin, a...), 0)
+		}
+	}
+	argv = append(append(argv, script), args...)
+	out, err := s.fsop(ctx, in.owner, stdin, argv...)
 	return string(out), err
 }
+
+// cmsArgvBootstrap is what php -r runs instead of an installer: it reads the
+// secret arguments from stdin — each one ended by a NUL byte, the way the
+// kernel keeps a command line — appends them to $argv and runs the script.
+// The script gets the $argv, $argc and $_SERVER that "php <script> <args>
+// <secrets>" would give it, and the stdin that this leaves it at EOF, as
+// /dev/null was before. What php -r does not give it: auto_prepend_file and
+// auto_append_file (the panel sets neither), and a script file behind
+// get_current_user(), getmyinode() and getlastmod(). Missing arguments stop
+// it before the installer runs: WordPress would otherwise make up an
+// administrator password nobody knows. PHP 5.6 syntax, since it runs under
+// whatever CLI the site has.
+const cmsArgvBootstrap = `$in = stream_get_contents(STDIN);` +
+	` if (!is_string($in) || substr($in, -1) !== "\0") { fwrite(STDERR, "Error: the installer's secret arguments did not arrive on stdin\n"); exit(1); }` +
+	` $argv = array_merge(array_slice($argv, 1), explode("\0", substr($in, 0, -1))); $argc = count($argv); unset($in);` +
+	` $_SERVER['argv'] = $argv; $_SERVER['argc'] = $argc;` +
+	` $_SERVER['PHP_SELF'] = $_SERVER['SCRIPT_NAME'] = $_SERVER['SCRIPT_FILENAME'] = $_SERVER['PATH_TRANSLATED'] = $argv[0];` +
+	` require ($argv[0][0] === '/' ? $argv[0] : getcwd() . '/' . $argv[0]);`
 
 // ensureWPCLI keeps wp-cli where every site can run it, checked against the
 // checksum wp-cli publishes next to it.
@@ -549,23 +612,24 @@ func (s *Server) cmsInstallWordPress(ctx context.Context, jc *jobs.Context, in c
 	if err := s.ensureWPCLI(ctx, jc); err != nil {
 		return "", err
 	}
-	wp := func(args ...string) (string, error) {
-		return s.cmsRun(ctx, in, append([]string{wpCLIPhar, "--path=" + in.layout.docroot}, args...)...)
+	wp := func(args []string, secret ...string) (string, error) {
+		return s.cmsRun(ctx, in, wpCLIPhar, append([]string{"--path=" + in.layout.docroot}, args...), secret...)
 	}
-	if _, err := wp("config", "create", "--dbname="+in.db, "--dbuser="+in.db, "--dbpass="+in.dbPassword, "--dbhost=localhost", "--skip-check"); err != nil {
+	if _, err := wp([]string{"config", "create", "--dbname=" + in.db, "--dbuser=" + in.db, "--dbhost=localhost", "--skip-check"}, "--dbpass="+in.dbPassword); err != nil {
 		return "", fmt.Errorf("wp config create: %w", err)
 	}
-	if _, err := wp("core", "install", "--url="+in.url, "--title="+in.title, "--admin_user="+in.login, "--admin_password="+in.password, "--admin_email="+in.email, "--skip-email"); err != nil {
+	if _, err := wp([]string{"core", "install", "--url=" + in.url, "--title=" + in.title, "--admin_user=" + in.login, "--admin_email=" + in.email, "--skip-email"}, "--admin_password="+in.password); err != nil {
 		return "", fmt.Errorf("wp core install: %w", err)
 	}
-	version, _ := wp("core", "version")
+	version, _ := wp([]string{"core", "version"})
 	jc.Logf("WordPress %s installed with wp-cli", strings.TrimSpace(version))
 	return strings.TrimSpace(version), nil
 }
 
 func (s *Server) cmsInstallJoomla(ctx context.Context, jc *jobs.Context, in cmsInstall) error {
-	if _, err := s.cmsRun(ctx, in, "installation/joomla.php", "install", "--site-name="+in.title, "--admin-user=Administrator", "--admin-username="+in.login, "--admin-password="+in.password, "--admin-email="+in.email,
-		"--db-type=mysqli", "--db-host=localhost", "--db-user="+in.db, "--db-pass="+in.dbPassword, "--db-name="+in.db, "--db-prefix=j_", "--db-encryption=0", "--no-interaction"); err != nil {
+	if _, err := s.cmsRun(ctx, in, "installation/joomla.php", []string{"install", "--site-name=" + in.title, "--admin-user=Administrator", "--admin-username=" + in.login, "--admin-email=" + in.email,
+		"--db-type=mysqli", "--db-host=localhost", "--db-user=" + in.db, "--db-name=" + in.db, "--db-prefix=j_", "--db-encryption=0", "--no-interaction"},
+		"--admin-password="+in.password, "--db-pass="+in.dbPassword); err != nil {
 		return fmt.Errorf("joomla installer: %w", err)
 	}
 	if _, err := s.fsop(ctx, in.owner, nil, "rm", path.Join(in.rel, "installation")); err != nil {
@@ -585,8 +649,11 @@ func (s *Server) cmsInstallOpenCart(ctx context.Context, jc *jobs.Context, in cm
 			return fmt.Errorf("opencart %s.php: %w", f, err)
 		}
 	}
-	out, err := s.cmsRun(ctx, in, "install/cli_install.php", "install", "--username", in.login, "--email", in.email, "--password", in.password, "--http_server", in.url+"/",
-		"--db_driver", "mysqli", "--db_hostname", "localhost", "--db_username", in.db, "--db_password", in.dbPassword, "--db_database", in.db, "--db_port", "3306", "--db_prefix", "oc_")
+	// the installer takes "--option value" pairs in any order: the two
+	// password pairs come last, from stdin
+	out, err := s.cmsRun(ctx, in, "install/cli_install.php", []string{"install", "--username", in.login, "--email", in.email, "--http_server", in.url + "/",
+		"--db_driver", "mysqli", "--db_hostname", "localhost", "--db_username", in.db, "--db_database", in.db, "--db_port", "3306", "--db_prefix", "oc_"},
+		"--password", in.password, "--db_password", in.dbPassword)
 	if err != nil {
 		return fmt.Errorf("opencart installer: %w", err)
 	}

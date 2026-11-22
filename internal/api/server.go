@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -29,6 +31,11 @@ import (
 
 // Server wires the API together.
 type Server struct {
+	// listenAddr is the address the HTTPS listener is bound to once Run has
+	// it (a net.Addr): the console reaches the API there, an address no
+	// other process can hold at the same time.
+	listenAddr atomic.Value
+
 	cfg     config.Config
 	db      *store.DB
 	agent   *agent.Client
@@ -61,6 +68,9 @@ type Server struct {
 	hostIPv6s func() []string
 	// lookup resolves a name in public DNS; tests answer themselves.
 	lookup func(ctx context.Context, name string) ([]string, error)
+	// restartDelay is how long a restart of monopanel-api that a request
+	// asked for waits after the answer; tests need no wait.
+	restartDelay time.Duration
 }
 
 // SetReadinessWaits overrides the post-reload waits. Intended for tests.
@@ -110,6 +120,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 		db.SetAuditSink(s.auditFile(cfg.Log.AuditFile))
 	}
 	s.poolSocketWait, s.nginxWait = 10*time.Second, 15*time.Second
+	s.restartDelay = 500 * time.Millisecond
 	s.probe = probePort
 	s.reach = reachPort
 	s.hostIPs = localIPv4s
@@ -179,6 +190,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 		s.registerPHPGlobal()
 		s.registerDBConfig()
 		s.registerUpdate()
+		s.registerPanelConfig()
 		s.registerMail()
 		s.registerMigrateSource()
 		s.registerMigrateImport()
@@ -220,6 +232,9 @@ type reqInfo struct {
 	Host   string
 	Origin string
 	TLS    bool
+
+	mu    sync.Mutex
+	after []func()
 }
 
 type reqInfoKey struct{}
@@ -232,7 +247,34 @@ func requestInfoMiddleware(next http.Handler) http.Handler {
 		}
 		info := &reqInfo{IP: ip, UA: r.UserAgent(), Host: r.Host, Origin: r.Header.Get("Origin"), TLS: r.TLS != nil}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), reqInfoKey{}, info)))
+		info.mu.Lock()
+		after := info.after
+		info.after = nil
+		info.mu.Unlock()
+		if len(after) > 0 {
+			go func() {
+				for _, fn := range after {
+					fn()
+				}
+			}()
+		}
 	})
+}
+
+// afterResponse runs fn once the handler of the current request has written
+// its answer. Restarting monopanel-api from inside the request that asked for
+// it would kill the process before the client hears back; started from here,
+// the restart finds the request finished, and the graceful shutdown on
+// SIGTERM lets the answer leave. Outside an HTTP request fn just runs in the
+// background.
+func afterResponse(ctx context.Context, fn func()) {
+	if info, ok := ctx.Value(reqInfoKey{}).(*reqInfo); ok {
+		info.mu.Lock()
+		info.after = append(info.after, fn)
+		info.mu.Unlock()
+		return
+	}
+	go fn()
 }
 
 func requestInfo(ctx context.Context) *reqInfo {

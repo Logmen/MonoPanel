@@ -64,8 +64,8 @@ func seed(ctx context.Context, cl *client.Client, db *store.DB, o Options, log *
 	s.step("mail")
 	s.job(cl.MailInstall(ctx, apitypes.MailInstallRequest{Hostname: "mail.example.com"}))
 	s.must(cl.CreateMailDomain(ctx, apitypes.MailDomainRequest{Name: "example.com", User: "alex"}))
-	s.must(cl.CreateMailbox(ctx, apitypes.MailboxRequest{Address: "ivan@example.com", Name: "Ivan Petrov", QuotaMB: 2048, Password: s.password()}))
-	s.must(cl.CreateMailbox(ctx, apitypes.MailboxRequest{Address: "info@example.com", Name: "Example", QuotaMB: 1024, Password: s.password()}))
+	s.must(cl.CreateMailbox(ctx, apitypes.MailboxRequest{Address: "ivan@example.com", Name: "Ivan Petrov", QuotaMB: ptr(2048), Password: s.password()}))
+	s.must(cl.CreateMailbox(ctx, apitypes.MailboxRequest{Address: "info@example.com", Name: "Example", QuotaMB: ptr(1024), Password: s.password()}))
 	s.must(cl.CreateMailAlias(ctx, apitypes.MailAliasRequest{Address: "sales@example.com", Destinations: []string{"ivan@example.com", "info@example.com"}}))
 
 	s.step("firewall")
@@ -178,10 +178,11 @@ func (s *seeder) files(db *store.DB, o Options) error {
 			}
 		}
 	}
+	logRoot := filepath.Join(o.config().LogDir, "sites")
 	for _, l := range []struct{ domain, login string }{
 		{"example.com", "alex"}, {"shop.example.com", "shop"}, {"old.example.com", "alex"}, {"app.example.org", "maria"},
 	} {
-		logs := filepath.Join(o.WWW, l.login, "data", "logs")
+		logs := filepath.Join(logRoot, l.login)
 		if err := writeFile(filepath.Join(logs, l.domain+".access.log"), accessLog(l.domain)); err != nil {
 			return err
 		}
@@ -280,3 +281,5 @@ func errorLog(domain string) string {
 	return fmt.Sprintf("%s [error] 2481#2481: *1937 open() \"/var/www/robots.txt\" failed (2: No such file or directory), client: 198.51.100.77, server: %s, request: \"GET /robots.txt HTTP/2.0\", host: \"%s\"\n",
 		t.Format("2006/01/02 15:04:05"), domain, domain)
 }
+
+func ptr[T any](v T) *T { return &v }

@@ -129,6 +129,17 @@ func siteCmd() *cobra.Command {
 			f := false
 			req.RedirectHTTPS = &f
 		}
+		// http2 and static-by-nginx are on unless switched off: only an
+		// explicit value goes to the API, which keeps its own default.
+		for _, f := range []struct {
+			name string
+			dst  **bool
+		}{{"http2", &req.HTTP2}, {"static-by-nginx", &req.StaticByNginx}} {
+			if cmd.Flags().Changed(f.name) {
+				v, _ := cmd.Flags().GetBool(f.name)
+				*f.dst = &v
+			}
+		}
 		res, err := cl.CreateSite(cmd.Context(), req)
 		if err != nil {
 			return err
@@ -155,7 +166,10 @@ func siteCmd() *cobra.Command {
 	add.Flags().StringVar(&req.RedirectWWW, "redirect-www", "", T("none, to_www или to_root", "none, to_www or to_root"))
 	add.Flags().StringVar(&req.FPMPM, "pm", "", T("ondemand, dynamic или static", "ondemand, dynamic or static"))
 	add.Flags().IntVar(&req.FPMMaxChildren, "max-children", 0, "pm.max_children")
+	add.Flags().StringVar(&req.ClientMaxBody, "max-body", "", T("client_max_body_size, например 128m", "client_max_body_size, for example 128m"))
 	add.Flags().StringSliceVar(&ini, "ini", nil, T("php_value key=value (можно несколько раз)", "php_value key=value (repeatable)"))
+	add.Flags().Bool("http2", true, "HTTP/2")
+	add.Flags().Bool("static-by-nginx", true, T("в режиме apache отдавать статику через nginx", "in apache mode, serve static files through nginx"))
 	add.Flags().BoolVar(&http3, "http3", false, T("включить HTTP/3 (после выпуска сертификата)", "enable HTTP/3 (once the certificate is issued)"))
 	add.Flags().BoolVar(&allowExec, "allow-exec", false, T("не отключать exec/system/proc_open", "do not disable exec/system/proc_open"))
 	add.Flags().BoolVar(&noRedirect, "no-https-redirect", false, T("не перенаправлять HTTP на HTTPS", "do not redirect HTTP to HTTPS"))
@@ -211,6 +225,11 @@ func siteCmd() *cobra.Command {
 	var preset, ipv6 string
 	var rateLimit int
 	set := &cobra.Command{Use: "set <domain>", Short: T("изменить настройки сайта и применить", "change a site's settings and apply them"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		for _, pair := range [][2]string{{"www", "no-www"}, {"allow-all", "allow"}} {
+			if err := apart(cmd, pair[0], pair[1]); err != nil {
+				return err
+			}
+		}
 		cl, err := newClient()
 		if err != nil {
 			return err
@@ -511,7 +530,7 @@ func phpIniCmd() *cobra.Command {
 		}
 		return nil
 	}
-	set := &cobra.Command{Use: "set key=value ...", Short: T("задать значения для всех сайтов", "set values for all sites"), Args: cobra.MinimumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	set := &cobra.Command{Use: "set <key=value>...", Short: T("задать значения для всех сайтов", "set values for all sites"), Args: cobra.MinimumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		ini, err := parseIni(args)
 		if err != nil {
 			return err
@@ -523,7 +542,7 @@ func phpIniCmd() *cobra.Command {
 		}
 		return change(ini, cmd)
 	}}
-	unset := &cobra.Command{Use: "unset key ...", Short: T("убрать глобальные значения (снова действует значение панели)", "remove global values (the panel's value applies again)"), Args: cobra.MinimumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	unset := &cobra.Command{Use: "unset <key>...", Short: T("убрать глобальные значения (снова действует значение панели)", "remove global values (the panel's value applies again)"), Args: cobra.MinimumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		ini := map[string]string{}
 		for _, k := range args {
 			ini[strings.TrimSpace(k)] = ""

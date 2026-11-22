@@ -10,7 +10,7 @@ export const console = frag({
     'console.abort': 'Abort',
     'console.run': 'Run',
     'console.aborted': '[aborted]',
-    'console.hint': 'Service commands (api, agent, helper, fsop, setup) are not available from the console; --server and --token are supplied by the panel itself, and every command gets a one-time token.'
+    'console.hint': 'Service commands (api, agent, helper, fsop, setup), commands that read or write files on the server (files get/put, ssl import, ssl panel import, site nginx --set, migrate --key) and update trust are not available from the console — the panel’s pages do the same. --server and --token are supplied by the panel itself, every command gets a one-time token, and passwords typed here reach the command on stdin, not on its command line.'
   },
   ru: {
     'console.title': 'Консоль',
@@ -21,6 +21,6 @@ export const console = frag({
     'console.abort': 'прервать',
     'console.run': 'выполнить',
     'console.aborted': '[прервано]',
-    'console.hint': 'Служебные команды (api, agent, helper, fsop, setup) из консоли недоступны; --server и --token подставляет сама панель, каждая команда получает одноразовый токен.'
+    'console.hint': 'Служебные команды (api, agent, helper, fsop, setup), команды, которые читают или пишут файлы на сервере (files get/put, ssl import, ssl panel import, site nginx --set, migrate --key), и update trust из консоли недоступны — то же делают страницы панели. --server и --token подставляет сама панель, каждая команда получает одноразовый токен, а введённые здесь пароли команда получает через stdin, а не в командной строке.'
   }
 });

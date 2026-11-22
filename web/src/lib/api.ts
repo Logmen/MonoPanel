@@ -16,7 +16,21 @@ export class ApiError extends Error {
   }
 }
 
+// safePath refuses a request path a name could have bent: the pages build
+// paths from stored names (a login, an app, a mailbox), and a "." or ".."
+// segment would make the browser send the request to another endpoint (a
+// Delete click on one account landing on another). The API validates every
+// name; this is the second line.
+function safePath(path: string): string {
+  const p = path.split('?')[0];
+  if (p.includes('#') || p.split('/').some((seg) => seg === '.' || seg === '..' || /^%2e(%2e)?$/i.test(seg))) {
+    throw new ApiError(400, 'refused: the request path has a "." or ".." segment');
+  }
+  return path;
+}
+
 export async function api<T = unknown>(path: string, init: RequestInit & { json?: unknown } = {}): Promise<T> {
+  path = safePath(path);
   const headers: Record<string, string> = { Accept: 'application/json', ...((init.headers as Record<string, string>) || {}) };
   let body = init.body;
   if (init.json !== undefined) {
@@ -45,13 +59,13 @@ async function fail(res: Response): Promise<never> {
 }
 
 export async function apiText(path: string): Promise<string> {
-  const res = await fetch('/api/v1' + path, { credentials: 'same-origin' });
+  const res = await fetch('/api/v1' + safePath(path), { credentials: 'same-origin' });
   if (!res.ok) await fail(res);
   return res.text();
 }
 
 export async function apiPutRaw(path: string, body: BodyInit): Promise<void> {
-  const res = await fetch('/api/v1' + path, {
+  const res = await fetch('/api/v1' + safePath(path), {
     method: 'PUT',
     body,
     credentials: 'same-origin',
@@ -60,16 +74,23 @@ export async function apiPutRaw(path: string, body: BodyInit): Promise<void> {
   if (!res.ok) await fail(res);
 }
 
+// A finished job's stream sends only its snapshot and ends; EventSource would
+// reconnect to it every few seconds for as long as the page stays open (and
+// call onEvent with the same snapshot each time), so it is closed right there.
+const finishedJob = (data: any) => ['done', 'failed', 'cancelled'].includes(data?.job?.status);
+
 export function jobEvents(id: number, onEvent: (type: string, data: any) => void): () => void {
   const es = new EventSource(`/api/v1/jobs/${id}/events`);
   for (const t of ['snapshot', 'queued', 'started', 'progress', 'log', 'done', 'failed', 'ping']) {
     es.addEventListener(t, (e) => {
+      let data: any = null;
       try {
-        onEvent(t, JSON.parse((e as MessageEvent).data));
+        data = JSON.parse((e as MessageEvent).data);
+        onEvent(t, data);
       } catch {
         /* ignore */
       }
-      if (t === 'done' || t === 'failed') es.close();
+      if (t === 'done' || t === 'failed' || (t === 'snapshot' && finishedJob(data))) es.close();
     });
   }
   es.onerror = () => {};

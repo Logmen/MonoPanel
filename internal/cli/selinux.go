@@ -1,11 +1,9 @@
 package cli
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -34,7 +32,7 @@ func selinuxCmd() *cobra.Command {
 		}
 		mode := args[0]
 		if mode != "enforcing" && mode != "permissive" {
-			return errors.New(T("режим: enforcing или permissive", "mode: enforcing or permissive"))
+			return &exitError{code: 2, msg: T("режим: enforcing или permissive", "mode: enforcing or permissive")}
 		}
 		if !st.Supported {
 			return errors.New(T("SELinux отсутствует на этом сервере", "SELinux is not present on this server"))
@@ -42,12 +40,10 @@ func selinuxCmd() *cobra.Command {
 		if mode == "permissive" && !yes {
 			fmt.Fprintln(os.Stderr, T("Внимание. ", "Warning: ")+st.Warning)
 			if g.json {
-				return errors.New(T("подтвердите флагом --yes", "confirm with --yes"))
+				return &exitError{code: 2, msg: T("подтвердите флагом --yes", "confirm with --yes")}
 			}
-			fmt.Fprint(os.Stderr, T("Перевести SELinux в permissive? [y/N] ", "Switch SELinux to permissive? [y/N] "))
-			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-			if l := strings.ToLower(strings.TrimSpace(line)); l != "y" && l != "yes" && l != T("д", "y") && l != T("да", "yes") {
-				return errors.New(T("отменено", "cancelled"))
+			if err := confirm(cmd.Context(), T("Перевести SELinux в permissive?", "Switch SELinux to permissive?")); err != nil {
+				return err
 			}
 		}
 		st, err = cl.SetSELinux(cmd.Context(), mode)

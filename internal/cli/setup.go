@@ -1,10 +1,8 @@
 package cli
 
 import (
-	"bufio"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -26,9 +24,8 @@ The command can be run again: what exists is left alone, what is missing is crea
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			opts.ConfigPath = g.config
 			opts.Start = !noStart
-			if passwordStdin {
-				line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-				opts.AdminPassword = strings.TrimRight(line, "\r\n")
+			if err := secretFlag(cmd, "password-stdin", "admin-password", T("Пароль администратора: ", "Administrator password: "), &opts.AdminPassword); err != nil {
+				return err
 			}
 			res, err := setup.Run(cmd.Context(), opts, os.Stderr)
 			if err != nil {

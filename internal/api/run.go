@@ -23,6 +23,7 @@ func (s *Server) Run(ctx context.Context) error {
 	if err := s.tls.Reload(); err != nil {
 		return err
 	}
+	s.revokeForgedMigrationTokens(ctx)
 	tlsSrv := &http.Server{
 		Addr:              s.cfg.Web.Listen,
 		Handler:           s.Handler(),
@@ -61,11 +62,17 @@ func (s *Server) Run(ctx context.Context) error {
 				s.refreshDBConfig(ctx)
 				s.refreshPHPCLIInis(ctx)
 				s.refreshSiteLogrotate(ctx)
+				// The label rule for the site log tree before anything is
+				// made in it, then the sites switch to it once, before the
+				// jails list its files.
+				s.refreshSELinuxSiteLogs(ctx)
+				s.moveSiteLogs(ctx)
 				s.refreshFail2ban(ctx)
 				s.refreshSELinuxModule(ctx)
 				s.refreshSELinuxSSH(ctx)
 				s.refreshSFTPHomes(ctx)
 				s.refreshCLIGroup(ctx)
+				s.moveAppEnvOutOfUnits(ctx)
 				return
 			}
 			select {
@@ -76,10 +83,15 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}()
 
+	tcp, err := net.Listen("tcp", tlsSrv.Addr)
+	if err != nil {
+		return err
+	}
+	s.listenAddr.Store(tcp.Addr())
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
-		s.log.Info("api listening", "https", s.cfg.Web.Listen, "socket", sock)
-		if err := tlsSrv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		s.log.Info("api listening", "https", tcp.Addr().String(), "socket", sock)
+		if err := tlsSrv.ServeTLS(tcp, "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
 		return nil

@@ -7,6 +7,7 @@
   import Skeleton from '$lib/components/Skeleton.svelte';
   import Icon from '$lib/components/Icon.svelte';
   import Confirm, { type Ask } from '$lib/components/Confirm.svelte';
+  import Modal from '$lib/components/Modal.svelte';
   import { t, tn } from '$lib/i18n/index.svelte';
   let data = $state<any>(null);
   let job = $state<number | null>(null);
@@ -64,23 +65,65 @@
   let gValue = $state('');
   let gBusy = $state(false);
   let gKeyInput = $state<HTMLInputElement | null>(null);
+  // Задачи пересборки пулов после последнего сохранения: по одной на сайт.
+  let gJobs = $state<number[]>([]);
   async function loadGlobal() { try { gphp = await api('/php/settings'); } catch (e: any) { error = e.text || String(e); } }
   onMount(loadGlobal);
   function editGlobal(key: string, value: string) { gKey = key; gValue = value; queueMicrotask(() => gKeyInput?.focus()); }
-  async function saveGlobal(ini: Record<string, string>) {
+  async function saveGlobal(ini: Record<string, string>): Promise<boolean> {
     gBusy = true; error = '';
     try {
       const r: any = await api('/php/settings', { method: 'PUT', json: { php_ini: ini } });
       gphp = r.settings;
       notify(tn('php.globalSaved', r.jobs.length));
+      gJobs = r.jobs;
       if (r.jobs.length) job = r.jobs[r.jobs.length - 1];
       gKey = ''; gValue = '';
+      return true;
     } catch (e) {
       error = e instanceof ApiError ? e.text : String(e);
       notify(error, 'err');
+      return false;
     } finally {
       gBusy = false;
     }
+  }
+
+  // Несколько ключей одним сохранением — как mp php ini set a=1 b=2 / unset c:
+  // пулы сайтов пересобираются один раз, а не на каждый ключ.
+  let bulkOpen = $state(false);
+  let bulkText = $state('');
+  let bulkError = $state('');
+  const globalNow = () => Object.fromEntries((gphp?.values || []).filter((v: any) => v.source === 'global').map((v: any) => [v.key, v.value]));
+  function openBulk() {
+    bulkText = Object.entries(globalNow()).map(([k, v]) => `${k}=${v}`).join('\n');
+    bulkError = '';
+    bulkOpen = true;
+  }
+  function bulkChanges(): Record<string, string> | null {
+    const want: Record<string, string> = {};
+    const bad: string[] = [];
+    for (const raw of bulkText.split('\n')) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#') || line.startsWith(';')) continue;
+      const at = line.indexOf('=');
+      if (at <= 0) { bad.push(line); continue; }
+      want[line.slice(0, at).trim()] = line.slice(at + 1).trim();
+    }
+    if (bad.length) { bulkError = t('php.bulkBadLines', { lines: bad.join(', ') }); return null; }
+    const unknown = Object.keys(want).filter((k) => !(gphp?.allowed || []).includes(k));
+    if (unknown.length) { bulkError = t('php.bulkUnknown', { keys: unknown.join(', ') }); return null; }
+    const now = globalNow();
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(want)) if (now[k] !== v) out[k] = v;
+    for (const k of Object.keys(now)) if (!(k in want)) out[k] = '';
+    return out;
+  }
+  async function saveBulk() {
+    const changes = bulkChanges();
+    if (!changes) return;
+    if (!Object.keys(changes).length) { bulkError = t('php.bulkNothing'); return; }
+    if (await saveGlobal(changes)) bulkOpen = false;
   }
   function submitGlobal(e: Event) { e.preventDefault(); const k = gKey.trim(); if (k && gValue.trim()) saveGlobal({ [k]: gValue.trim() }); }
 
@@ -103,7 +146,7 @@
 
 <PageHead title="PHP" sub={t('php.sub')} />
 {#if error}<p class="text-danger text-sm mb-3">{error}</p>{/if}
-{#if job}<div class="mb-4"><JobLog jobId={job} onfinish={() => load()} /></div>{/if}
+{#if job}<div class="mb-4"><JobLog jobId={job} onfinish={() => load()} />{#if gJobs.length > 1 && gJobs.includes(job)}<p class="text-xs text-muted mt-2">{tn('php.globalJobs', gJobs.length, { first: gJobs[0], last: gJobs[gJobs.length - 1] })} <a class="link" href="/jobs">{t('php.globalJobsLink')}</a></p>{/if}</div>{/if}
 <div class="card overflow-x-auto p-0 rise">
   {#if !data}<Skeleton rows={6} />{:else}
   <table class="tbl">
@@ -124,7 +167,10 @@
               </button>
             {/if}
           </td>
-          <td data-label="" class="text-right">{#if p?.status === 'installed'}<button class="btn btn-danger btn-sm" onclick={() => (ask = askRemove(a.version))}><Icon name="trash" size={13} /></button>{:else if a.available}<button class="btn btn-sm" onclick={() => install(a.version)}><Icon name="plus" size={13} /> {t('php.btnInstall')}</button>{/if}</td>
+          <td data-label=""><div class="row-actions">
+            {#if (!p || p.status === 'error') && a.available}<button class="btn btn-sm" onclick={() => install(a.version)}><Icon name={p ? 'refresh' : 'plus'} size={13} /> {p ? t('php.btnRetry') : t('php.btnInstall')}</button>{/if}
+            {#if p?.status === 'installed' || p?.status === 'error'}<button class="btn btn-danger btn-sm" onclick={() => (ask = askRemove(a.version))} title={t('php.remove')} aria-label="{t('php.remove')} PHP {a.version}"><Icon name="trash" size={13} /></button>{/if}
+          </div></td>
         </tr>
         {#if openExt === a.version}
           <tr>
@@ -167,6 +213,7 @@
       <input bind:this={gKeyInput} class="input font-mono text-xs flex-1 min-w-40" list="global-ini-keys" bind:value={gKey} placeholder="memory_limit" aria-label={t('php.globalKey')} />
       <input class="input font-mono text-xs w-40" bind:value={gValue} placeholder="512M" aria-label={t('php.globalValue')} />
       <button class="btn btn-primary btn-sm" disabled={gBusy || !gKey.trim() || !gValue.trim()}><Icon name="save" size={13} /> {t('php.globalSave')}</button>
+      <button type="button" class="btn btn-sm" disabled={gBusy} onclick={openBulk}><Icon name="pencil" size={13} /> {t('php.bulkBtn')}</button>
       <datalist id="global-ini-keys">{#each gphp.allowed as k}<option value={k}></option>{/each}</datalist>
     </form>
     <table class="tbl">
@@ -190,3 +237,13 @@
 </div>
 
 <Confirm bind:ask />
+
+<Modal bind:open={bulkOpen} title={t('php.bulkTitle')}>
+  <p class="text-muted">{t('php.bulkHint')}</p>
+  <textarea class="input font-mono text-xs min-h-48" bind:value={bulkText} spellcheck="false" autocomplete="off" aria-label={t('php.bulkTitle')} placeholder={'memory_limit=512M\nupload_max_filesize=128M'}></textarea>
+  {#if bulkError}<p class="text-danger text-xs">{bulkError}</p>{/if}
+  {#snippet footer()}
+    <button class="btn" onclick={() => (bulkOpen = false)} disabled={gBusy}>{t('common.cancel')}</button>
+    <button class="btn btn-primary" onclick={saveBulk} disabled={gBusy}><Icon name="save" size={13} /> {gBusy ? t('php.bulkSaving') : t('php.globalSave')}</button>
+  {/snippet}
+</Modal>

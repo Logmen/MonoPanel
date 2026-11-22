@@ -34,10 +34,11 @@ func main() {
 		}
 		fmt.Printf("%.0f\n", num(dig(list[len(list)-1], "id")))
 	case "panel-url":
-		// `mp config show --json` marshals the Go struct, so the keys are
-		// capitalised; accept both spellings.
-		host := first(str(dig(doc, "Web", "Hostname")), str(dig(doc, "web", "hostname")))
-		listen := first(str(dig(doc, "Web", "Listen")), str(dig(doc, "web", "listen")))
+		// `mp config show --json` prints GET /system/config (hostname, listen);
+		// `--local` and older panels marshal the Go struct, with
+		// capitalised keys. Accept every spelling.
+		host := first(str(dig(doc, "hostname")), str(dig(doc, "Web", "Hostname")), str(dig(doc, "web", "hostname")))
+		listen := first(str(dig(doc, "listen")), str(dig(doc, "Web", "Listen")), str(dig(doc, "web", "listen")))
 		if host == "" {
 			host = "localhost"
 		}

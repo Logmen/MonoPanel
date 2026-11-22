@@ -10,17 +10,20 @@ package agenttest
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
 
 	"monopanel/internal/agent"
+	"monopanel/internal/config"
 	"monopanel/internal/systemd"
 )
 
@@ -42,6 +45,11 @@ type Agent struct {
 	dirs    []string
 	tools   []agent.ToolRequest
 	runas   []agent.RunAsUserRequest
+	panel   []agent.PanelConfigRequest
+	// siteLogs are the site logs the panel had the agent prepare, by login;
+	// siteLogsGone the logins whose log directory it removed.
+	siteLogs     map[string]map[string]bool
+	siteLogsGone []string
 
 	// Fail makes the endpoint at the given path answer with an error; the
 	// message is returned to the panel as the agent's failure output.
@@ -105,6 +113,7 @@ func Start(t *testing.T) *Agent {
 		Socket:       filepath.Join(dir, "agent.sock"),
 		files:        map[string]agent.FileSpec{},
 		units:        map[string]string{},
+		siteLogs:     map[string]map[string]bool{},
 		Fail:         map[string]string{},
 		Stat:         map[string]bool{},
 		ReadFile:     map[string]string{},
@@ -198,6 +207,11 @@ func (a *Agent) handle(w http.ResponseWriter, r *http.Request) {
 
 	resp := a.respond(r.URL.Path, body)
 	w.Header().Set("Content-Type", "application/json")
+	if e, ok := resp.(*agent.Error); ok {
+		w.WriteHeader(e.Status)
+		json.NewEncoder(w).Encode(e) //nolint:errcheck // test double
+		return
+	}
 	if resp == nil {
 		w.Write([]byte("{}")) //nolint:errcheck // test double
 		return
@@ -238,6 +252,32 @@ func (a *Agent) respond(path string, body []byte) any {
 		json.Unmarshal(body, &req) //nolint:errcheck // test double
 		a.files[req.Path] = agent.FileSpec{Path: req.Path, Content: req.Content, Mode: req.Mode, Owner: req.Owner}
 		return agent.EnsureFileResponse{Written: true}
+
+	case "/v1/sitelogs/ensure":
+		// The real agent works in its own log_dir; the fake answers with the
+		// default one and remembers the names.
+		var req agent.SiteLogsRequest
+		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		dir := filepath.Join(config.Default().LogDir, "sites", req.Login)
+		if a.siteLogs[req.Login] == nil {
+			a.siteLogs[req.Login] = map[string]bool{}
+		}
+		created := []string{}
+		for _, n := range req.Files {
+			if !a.siteLogs[req.Login][n] {
+				a.siteLogs[req.Login][n] = true
+				created = append(created, filepath.Join(dir, n))
+			}
+		}
+		return agent.SiteLogsResponse{Dir: dir, Created: created}
+
+	case "/v1/sitelogs/remove":
+		var req agent.RemoveSiteLogsRequest
+		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		a.siteLogsGone = append(a.siteLogsGone, req.Login)
+		_, had := a.siteLogs[req.Login]
+		delete(a.siteLogs, req.Login)
+		return agent.RemoveSiteLogsResponse{Removed: had}
 
 	case "/v1/dirs/ensure":
 		var req agent.EnsureDirsRequest
@@ -326,6 +366,37 @@ func (a *Agent) respond(path string, body []byte) any {
 		var req agent.InstallPanelRequest
 		json.Unmarshal(body, &req) //nolint:errcheck // test double
 		return agent.InstallPanelResponse{Unit: "monopanel-update.service", Started: true, Signed: req.Sig != ""}
+
+	case "/v1/panel/config":
+		// Like the real agent: the panel keys only, edited in the file the
+		// panel names (a temporary config.yaml in tests), the rest untouched.
+		var req agent.PanelConfigRequest
+		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		a.panel = append(a.panel, req)
+		for k := range req.Set {
+			if !config.IsPanelKey(k) {
+				return &agent.Error{Status: http.StatusForbidden, Message: k + " cannot be changed through the agent"}
+			}
+		}
+		resp := agent.PanelConfigResponse{Path: req.Path, Changed: []string{}}
+		if req.Path == "" {
+			return resp
+		}
+		old, err := os.ReadFile(req.Path)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return &agent.Error{Status: http.StatusInternalServerError, Message: err.Error()}
+		}
+		out, changed, err := config.EditPanelKeys(old, req.Set)
+		if err != nil {
+			return &agent.Error{Status: http.StatusUnprocessableEntity, Message: err.Error()}
+		}
+		if len(changed) > 0 {
+			if err := os.WriteFile(req.Path, out, 0o640); err != nil {
+				return &agent.Error{Status: http.StatusInternalServerError, Message: err.Error()}
+			}
+			resp.Changed = changed
+		}
+		return resp
 
 	case "/v1/runas":
 		var req agent.RunAsUserRequest
@@ -438,6 +509,15 @@ func (a *Agent) File(path string) (string, bool) {
 	return f.Content, ok
 }
 
+// FileSpec returns how a path was last written (content, mode, owner), and
+// whether it was.
+func (a *Agent) FileSpec(path string) (agent.FileSpec, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	f, ok := a.files[path]
+	return f, ok
+}
+
 // FileContaining returns the content of the first written file whose path
 // contains the substring; handy when the exact layout is not the point.
 func (a *Agent) FileContaining(substr string) (string, bool) {
@@ -483,6 +563,34 @@ func (a *Agent) RunAs() []agent.RunAsUserRequest {
 	return append([]agent.RunAsUserRequest{}, a.runas...)
 }
 
+// PanelConfigs returns the recorded changes of config.yaml (/v1/panel/config).
+func (a *Agent) PanelConfigs() []agent.PanelConfigRequest {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]agent.PanelConfigRequest{}, a.panel...)
+}
+
+// SiteLogs returns the names of the site logs the panel had the agent
+// prepare for an account, sorted.
+func (a *Agent) SiteLogs(login string) []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := []string{}
+	for n := range a.siteLogs[login] {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// SiteLogsRemoved returns the logins whose log directory the panel had the
+// agent remove.
+func (a *Agent) SiteLogsRemoved() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string{}, a.siteLogsGone...)
+}
+
 // Tools returns the recorded tool invocations.
 func (a *Agent) Tools() []agent.ToolRequest {
 	a.mu.Lock()
@@ -500,6 +608,9 @@ func (a *Agent) Reset() {
 	a.units = map[string]string{}
 	a.dirs = nil
 	a.tools = nil
+	a.panel = nil
+	a.siteLogs = map[string]map[string]bool{}
+	a.siteLogsGone = nil
 }
 
 func readAll(r *http.Request) ([]byte, error) {
