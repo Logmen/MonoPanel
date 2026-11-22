@@ -1,6 +1,8 @@
 package api
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -146,47 +148,99 @@ func TestDoctorResticSandbox(t *testing.T) {
 }
 
 // The agent runs the installed restic's restic version in the sandbox a
-// backup gets: one that starts there the doctor names; one that does not —
+// backup gets: one that starts there the doctor names. One that does not —
 // Red Hat's Go exits when it cannot read the kernel's FIPS switch — fails
-// every backup, and the doctor warns with restic's own error and what to do,
-// first, so that no rule of the testbed's doctor-expected.sh that allows a
-// host's missing Landlock (^no Landlock) takes it for that.
+// every backup, and the doctor's line fails, with restic's own error and what
+// to do, counted in the summary like any failure. One that did not finish in
+// time may only have met a host too busy at that moment and is tested again:
+// a warning that says so, when, and what to look at should it last. An agent
+// that does not say it timed out (no restic_timeout) reports a failure, even
+// in words that say it did not finish. Either verdict comes first, so that
+// no rule of the testbed's doctor-expected.sh that allows a host's missing
+// Landlock (^no Landlock) takes it for that, and the sandbox's state follows.
 func TestDoctorResticSelfTest(t *testing.T) {
 	f := newSiteFixture(t)
-	find := func() *apitypes.Check {
+	doctor := func() (apitypes.Doctor, *apitypes.Check) {
 		var d apitypes.Doctor
 		f.call(http.MethodGet, "/system/doctor", nil, http.StatusOK, &d)
 		for i := range d.Checks {
 			if d.Checks[i].Name == "restic sandbox" {
-				return &d.Checks[i]
+				return d, &d.Checks[i]
 			}
 		}
 		t.Fatal("no restic sandbox line")
-		return nil
+		return d, nil
+	}
+	find := func() *apitypes.Check {
+		_, c := doctor()
+		return c
+	}
+	failures := func(d apitypes.Doctor) int {
+		n := 0
+		for _, c := range d.Checks {
+			if c.Status == "fail" {
+				n++
+			}
+		}
+		return n
 	}
 	const (
 		bin     = "/usr/bin/restic"
 		version = "restic 0.19.1 compiled with go1.26.4 (Red Hat 1.26.4-1.el9_8) on linux/amd64"
 		failed  = "error reading /proc/sys/crypto/fips_enabled: open /proc/sys/crypto/fips_enabled: permission denied (exit 1)"
+		hung    = "restic version did not finish within 30s"
 	)
 	f.agent.Sandbox = &agent.SandboxInfo{Landlock: 6, NoSymfollow: true, PrivateEtc: true, Restic: bin, ResticVersion: version}
-	if c := find(); c.Status != "ok" || c.Detail != "Landlock ABI 6; restic starts as a backup's restic would ("+version+")" {
+	healthy, c := doctor()
+	if c.Status != "ok" || c.Detail != "Landlock ABI 6; restic starts as a backup's restic would ("+version+")" {
 		t.Fatalf("a restic that starts in its sandbox: %+v", c)
 	}
 	f.agent.Sandbox = &agent.SandboxInfo{Landlock: 6, NoSymfollow: true, PrivateEtc: true, Restic: bin, ResticError: failed}
-	c := find()
-	if c.Status != "warn" || !strings.HasPrefix(c.Detail, "restic does not start in its sandbox — "+bin+" version there: "+failed+". ") ||
+	d, c := doctor()
+	if c.Status != "fail" || !strings.HasPrefix(c.Detail, "restic does not start in its sandbox — "+bin+" version there: "+failed+". ") ||
 		!strings.Contains(c.Detail, "Every backup fails") || !strings.Contains(c.Detail, "does not run restic outside it") ||
 		!strings.Contains(c.Detail, "panel's developers") || !strings.Contains(c.Detail, "upgrade the panel") || !strings.HasSuffix(c.Detail, "The sandbox: Landlock ABI 6") {
 		t.Fatalf("a restic that does not start in its sandbox: %+v", c)
 	}
+	if n := failures(d); n != failures(healthy)+1 || !strings.Contains(d.Summary, fmt.Sprintf(", %d failed, ", n)) {
+		t.Fatalf("the summary of a doctor whose restic does not start: %q (%d failed, %d before)", d.Summary, n, failures(healthy))
+	}
+	f.agent.Sandbox = &agent.SandboxInfo{Landlock: 6, NoSymfollow: true, PrivateEtc: true, Restic: bin, ResticError: hung, ResticTimeout: true}
+	d, c = doctor()
+	if c.Status != "warn" || !strings.HasPrefix(c.Detail, "restic took too long to start in its sandbox — "+bin+" version there: "+hung+". ") ||
+		!strings.Contains(c.Detail, "too busy") || !strings.Contains(c.Detail, "tests it again on the first ping 10 minutes after that run") ||
+		!strings.Contains(c.Detail, "If it keeps timing out, backups hang the same way") || !strings.Contains(c.Detail, "(time "+bin+" version)") ||
+		strings.Contains(c.Detail, "does not start") || !strings.HasSuffix(c.Detail, "The sandbox: Landlock ABI 6") {
+		t.Fatalf("a restic that did not finish in time: %+v", c)
+	}
+	if failures(d) != failures(healthy) {
+		t.Fatalf("a timeout counted as a failure: %q", d.Summary)
+	}
+	// the ping of an agent that does not tell a timeout from an error
+	var older agent.SandboxInfo
+	if err := json.Unmarshal([]byte(`{"landlock":6,"nosymfollow":true,"private_etc":true,"restic":"`+bin+`","restic_error":"`+hung+`"}`), &older); err != nil {
+		t.Fatal(err)
+	}
+	f.agent.Sandbox = &older
+	if c := find(); c.Status != "fail" || !strings.HasPrefix(c.Detail, "restic does not start in its sandbox — "+bin+" version there: "+hung+". ") {
+		t.Fatalf("an agent without restic_timeout: %+v", c)
+	}
+	// the flag qualifies an error and says nothing without one
+	f.agent.Sandbox = &agent.SandboxInfo{Landlock: 6, NoSymfollow: true, PrivateEtc: true, Restic: bin, ResticVersion: version, ResticTimeout: true}
+	if c := find(); c.Status != "ok" || c.Detail != "Landlock ABI 6; restic starts as a backup's restic would ("+version+")" {
+		t.Fatalf("restic_timeout without an error: %+v", c)
+	}
 	// without Landlock a backup's restic still goes through sandbox-exec, for
-	// its view: the self-test's failure comes before the missing Landlock,
-	// its success after it
+	// its view: the self-test's failure and timeout come before the missing
+	// Landlock, its success after it
 	hint := "Landlock is built into this kernel but not enabled: add it to the kernel's lsm= list and reboot — grubby --update-kernel=ALL --args=lsm=lockdown,capability,yama,selinux,bpf,landlock"
 	f.agent.Sandbox = &agent.SandboxInfo{Error: "landlock: operation not supported", Hint: hint, NoSymfollow: true, Restic: bin, ResticError: failed}
-	if c := find(); c.Status != "warn" || !strings.HasPrefix(c.Detail, "restic does not start in its sandbox") || !strings.Contains(c.Detail, failed) || !strings.Contains(c.Detail, "The sandbox: no Landlock (landlock: operation not supported)") {
+	if c := find(); c.Status != "fail" || !strings.HasPrefix(c.Detail, "restic does not start in its sandbox") || !strings.Contains(c.Detail, failed) || !strings.Contains(c.Detail, "The sandbox: no Landlock (landlock: operation not supported)") {
 		t.Fatalf("no Landlock, a restic that does not start: %+v", c)
+	}
+	f.agent.Sandbox = &agent.SandboxInfo{Error: "landlock: operation not supported", Hint: hint, NoSymfollow: true, Restic: bin, ResticError: hung, ResticTimeout: true}
+	if c := find(); c.Status != "warn" || !strings.HasPrefix(c.Detail, "restic took too long to start in its sandbox") || !strings.Contains(c.Detail, hung) || !strings.Contains(c.Detail, "The sandbox: no Landlock (landlock: operation not supported)") {
+		t.Fatalf("no Landlock, a restic that did not finish in time: %+v", c)
 	}
 	f.agent.Sandbox = &agent.SandboxInfo{Error: "landlock: operation not supported", Hint: hint, NoSymfollow: true, Restic: bin, ResticVersion: version}
 	if c := find(); c.Status != "warn" || !strings.HasPrefix(c.Detail, "no Landlock (") || !strings.HasSuffix(c.Detail, "; restic starts as a backup's restic would ("+version+")") {

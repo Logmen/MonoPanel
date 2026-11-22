@@ -50,12 +50,20 @@ type SandboxInfo struct {
 	// the binary changed: ResticVersion is what it said, ResticError
 	// restic's own error line and its exit status when it did not start
 	// there — and then every backup fails the same way, and every other run
-	// the sandbox confines. All three are empty where restic is not
+	// the sandbox confines —, or that it did not finish in time
+	// (ResticTimeout). All of them are empty (false) where restic is not
 	// installed or runs without a sandbox, and while the first run of a
 	// binary takes longer than a ping waits for it.
 	Restic        string `json:"restic,omitempty"`
 	ResticVersion string `json:"restic_version,omitempty"`
 	ResticError   string `json:"restic_error,omitempty"`
+	// ResticTimeout: ResticError is restic version not finishing within the
+	// self-test's time rather than restic ending with an error. A host too
+	// busy at that moment does that as well, and the agent tests it again
+	// ResticRetestAfter later: the doctor warns where it fails on an error.
+	// An agent that does not tell leaves it out, and its ResticError stays
+	// the failure it always meant.
+	ResticTimeout bool `json:"restic_timeout,omitempty"`
 }
 
 // FileSpec is one file to write. Mode is a unix permission (0o644); Owner and

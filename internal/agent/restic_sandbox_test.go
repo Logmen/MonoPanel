@@ -1277,17 +1277,17 @@ func TestResticSelfTest(t *testing.T) {
 	ctx := context.Background()
 	version := fmt.Sprintf("restic 0.0.0-test compiled with %s on %s/%s", runtime.Version(), runtime.GOOS, runtime.GOARCH)
 	r := s.selfTestRestic(ctx)
-	if r == nil || r.err != nil || r.version != version || r.bin != bin {
+	if r == nil || r.err != nil || r.timedOut || r.version != version || r.bin != bin {
 		t.Fatalf("the self-test: %+v", r)
 	}
 	if l := logs.String(); !strings.Contains(l, "level=INFO") || !strings.Contains(l, `msg="restic starts in its sandbox"`) || !strings.Contains(l, version) {
 		t.Fatalf("log: %s", l)
 	}
 	p, err := s.ping(ctx, nil)
-	if err != nil || p.Sandbox.Restic != bin || p.Sandbox.ResticVersion != version || p.Sandbox.ResticError != "" {
+	if err != nil || p.Sandbox.Restic != bin || p.Sandbox.ResticVersion != version || p.Sandbox.ResticError != "" || p.Sandbox.ResticTimeout {
 		t.Fatalf("ping %+v %v", p.Sandbox, err)
 	}
-	if b, _ := json.Marshal(p.Sandbox); !bytes.Contains(b, []byte(`"restic":"`+bin+`"`)) || !bytes.Contains(b, []byte(`"restic_version":"`+version+`"`)) || bytes.Contains(b, []byte("restic_error")) {
+	if b, _ := json.Marshal(p.Sandbox); !bytes.Contains(b, []byte(`"restic":"`+bin+`"`)) || !bytes.Contains(b, []byte(`"restic_version":"`+version+`"`)) || bytes.Contains(b, []byte("restic_error")) || bytes.Contains(b, []byte("restic_timeout")) {
 		t.Fatalf("ping: %s", b)
 	}
 
@@ -1314,13 +1314,13 @@ func TestResticSelfTest(t *testing.T) {
 	})
 	r = s.selfTestRestic(ctx)
 	wantErr := "error reading " + sw + ": open " + sw + ": permission denied (exit 1)"
-	if r == nil || r.err == nil || r.err.Error() != wantErr || r.version != "" || r.bin != other {
+	if r == nil || r.err == nil || r.err.Error() != wantErr || r.timedOut || r.version != "" || r.bin != other {
 		t.Fatalf("a restic that does not start in its sandbox: %+v, want %q", r, wantErr)
 	}
 	if l := logs.String(); !strings.Contains(l, "level=ERROR") || !strings.Contains(l, "restic does not start in its sandbox") || !strings.Contains(l, "upgrade the panel") || !strings.Contains(l, wantErr) {
 		t.Fatalf("log: %s", l)
 	}
-	if p, _ := s.ping(ctx, nil); p.Sandbox.Restic != other || p.Sandbox.ResticError != wantErr || p.Sandbox.ResticVersion != "" {
+	if p, _ := s.ping(ctx, nil); p.Sandbox.Restic != other || p.Sandbox.ResticError != wantErr || p.Sandbox.ResticTimeout || p.Sandbox.ResticVersion != "" {
 		t.Fatalf("ping %+v", p.Sandbox)
 	}
 	// and it changes nothing else: a backup runs in the sandbox all the same,
@@ -1341,13 +1341,13 @@ func TestResticSelfTest(t *testing.T) {
 		t.Fatalf("the backup: %d %v\n%s", code, err, out.String())
 	}
 
-	// a failure stands, not said again, until it is resticRetestAfter old
+	// a failure stands, not said again, until it is ResticRetestAfter old
 	logs.Reset()
 	if again := s.selfTestRestic(ctx); again != r || logs.Len() != 0 {
 		t.Fatalf("a fresh failure tested again: %+v\n%s", again, logs.String())
 	}
 	restore()
-	r.at = time.Now().Add(-resticRetestAfter - time.Minute)
+	r.at = time.Now().Add(-ResticRetestAfter - time.Minute)
 	if r = s.selfTestRestic(ctx); r == nil || r.err != nil || r.version != version || !strings.Contains(logs.String(), "restic starts in its sandbox") {
 		t.Fatalf("tested again: %+v\n%s", r, logs.String())
 	}
@@ -1390,9 +1390,9 @@ func TestResticSelfTestPlan(t *testing.T) {
 	}
 	c.done()
 	got, code := runConfined(t, plan, bin, userNS(t))
-	version, err := resticSelfTestOutcome(context.Background(), code, nil, got)
-	if err != nil || !strings.HasPrefix(version, "restic 0.0.0-test compiled with ") {
-		t.Fatalf("restic version in the private /etc: %q %v\n%s", version, err, got)
+	version, timedOut, err := resticSelfTestOutcome(context.Background(), code, nil, got)
+	if err != nil || timedOut || !strings.HasPrefix(version, "restic 0.0.0-test compiled with ") {
+		t.Fatalf("restic version in the private /etc: %q %v %v\n%s", version, timedOut, err, got)
 	}
 	value, _ := os.ReadFile(sw)
 	wantLines(t, got, "fips "+sw+": "+strings.TrimSpace(string(value)))
@@ -1403,29 +1403,51 @@ func TestResticSelfTestPlan(t *testing.T) {
 	t.Cleanup(func() { resticSelfTestTimeout = old })
 	t.Setenv("MP_FAKE_RESTIC_SLEEP", "5s")
 	start := time.Now()
-	if _, err := s.runResticSelfTest(context.Background(), bin); err == nil || err.Error() != "restic version did not finish within 500ms" || time.Since(start) > 4*time.Second {
-		t.Fatalf("a restic that hangs: %v after %s", err, time.Since(start))
+	if _, timedOut, err := s.runResticSelfTest(context.Background(), bin); err == nil || !timedOut || err.Error() != "restic version did not finish within 500ms" || time.Since(start) > 4*time.Second {
+		t.Fatalf("a restic that hangs: %v (timed out: %v) after %s", err, timedOut, time.Since(start))
 	}
 }
 
 // What the self-test makes of restic's output: the first line said, cut
-// short, or what restic did not say.
+// short, or what restic did not say — and whether it did not finish in time,
+// which the deadline of its run tells, not the words. A restic the deadline
+// killed timed out; one that exited with an error, whose sandbox could not
+// be set up (sandbox.ExitSetup), that could not be started or that something
+// else killed (the OOM killer) failed; a run its caller gave up on (the
+// agent stopping) did neither.
 func TestResticSelfTestOutcome(t *testing.T) {
 	ctx := context.Background()
-	if v, err := resticSelfTestOutcome(ctx, 0, nil, "\n  restic 0.19.1 compiled with go1.26.4 (Red Hat 1.26.4-1.el9_8) on linux/amd64\n"); err != nil || v != "restic 0.19.1 compiled with go1.26.4 (Red Hat 1.26.4-1.el9_8) on linux/amd64" {
-		t.Errorf("a restic that starts: %q %v", v, err)
-	}
-	if _, err := resticSelfTestOutcome(ctx, 1, nil, "error reading /proc/sys/crypto/fips_enabled: open /proc/sys/crypto/fips_enabled: permission denied\n"); err == nil || err.Error() != "error reading /proc/sys/crypto/fips_enabled: open /proc/sys/crypto/fips_enabled: permission denied (exit 1)" {
-		t.Errorf("Red Hat's Go: %v", err)
-	}
-	if _, err := resticSelfTestOutcome(ctx, 2, nil, "panic: opensslcrypto: can't initialize OpenSSL libcrypto.so.3\n\ngoroutine 1 [running]:\nmain.main()\n"); err == nil || err.Error() != "panic: opensslcrypto: can't initialize OpenSSL libcrypto.so.3 (exit 2)" {
-		t.Errorf("a panic: %v", err)
-	}
-	if _, err := resticSelfTestOutcome(ctx, sandbox.ExitSetup, nil, ""); err == nil || err.Error() != "it said nothing (exit 125)" {
-		t.Errorf("nothing said: %v", err)
-	}
-	if _, err := resticSelfTestOutcome(ctx, 0, errors.New("fork/exec /proc/self/exe: permission denied"), ""); err == nil || !strings.Contains(err.Error(), "fork/exec") {
-		t.Errorf("not run: %v", err)
+	expired, cancel := context.WithDeadline(ctx, time.Now().Add(-time.Second))
+	defer cancel()
+	stopped, stop := context.WithCancel(ctx)
+	stop()
+	for _, c := range []struct {
+		name     string
+		ctx      context.Context
+		code     int
+		err      error
+		out      string
+		version  string
+		timedOut bool
+		wantErr  string
+	}{
+		{"a restic that starts", ctx, 0, nil, "\n  restic 0.19.1 compiled with go1.26.4 (Red Hat 1.26.4-1.el9_8) on linux/amd64\n",
+			"restic 0.19.1 compiled with go1.26.4 (Red Hat 1.26.4-1.el9_8) on linux/amd64", false, "<nil>"},
+		{"Red Hat's Go", ctx, 1, nil, "error reading /proc/sys/crypto/fips_enabled: open /proc/sys/crypto/fips_enabled: permission denied\n",
+			"", false, "error reading /proc/sys/crypto/fips_enabled: open /proc/sys/crypto/fips_enabled: permission denied (exit 1)"},
+		{"a panic", ctx, 2, nil, "panic: opensslcrypto: can't initialize OpenSSL libcrypto.so.3\n\ngoroutine 1 [running]:\nmain.main()\n",
+			"", false, "panic: opensslcrypto: can't initialize OpenSSL libcrypto.so.3 (exit 2)"},
+		{"nothing said", ctx, sandbox.ExitSetup, nil, "", "", false, "it said nothing (exit 125)"},
+		{"killed, but not by the deadline", ctx, -1, nil, "", "", false, "it said nothing (exit -1)"},
+		{"not run", ctx, 0, errors.New("fork/exec /proc/self/exe: permission denied"), "", "", false, "fork/exec /proc/self/exe: permission denied"},
+		{"killed by the deadline", expired, -1, nil, "", "", true, "restic version did not finish within " + resticSelfTestTimeout.String()},
+		{"not started before the deadline", expired, 0, context.DeadlineExceeded, "", "", true, "restic version did not finish within " + resticSelfTestTimeout.String()},
+		{"given up on", stopped, -1, nil, "", "", false, context.Canceled.Error()},
+	} {
+		v, timedOut, err := resticSelfTestOutcome(c.ctx, c.code, c.err, c.out)
+		if v != c.version || timedOut != c.timedOut || fmt.Sprint(err) != c.wantErr {
+			t.Errorf("%s: %q, timed out %v, %v; want %q, %v, %s", c.name, v, timedOut, err, c.version, c.timedOut, c.wantErr)
+		}
 	}
 	if l := firstLine("a"+strings.Repeat("é", 300), ""); len(l) > 403 || !strings.HasSuffix(l, "…") || !utf8.ValidString(l) {
 		t.Errorf("a long line: %d bytes %q", len(l), l)
@@ -1592,7 +1614,7 @@ func TestPingDoesNotWaitForTheSelfTest(t *testing.T) {
 	if failed == nil || failed.err == nil {
 		t.Fatalf("the failure: %+v", failed)
 	}
-	failed.at = time.Now().Add(-resticRetestAfter - time.Minute)
+	failed.at = time.Now().Add(-ResticRetestAfter - time.Minute)
 
 	// restic version takes its time from here on
 	const slow = time.Second
@@ -1652,6 +1674,129 @@ func TestResticSelfTestGivenUp(t *testing.T) {
 	t.Setenv("MP_FAKE_RESTIC_SLEEP", "")
 	if r := s.selfTestRestic(context.Background()); r == nil || r.err != nil || r.bin != bin || !strings.Contains(logs.String(), `msg="restic starts in its sandbox"`) {
 		t.Fatalf("the next run: %+v\n%s", r, logs.String())
+	}
+}
+
+// The self-test's verdict as the ping carries it to the doctor, which fails
+// on an error and warns of a timeout: a restic version that did not finish
+// in time timed out (restic_timeout) — a warning in the agent's log, which
+// says the host may only have been busy, when the test runs again and what
+// to look at —; one that exited with an error, was killed by a signal or
+// whose sandbox could not be started at all failed, logged as before and
+// without the flag. A verdict is logged when it changes, not while it
+// stands, and a run the agent gives up on is none. Scripts stand in for
+// sandbox-exec here, doing what restic in its sandbox would: this runs on a
+// kernel without Landlock too.
+func TestResticSelfTestTimeoutOrError(t *testing.T) {
+	s, bin := sandboxServer(t, 6)
+	var logs bytes.Buffer
+	s.log = slog.New(slog.NewTextHandler(&logs, nil))
+	old := resticSelfTestTimeout
+	t.Cleanup(func() { resticSelfTestTimeout = old })
+	// the scripts are written before anything runs: a file still open for
+	// writing in a child forked meanwhile cannot be executed (ETXTBSY)
+	dir := t.TempDir()
+	script := map[string]string{}
+	for name, body := range map[string]string{
+		"hangs":  "exec sleep 10",
+		"fails":  "echo 'Fatal: unable to start: operation not permitted' >&2; exit 1",
+		"killed": "kill -KILL $$",
+		"starts": "echo 'restic 0.18.1 compiled with go1.25.5 on linux/amd64'",
+	} {
+		script[name] = filepath.Join(dir, name)
+		if err := os.WriteFile(script[name], []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := context.Background()
+	// run has the sandbox executable be exe and the same binary tested
+	// again, as a ping does once a failure is ResticRetestAfter old, with
+	// the time a test has: short for the scripts that hang, ample for those
+	// that do not, which a loaded machine must not see time out
+	const hang, ample = 300 * time.Millisecond, 20 * time.Second
+	run := func(exe string, timeout time.Duration) *resticSelfTest {
+		t.Helper()
+		s.sandboxExe, resticSelfTestTimeout = exe, timeout
+		if last := s.resticTest.Load(); last != nil {
+			last.at = time.Now().Add(-ResticRetestAfter - time.Minute)
+		}
+		logs.Reset()
+		return s.selfTestRestic(ctx)
+	}
+	ping := func() (*SandboxInfo, string) {
+		t.Helper()
+		p, err := s.ping(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := json.Marshal(p.Sandbox)
+		return p.Sandbox, string(b)
+	}
+
+	// restic version hangs, and the deadline kills it
+	start := time.Now()
+	r := run(script["hangs"], hang)
+	wantErr := "restic version did not finish within 300ms"
+	if r == nil || !r.timedOut || r.err == nil || r.err.Error() != wantErr || r.version != "" || r.bin != bin || time.Since(start) > 4*time.Second {
+		t.Fatalf("a restic that hangs, after %s: %+v", time.Since(start), r)
+	}
+	if l := logs.String(); !strings.Contains(l, "level=WARN") || !strings.Contains(l, "restic took too long to start in its sandbox") || !strings.Contains(l, "too busy") ||
+		!strings.Contains(l, "first ping 10 minutes after this run") || !strings.Contains(l, "backups hang the same way") || !strings.Contains(l, wantErr) || strings.Contains(l, "does not start") {
+		t.Fatalf("log of a timeout: %s", l)
+	}
+	if sb, b := ping(); sb.Restic != bin || sb.ResticError != wantErr || !sb.ResticTimeout || sb.ResticVersion != "" || !strings.Contains(b, `"restic_timeout":true`) {
+		t.Fatalf("ping of a timeout: %s", b)
+	}
+	// timing out again is no news
+	if r = run(script["hangs"], hang); r == nil || !r.timedOut || logs.Len() != 0 {
+		t.Fatalf("timed out again: %+v\n%s", r, logs.String())
+	}
+
+	// restic exits with an error, and says why
+	r = run(script["fails"], ample)
+	wantErr = "Fatal: unable to start: operation not permitted (exit 1)"
+	if r == nil || r.timedOut || r.err == nil || r.err.Error() != wantErr {
+		t.Fatalf("a restic that exits with an error: %+v", r)
+	}
+	if l := logs.String(); !strings.Contains(l, "level=ERROR") || !strings.Contains(l, "restic does not start in its sandbox") || !strings.Contains(l, wantErr) || strings.Contains(l, "too busy") {
+		t.Fatalf("log of an error: %s", l)
+	}
+	if sb, b := ping(); sb.ResticError != wantErr || sb.ResticTimeout || strings.Contains(b, "restic_timeout") {
+		t.Fatalf("ping of an error: %s", b)
+	}
+
+	// killed by a signal that is not the deadline's (the OOM killer)
+	if r = run(script["killed"], ample); r == nil || r.timedOut || r.err == nil || r.err.Error() != "it said nothing (exit -1)" || !strings.Contains(logs.String(), "level=ERROR") {
+		t.Fatalf("a restic killed: %+v\n%s", r, logs.String())
+	}
+
+	// the sandbox cannot be started at all
+	if r = run(filepath.Join(dir, "missing"), ample); r == nil || r.timedOut || !errors.Is(r.err, fs.ErrNotExist) || !strings.Contains(logs.String(), "level=ERROR") {
+		t.Fatalf("a sandbox that cannot be started: %+v\n%s", r, logs.String())
+	}
+	if sb, b := ping(); sb.ResticError != r.err.Error() || sb.ResticTimeout || strings.Contains(b, "restic_timeout") {
+		t.Fatalf("ping of a sandbox that cannot be started: %s", b)
+	}
+
+	// a run the agent gives up on while restic hangs is no verdict: the last
+	// one stands, and nothing is said
+	last := s.resticTest.Load()
+	last.at = time.Now().Add(-ResticRetestAfter - time.Minute)
+	s.sandboxExe, resticSelfTestTimeout = script["hangs"], ample
+	gctx, giveUp := context.WithCancel(ctx)
+	defer giveUp()
+	time.AfterFunc(100*time.Millisecond, giveUp)
+	logs.Reset()
+	if r = s.selfTestRestic(gctx); r != nil || s.resticTest.Load() != last || logs.Len() != 0 {
+		t.Fatalf("a run given up on: %+v, kept %+v\n%s", r, s.resticTest.Load(), logs.String())
+	}
+
+	// and a restic that starts
+	if r = run(script["starts"], ample); r == nil || r.timedOut || r.err != nil || r.version != "restic 0.18.1 compiled with go1.25.5 on linux/amd64" || !strings.Contains(logs.String(), "level=INFO") {
+		t.Fatalf("a restic that starts: %+v\n%s", r, logs.String())
+	}
+	if sb, b := ping(); sb.ResticError != "" || sb.ResticTimeout || sb.ResticVersion != r.version || strings.Contains(b, "restic_timeout") {
+		t.Fatalf("ping of a restic that starts: %s", b)
 	}
 }
 

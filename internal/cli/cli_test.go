@@ -876,6 +876,34 @@ func TestDoctorPrintsALinePerCheck(t *testing.T) {
 	}
 }
 
+// mp doctor exits 3 once a check failed — the restic sandbox line of a
+// restic that does not start in its sandbox, which fails every backup — and
+// 0 when the worst is a warning, as of a restic version that did not finish
+// in time on a busy host; it prints the line either way.
+func TestDoctorExitStatus(t *testing.T) {
+	for _, c := range []struct {
+		status, detail, line string
+		code                 int
+	}{
+		{"fail", "restic does not start in its sandbox — /usr/bin/restic version there: Fatal: boom (exit 1). The sandbox: Landlock ABI 6",
+			"[FAIL] restic sandbox                   restic does not start in its sandbox", 3},
+		{"warn", "restic took too long to start in its sandbox — /usr/bin/restic version there: restic version did not finish within 30s. The sandbox: Landlock ABI 6",
+			"[WARN] restic sandbox                   restic took too long to start in its sandbox", 0},
+	} {
+		t.Run(c.status, func(t *testing.T) {
+			newFakeAPI(t, map[string]fakeResp{"GET /system/doctor": {body: map[string]any{"summary": "3 checks", "checks": []map[string]any{
+				{"name": "agent", "status": "ok", "detail": "version test"},
+				{"name": "restic sandbox", "status": c.status, "detail": c.detail},
+				{"name": "api socket", "status": "ok", "detail": "monopanel-api.socket holds the port while monopanel-api restarts"},
+			}}}})
+			out, err := mp(t, "", "doctor")
+			if code := exitCode(err); code != c.code || !strings.Contains(out, "\n"+c.line) {
+				t.Fatalf("exit %d (%v), want %d:\n%s", code, err, c.code, out)
+			}
+		})
+	}
+}
+
 // A start of the API that monopanel-api.socket made and that fails lingers
 // for the unit's restart pause before it exits: a connection waiting on the
 // socket would start it again at once, twenty times in two seconds, and the

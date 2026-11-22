@@ -240,6 +240,12 @@ type resticSelfTest struct {
 	// version is what restic said when it started, err why it did not
 	version string
 	err     error
+	// timedOut: err is restic version not finishing within
+	// resticSelfTestTimeout, not restic ending with an error. A host too
+	// busy at that moment does that as well, and the next test may pass;
+	// an error fails every backup the same way. The doctor warns of the
+	// one and fails on the other, so the ping says which (SandboxInfo).
+	timedOut bool
 }
 
 // binaryID tells one restic binary from another: an upgrade renames a new
@@ -262,11 +268,12 @@ func statBinary(p string) (binaryID, error) {
 // line and exits within a fraction of a second.
 var resticSelfTestTimeout = 30 * time.Second
 
-// resticRetestAfter is how long a failed self-test stands before a ping runs
+// ResticRetestAfter is how long a failed self-test stands before a ping runs
 // it again on the same binary: a failure that came of a moment's trouble — a
 // host too busy to start restic in time — does not stay in the doctor until
-// restic or the agent change.
-const resticRetestAfter = 10 * time.Minute
+// restic or the agent change. Exported for the doctor, which tells when a
+// self-test that timed out is run again.
+const ResticRetestAfter = 10 * time.Minute
 
 // selfTestRestic runs the installed restic's `restic version` in the sandbox
 // a backup's restic gets — the rules of resticRules, the private /etc and the
@@ -283,10 +290,14 @@ const resticRetestAfter = 10 * time.Minute
 // the agent does, so the API need not wait for it —, and a ping again once
 // the binary is another one — the panel installs restic with a host's first
 // backup, the package manager upgrades it while the agent runs — or a
-// failure is older than resticRetestAfter (pingResticSelfTest). A failure
+// failure is older than ResticRetestAfter (pingResticSelfTest). A failure
 // changes nothing else: restic keeps running in its sandbox and never
 // outside it, and a backup fails as it would — the doctor and the agent's
-// log say why and what to do.
+// log say why and what to do. A restic version that did not finish within
+// resticSelfTestTimeout is kept apart from one that ended with an error
+// (timedOut): a host too busy at that moment does that as well, and the
+// doctor warns of it where it fails on an error, until the next test tells
+// more.
 //
 // nil: nothing to test — restic is not installed, a backup's restic runs
 // without a sandbox (no Landlock and no view), or the agent has no
@@ -306,11 +317,11 @@ func (s *Server) selfTestRestic(ctx context.Context) *resticSelfTest {
 		return nil
 	}
 	last := s.resticTest.Load()
-	if last != nil && last.bin == bin && last.id == id && (last.err == nil || time.Since(last.at) < resticRetestAfter) {
+	if last != nil && last.bin == bin && last.id == id && (last.err == nil || time.Since(last.at) < ResticRetestAfter) {
 		return last
 	}
 	t := &resticSelfTest{bin: bin, id: id, at: time.Now()}
-	t.version, t.err = s.runResticSelfTest(ctx, bin)
+	t.version, t.timedOut, t.err = s.runResticSelfTest(ctx, bin)
 	if ctx.Err() != nil {
 		return nil
 	}
@@ -366,8 +377,8 @@ func (s *Server) pingResticSelfTest(ctx context.Context) *resticSelfTest {
 }
 
 // runResticSelfTest runs bin's restic version in its sandbox (selfTestRestic)
-// and returns what restic said.
-func (s *Server) runResticSelfTest(ctx context.Context, bin string) (string, error) {
+// and returns what restic said, and whether it did not finish in time.
+func (s *Server) runResticSelfTest(ctx context.Context, bin string) (string, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, resticSelfTestTimeout)
 	defer cancel()
 	plan := s.resticSelfTestPlan()
@@ -387,28 +398,36 @@ func (s *Server) resticSelfTestPlan() *toolPlan {
 // resticSelfTestOutcome is what the self-test's restic said: the first line
 // of a restic that started (restic 0.19.1 compiled with go1.26.4 …), and of
 // one that did not its own error line with the exit status — or why it did
-// not run at all.
-func resticSelfTestOutcome(ctx context.Context, code int, err error, out string) (string, error) {
+// not run at all. timedOut: it did not finish within resticSelfTestTimeout
+// (the deadline of ctx killed it), which is told apart from the rest here,
+// where it is known, rather than by the error's words later.
+func resticSelfTestOutcome(ctx context.Context, code int, err error, out string) (version string, timedOut bool, _ error) {
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		return "", fmt.Errorf("restic version did not finish within %s", resticSelfTestTimeout)
+		return "", true, fmt.Errorf("restic version did not finish within %s", resticSelfTestTimeout)
 	case ctx.Err() != nil:
-		return "", ctx.Err()
+		return "", false, ctx.Err()
 	case err != nil:
-		return "", err
+		return "", false, err
 	case code != 0:
-		return "", fmt.Errorf("%s (exit %d)", firstLine(out, "it said nothing"), code)
+		return "", false, fmt.Errorf("%s (exit %d)", firstLine(out, "it said nothing"), code)
 	}
-	return firstLine(out, ""), nil
+	return firstLine(out, ""), false, nil
 }
 
-// logResticSelfTest says in the agent's log what the self-test found.
+// logResticSelfTest says in the agent's log what the self-test found, at the
+// level the doctor gives it: a restic that does not start fails every
+// backup; one that did not finish in time may only have met a busy host, and
+// is tested again — which a warning says in words of its own.
 func (s *Server) logResticSelfTest(t *resticSelfTest) {
-	if t.err != nil {
+	switch {
+	case t.timedOut:
+		s.log.Warn(fmt.Sprintf("restic took too long to start in its sandbox: the host may only have been too busy at that moment, and the agent tests it again on the first ping %d minutes after this run. If it keeps timing out, backups hang the same way: look at the host's load, memory and disk I/O, and at how long restic version takes outside the panel; if it answers there at once, report this to the panel's developers", int(ResticRetestAfter/time.Minute)), "restic", t.bin, "err", t.err)
+	case t.err != nil:
 		s.log.Error("restic does not start in its sandbox: every backup fails the same way, and so does every other restic run the sandbox confines; the agent does not run restic outside it. Report restic's error, which names what the sandbox kept from it, to the panel's developers and upgrade the panel once a release fixes it", "restic", t.bin, "err", t.err)
-		return
+	default:
+		s.log.Info("restic starts in its sandbox", "restic", t.bin, "version", t.version)
 	}
-	s.log.Info("restic starts in its sandbox", "restic", t.bin, "version", t.version)
 }
 
 // sandboxRestic has each run of the plan's restic go through the sandbox.

@@ -198,7 +198,9 @@ func (s *Server) ping(ctx context.Context, _ *struct{}) (*PingResponse, error) {
 	if t := s.pingResticSelfTest(ctx); t != nil {
 		resp.Sandbox.Restic, resp.Sandbox.ResticVersion = t.bin, t.version
 		if t.err != nil {
-			resp.Sandbox.ResticError = t.err.Error()
+			// whether it timed out as data: the doctor must not tell a busy
+			// host from a broken restic by the error's words
+			resp.Sandbox.ResticError, resp.Sandbox.ResticTimeout = t.err.Error(), t.timedOut
 		}
 	}
 	if c, ok := peercred.FromContext(ctx); ok {

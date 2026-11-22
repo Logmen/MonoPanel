@@ -22,5 +22,7 @@
 # repository directory that holds other files is not refused, or only after
 # restic init wrote into it. What else that leaves open (a backup that
 # follows an account's symlinks, unless the agent reads the trees in its
-# view without symlinks) the doctor's detail says.
+# view without symlinks) the doctor's detail says. The verdict of restic's
+# self-test in its sandbox — a failure, or a warning that it took too long
+# to start — comes before that in the detail: this rule never covers it.
 expect 'el[0-9]+uek' 'restic sandbox' '^no Landlock' "UEK boots without landlock in lsm=: restic runs without its Landlock sandbox (grubby --update-kernel=ALL --args=lsm=<the list>,landlock, or boot the Red Hat compatible kernel)"

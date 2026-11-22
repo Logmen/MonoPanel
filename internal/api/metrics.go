@@ -331,16 +331,25 @@ func check(name, status, detail string) apitypes.Check {
 
 // resticSandboxCheck is the doctor's line on how restic runs, from what the
 // agent's ping says of its sandbox — and on whether the installed restic
-// starts in it at all: one that does not (Red Hat's Go exits when the sandbox
+// starts in it at all. One that does not (Red Hat's Go exits when the sandbox
 // keeps /proc/sys/crypto/fips_enabled from it) fails every backup at once,
-// and every other run the sandbox confines. That comes first, where no rule
-// of the testbed's doctor-expected.sh that allows a host's missing Landlock
-// takes it for that.
+// and every other run the sandbox confines: a failure, whatever the sandbox
+// is like. One whose restic version did not finish in time (ResticTimeout)
+// may only have met a host too busy at that moment, and the agent tests it
+// again ResticRetestAfter later: a warning that says so, and what to look at
+// should it last — backups would hang the same way. An agent that does not
+// tell a timeout from an error reports a failure, as it always did. The
+// self-test's verdict comes first, where no rule of the testbed's
+// doctor-expected.sh that allows a host's missing Landlock takes it for
+// that, and the sandbox's own state follows it.
 func resticSandboxCheck(sb *agent.SandboxInfo) apitypes.Check {
 	c := resticSandboxState(sb)
 	switch {
-	case sb.ResticError != "":
+	case sb.ResticError != "" && sb.ResticTimeout:
 		c.Status = "warn"
+		c.Detail = fmt.Sprintf("restic took too long to start in its sandbox — %s version there: %s. The host may only have been too busy at that moment: the agent tests it again on the first ping %d minutes after that run (the doctor, the dashboard), and a later doctor shows what came of it. If it keeps timing out, backups hang the same way: look at the host's load, memory and disk I/O (uptime, free -m, vmstat 5), and at how long restic takes outside the panel (time %s version) — if it answers there at once, report this to the panel's developers. The sandbox: %s", sb.Restic, sb.ResticError, int(agent.ResticRetestAfter/time.Minute), sb.Restic, c.Detail)
+	case sb.ResticError != "":
+		c.Status = "fail"
 		c.Detail = fmt.Sprintf("restic does not start in its sandbox — %s version there: %s. Every backup fails the same way, and so does every other restic run the sandbox confines; the agent does not run restic outside it. Report this error to the panel's developers — it names what the sandbox kept from restic — and upgrade the panel once a release fixes it. The sandbox: %s", sb.Restic, sb.ResticError, c.Detail)
 	case sb.ResticVersion != "":
 		c.Detail += "; restic starts as a backup's restic would (" + sb.ResticVersion + ")"

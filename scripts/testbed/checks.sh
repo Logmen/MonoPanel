@@ -52,8 +52,11 @@
 #                 the host, upgrading nothing (the PPA's build still in),
 #                 apt-get update is clean, and mp stack upgrade php brings
 #                 Sury's builds in
-#   restic        a backup through the panel, restored aside, a repository
-#                 directory holding other files refused
+#   restic        restic starts in its sandbox (the doctor's self-test: a
+#                 restic that does not fails, one that took too long fails
+#                 unless doctor-expected.sh allows it), a backup through the
+#                 panel, restored aside, a repository directory holding
+#                 other files refused
 #   restore nodes a snapshot with a FIFO and a set-uid file: restores in place
 #                 and aside that would bring them back are refused naming the
 #                 node, with nothing staged; a subtree beside them restores
@@ -1508,10 +1511,32 @@ restic_section() {
 		fail "no account to back up (see above)"
 		return
 	fi
-	local repo=/var/backups/tbck/repo mixed=/var/backups/tbck/mixed text sb sandbox=on why snap d out rc st
+	local repo=/var/backups/tbck/repo mixed=/var/backups/tbck/mixed text sb state sandbox=on why snap d out rc st
 	sb=$(mp --json doctor </dev/null 2>/dev/null | pj '[c["status"] + " " + c.get("detail", "") for c in d["checks"] if c["name"] == "restic sandbox"][0]')
-	case "$sb" in "warn no Landlock"*) sandbox=off ;; esac
-	info "restic sandbox: ${sb:-no line in mp doctor}"
+	# the sandbox's own state: the detail, or what follows the verdict of
+	# restic's self-test there ("… The sandbox: no Landlock (…)"), which
+	# comes first
+	state=${sb#* }
+	case "$state" in *"The sandbox: "*) state=${state##*The sandbox: } ;; esac
+	case "$state" in "no Landlock"*) sandbox=off ;; esac
+	case "$sb" in
+	"fail "*)
+		# restic does not start in its sandbox: every backup below fails
+		# the same way
+		fail "restic sandbox: [FAIL] $(cut -c1-240 <<<"${sb#fail }")"
+		;;
+	"warn restic took too long"*)
+		# restic version did not finish in time: a busy host does that, a
+		# test VM is never that busy — a failure unless doctor-expected.sh
+		# allows it here
+		if why=$(expected_why "restic sandbox" "${sb#warn }"); then
+			expected "restic sandbox: [WARN] $(cut -c1-160 <<<"${sb#warn }") — $why"
+		else
+			fail "restic sandbox: [WARN] $(cut -c1-240 <<<"${sb#warn }")"
+		fi
+		;;
+	*) info "restic sandbox: ${sb:-no line in mp doctor}" ;;
+	esac
 	text="tbck-backup-$(rand)"
 	put "$A" "$docA/tbck-backup.txt" "$text"
 	# the account makes the link itself: chown -h of uutils coreutils (Ubuntu
@@ -1567,7 +1592,7 @@ restic_section() {
 		pass "a repository directory that holds other files is refused: $(grep -o 'the repository [^:]*: it holds files restic did not make' <<<"$out" | head -1)"
 		if [ ! -e "$mixed/config" ]; then
 			pass "nothing written into it"
-		elif [ "$sandbox" = off ] && why=$(expected_why "restic sandbox" "${sb#warn }"); then
+		elif [ "$sandbox" = off ] && why=$(expected_why "restic sandbox" "$state"); then
 			# without Landlock only a backup may go through the agent's
 			# sandbox (for its view without symlinks), while restic init,
 			# unconfined, already made the repository there
@@ -1583,11 +1608,11 @@ restic_section() {
 		else
 			fail "the emptied directory: $(last "$tmp/out" 3)"
 		fi
-	elif [ "$sandbox" = off ] && [ "$rc" -eq 0 ] && why=$(expected_why "restic sandbox" "${sb#warn }"); then
+	elif [ "$sandbox" = off ] && [ "$rc" -eq 0 ] && why=$(expected_why "restic sandbox" "$state"); then
 		expected "a repository directory that holds other files is taken here: restic runs without its sandbox ($why)"
 	elif [ "$sandbox" = off ] && [ "$rc" -eq 0 ]; then
 		# a host doctor-expected.sh does not name: not a known shortfall
-		fail "a repository directory that holds other files is taken: restic runs without its sandbox here, and doctor-expected.sh has no rule for this host ($(cut -c1-120 <<<"$sb"))"
+		fail "a repository directory that holds other files is taken: restic runs without its sandbox here, and doctor-expected.sh has no rule for this host ($(cut -c1-120 <<<"$state"))"
 	else
 		fail "a repository directory that holds other files: exit $rc, $(tail -2 <<<"$out" | tr '\n' ' ' | cut -c1-240)"
 	fi
@@ -1885,6 +1910,10 @@ doctor_verdicts() {
 			esac
 			;;
 		warn)
+			# restic that took too long to start in its sandbox too: its
+			# verdict comes before the sandbox's state, where no rule for a
+			# missing Landlock (^no Landlock) covers it, and a test VM is
+			# never that busy
 			[ "$name" = "restic sandbox" ] && found=1
 			if why=$(expected_why "$name" "$detail"); then
 				printf 'EXPECTED\tdoctor: [WARN] %s: %s — %s\n' "$name" "$(cut -c1-160 <<<"$detail")" "$why"
@@ -1892,7 +1921,11 @@ doctor_verdicts() {
 				printf 'FAIL\tdoctor: [WARN] %s: %s\n' "$name" "$(cut -c1-240 <<<"$detail")"
 			fi
 			;;
-		fail) printf 'FAIL\tdoctor: [FAIL] %s: %s\n' "$name" "$(cut -c1-240 <<<"$detail")" ;;
+		fail)
+			# restic that does not start in its sandbox fails the line
+			[ "$name" = "restic sandbox" ] && found=1
+			printf 'FAIL\tdoctor: [FAIL] %s: %s\n' "$name" "$(cut -c1-240 <<<"$detail")"
+			;;
 		esac
 	done < <(pj '"\n".join(c["status"] + "\t" + c["name"] + "\t" + " ".join(c.get("detail", "").split()) for c in d["checks"])' <<<"$json")
 	[ "$found" = 1 ] || printf 'FAIL\tdoctor: no restic sandbox line (an agent older than 0.8.20?)\n'
