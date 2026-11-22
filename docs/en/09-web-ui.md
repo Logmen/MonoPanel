@@ -97,7 +97,8 @@ anything but the site's pool, `fastcgi_param PHP_VALUE` and others —
 written, and the message says so — "the panel does not take these directives (nothing
 was changed)" — rather than blaming nginx. "Logs" shows access, error, php, slow and the Apache logs,
 from the last 50 to 5000 lines (for a site that has not moved out of `data/logs` since the
-upgrade to 0.8.20, from `~/data/logs`, read as the account).
+upgrade to 0.8.20, from the file written last: the one in `~/data/logs`, read as the
+account, or the log tree's).
 
 ## PHP
 
@@ -125,9 +126,12 @@ An installed component can be reinstalled — that is how a broken one is repair
 composer is updated; a failed installation can be retried, and the reason is shown in its
 row. Apache shows "N of M running" instead of one service's state: every account with
 sites in apache mode has an Apache of its own, and the row tells whether all of them run.
-The PHP branches are listed here too, with the state of their php-fpm, and are
-managed on the PHP page. The memory and the number of connections for memcached are set
-here as well.
+While the move of the sites onto their accounts' Apaches after an upgrade from 0.8.19 has
+not finished, the row also gives the number of sites that wait and the state of the
+shared `apache2.service` that serves them (the tag's tooltip explains); stopped, it is
+red: those sites answer 502. The PHP branches are listed here too, with the state of
+their php-fpm, and are managed on the PHP page. The memory and the number of connections
+for memcached are set here as well.
 
 When a component's repository has a newer version than the installed one, the version
 carries a "→ new version" tag (the tooltip says where from) and the row an Upgrade
@@ -266,7 +270,10 @@ database server the databases, for `monopanel-api` and the agent the panel itsel
 page survives a restart of the panel and reconnects by itself. Stopping `monopanel-api`
 leaves the port to its socket, `monopanel-api.socket`, and the next connection starts the
 panel again; a restart of the socket itself is carried out as a stop of it and a restart
-of the API. Instances of template units (modprobe@…, getty@…), targets, slices, devices
+of the API. Stopping `monopanel-api.socket` itself leaves the API running on its copy of
+the port, but once the API stops or crashes nothing holds the port: the diagnostics'
+"api socket" line warns of it, and a restart of `monopanel-api` brings the socket back.
+Instances of template units (modprobe@…, getty@…), targets, slices, devices
 and scopes, as well as debug-shell, emergency, rescue, console-getty, the power units
 (systemd-halt, -poweroff, -reboot, -kexec, -soft-reboot, -exit, -suspend, -hibernate,
 -hybrid-sleep, -suspend-then-hibernate), systemd-sysext/confext and systemd-tmpfiles-*

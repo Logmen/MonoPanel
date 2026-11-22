@@ -218,7 +218,7 @@ Under each heading are that area's `mp` commands.
 `mp stack list`, `mp stack install apache`, `mp stack install|remove memcached|jpegoptim|git|composer|sphinx`, `mp stack memcached --memory-mb --max-conn`, `mp stack upgrade [nginx|php|apache|db]`, `mp stack auto-upgrade [--on|--off] [--hour 4]`
 
 - Apache 2.4 on Debian/Ubuntu: every account with sites in apache mode gets an instance of its own, `monopanel-apache@<login>.service`; the root parent listens on `127.<100+uid>>16>.<(uid>>8)&255>.<uid&255>:81` (a privileged port on an address of that account alone), and the children run as the account and read only what it reads. The configuration is `/etc/apache2/monopanel/accounts/<login>/` (`httpd.conf`, `backend.conf`, `sites/<domain>.conf`, `sites/<domain>.d/*.conf`); mpm_event and a short module list without cgi, include, lua, ext_filter, status and info; `.htaccess` may do anything (`AllowOverride All`) except in shared folders with `--no-php`, where no `.htaccess` is read and no PHP runs. Only nginx talks to an account's Apache: every request nginx sends carries the account's secret (the `X-MonoPanel-Backend` header), and a local process connecting to the Apache's address directly gets 403, so a site's `--allow` list, rate limit and client address cannot be bypassed past nginx; PHP never sees the secret. What nginx answers 404 for (dotfiles such as `.env` and `.git/`, `composer.json`, `.user.ini`) the account's Apache refuses even with the secret. The panel stops and disables the distribution's `apache2.service` and takes `www-data` out of `monopanel-web`. A site's custom directives (`sites/<domain>.d/`) live as long as the site does: a mode change or a suspension leaves them alone.
-- The stack packages the panel installed — nginx from nginx.org, the PHP branches from Sury, ppa:ondrej/php or Remi, Apache from the distribution, Percona or MySQL — are upgraded from their repositories by `mp stack upgrade` or the Upgrade button on the Extensions page, and only the installed packages of the panel's set. The running version checks the configuration of nginx, PHP and the database server before the upgrade (`nginx -t`, `php-fpm -t`, `mysqld --validate-config`): their packages restart those services themselves, and a component that fails is not upgraded. After the upgrade the new version checks the configuration, each account's Apache included (`apache2 -t`), and then the services reload or restart. A service that fails the check after the upgrade is not reloaded and runs on as it was — unless its own package's restart during the upgrade has already taken it down: then it stays down, and the job says so. Nothing is rolled back. The panel upgrades nginx, PHP and Apache by itself as well, every day at 04:00 server time (`mp stack auto-upgrade`, Settings); the database server only by name (`mp stack upgrade db`), as its restart is downtime for the sites. `mp doctor` names the components with an update waiting and the services that still run a binary an upgrade replaced. The stack upgrade and the panel's self-update never run at the same time; the panel runs the installs and upgrades of packages (apt, dnf) as a systemd unit of their own (`monopanel-pkg-<run>.service`), so an agent restart does not break them off in the middle of a transaction.
+- The stack packages the panel installed — nginx from nginx.org, the PHP branches from Sury, ppa:ondrej/php or Remi, Apache from the distribution, Percona or MySQL — are upgraded from their repositories by `mp stack upgrade` or the Upgrade button on the Extensions page, and only the installed packages of the panel's set. The running version checks the configuration of nginx, PHP and the database server before the upgrade (`nginx -t`, `php-fpm -t`, `mysqld --validate-config`): their packages restart those services themselves, and a component that fails is not upgraded. After the upgrade the new version checks the configuration, each account's Apache included (`apache2 -t`), and then the services reload or restart. While the move of the sites onto their accounts' Apaches after an upgrade from 0.8.19 has not finished, the shared `apache2.service` that still serves the sites not moved is checked with `apache2ctl -t` before the upgrade — Apache is not upgraded when that fails — and restarted after it (gracefully when its binary is unchanged). A service that fails the check after the upgrade is not reloaded and runs on as it was — unless its own package's restart during the upgrade has already taken it down: then it stays down, and the job says so. Nothing is rolled back. The panel upgrades nginx, PHP and Apache by itself as well, every day at 04:00 server time (`mp stack auto-upgrade`, Settings); the database server only by name (`mp stack upgrade db`), as its restart is downtime for the sites. `mp doctor` names the components with an update waiting and the services that still run a binary an upgrade replaced. The stack upgrade and the panel's self-update never run at the same time; the panel runs the installs and upgrades of packages (apt, dnf) as a systemd unit of their own (`monopanel-pkg-<run>.service`), so an agent restart does not break them off in the middle of a transaction.
 - The "Extensions" page in the web UI: memcached (127.0.0.1 only, memory and connections adjustable, restarted on change), jpegoptim, git, composer (from getcomposer.org with the published checksum, running on the newest PHP branch the panel installed, for the accounts and not for root; installing again updates it).
 - Sphinx for 1C-Bitrix: the distribution's Sphinx 2.2 on Debian/Ubuntu, the sphinxsearch.com build of Sphinx 3 on EL; the `bitrix` index as Bitrix's own settings page documents it, a stale index on disk is recreated, SphinxQL on 127.0.0.1:9306.
 
@@ -439,7 +439,7 @@ What an administrator notices after the upgrade from 0.8.19:
   taking over the previous version's mount units of shared folders and checking what they
   mounted): the API's journal says `start-up refresh: waiting for the agent` and
   `the agent answers`, the start-up work (the moves, the checks) begins once it answers,
-  and queued jobs wait for the agent up to three minutes instead of failing on "agent
+  and queued jobs wait for the agent up to six minutes instead of failing on "agent
   unreachable". Should the API stop first, the start-up work runs at the next start.
 - An API that cannot take what it serves on — the port of `web.listen` (held by another
   process), its TLS key, the socket `api.sock` — no longer runs on without its port: it
@@ -480,7 +480,11 @@ What an administrator notices after the upgrade from 0.8.19:
   Apaches of accounts none of whose sites has moved yet are not checked, and the shared
   Apache stopped meanwhile is a failure in `mp doctor`: those sites answer 502
   (`systemctl start apache2.service`). `mp stack upgrade apache` and the daily upgrade
-  check its configuration first (`apache2ctl -t`) and restart it after the upgrade.
+  check its configuration first (`apache2ctl -t`), leave Apache alone when that fails, and
+  restart it after the upgrade. Meanwhile the Apache row of the Extensions page,
+  `mp stack list` and the TUI gives the number of sites waiting for the move and the state
+  of the shared `apache2.service`; stopped, it is a red tag, and `mp stack list` hints
+  `systemctl start apache2.service`.
 - The panel makes every php-fpm branch's stock `www` pool idle once — when it installs the
   branch, or at the first start of 0.8.20: a virtual host of your own that used its socket
   (`/run/php/php<version>-fpm.sock`, on EL `/var/opt/remi/phpXY/run/php-fpm/www.sock`;
@@ -558,8 +562,9 @@ What an administrator notices after the upgrade from 0.8.19:
   after each further one, at least once a day. Once the cause is fixed,
   `mp site apply <domain>` moves the site at once. Until a site has moved, nothing rotates
   its logs in `data/logs` and fail2ban does not read them: root does not work on files in
-  a client's directory; its log tail (the "Logs" tab, `mp site logs`) shows the file in
-  `~/data/logs`. On EL with SELinux the sites move only once the label rule of the log
+  a client's directory; its log tail (the "Logs" tab, `mp site logs`) shows the one of its
+  two files written last: the one in `~/data/logs` (the account reads it) or the log
+  tree's. On EL with SELinux the sites move only once the label rule of the log
   tree is in place. If `semanage` failed, the panel tries the rule again every hour and
   before it applies a site; while the rule is missing, a site on an enforcing host is not
   applied — the job gives `semanage`'s reason, and the site runs on as it was — and the
@@ -620,16 +625,30 @@ What an administrator notices after the upgrade from 0.8.19:
 - The agent binds the shared folders, not systemd: it takes the previous version's mount
   units over at its first start — those whose guest or owner no longer passes the account
   check too — and takes a mount that does not show the folder (systemd mounted it by path,
-  through the owner's symlink) off at once, in use or not. There are no units any more:
+  through the owner's symlink), or shows a folder the agent would not open now (its owner
+  no longer passes the account check, say), off at once, in use or not; a folder of a
+  guest that fails the check stays mounted until a reboot. There are no units any more:
   nothing mounts the folders at boot, the panel binds them at its start, and until the
-  API starts no shared folder is mounted. A folder its owner swapped for a symlink, and a
+  API starts no shared folder is mounted. A folder its owner swapped for a symlink, a
   folder of an account in a system or privileged group (`users`, `sudo`, `docker` … — the
-  rules of an account's own units), the agent does not bind: its status is `failed` with
-  why, and the `shared folders` line of `mp doctor` names it; once the cause is fixed, run
-  `mp site fix <domain>`. Mount units of your own below the web root the panel never
-  starts or enables — they are for `systemctl`. The shared folders of guests with a shell
-  move to `/var/www/.shares/<guest>/<name>`, with a symlink left in the home; a folder in
-  use moves at the next start or after `mp site fix <domain>`. In detail:
+  rules of an account's own units), and a folder of a home with something of its own
+  mounted on its `data` itself (a volume, say; a volume or dataset deeper down, for a
+  site's files, is no hindrance) the agent does not bind: its status is `failed` with why,
+  and the `shared folders` line of `mp doctor` names it; once the cause is fixed, run
+  `mp site fix <domain>`. The folders of a guest in a system group can be taken away all
+  the same: `mp user share rm` and `mp user rm` unbind them by the agent's record, without
+  the account check. Folders the panel's database does not have (after a restore of it
+  from a copy, say) are unbound by the panel at its start, and where the agent keeps
+  another directory than the database names, the panel binds the database's — so after a
+  site's docroot changes, its shared folders move to the new docroot at the panel's next
+  start (or with `mp site fix`) as well. The API passes the agent's refusal to give or
+  take away a folder on with its status — 403, 409 (in use), 503 (an extraction, a
+  restore or another long walk of a tree below the web root is under way, try again
+  later) — not as a 502. Mount units of your own below the web root the panel never
+  starts or enables — they are for `systemctl`. The
+  shared folders of guests with a shell move to `/var/www/.shares/<guest>/<name>`, with a
+  symlink left in the home; a folder in use moves at the next start or after
+  `mp site fix <domain>`. In detail:
   [docs/en/10-shared-folders.md](docs/en/10-shared-folders.md); what becomes of the folders
   after going back: [Going back to an older version](#going-back-to-an-older-version).
 - When systemd refuses the panel a start or restart of a service for its start limit (it
@@ -641,14 +660,22 @@ What an administrator notices after the upgrade from 0.8.19:
   jails (a site created or deleted, a start of the panel), and a running one once a site
   log on its list appears (a site suspended under 0.8.19 and unsuspended, say).
 - New and changed lines of `mp doctor`: `shared folders` (the shared folders that are not
-  mounted, and why), `apache move` (the sites still on the shared Apache), `restic sandbox`
-  (the version of the restic that started in the sandbox, or its error), `kernel modules`
-  in a container (the host's kernel loads the modules), `update attempt`
-  (`mp update apply` installs a version that rolled back). The API judges the
-  `api socket` line itself: a warning when it listens on the port itself while the socket
-  is there and not masked (to have the API listen itself on purpose:
-  `systemctl mask monopanel-api.socket`). `jobs` does not count a failed job that the same
-  work fixed later, or whose site or account was deleted.
+  mounted, and why, the folders where another directory is mounted, and the folders the
+  agent keeps that the panel's database does not name), `apache move` (the sites still on
+  the shared Apache), `restic sandbox` (the version of the restic that started in the
+  sandbox, or its error), `kernel modules` in a container (the host's kernel loads the
+  modules), `update attempt` (`mp update apply` installs a version that rolled back). The
+  API judges the `api socket` line itself: a warning when it listens on the port itself
+  although the socket could hold it (enabled or not), and when the socket that passed it
+  the port has been stopped since (Stop on the Services page, or
+  `systemctl restart monopanel-api.socket` while the API runs): once the API stops or
+  crashes, the port is free. `mp setup` brings the socket back (a stopped one,
+  `systemctl restart monopanel-api` too). To have the API listen on the port itself on
+  purpose, mask the socket: `systemctl mask monopanel-api.socket` (on an install without
+  the package remove `/etc/systemd/system/monopanel-api.socket` first), and `mp setup`
+  leaves the mask alone. `jobs` does not count a failed job that the same work fixed
+  later, nor a job of a site or an account deleted after it (`mp site rm`, `mp user rm`;
+  the failures of the sites deleted along with an account count until a day has passed).
 - On Ubuntu the update to 0.8.20 itself runs 0.8.19's updater, whose apt run may let
   needrestart restart the services left on old libraries, the database server among them.
   To avoid that, update by hand:

@@ -119,9 +119,11 @@ it gets fixed.
   the site's owner or reading the owner's files outside the folder. So is a guest
   that gets its shared folder bound anywhere but its mount point, anything but the
   folder bound there (a folder its owner swapped for a symlink: the agent binds
-  the directory it opened without following one), or a mount of its own inside
-  the folder shown in the owner's site, and so is making a backup store a file
-  outside the account's home — or another account's — as the account's own
+  the directory it opened without following one), a folder below another shared
+  folder's mount point bound for another guest (whatever the agent's records say
+  at the time), or a mount of its own inside the folder shown in the owner's
+  site, and so is making a backup store a file outside the account's home — or
+  another account's — as the account's own
   (restic's Landlock sandbox and the view without symlinks of every tree a backup
   reads, which holds without Landlock too; `mp doctor` warns on a kernel without
   Landlock, saying how to turn it on where it is built in, where the agent may
