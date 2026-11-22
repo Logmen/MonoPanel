@@ -288,10 +288,16 @@ func (s *Server) consoleServerURL() string {
 		if tcp, ok := a.(*net.TCPAddr); ok {
 			ip := tcp.IP
 			if ip == nil || ip.IsUnspecified() {
-				// Go binds a wildcard listener dual-stack (IPV6_V6ONLY off), so
+				// Go binds a wildcard listener dual-stack (IPV6_V6ONLY off),
+				// and so does monopanel-api.socket (BindIPv6Only=both), so
 				// 127.0.0.1 is this socket too — also where ::1 is not
-				// configured (IPv6 switched off by sysctl).
+				// configured (IPv6 switched off by sysctl). A socket systemd
+				// made for IPv6 alone leaves 127.0.0.1 on the port to whoever
+				// binds it: ::1 is this socket then.
 				ip = net.IPv4(127, 0, 0, 1)
+				if s.listenV6Only.Load() {
+					ip = net.IPv6loopback
+				}
 			}
 			return "https://" + net.JoinHostPort(ip.String(), strconv.Itoa(tcp.Port))
 		}

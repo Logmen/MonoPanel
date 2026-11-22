@@ -18,12 +18,21 @@ import (
 	"monopanel/internal/peercred"
 )
 
-// serveAgent runs an agent with the given configuration on a socket.
-func serveAgent(t *testing.T, cfg config.Config) (*Server, *Client) {
+// serveAgent runs an agent with the given configuration on a socket. Its
+// units and the drop-ins of the panel's socket go into a temporary
+// directory, names resolve in the tests' DNS (testLookup), and systemd is
+// never asked; tweak changes the agent before it serves.
+func serveAgent(t *testing.T, cfg config.Config, tweak ...func(*Server)) (*Server, *Client) {
 	t.Helper()
 	rel, _ := osprofile.ParseOSRelease(strings.NewReader("ID=debian\nVERSION_ID=13\n"))
 	p, _ := osprofile.FromRelease(rel)
 	s := NewServer(cfg, p, nil)
+	s.unitDir = filepath.Join(t.TempDir(), "system")
+	s.lookupIP = testLookup(nil)
+	s.daemonReload = func(context.Context) error { return nil }
+	for _, f := range tweak {
+		f(s)
+	}
 	sock := filepath.Join(t.TempDir(), "a.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {

@@ -16,6 +16,7 @@ import (
 	"github.com/goccy/go-yaml"
 	"github.com/spf13/cobra"
 
+	"monopanel/internal/agent"
 	"monopanel/internal/apitypes"
 	"monopanel/internal/client"
 	"monopanel/internal/config"
@@ -28,22 +29,49 @@ import (
 // only `mp update trust` as root on the server changes it.
 var configKeys = config.PanelKeys()
 
-// Who runs the command, how config set --local restarts monopanel-api without
-// the API, and the pauses of waiting for it to come back. Tests replace them.
+// Who runs the command, how config set --local moves the socket of the
+// panel's port and restarts monopanel-api without the API, and the pauses of
+// waiting for it to come back. Tests replace them.
 var (
 	geteuid        = os.Geteuid
-	restartAPIUnit = func(ctx context.Context, unit string) error {
-		sd, err := systemd.Connect(ctx)
-		if err != nil {
-			return err
-		}
-		defer sd.Close()
-		return sd.Restart(ctx, unit)
-	}
+	syncAPISocket  = agent.SyncAPISocket
+	restartAPIUnit = restartAPIWithSocket
 	restartPoll    = 500 * time.Millisecond
 	restartSettle  = 1500 * time.Millisecond
 	restartTimeout = time.Minute
 )
+
+// restartAPIWithSocket restarts monopanel-api for config set --local. The
+// socket that holds the panel's port goes along when it has to take the port
+// anew: moved says that its address was written just now, and a socket that
+// is not listening, or was started on an older address, is stale too. It is
+// stopped first and comes back with the API, whose unit wants it, once the
+// old API process — which still holds the port — is gone: started while the
+// API runs, systemd would refuse it. Otherwise only the API restarts, and
+// the socket keeps the port throughout.
+func restartAPIWithSocket(ctx context.Context, cfg config.Config, moved bool) error {
+	sd, err := systemd.Connect(ctx)
+	if err != nil {
+		return err
+	}
+	defer sd.Close()
+	socket := cfg.APISocketUnit()
+	if st, err := sd.Status(ctx, socket); err == nil && st.LoadState == "loaded" && (moved || agent.APISocketStale(st, fileTime(agent.APISocketDropIn(cfg)))) {
+		if err := sd.Stop(ctx, socket); err != nil {
+			return err
+		}
+	}
+	return sd.Restart(ctx, cfg.Update.APIUnit)
+}
+
+// fileTime is when path was last written, zero when it is not there.
+func fileTime(path string) time.Time {
+	st, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return st.ModTime()
+}
 
 func configCmd() *cobra.Command {
 	c := &cobra.Command{Use: "config", Short: T("настройки панели (config.yaml) и шаблоны конфигураций", "panel settings (config.yaml) and configuration templates")}
@@ -412,11 +440,21 @@ func configSetLocal(ctx context.Context, key, raw string, restart bool) error {
 			fmt.Printf(T("%s = %s: в %s уже так\n", "%s = %s: %s already says so\n"), key, val, cfg.Path())
 		}
 	}
+	// The socket that holds the panel's port follows web.listen — also when
+	// the file said so already: that is how a socket that missed a change by
+	// hand gets there.
+	moved := false
+	if key == config.KeyListen {
+		if moved, err = syncAPISocket(ctx, cfg); err != nil {
+			fmt.Fprintf(os.Stderr, T("внимание: %s не перешёл на web.listen (%v): monopanel-api будет слушать адрес сам, и пока он перезапускается, порт свободен; mp setup настроит сокет заново\n",
+				"warning: %s did not follow web.listen (%v): monopanel-api will listen on the address itself, and the port is free while it restarts; mp setup sets the socket up again\n"), cfg.APISocketUnit(), err)
+		}
+	}
 	if changed && key == "web.listen" {
 		listenNotes(val)
 	}
 	if restart {
-		if err := restartAPIUnit(ctx, cfg.Update.APIUnit); err != nil {
+		if err := restartAPIUnit(ctx, cfg, moved); err != nil {
 			// After a run of failed starts systemd refuses to start the unit
 			// for a while, which is exactly when this path is used.
 			return fmt.Errorf(T("%w (если юнит исчерпал лимит запусков: systemctl reset-failed %s и повторите)", "%w (if the unit has used up its start limit: systemctl reset-failed %s, then try again)"), err, cfg.Update.APIUnit)
@@ -438,10 +476,40 @@ func configSetLocal(ctx context.Context, key, raw string, restart bool) error {
 	switch {
 	case restart:
 		fmt.Println(T("monopanel-api перезапущен", "monopanel-api restarted"))
+	case moved:
+		// A plain restart of the API would leave the socket where it was.
+		fmt.Printf(T("применится после перезапуска вместе с сокетом порта: systemctl stop %s && systemctl restart monopanel-api (или --restart)\n",
+			"takes effect after a restart along with the port's socket: systemctl stop %s && systemctl restart monopanel-api (or --restart)\n"), cfg.APISocketUnit())
 	case changed:
 		fmt.Println(T("применится после перезапуска: systemctl restart monopanel-api (или --restart)", "takes effect after a restart: systemctl restart monopanel-api (or --restart)"))
 	}
 	return nil
+}
+
+// apiSocketSyncCmd gives the socket that holds the panel's port the address
+// of web.listen in config.yaml, for the package's scripts after an install
+// or an upgrade: mp setup and config set --local do the same themselves. It
+// moves no socket that is listening already; that takes a restart of the
+// socket while no API process holds the port.
+func apiSocketSyncCmd() *cobra.Command {
+	return &cobra.Command{Use: "api-socket-sync", Short: T("адрес сокета HTTPS-порта панели из web.listen (для скриптов пакета)", "the address of the panel's HTTPS port socket from web.listen (for the package scripts)"), Hidden: true, Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if geteuid() != 0 {
+				return &exitError{code: 4, msg: T("api-socket-sync выполняется только от root", "api-socket-sync must run as root")}
+			}
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			moved, err := syncAPISocket(cmd.Context(), cfg)
+			if err != nil {
+				return fmt.Errorf("%s: %w", cfg.APISocketUnit(), err)
+			}
+			if moved && !g.json {
+				fmt.Printf(T("%s: адрес из web.listen (%s)\n", "%s: the address of web.listen (%s)\n"), cfg.APISocketUnit(), cfg.Web.Listen)
+			}
+			return nil
+		}}
 }
 
 // listenNotes says what config set --local does not do for a new web.listen,
@@ -458,6 +526,9 @@ func listenNotes(listen string) {
 	}
 	if port < start {
 		fmt.Fprintf(os.Stderr, T("внимание: monopanel-api работает без привилегий и не сможет слушать порт %d (меньше %d), если его юнит не даёт CAP_NET_BIND_SERVICE\n", "warning: monopanel-api runs without privileges and cannot listen on port %d (below %d) unless its unit grants CAP_NET_BIND_SERVICE\n"), port, start)
+	}
+	if ip := agent.ForeignListenIP(listen); ip != nil {
+		fmt.Fprintf(os.Stderr, T("внимание: %s — не адрес этого сервера; сокет порта панели всё равно займёт его, и панель будет слушать там, где её никто не достанет\n", "warning: %s is not an address of this server; the socket of the panel's port takes it all the same, and the panel would listen where nobody reaches it\n"), ip)
 	}
 	fmt.Fprintln(os.Stderr, T("--local не трогает firewall: если он включён, после запуска панели выполните mp firewall apply — его правила откроют новый порт панели (firewalld: firewall-cmd --add-port)",
 		"--local leaves the firewall alone: if it is on, run mp firewall apply once the panel is up, and its rules open the panel's new port (firewalld: firewall-cmd --add-port)"))

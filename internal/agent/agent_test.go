@@ -28,6 +28,10 @@ func testServer(t *testing.T, allowed string) (*Server, *Client) {
 	rel, _ := osprofile.ParseOSRelease(strings.NewReader("ID=debian\nVERSION_ID=13\n"))
 	p, _ := osprofile.FromRelease(rel)
 	s := NewServer(cfg, p, nil)
+	// Nothing a test does reaches the host's systemd.
+	s.unitDir = filepath.Join(t.TempDir(), "system")
+	s.lookupIP = testLookup(nil)
+	s.daemonReload = func(context.Context) error { return nil }
 	sock := filepath.Join(t.TempDir(), "a.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {

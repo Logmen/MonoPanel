@@ -1,0 +1,16 @@
+[Unit]
+Description=MonoPanel HTTPS port of the API
+
+[Socket]
+# PID 1 binds the panel's HTTPS port and hands it to monopanel-api.service,
+# also while the API restarts: no local account can take the port then. The
+# address comes from web.listen in config.yaml (monopanel-api.socket.d/listen.conf).
+# BindIPv6Only=both takes IPv4 as well, as the API's own listener on :8443
+# does; FreeBind=yes binds an address the network does not have yet at boot.
+ListenStream=8443
+Accept=no
+BindIPv6Only=both
+FreeBind=yes
+
+[Install]
+WantedBy=sockets.target

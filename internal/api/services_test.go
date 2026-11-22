@@ -277,6 +277,9 @@ func TestStopsPanelReadsUnitNamesAsSystemd(t *testing.T) {
 		{"monopanel-api.service", "start", false},
 		{"monopanel-agent", "disable", false},
 		{"monopanel-api.socket", "stop", false},
+		{"monopanel-api.socket", "restart", true},
+		{"monopanel-api.socket", "reload-or-restart", true},
+		{"monopanel-api.socket", "start", false},
 		{"monopanel-firewall", "restart", false},
 	} {
 		if got := s.stopsPanel(c.unit, c.action); got != c.want {

@@ -602,7 +602,7 @@ func serviceCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if panelUnit(st.Unit) && (action == "stop" || action == "restart" || action == "reload-or-restart") {
+			if endsPanel(st.Unit, action) {
 				// The API answers first and acts half a second later: the
 				// state in the answer is the one before the action.
 				if action == "stop" {
@@ -636,6 +636,21 @@ func panelUnit(unit string) bool {
 	switch strings.TrimSuffix(unit, ".service") {
 	case "monopanel-api", "monopanel-agent":
 		return true
+	}
+	return false
+}
+
+// endsPanel tells whether the action takes the API that serves the command
+// down for a while: a stop or restart of the panel's own units, and a restart
+// of monopanel-api.socket, which holds the panel's port — systemd starts no
+// socket while its service runs, so the API stops the socket and restarts
+// itself, and its unit brings the socket back.
+func endsPanel(unit, action string) bool {
+	switch action {
+	case "restart", "reload-or-restart":
+		return panelUnit(unit) || unit == "monopanel-api.socket"
+	case "stop":
+		return panelUnit(unit)
 	}
 	return false
 }

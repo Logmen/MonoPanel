@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -41,7 +42,9 @@ func samePath(a, b string) bool {
 // rest of the file stays byte for byte (config.EditPanelKeys), the file keeps
 // its mode and owner (root:monopanel 0640, so that the API can read it) and is
 // replaced atomically; the previous version goes to the configuration history.
-// The change takes effect when monopanel-api restarts, which is the caller's
+// A new web.listen also goes into the drop-in of the socket that holds the
+// panel's port (apisocket.go), from the checked value and nothing else. The
+// change takes effect when monopanel-api restarts, which is the caller's
 // call.
 func (s *Server) setPanelConfig(ctx context.Context, req *PanelConfigRequest) (*PanelConfigResponse, error) {
 	path := s.configPath()
@@ -106,6 +109,18 @@ func (s *Server) setPanelConfig(ctx context.Context, req *PanelConfigRequest) (*
 	if len(changed) == 0 {
 		return resp, nil
 	}
+	// A new web.listen moves the socket that holds the panel's port. Where
+	// to is worked out before anything is written: a web.listen the socket
+	// cannot take (a name this host cannot resolve) changes nothing.
+	var socket *APISocketAddr
+	if slices.Contains(changed, config.KeyListen) {
+		listen, _ := config.NormalizePanelValue(config.KeyListen, req.Set[config.KeyListen])
+		addr, err := ResolveAPISocket(ctx, listen, s.lookupIP)
+		if err != nil {
+			return nil, &Error{Status: http.StatusUnprocessableEntity, Message: err.Error()}
+		}
+		socket = &addr
+	}
 	if err := writeFileAt(dir.fd, dir.resolved, name, out, mode, uid, gid); err != nil {
 		return nil, &Error{Message: "write " + path, Output: err.Error()}
 	}
@@ -116,5 +131,18 @@ func (s *Server) setPanelConfig(ctx context.Context, req *PanelConfigRequest) (*
 	}
 	s.restorecon(ctx, path)
 	s.log.Info("panel configuration changed", "file", path, "keys", changed)
+	if socket != nil {
+		// The socket takes the new address when the API restarts next
+		// (stopped first, it comes back with the API). Should its drop-in
+		// fail, config.yaml stands all the same: the API listens on the new
+		// address itself then, only without PID 1 keeping the port while it
+		// restarts.
+		if _, err := s.apiSocket().write(ctx, s.cfg, *socket); err != nil {
+			s.log.Warn("the panel's socket did not follow web.listen; monopanel-api will listen on it itself", "socket", s.cfg.APISocketUnit(), "address", socket.ListenStream(), "err", err)
+			resp.SocketError = err.Error()
+		} else {
+			s.log.Info("the panel's socket follows web.listen", "socket", s.cfg.APISocketUnit(), "address", socket.ListenStream())
+		}
+	}
 	return resp, nil
 }

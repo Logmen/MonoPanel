@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -22,6 +23,8 @@ import (
 	"github.com/goccy/go-yaml"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+
+	"monopanel/internal/config"
 )
 
 // fakeAPI stands in for the panel: it records every request and answers from
@@ -528,16 +531,28 @@ func healthSocket(t *testing.T, dir string, down func() bool) {
 
 // As root, config set --local writes the normalized value, leaves an equal one
 // alone, restarts the unit from config.yaml and reports a restart only once
-// monopanel-api answers again.
+// monopanel-api answers again. web.listen goes to the socket of the panel's
+// port as well, and a restart takes the socket along when its address moved.
 func TestConfigSetLocalAsRoot(t *testing.T) {
 	fastRestartWait(t)
 	euid := geteuid
 	geteuid = func() int { return 0 }
 	t.Cleanup(func() { geteuid = euid })
-	var restarted []string
-	restart := restartAPIUnit
-	restartAPIUnit = func(_ context.Context, unit string) error { restarted = append(restarted, unit); return nil }
-	t.Cleanup(func() { restartAPIUnit = restart })
+	var restarted, synced []string
+	restart, sync := restartAPIUnit, syncAPISocket
+	restartAPIUnit = func(_ context.Context, cfg config.Config, moved bool) error {
+		restarted = append(restarted, fmt.Sprintf("%s moved=%v", cfg.Update.APIUnit, moved))
+		return nil
+	}
+	// the drop-in: written when the address differs from the one it holds
+	socketAt := ":9443"
+	syncAPISocket = func(_ context.Context, cfg config.Config) (bool, error) {
+		synced = append(synced, cfg.Web.Listen)
+		moved := cfg.Web.Listen != socketAt
+		socketAt = cfg.Web.Listen
+		return moved, nil
+	}
+	t.Cleanup(func() { restartAPIUnit, syncAPISocket = restart, sync })
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -599,17 +614,114 @@ func TestConfigSetLocalAsRoot(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &res); err != nil || res.Config.Listen != ":9443" || !res.Restarted {
 		t.Errorf("--json: %v %q", err, out)
 	}
-	if want := []string{"test-api.service", "test-api.service"}; !reflect.DeepEqual(restarted, want) {
+	// The value the file has already still goes to the socket — a socket
+	// that missed a change gets there — and a restart that moves nothing
+	// leaves it alone; so does one of another key.
+	if out, err := mp(t, "", "--config", path, "config", "set", "web.listen", ":9443", "--local", "--restart"); err != nil || !strings.Contains(out, "already says so") {
+		t.Errorf("an unchanged web.listen: %v %q", err, out)
+	}
+	if _, err := mp(t, "", "--config", path, "config", "set", "jobs.workers", "3", "--local", "--restart"); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"test-api.service moved=true", "test-api.service moved=true", "test-api.service moved=false", "test-api.service moved=false"}; !reflect.DeepEqual(restarted, want) {
 		t.Errorf("restarted %v, want %v", restarted, want)
+	}
+	// Without --restart, the hint says how to restart with the socket.
+	out, err = mp(t, "", "--config", path, "config", "set", "web.listen", "127.0.0.1:9555", "--local")
+	if err != nil || !strings.Contains(out, "systemctl stop test-api.socket && systemctl restart monopanel-api") {
+		t.Errorf("a moved socket without a restart: %v %q", err, out)
+	}
+	if want := []string{"[2001:db8::1]:8443", ":9443", ":9443", "127.0.0.1:9555"}; !reflect.DeepEqual(synced, want) {
+		t.Errorf("synced %v, want %v", synced, want)
+	}
+	// A socket that cannot follow does not stop the change: the API listens
+	// on the address itself then.
+	syncAPISocket = func(context.Context, config.Config) (bool, error) { return false, errors.New("does not resolve") }
+	if _, err := mp(t, "", "--config", path, "config", "set", "web.listen", ":9556", "--local"); err != nil {
+		t.Errorf("a socket that cannot follow: %v", err)
+	}
+	if got := read().Web.Listen; got != ":9556" {
+		t.Errorf("listen written as %q", got)
 	}
 
 	// systemd refuses the restart (the unit used up its start limit): say how
 	// to get past that
-	restartAPIUnit = func(context.Context, string) error {
+	restartAPIUnit = func(context.Context, config.Config, bool) error {
 		return errors.New(`restart test-api.service: job result "failed"`)
 	}
 	if _, err := mp(t, "", "--config", path, "config", "set", "jobs.workers", "4", "--local", "--restart"); err == nil || !strings.Contains(err.Error(), "systemctl reset-failed test-api.service") {
 		t.Errorf("a refused restart: %v", err)
+	}
+}
+
+// monopanel api-socket-sync, for the package's scripts: as root only, the
+// socket of the panel's port gets the address of config.yaml's web.listen,
+// and one it cannot take is an error (the script goes on regardless).
+func TestAPISocketSyncCommand(t *testing.T) {
+	euid, sync := geteuid, syncAPISocket
+	t.Cleanup(func() { geteuid, syncAPISocket = euid, sync })
+	var synced []string
+	syncAPISocket = func(_ context.Context, cfg config.Config) (bool, error) {
+		synced = append(synced, cfg.Web.Listen)
+		if strings.HasPrefix(cfg.Web.Listen, "nowhere.") {
+			return false, errors.New("nowhere.example.com does not resolve")
+		}
+		return true, nil
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("web:\n  listen: \"203.0.113.5:9443\"\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	geteuid = func() int { return 1000 }
+	if _, err := mp(t, "", "--config", path, "api-socket-sync"); exitCode(err) != 4 || len(synced) != 0 {
+		t.Fatalf("not root: %v, synced %v", err, synced)
+	}
+	geteuid = func() int { return 0 }
+	out, err := mp(t, "", "--config", path, "api-socket-sync")
+	if err != nil || !strings.Contains(out, "monopanel-api.socket") || !strings.Contains(out, "203.0.113.5:9443") || !reflect.DeepEqual(synced, []string{"203.0.113.5:9443"}) {
+		t.Fatalf("%v %q, synced %v", err, out, synced)
+	}
+	if err := os.WriteFile(path, []byte("web:\n  listen: nowhere.example.com:8443\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mp(t, "", "--config", path, "api-socket-sync"); err == nil || !strings.Contains(err.Error(), "does not resolve") {
+		t.Fatalf("a web.listen the socket cannot take: %v", err)
+	}
+}
+
+// A start of the API that monopanel-api.socket made and that fails lingers
+// for the unit's restart pause before it exits: a connection waiting on the
+// socket would start it again at once, twenty times in two seconds, and the
+// socket would give up and leave the port to anybody. Started otherwise —
+// by hand, or with the sockets of another process in the environment — it
+// fails at once.
+func TestAPIFailedStartLingersUnderTheSocket(t *testing.T) {
+	pause := failedStartPause
+	failedStartPause = 400 * time.Millisecond
+	t.Cleanup(func() { failedStartPause = pause })
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("web: [\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	run := func() time.Duration {
+		t.Helper()
+		start := time.Now()
+		if _, err := mp(t, "", "--config", path, "api"); err == nil || !strings.Contains(err.Error(), "parse config") {
+			t.Fatalf("a broken config.yaml: %v", err)
+		}
+		return time.Since(start)
+	}
+	if took := run(); took >= failedStartPause {
+		t.Errorf("by hand the failure took %v", took)
+	}
+	t.Setenv("LISTEN_FDS", "1")
+	t.Setenv("LISTEN_PID", "1")
+	if took := run(); took >= failedStartPause {
+		t.Errorf("with another process's sockets the failure took %v", took)
+	}
+	t.Setenv("LISTEN_PID", fmt.Sprint(os.Getpid()))
+	if took := run(); took < failedStartPause {
+		t.Errorf("started by the socket the failure took only %v", took)
 	}
 }
 
@@ -1240,5 +1352,30 @@ func TestReadEnvFile(t *testing.T) {
 	}
 	if _, err := readEnvFile(filepath.Join(t.TempDir(), "missing")); err == nil {
 		t.Error("a missing env file must fail, as EnvironmentFile= does")
+	}
+}
+
+// mp service waits for the panel to come back after the actions that take
+// it down: a stop or restart of its own units, and a restart of the socket
+// of its port, which the API carries out as a restart of itself. A stop of
+// the socket leaves the API running.
+func TestEndsPanel(t *testing.T) {
+	for _, c := range []struct {
+		unit, action string
+		want         bool
+	}{
+		{"monopanel-api.service", "restart", true},
+		{"monopanel-api", "stop", true},
+		{"monopanel-agent.service", "reload-or-restart", true},
+		{"monopanel-api.socket", "restart", true},
+		{"monopanel-api.socket", "reload-or-restart", true},
+		{"monopanel-api.socket", "stop", false},
+		{"monopanel-api.socket", "start", false},
+		{"monopanel-api.service", "start", false},
+		{"nginx.service", "restart", false},
+	} {
+		if got := endsPanel(c.unit, c.action); got != c.want {
+			t.Errorf("endsPanel(%q, %q) = %v, want %v", c.unit, c.action, got, c.want)
+		}
 	}
 }

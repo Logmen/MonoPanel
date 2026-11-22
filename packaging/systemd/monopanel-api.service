@@ -3,6 +3,14 @@ Description=MonoPanel API and web interface
 After=network-online.target monopanel-agent.service
 Wants=network-online.target
 Requires=monopanel-agent.service
+# The HTTPS port comes from monopanel-api.socket: PID 1 keeps it bound while
+# the API restarts. Wants=, not Requires=: without the socket the API listens
+# on the port itself.
+Wants=monopanel-api.socket
+After=monopanel-api.socket
+# A unit that runs into its start limit takes its socket down with it, and
+# the port would be free.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

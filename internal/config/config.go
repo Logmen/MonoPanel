@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/goccy/go-yaml"
 )
@@ -239,6 +240,17 @@ func (c Config) WritePrefixes() []string {
 
 // Path returns the file this configuration was loaded from (or would be saved to).
 func (c Config) Path() string { return c.path }
+
+// APISocketUnit is the socket unit that holds the panel's HTTPS port for
+// Update.APIUnit: monopanel-api.socket for monopanel-api.service (systemd
+// hands a service the sockets of the unit with its name).
+func (c Config) APISocketUnit() string {
+	unit := c.Update.APIUnit
+	if unit != "" && !strings.Contains(unit, ".") {
+		unit += ".service"
+	}
+	return strings.TrimSuffix(unit, ".service") + ".socket"
+}
 
 // DBPath is the SQLite database file.
 func (c Config) DBPath() string { return filepath.Join(c.DataDir, "panel.db") }

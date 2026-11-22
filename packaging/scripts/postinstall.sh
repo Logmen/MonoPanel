@@ -22,7 +22,20 @@ install -d -m 0700 -o root -g root /var/lib/monopanel-agent /var/lib/monopanel-a
 install -d -m 1771 -o root -g monopanel /var/log/monopanel
 [ -e /var/log/monopanel/sites ] || [ -L /var/log/monopanel/sites ] || install -d -m 0711 -o root -g root /var/log/monopanel/sites
 systemctl daemon-reload >/dev/null 2>&1 || true
-systemctl enable monopanel-agent.service monopanel-api.service >/dev/null 2>&1 || true
+systemctl enable monopanel-agent.service monopanel-api.socket monopanel-api.service >/dev/null 2>&1 || true
+# The panel's HTTPS port belongs to monopanel-api.socket: PID 1 keeps it bound
+# while the API restarts, so no local account can take it in between. Its
+# address follows web.listen in config.yaml (before mp setup there is none,
+# and the unit's own 8443 stands). Never fatal: without the socket the API
+# listens on the port itself. moved: the address in the drop-in changed, which
+# a socket that is listening does not follow by itself.
+dropin=/etc/systemd/system/monopanel-api.socket.d/listen.conf
+moved=0
+if [ -f /etc/monopanel/config.yaml ]; then
+	before=$(cat "$dropin" 2>/dev/null || true)
+	/usr/bin/monopanel api-socket-sync || echo "warning: monopanel-api.socket did not follow web.listen; run mp setup" >&2
+	[ "$(cat "$dropin" 2>/dev/null || true)" = "$before" ] || moved=1
+fi
 
 # On an upgrade the panel is already running the old binary: restart it, or the
 # new version would only take effect at the next reboot. dpkg passes the
@@ -31,7 +44,26 @@ upgrade=0
 [ -n "${2:-}" ] && upgrade=1
 [ "${1:-}" = "2" ] && upgrade=1
 if [ "$upgrade" = "1" ]; then
-	systemctl try-restart monopanel-agent.service monopanel-api.service >/dev/null 2>&1 || true
+	if [ "$moved" = "0" ] && systemctl -q is-active monopanel-api.socket; then
+		# The socket holds the port through the upgrade; the API restarts on it.
+		systemctl try-restart monopanel-agent.service monopanel-api.service >/dev/null 2>&1 || true
+	else
+		# Up to 0.8.19 the API listened on the port itself, and the old one
+		# still does; or the socket's address moved, which a socket that is
+		# listening does not follow. The socket can bind the port only once no
+		# API process holds it, and systemd refuses to start a socket whose
+		# service runs. So the socket restarts in one go with the API: systemd
+		# orders it after the old API's exit and before the new one's start,
+		# and the port is never free for as long as a separate stop of the API
+		# and start of the socket would leave it. An API that is not running
+		# stays so, with its socket listening.
+		if systemctl -q is-active monopanel-api.service; then
+			systemctl restart monopanel-agent.service monopanel-api.socket monopanel-api.service >/dev/null 2>&1 || true
+		else
+			systemctl restart monopanel-api.socket >/dev/null 2>&1 || true
+			systemctl try-restart monopanel-agent.service >/dev/null 2>&1 || true
+		fi
+	fi
 	echo "MonoPanel updated."
 else
 	echo "MonoPanel installed. Run: mp setup"

@@ -61,7 +61,7 @@ func (s *Server) registerServices() {
 
 	huma.Register(s.api, huma.Operation{
 		OperationID: "services-action", Method: http.MethodPost, Path: "/services/{unit}", Summary: "Start, stop, reload, restart, enable or disable a unit", Tags: []string{"services"}, Security: secured, Metadata: adminOnly,
-		Description: "Answers with the unit's state after the action. Stopping or restarting monopanel-api, or monopanel-agent (which monopanel-api requires), stops the process that serves the request: for these, stop, restart and reload-or-restart are recorded in the audit log and answered with the unit's current state first, and carried out right after the answer. Reconnect a few seconds later.",
+		Description: "Answers with the unit's state after the action. Stopping or restarting monopanel-api, or monopanel-agent (which monopanel-api requires), stops the process that serves the request: for these, stop, restart and reload-or-restart are recorded in the audit log and answered with the unit's current state first, and carried out right after the answer. So is a restart of monopanel-api.socket, which holds the panel's port: systemd starts no socket while its service runs, so the socket is stopped and monopanel-api restarted, which brings the socket back. Reconnect a few seconds later.",
 	}, func(ctx context.Context, in *serviceActionInput) (*serviceOutput, error) {
 		p := principalFrom(ctx)
 		if s.stopsPanel(in.Unit, in.Body.Action) {
@@ -82,7 +82,9 @@ func (s *Server) registerServices() {
 // stopsPanel reports whether the action ends the process that serves the
 // request: a stop or restart of monopanel-api itself, or of monopanel-agent,
 // which monopanel-api requires — systemd stops and restarts the API with it.
-// Neither unit can reload, so reload-or-restart restarts.
+// Neither unit can reload, so reload-or-restart restarts. A restart of the
+// socket that holds the panel's port restarts the API too (actOnPanelUnit);
+// a stop of it leaves the API running on its copy of the port.
 func (s *Server) stopsPanel(unit, action string) bool {
 	switch action {
 	case "stop", "restart", "reload-or-restart":
@@ -92,6 +94,9 @@ func (s *Server) stopsPanel(unit, action string) bool {
 	// Both sides as systemd names them: the request and config.yaml may
 	// each leave the .service off, as the agent does.
 	unit = serviceUnit(unit)
+	if unit == s.cfg.APISocketUnit() {
+		return action != "stop"
+	}
 	return unit == serviceUnit(s.cfg.Update.APIUnit) || unit == serviceUnit(s.cfg.Update.AgentUnit)
 }
 
@@ -147,10 +152,31 @@ func (s *Server) actOnPanelUnit(entry store.AuditEntry, unit, action string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	s.log.Info("acting on the panel's own unit", "unit", unit, "action", action, "actor", entry.Actor)
-	if _, err := s.agent.Service(ctx, unit, action); err != nil {
-		s.log.Error("acting on the panel's own unit", "unit", unit, "action", action, "err", err)
-		entry.Result, entry.Details = "error", map[string]any{"after_answer": true, "error": err.Error()}
-		s.db.Audit(ctx, entry)
+	// A restart of the API applies a web.listen waiting in config.yaml as
+	// well, and its socket has to move along. A stop leaves the socket be:
+	// it keeps the port, and the next connection starts the API again. The
+	// agent's restart takes the API along by itself and leaves the socket as
+	// it is: a move waits for the next restart of the API.
+	if action != "stop" && serviceUnit(unit) == serviceUnit(s.cfg.Update.APIUnit) {
+		s.stopMovingSocket(ctx)
+	}
+	// A restart of the socket itself would leave it stopped: systemd stops
+	// it and then refuses to start it while the API runs, and the port is
+	// kept only by this process — free for anybody while the API restarts
+	// next. So the socket is stopped (this process holds its own copy of
+	// the port meanwhile) and the API restarted, whose unit wants the socket
+	// and gets it back between this process's exit and the next one's start.
+	act := []struct{ unit, action string }{{unit, action}}
+	if serviceUnit(unit) == s.cfg.APISocketUnit() {
+		act = []struct{ unit, action string }{{unit, "stop"}, {s.cfg.Update.APIUnit, "restart"}}
+	}
+	for _, a := range act {
+		if _, err := s.agent.Service(ctx, a.unit, a.action); err != nil {
+			s.log.Error("acting on the panel's own unit", "unit", a.unit, "action", a.action, "err", err)
+			entry.Result, entry.Details = "error", map[string]any{"after_answer": true, "error": err.Error()}
+			s.db.Audit(ctx, entry)
+			return
+		}
 	}
 }
 

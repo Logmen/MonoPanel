@@ -402,9 +402,13 @@ type PanelConfigRequest struct {
 }
 
 // PanelConfigResponse names the file and the keys whose value changed.
+// SocketError says why the socket that holds the panel's port could not
+// follow a new web.listen: config.yaml is changed all the same, and the API
+// listens on the new address itself.
 type PanelConfigResponse struct {
-	Path    string   `json:"path"`
-	Changed []string `json:"changed"`
+	Path        string   `json:"path"`
+	Changed     []string `json:"changed"`
+	SocketError string   `json:"socket_error,omitempty"`
 }
 
 // ApplyUnitRequest writes one of the panel's systemd units, or the drop-in

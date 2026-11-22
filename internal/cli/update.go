@@ -285,8 +285,12 @@ func updateRunCmd() *cobra.Command {
 			WriteState: writeUpdateState,
 			Binary:     panelBinary(),
 			Argv:       profile.Packages().InstallArgv([]string{pkg}),
-			Units:      []string{cfg.Update.AgentUnit, cfg.Update.APIUnit},
-			Ready:      panelVersionProbe(cfg),
+			// Not the socket of the panel's port: the package's postinstall
+			// has it listening, it keeps the port while both restart, and
+			// systemd refuses to restart a socket whose service runs. Should
+			// it not listen, the API's restart starts it (the unit wants it).
+			Units: []string{cfg.Update.AgentUnit, cfg.Update.APIUnit},
+			Ready: panelVersionProbe(cfg),
 		}
 		return inst.Run(cmd.Context())
 	}}

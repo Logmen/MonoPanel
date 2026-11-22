@@ -4,15 +4,18 @@ package api
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/coreos/go-systemd/v22/activation"
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
@@ -33,8 +36,22 @@ import (
 type Server struct {
 	// listenAddr is the address the HTTPS listener is bound to once Run has
 	// it (a net.Addr): the console reaches the API there, an address no
-	// other process can hold at the same time.
-	listenAddr atomic.Value
+	// other process can hold at the same time. listenV6Only says that it is
+	// the IPv6 wildcard without IPv4, listenVia where the listener came from
+	// (viaSocket, viaSelf).
+	listenAddr   atomic.Value
+	listenV6Only atomic.Bool
+	listenVia    atomic.Int32
+	// activation takes the listening sockets systemd passed the process
+	// (monopanel-api.socket); tests pass their own. stopAPISocket stops
+	// that socket through the agent when it keeps the port of web.listen
+	// on another address (httpsListener).
+	activation    func() ([]net.Listener, error)
+	stopAPISocket func(ctx context.Context) error
+	// keepPort makes Run leave its copy of the HTTPS socket (keptPort) open
+	// for the exit of the process to close (KeepPortUntilExit).
+	keepPort atomic.Bool
+	keptPort atomic.Pointer[os.File]
 
 	cfg     config.Config
 	db      *store.DB
@@ -81,6 +98,13 @@ func (s *Server) SetReadinessWaits(poolSocket, nginx time.Duration) {
 // SetHostIPs overrides the host's addresses. Intended for tests.
 func (s *Server) SetHostIPs(fn func() []string) { s.hostIPs = fn }
 
+// KeepPortUntilExit makes Run leave a copy of the HTTPS socket open for the
+// end of the process to close, for monopanel api: after Run it waits for the
+// jobs in flight, and a port closed before that would be anybody's while the
+// socket moves to a new address, or wherever there is no socket. In a
+// process that runs the server again (the demo, tests) Run closes it.
+func (s *Server) KeepPortUntilExit() { s.keepPort.Store(true) }
+
 // SetHostIPv6s replaces the host's IPv6 address list (tests, the demo).
 func (s *Server) SetHostIPv6s(fn func() []string) { s.hostIPv6s = fn }
 
@@ -121,6 +145,14 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	}
 	s.poolSocketWait, s.nginxWait = 10*time.Second, 15*time.Second
 	s.restartDelay = 500 * time.Millisecond
+	s.activation = activation.Listeners
+	s.stopAPISocket = func(ctx context.Context) error {
+		if s.agent == nil {
+			return errors.New("no agent")
+		}
+		_, err := s.agent.Service(ctx, s.cfg.APISocketUnit(), "stop")
+		return err
+	}
 	s.probe = probePort
 	s.reach = reachPort
 	s.hostIPs = localIPv4s

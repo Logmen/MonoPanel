@@ -34,7 +34,8 @@ type Server struct {
 	// rootUID is the user whose directories root's walks trust as root's
 	// own: 0 for the agent as it runs, the test's user in tests.
 	rootUID int
-	// unitDir is where /v1/units/* write (/etc/systemd/system).
+	// unitDir is where /v1/units/* write (/etc/systemd/system), and the
+	// drop-ins of the panel's socket go.
 	unitDir string
 	// shareMu orders the writes of the shared folders' mount units (write
 	// lock, taken with TryLock: lockShareUnits) against the calls that change
@@ -43,6 +44,11 @@ type Server struct {
 	// such a call that read the units before it is still at work
 	// (sharemount.go).
 	shareMu sync.RWMutex
+	// lookupIP resolves a host name of web.listen for the panel's socket,
+	// daemonReload reloads systemd after its drop-in changed. Tests replace
+	// both.
+	lookupIP     LookupIP
+	daemonReload func(ctx context.Context) error
 }
 
 // NewServer builds an agent.
@@ -50,7 +56,8 @@ func NewServer(cfg config.Config, profile osprofile.Profile, log *slog.Logger) *
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{cfg: cfg, profile: profile, log: log, rootUID: os.Geteuid(), unitDir: systemUnitDir}
+	return &Server{cfg: cfg, profile: profile, log: log, rootUID: os.Geteuid(), unitDir: systemUnitDir,
+		lookupIP: net.DefaultResolver.LookupIPAddr, daemonReload: systemdReload}
 }
 
 // Handler returns the RPC router.

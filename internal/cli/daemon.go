@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -50,8 +52,42 @@ func versionCmd() *cobra.Command {
 	}}
 }
 
+// failedStartPause is how long a failed start of the API that
+// monopanel-api.socket made lingers before it exits; RestartSec of its unit.
+var failedStartPause = 2 * time.Second
+
+// startedBySocket tells whether systemd passed this process listening
+// sockets: monopanel-api.socket started it (sd_listen_fds(3)). It is asked
+// before Run takes them, which unsets the variables.
+func startedBySocket() bool {
+	return os.Getenv("LISTEN_FDS") != "" && os.Getenv("LISTEN_PID") == strconv.Itoa(os.Getpid())
+}
+
+// lingerAfterFailure keeps a failed start of the API from exiting at once
+// when monopanel-api.socket made it. A connection waiting on the socket
+// starts the API again as soon as it is gone, past RestartSec — on every
+// version when the unit does not restart by itself (seen on systemd 262),
+// and, by the source of systemd before 254, even while it waits to restart
+// — and a start that fails in a moment would run twenty times in two
+// seconds: the socket then gives up (trigger-limit-hit) and closes the
+// panel's port, which is anybody's while the API keeps failing. Paced like
+// this, a failing API comes back no faster than its unit restarts it.
+func lingerAfterFailure(ctx context.Context) {
+	select {
+	case <-ctx.Done():
+	case <-time.After(failedStartPause):
+	}
+}
+
 func apiCmd() *cobra.Command {
-	return &cobra.Command{Use: "api", Short: T("запустить API-сервер (monopanel-api.service)", "run the API server (monopanel-api.service)"), Hidden: true, RunE: func(cmd *cobra.Command, _ []string) error {
+	return &cobra.Command{Use: "api", Short: T("запустить API-сервер (monopanel-api.service)", "run the API server (monopanel-api.service)"), Hidden: true, RunE: func(cmd *cobra.Command, _ []string) (err error) {
+		if startedBySocket() {
+			defer func() {
+				if err != nil && cmd.Context().Err() == nil {
+					lingerAfterFailure(cmd.Context())
+				}
+			}()
+		}
 		cfg, err := loadConfig()
 		if err != nil {
 			return err
@@ -73,6 +109,7 @@ func apiCmd() *cobra.Command {
 		defer db.Close() //nolint:errcheck // cleanup
 		runner := jobs.NewRunner(db, cfg.Jobs.Workers, logger)
 		srv := api.New(cfg, db, agent.NewClient(cfg.AgentSocket()), runner, profile, logger)
+		srv.KeepPortUntilExit()
 		runner.Start(ctx)
 		logger.Info("monopanel api starting", "version", buildinfo.Version, "config", cfg.Path())
 		err = srv.Run(ctx)

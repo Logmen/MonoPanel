@@ -43,6 +43,9 @@ type Agent struct {
 	files   map[string]agent.FileSpec // last written content per path
 	removed []string
 	units   map[string]string // unit -> last action
+	// actions are the /v1/service actions, "<unit> <action>" in the order
+	// they came (status left out).
+	actions []string
 	dirs    []string
 	// dirSpecs is how dirs/ensure was last told to make a directory (an
 	// empty owner keeps the one before), symlinks what symlink/ensure made:
@@ -114,6 +117,9 @@ type Agent struct {
 	// account with its home in /var/www, and the layouts are the
 	// distributions' own. A unit the real agent would refuse fails here too.
 	UnitHost *agent.UnitHost
+	// LoadState answers the load state of these units ("not-found": a unit
+	// the host does not have); every other unit is "loaded".
+	LoadState map[string]string
 
 	srv *httptest.Server
 }
@@ -492,12 +498,17 @@ func (a *Agent) respond(path string, body []byte) any {
 		}
 		if unit != "" && req.Action != "" && req.Action != "status" {
 			a.units[unit] = req.Action
+			a.actions = append(a.actions, unit+" "+req.Action)
 		}
 		state := "active"
 		if req.Action == "stop" || req.Action == "disable" {
 			state = "inactive"
 		}
-		return agent.ServiceResponse{Status: systemd.Status{Unit: unit, LoadState: "loaded", ActiveState: state, SubState: "running", UnitFileState: "enabled"}}
+		load := "loaded"
+		if l, ok := a.LoadState[unit]; ok {
+			load = l
+		}
+		return agent.ServiceResponse{Status: systemd.Status{Unit: unit, LoadState: load, ActiveState: state, SubState: "running", UnitFileState: "enabled"}}
 
 	case "/v1/pkg":
 		var req agent.PkgRequest
@@ -757,6 +768,14 @@ func (a *Agent) UnitAction(unit string) string {
 	return a.units[unit]
 }
 
+// ServiceActions returns the actions asked of /v1/service, "<unit> <action>"
+// in the order they came; status queries are left out.
+func (a *Agent) ServiceActions() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string{}, a.actions...)
+}
+
 // RunAs returns the recorded run-as-user (fsop) invocations.
 func (a *Agent) RunAs() []agent.RunAsUserRequest {
 	a.mu.Lock()
@@ -807,6 +826,7 @@ func (a *Agent) Reset() {
 	a.files = map[string]agent.FileSpec{}
 	a.removed = nil
 	a.units = map[string]string{}
+	a.actions = nil
 	a.dirs = nil
 	a.dirSpecs = map[string]agent.DirSpec{}
 	a.symlinks = map[string]string{}

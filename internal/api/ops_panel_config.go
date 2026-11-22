@@ -243,6 +243,7 @@ func (s *Server) setPanelConfig(ctx context.Context, in *panelConfigSetInput) (*
 	}
 
 	changes := map[string]any{}
+	details := map[string]any{"changes": changes, "restart": b.Restart}
 	if len(set) > 0 {
 		res, err := s.agent.SetPanelConfig(ctx, &agent.PanelConfigRequest{Path: s.cfg.Path(), Set: set})
 		if err != nil {
@@ -252,10 +253,17 @@ func (s *Server) setPanelConfig(ctx context.Context, in *panelConfigSetInput) (*
 		for _, k := range res.Changed {
 			changes[k] = map[string]string{"from": cur.PanelValue(k), "to": set[k]}
 		}
+		// The new address is in config.yaml, and the API comes back there
+		// listening on it itself: without the socket that keeps the port
+		// bound while it restarts.
+		if res.SocketError != "" {
+			s.log.Warn("the panel's socket did not follow web.listen", "socket", s.cfg.APISocketUnit(), "err", res.SocketError)
+			details["socket_error"] = res.SocketError
+		}
 	}
 	// Recorded before the file is read back: the change is made either way.
 	if len(changes) > 0 || b.Restart {
-		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "config.set", Target: cur.Path(), IP: requestInfo(ctx).IP, Details: map[string]any{"changes": changes, "restart": b.Restart}})
+		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "config.set", Target: cur.Path(), IP: requestInfo(ctx).IP, Details: details})
 	}
 	// A file this process cannot load any more would keep the restarted one
 	// from starting at all: no restart then.
@@ -348,14 +356,9 @@ func (s *Server) checkListen(ctx context.Context, listen string) error {
 				return fmt.Errorf("web.listen: %s does not resolve on this server; give an IP address of the server instead", host)
 			}
 			// A listener on a name takes one of its addresses, the first
-			// IPv4 one when there is one — as net.Listen does.
-			ip = found[0].IP
-			for _, a := range found {
-				if a.IP.To4() != nil {
-					ip = a.IP
-					break
-				}
-			}
+			// IPv4 one when there is one — as net.Listen does, and as the
+			// agent writes it into the drop-in of the panel's socket.
+			ip = agent.ListenIP(found)
 		}
 		if !localIP(ip) {
 			return fmt.Errorf("web.listen: %s is not an address of this server, the panel could not listen there", ip)
@@ -363,7 +366,7 @@ func (s *Server) checkListen(ctx context.Context, listen string) error {
 		addrs = append(addrs, ip.String())
 	}
 	if port == s.panelPort() {
-		return nil // the panel's own listener holds it now
+		return nil // the panel's own listener holds it now, or its socket
 	}
 	for _, a := range addrs {
 		if s.reach(a, port) {
@@ -485,7 +488,37 @@ func (s *Server) restartAPI() {
 	defer cancel()
 	unit := s.cfg.Update.APIUnit
 	s.log.Info("restarting to apply config.yaml", "unit", unit)
+	s.stopMovingSocket(ctx)
 	if _, err := s.agent.Service(ctx, unit, "restart"); err != nil {
 		s.log.Error("restart after a change of config.yaml", "unit", unit, "err", err)
+	}
+}
+
+// stopMovingSocket stops the socket that holds the panel's port before a
+// restart of monopanel-api that has to move it: config.yaml's web.listen
+// is not the one this process runs with (the agent has given the socket the
+// new address in its drop-in), or this process listens on a port of its own
+// (the socket was not there, not listening, or elsewhere when it started).
+// The API's unit wants the socket, so its restart starts it again on the
+// drop-in's address — once this process, which still holds the old one, is
+// gone: started while the API runs, the socket is refused ("Socket service
+// already active, refusing"). A restart that moves nothing leaves the
+// socket alone, and the port stays bound throughout.
+func (s *Server) stopMovingSocket(ctx context.Context) {
+	listen := s.cfg.Web.Listen
+	if file, err := s.panelConfigFile(); err == nil {
+		listen = file.Web.Listen
+	}
+	if listen == s.cfg.Web.Listen && s.listenVia.Load() != viaSelf {
+		return
+	}
+	unit := s.cfg.APISocketUnit()
+	st, err := s.agent.Service(ctx, unit, "status")
+	if err != nil || st.Status.LoadState != "loaded" {
+		return // no socket here: the API listens on the port itself, as without systemd
+	}
+	s.log.Info("stopping the panel's socket: the restart moves it to web.listen", "socket", unit, "web.listen", listen)
+	if _, err := s.agent.Service(ctx, unit, "stop"); err != nil {
+		s.log.Warn("stopping the panel's socket for the restart", "socket", unit, "err", err)
 	}
 }

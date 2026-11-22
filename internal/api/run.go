@@ -17,9 +17,17 @@ import (
 	"monopanel/internal/peercred"
 )
 
-// Run serves HTTPS on cfg.Web.Listen and plain HTTP on the local unix socket
-// until ctx is cancelled.
+// Run serves HTTPS on cfg.Web.Listen — on the socket systemd passed when it
+// is there (httpsListener) — and plain HTTP on the local unix socket until
+// ctx is cancelled.
 func (s *Server) Run(ctx context.Context) error {
+	// The sockets systemd passed come first: activation unsets LISTEN_FDS
+	// and marks them close-on-exec, so that no child of this process (the
+	// console's mp) inherits the panel's port.
+	passed, err := s.activation()
+	if err != nil {
+		s.log.Warn("the sockets systemd passed", "err", err)
+	}
 	if err := s.tls.Reload(); err != nil {
 		return err
 	}
@@ -87,14 +95,23 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}()
 
-	tcp, err := net.Listen("tcp", tlsSrv.Addr)
+	tcp, onSocket, err := s.httpsListener(ctx, passed)
 	if err != nil {
 		return err
 	}
 	s.listenAddr.Store(tcp.Addr())
+	s.listenV6Only.Store(v6Only(tcp))
+	from := "itself"
+	if onSocket {
+		s.listenVia.Store(viaSocket)
+		from = s.cfg.APISocketUnit()
+	} else {
+		s.listenVia.Store(viaSelf)
+	}
+	defer s.holdPort(tcp)()
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
-		s.log.Info("api listening", "https", tcp.Addr().String(), "socket", sock)
+		s.log.Info("api listening", "https", tcp.Addr().String(), "from", from, "socket", sock)
 		if err := tlsSrv.ServeTLS(tcp, "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}

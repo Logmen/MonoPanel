@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -90,6 +91,14 @@ Description=MonoPanel API and web interface
 After=network-online.target monopanel-agent.service
 Wants=network-online.target
 Requires=monopanel-agent.service
+# The HTTPS port comes from monopanel-api.socket: PID 1 keeps it bound while
+# the API restarts. Wants=, not Requires=: without the socket the API listens
+# on the port itself.
+Wants=monopanel-api.socket
+After=monopanel-api.socket
+# A unit that runs into its start limit takes its socket down with it, and
+# the port would be free.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -108,6 +117,35 @@ CapabilityBoundingSet=
 [Install]
 WantedBy=multi-user.target
 `
+
+// apiSocketUnit holds the panel's HTTPS port for monopanel-api. Its address
+// follows web.listen through a drop-in MonoPanel writes
+// (agent.SyncAPISocket); 8443 is that of the default web.listen, :8443.
+const apiSocketUnit = `[Unit]
+Description=MonoPanel HTTPS port of the API
+
+[Socket]
+# PID 1 binds the panel's HTTPS port and hands it to monopanel-api.service,
+# also while the API restarts: no local account can take the port then. The
+# address comes from web.listen in config.yaml (monopanel-api.socket.d/listen.conf).
+# BindIPv6Only=both takes IPv4 as well, as the API's own listener on :8443
+# does; FreeBind=yes binds an address the network does not have yet at boot.
+ListenStream=8443
+Accept=no
+BindIPv6Only=both
+FreeBind=yes
+
+[Install]
+WantedBy=sockets.target
+`
+
+// The panel's units and where mp setup writes them.
+const (
+	systemUnitDir = "/etc/systemd/system"
+	agentService  = "monopanel-agent.service"
+	apiService    = "monopanel-api.service"
+	apiSocket     = "monopanel-api.socket"
+)
 
 // Run performs the setup.
 func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
@@ -305,32 +343,29 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 		binary, _ = os.Executable()
 		binary, _ = filepath.EvalSymlinks(binary)
 	}
-	units := map[string]string{
-		"/etc/systemd/system/monopanel-agent.service": fmt.Sprintf(agentUnit, binary),
-		"/etc/systemd/system/monopanel-api.service":   fmt.Sprintf(apiUnit, binary),
-	}
 	sd, err := systemd.Connect(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer sd.Close()
-	wrote := false
-	for path, content := range units {
-		_, statErr := os.Stat(path)
-		if opts.InstallUnits || errors.Is(statErr, os.ErrNotExist) {
-			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-				return nil, err
-			}
-			wrote = true
-		}
+	wrote, moved, socketErr, err := installUnits(ctx, systemUnitDir, cfg, binary, opts.InstallUnits, sd.DaemonReload)
+	if len(wrote) > 0 {
+		step("systemd units: %s (%s)", strings.Join(wrote, ", "), binary)
 	}
-	if wrote {
-		step("systemd units: monopanel-agent, monopanel-api (%s)", binary)
-		if err := sd.DaemonReload(ctx); err != nil {
-			return nil, err
-		}
+	if err != nil {
+		return nil, err
 	}
-	for _, u := range []string{"monopanel-agent.service", "monopanel-api.service"} {
+	if socketErr != nil {
+		step(T("предупреждение: %v; monopanel-api будет слушать web.listen сам, и пока он перезапускается, порт свободен: исправьте web.listen и запустите mp setup ещё раз",
+			"warning: %v; monopanel-api will listen on web.listen itself, and the port is free while it restarts: fix web.listen and run mp setup again"), socketErr)
+	}
+	if moved {
+		step(T("%s: адрес из web.listen (%s)", "%s: the address of web.listen (%s)"), apiSocket, cfg.Web.Listen)
+	}
+	if ip := agent.ForeignListenIP(cfg.Web.Listen); ip != nil {
+		step(T("предупреждение: %s — не адрес этого сервера; сокет порта панели всё равно займёт его, и панель будет слушать там, где её никто не достанет", "warning: %s is not an address of this server; the socket of the panel's port takes it all the same, and the panel would listen where nobody reaches it"), ip)
+	}
+	for _, u := range []string{agentService, apiSocket, apiService} {
 		if err := sd.Enable(ctx, u); err != nil {
 			return nil, err
 		}
@@ -346,10 +381,16 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 	}
 	if opts.Start {
 		step("%s", T("запуск сервисов", "starting the services"))
-		for _, u := range []string{"monopanel-agent.service", "monopanel-api.service"} {
-			if err := sd.Restart(ctx, u); err != nil {
-				return nil, err
-			}
+		fresh := slices.Contains(wrote, apiSocket) || moved
+		if !fresh {
+			st, err := sd.Status(ctx, apiSocket)
+			fresh = err != nil || agent.APISocketStale(st, modTime(agent.APISocketDropIn(cfg)))
+		}
+		warn := func(err error) {
+			step(T("предупреждение: %v; monopanel-api слушает порт сам", "warning: %v; monopanel-api listens on the port itself"), err)
+		}
+		if err := startPanel(ctx, sd, fresh, warn); err != nil {
+			return nil, err
 		}
 		cl := client.NewUnix(cfg.APISocket())
 		deadline := time.Now().Add(20 * time.Second)
@@ -384,6 +425,96 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 		res.URLs = append(res.URLs, fmt.Sprintf("https://%s:%s/", n, port))
 	}
 	return res, nil
+}
+
+// installUnits writes the panel's units into dir (writeUnits) and gives the
+// socket of the panel's port the address of web.listen
+// (agent.APISocketSync), reloading systemd when anything changed. moved says
+// that the socket's address changed on disk. A socket that cannot follow
+// web.listen (a name that does not resolve now) is socketErr, not err: the
+// API listens on web.listen itself then, stopping a socket in its way, as
+// it does when the agent or the package's script could not move the socket.
+func installUnits(ctx context.Context, dir string, cfg config.Config, binary string, force bool, reload func(context.Context) error) (wrote []string, moved bool, socketErr, err error) {
+	if wrote, err = writeUnits(dir, binary, force); err != nil {
+		return wrote, false, nil, err
+	}
+	if len(wrote) > 0 {
+		if err := reload(ctx); err != nil {
+			return wrote, false, nil, err
+		}
+	}
+	if moved, socketErr = (agent.APISocketSync{UnitDir: dir, Reload: reload}).Sync(ctx, cfg); socketErr != nil {
+		socketErr = fmt.Errorf("%s: %w", apiSocket, socketErr)
+	}
+	return wrote, moved, socketErr, nil
+}
+
+// writeUnits writes the panel's units into dir (/etc/systemd/system) as mp
+// setup makes them: the ones that are missing, every one with force
+// (--install-units). It returns the names it wrote.
+func writeUnits(dir, binary string, force bool) ([]string, error) {
+	var wrote []string
+	for _, u := range []struct{ name, content string }{
+		{agentService, fmt.Sprintf(agentUnit, binary)},
+		{apiSocket, apiSocketUnit},
+		{apiService, fmt.Sprintf(apiUnit, binary)},
+	} {
+		path := filepath.Join(dir, u.name)
+		if _, err := os.Stat(path); !force && !errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err := os.WriteFile(path, []byte(u.content), 0o644); err != nil {
+			return wrote, err
+		}
+		wrote = append(wrote, u.name)
+	}
+	return wrote, nil
+}
+
+// serviceManager is what starting the panel needs of systemd.
+type serviceManager interface {
+	Start(ctx context.Context, unit string) error
+	Stop(ctx context.Context, unit string) error
+	Restart(ctx context.Context, unit string) error
+}
+
+// startPanel starts the panel's services, or restarts them. The socket of
+// the panel's port starts afresh only when it has to take the port anew
+// (fresh): its unit or its address was written just now, it is not
+// listening — an API of 0.8.19 or older still listens on the port itself —
+// or it was started on an older address. The API is stopped first then: the
+// socket can only bind the port once no API process holds it, and systemd
+// refuses to start a socket whose service runs. Otherwise the socket keeps
+// the port while the API restarts. A socket that does not start is warned
+// about: the API listens on the port itself then.
+func startPanel(ctx context.Context, sd serviceManager, fresh bool, warn func(error)) error {
+	if !fresh {
+		for _, u := range []string{agentService, apiService} {
+			if err := sd.Restart(ctx, u); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := sd.Stop(ctx, apiService); err != nil {
+		return err
+	}
+	if err := sd.Restart(ctx, apiSocket); err != nil {
+		warn(err)
+	}
+	if err := sd.Restart(ctx, agentService); err != nil {
+		return err
+	}
+	return sd.Start(ctx, apiService)
+}
+
+// modTime is when path was last written, zero when it is not there.
+func modTime(path string) time.Time {
+	st, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return st.ModTime()
 }
 
 func chownName(path, owner, group string, mode os.FileMode) error {
