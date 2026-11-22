@@ -268,6 +268,40 @@ func check(name, status, detail string) apitypes.Check {
 	return apitypes.Check{Name: name, Status: status, Detail: detail}
 }
 
+// resticSandboxCheck is the doctor's line on how restic runs, from what the
+// agent's ping says of its sandbox.
+func resticSandboxCheck(sb *agent.SandboxInfo) apitypes.Check {
+	const name = "restic sandbox"
+	if sb.Landlock < 1 {
+		why := "no Landlock (" + sb.Error + ")"
+		if sb.Hint != "" {
+			why += "; " + sb.Hint
+		}
+		if sb.NoSymfollow {
+			return check(name, "warn", why+": restic backs up and restores as root without its sandbox. A backup still reads the trees it saves in a view that follows no symlink, so a directory an account swaps for a symlink leads nowhere; nothing else confines restic")
+		}
+		detail := why + ": restic backs up and restores as root without its sandbox, and an account that swaps a directory for a symlink while a backup reads its home can have files outside it stored as its own"
+		if sb.NoSymfollowError != "" {
+			detail += "; the view without symlinks that would stop that needs the agent to mount (" + sb.NoSymfollowError + ")"
+		}
+		return check(name, "warn", detail)
+	}
+	var warns []string
+	if !sb.NoSymfollow && sb.NoSymfollowError != "" {
+		warns = append(warns, fmt.Sprintf("a backup follows the symlinks in the trees it reads (%s): during a server backup, which reads the panel's configuration, certificates and dumps as well, an account that swaps a directory of its own for a symlink can have those, or another account's files, stored as its own; the agent needs to mount (a mount namespace, mount_setattr of Linux 5.14)", sb.NoSymfollowError))
+	}
+	if !sb.PrivateEtc && sb.PrivateEtcError != "" {
+		warns = append(warns, fmt.Sprintf("restic reads /etc/resolv.conf, /etc/hosts and /etc/passwd by inode (%s): when the host replaces one of them during a backup (NetworkManager, dhclient, useradd), restic loses name resolution, and with it a remote repository, or owner names; the agent needs to mount a tmpfs for a private /etc", sb.PrivateEtcError))
+	}
+	if len(warns) > 0 {
+		return check(name, "warn", fmt.Sprintf("Landlock ABI %d, but %s", sb.Landlock, strings.Join(warns, "; and ")))
+	}
+	if sb.Landlock == 1 {
+		return check(name, "ok", "Landlock ABI 1: backups run in it, restores without it (ABI 1 cannot let restic link files between directories)")
+	}
+	return check(name, "ok", fmt.Sprintf("Landlock ABI %d", sb.Landlock))
+}
+
 // doctor runs the health checks.
 func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 	actx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -282,16 +316,7 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 	}
 	add(check("agent", "ok", "version "+ping.Version))
 	if sb := ping.Sandbox; sb != nil {
-		switch {
-		case sb.Landlock >= 1 && !sb.NoSymfollow && sb.NoSymfollowError != "":
-			add(check("restic sandbox", "warn", fmt.Sprintf("Landlock ABI %d, but a backup follows the symlinks in the web root (%s): during a server backup, which reads the panel's configuration, certificates and dumps as well, an account that swaps a directory of its own for a symlink can have those, or another account's files, stored as its own; the agent needs to mount (a mount namespace, mount_setattr of Linux 5.14)", sb.Landlock, sb.NoSymfollowError)))
-		case sb.Landlock >= 2:
-			add(check("restic sandbox", "ok", fmt.Sprintf("Landlock ABI %d", sb.Landlock)))
-		case sb.Landlock == 1:
-			add(check("restic sandbox", "ok", "Landlock ABI 1: backups run in it, restores without it (ABI 1 cannot let restic link files between directories)"))
-		default:
-			add(check("restic sandbox", "warn", "no Landlock ("+sb.Error+"): restic backs up and restores as root without its sandbox, and an account that swaps a directory for a symlink while a backup reads its home can have files outside it stored as its own; boot a kernel with landlock in its lsm= list"))
-		}
+		add(resticSandboxCheck(sb))
 	}
 
 	web := s.profile.Web()

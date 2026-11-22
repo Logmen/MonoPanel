@@ -80,6 +80,9 @@ func (s *Server) removeUnixUser(ctx context.Context, req *RemoveUnixUserRequest)
 		if !filepath.IsAbs(home) || filepath.Dir(home) != root {
 			return resp, &Error{Status: http.StatusForbidden, Message: "refusing to remove " + home + ": not a directory of " + root}
 		}
+		if s.inRestoreArea(home) {
+			return resp, &Error{Status: http.StatusForbidden, Message: "refusing to remove " + home + ": " + s.restoreAreaErr(home).Error()}
+		}
 		if st, err := os.Lstat(home); err == nil {
 			if st.Mode()&os.ModeSymlink != 0 {
 				return resp, &Error{Status: http.StatusForbidden, Message: home + " is a symlink"}

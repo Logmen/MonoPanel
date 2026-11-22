@@ -27,14 +27,23 @@ type SandboxInfo struct {
 	// Landlock is the kernel's Landlock ABI version; 0 when the kernel has
 	// none, and restic runs as root without the sandbox.
 	Landlock int `json:"landlock"`
-	// Error says why there is no Landlock.
+	// Error says why there is no Landlock, and Hint how to turn it on where
+	// the kernel has it built in but the boot left it out (Oracle Linux's
+	// UEK).
 	Error string `json:"error,omitempty"`
-	// NoSymfollow: a backup reads the web root in a view of it in which no
-	// symlink is followed, so that a symlink in a home leads nowhere — not
-	// into the panel's configuration, certificates and dumps either, which
-	// a server backup reads too. NoSymfollowError says why not.
+	Hint  string `json:"hint,omitempty"`
+	// NoSymfollow: a backup reads the trees it saves in a view in which no
+	// symlink is followed, Landlock or not, so that a symlink in a home leads
+	// nowhere — not into the panel's configuration, certificates and dumps
+	// either, which a server backup reads too. NoSymfollowError says why not.
 	NoSymfollow      bool   `json:"nosymfollow,omitempty"`
 	NoSymfollowError string `json:"nosymfollow_error,omitempty"`
+	// PrivateEtc: restic in its Landlock sandbox reads the system's files of
+	// /etc in a private /etc, so that the host renaming resolv.conf, hosts or
+	// passwd during a run does not take them away from it.
+	// PrivateEtcError says why not.
+	PrivateEtc      bool   `json:"private_etc,omitempty"`
+	PrivateEtcError string `json:"private_etc_error,omitempty"`
 }
 
 // FileSpec is one file to write. Mode is a unix permission (0o644); Owner and

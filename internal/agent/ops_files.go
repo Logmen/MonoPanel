@@ -33,6 +33,9 @@ func (s *Server) safeHomePath(p string) (string, error) {
 	if s.coversProtected(p) { // only a www_root set to / or /etc gets here
 		return "", errors.New(protectedErr(p).Message)
 	}
+	if s.inRestoreArea(p) {
+		return "", s.restoreAreaErr(p)
+	}
 	rel := strings.TrimPrefix(p, root+"/")
 	cur := root
 	for _, part := range strings.Split(rel, "/") {

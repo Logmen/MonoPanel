@@ -433,6 +433,144 @@ func TestResticPlanThroughTheSandbox(t *testing.T) {
 		}
 		plan.close()
 	}
+	// Without Landlock a backup runs in its view without symlinks where the
+	// agent may mount — sandbox-exec --no-landlock, no rules, nothing
+	// pinned —, and everything else as it is.
+	for _, view := range []bool{false, true} {
+		s, bin := sandboxServer(t, 0)
+		s.noSymfollow = view
+		home := filepath.Join(s.cfg.WWWRoot, "alex")
+		mkdirs(t, home)
+		env := []string{"RESTIC_REPOSITORY=sftp:backup@203.0.113.7:/srv/restic", "RESTIC_PASSWORD=pw"}
+		for _, args := range [][]string{
+			{"backup", "--json", "--tag", "monopanel", "--tag", "scope=user:alex", home},
+			{"restore", "1a2b3c4d", "--target", "/", "--include", home},
+			{"snapshots", "--json", "--tag", "monopanel"},
+		} {
+			call := withEnv(tc(modeTool, "restic", args...), env...)
+			plan, err := s.planTool(&call)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := view && args[0] == "backup"; (plan.confine != nil) != want || len(plan.closers) != 0 {
+				t.Fatalf("no Landlock, view %v: %s confined %v, %d pinned", view, args[0], plan.confine != nil, len(plan.closers))
+			}
+			if plan.confine != nil {
+				c, err := plan.confine(context.Background(), bin, plan.args, &bytes.Buffer{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				// restic's own ssh, as without a sandbox: no master to go through
+				if want := "sandbox-exec --no-landlock --nosymfollow " + s.cfg.WWWRoot + " -- " + bin + " backup"; !strings.HasPrefix(strings.Join(c.args, " "), want) || len(c.files) != 0 || len(c.env) != 0 {
+					t.Fatalf("no Landlock: %q %d %q", c.args, len(c.files), c.env)
+				}
+				c.done()
+			}
+			plan.close()
+		}
+	}
+}
+
+// With Landlock and where the agent may mount, restic reads the system's
+// files of /etc in a private /etc: its rules name them there instead of in
+// the system's /etc, and a backup of the panel's configuration below /etc
+// binds it in as it is — unless it would hold the system's entries, and the
+// run then reads /etc by the rules of its files. What restic needs of the
+// system — the CA certificates, name resolution, owner names, the time zone
+// — it finds in it as on the host, and /etc/shadow not at all.
+func TestResticPrivateEtc(t *testing.T) {
+	s, bin := sandboxServer(t, needLandlock(t))
+	s.privateEtc = true
+	home := filepath.Join(s.cfg.WWWRoot, "alex")
+	mkdirs(t, home)
+	backup := func(paths ...string) []string {
+		return append([]string{"backup", "--json", "--tag", "monopanel", "--tag", "scope=server"}, paths...)
+	}
+	acc, err := s.resticRules(bin, backup(home), "s3:https://s3.example.com/b")
+	if err != nil || !slices.Equal(acc.etc, existingPaths(resticEtcReads)) || len(acc.etc) == 0 || acc.etcBind != nil {
+		t.Fatalf("private /etc: %+v %v", acc, err)
+	}
+	for _, p := range acc.ro {
+		if below(p, "/etc") {
+			t.Errorf("a rule of the system's /etc beside the private one: %s", p)
+		}
+	}
+	conf := s.cfg.ConfigDir
+	s.cfg.ConfigDir = "/etc/monopanel-test"
+	if acc, err := s.resticRules(bin, backup(home, s.cfg.ConfigDir), ""); err != nil || !slices.Equal(acc.etcBind, []string{s.cfg.ConfigDir}) || acc.etc == nil {
+		t.Errorf("the configuration below /etc: %+v %v", acc, err)
+	}
+	s.cfg.ConfigDir = "/etc/ssl"
+	if acc, err := s.resticRules(bin, backup(s.cfg.ConfigDir), ""); err != nil || acc.etc != nil || acc.etcBind != nil || !slices.Contains(acc.ro, "/etc/hosts") {
+		t.Errorf("a configuration that holds the system's entries: %+v %v", acc, err)
+	}
+	s.cfg.ConfigDir = conf
+	// resolv.conf as a symlink straight into /run stays one, live; any
+	// other is copied
+	for _, c := range []struct {
+		link, target, resolved, dir string
+	}{
+		{"/etc/resolv.conf", "../run/systemd/resolve/stub-resolv.conf", "/run/systemd/resolve/stub-resolv.conf", "/run/systemd/resolve"},
+		{"/etc/resolv.conf", "/run/NetworkManager/resolv.conf", "/run/NetworkManager/resolv.conf", "/run/NetworkManager"},
+		{"/etc/resolv.conf", "/etc/resolvconf/run/resolv.conf", "/run/resolvconf/resolv.conf", ""},
+		{"/etc/resolv.conf", "resolv.conf.dhcp", "/etc/resolv.conf.dhcp", ""},
+		{"/etc/resolv.conf", "/run/x/resolv.conf", "/var/lib/x/resolv.conf", ""},
+	} {
+		if dir, ok := linkDirIn(c.link, c.target, c.resolved, "/run"); dir != c.dir || ok != (c.dir != "") {
+			t.Errorf("%s -> %s: %q %v", c.link, c.target, dir, ok)
+		}
+	}
+	if acc, err := s.resticRules(bin, backup(home), ""); err == nil {
+		if dir, ok := runLinkDir("/etc/resolv.conf"); ok != slices.Contains(acc.etcBind, "/etc/resolv.conf") || ok == slices.Contains(acc.etc, "/etc/resolv.conf") || ok && !slices.Contains(acc.ro, dir) {
+			t.Errorf("this host's resolv.conf: %+v", acc)
+		}
+	}
+
+	repo := filepath.Join(t.TempDir(), "repo")
+	mkdirs(t, repo)
+	call := withEnv(tc(modeTool, "restic", backup(home)...), "RESTIC_REPOSITORY="+repo, "RESTIC_PASSWORD=pw")
+	plan, err := s.planTool(&call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plan.close()
+	t.Setenv(fakeResticEnv, "1")
+	t.Setenv("MP_FAKE_RESTIC_SYSTEM", "1")
+	t.Setenv("MP_FAKE_RESTIC_READ", "/etc/shadow /etc/machine-id")
+	got, code := runConfined(t, plan, bin, userNS(t))
+	if code != 0 {
+		t.Fatalf("restic: exit %d\n%s", code, got)
+	}
+	wantLines(t, got, systemProbe(), "read /etc/shadow: open /etc/shadow: no such file or directory", "read /etc/machine-id: open /etc/machine-id: no such file or directory")
+}
+
+// Where Landlock is built in but the boot left it out (EOPNOTSUPP: Oracle
+// Linux's UEK), the agent says how to turn it on: the kernel's LSM list with
+// landlock added, as EL or Debian set a boot parameter, and on UEK the Red
+// Hat compatible kernel; a kernel without it (ENOSYS) has nothing to turn on.
+func TestLandlockHint(t *testing.T) {
+	el, deb := policyServer(t, oracle10), policyServer(t, debian13)
+	h := landlockHint(el.profile, "6.12.0-202.76.4.4.el10uek.x86_64", "lockdown,capability,yama,selinux,bpf")
+	if !strings.Contains(h, "grubby --update-kernel=ALL --args=lsm=lockdown,capability,yama,selinux,bpf,landlock") || !strings.Contains(h, "Red Hat compatible kernel") || !strings.Contains(h, "dnf install kernel") {
+		t.Errorf("UEK: %s", h)
+	}
+	if h := landlockHint(el.profile, "5.14.0-570.el9.x86_64", "lockdown,capability,yama,selinux,bpf"); strings.Contains(h, "Red Hat compatible") || !strings.Contains(h, "grubby") {
+		t.Errorf("EL: %s", h)
+	}
+	if h := landlockHint(deb.profile, "6.1.0-27-amd64", "lockdown,capability,apparmor"); !strings.Contains(h, "lsm=lockdown,capability,apparmor,landlock in GRUB_CMDLINE_LINUX") || !strings.Contains(h, "update-grub") {
+		t.Errorf("Debian: %s", h)
+	}
+	if h := landlockHint(deb.profile, "6.1.0", ""); !strings.Contains(h, "lsm=landlock ") {
+		t.Errorf("no list: %s", h)
+	}
+	el.landlockErr = fmt.Errorf("landlock: %w", unix.ENOSYS)
+	if h := el.landlockHint(); h != "" {
+		t.Errorf("ENOSYS: %s", h)
+	}
+	el.landlockErr = fmt.Errorf("landlock: %w", unix.EOPNOTSUPP)
+	if h := el.landlockHint(); !strings.Contains(h, "lsm=") {
+		t.Errorf("EOPNOTSUPP: %s", h)
+	}
 }
 
 // Without Landlock the agent says once, as it starts, that restic runs
@@ -446,9 +584,20 @@ func TestNoLandlockIsReported(t *testing.T) {
 		t.Fatalf("log: %s", logs.String())
 	}
 	p, err := s.ping(context.Background(), nil)
-	if err != nil || p.Sandbox == nil || p.Sandbox.Landlock != 0 || !strings.Contains(p.Sandbox.Error, "not supported") {
+	if err != nil || p.Sandbox == nil || p.Sandbox.Landlock != 0 || !strings.Contains(p.Sandbox.Error, "not supported") || !strings.Contains(p.Sandbox.Hint, "lsm=") {
 		t.Fatalf("ping %+v %v", p.Sandbox, err)
 	}
+	if !strings.Contains(logs.String(), "lsm=") {
+		t.Fatalf("log without how to turn Landlock on: %s", logs.String())
+	}
+	// without Landlock the view still covers a backup: said so
+	logs.Reset()
+	s.noSymfollow = true
+	s.logSandbox()
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "follows no symlink") || !strings.Contains(logs.String(), "nothing else confines restic") {
+		t.Fatalf("log: %s", logs.String())
+	}
+	s.noSymfollow = false
 	logs.Reset()
 	s.landlock, s.landlockErr = 4, nil
 	s.logSandbox()
@@ -458,27 +607,45 @@ func TestNoLandlockIsReported(t *testing.T) {
 	if p, _ := s.ping(context.Background(), nil); p.Sandbox.Landlock != 4 || p.Sandbox.Error != "" {
 		t.Fatalf("ping %+v", p.Sandbox)
 	}
-	// Landlock without the view of the web root that follows no symlink:
-	// said as well, with what it leaves open
+	// Landlock without the view that follows no symlink: said as well,
+	// with what it leaves open
 	logs.Reset()
 	s.noSymfollowErr = errors.New("open_tree: operation not permitted")
 	s.logSandbox()
-	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "follows the symlinks in the web root") || !strings.Contains(logs.String(), "operation not permitted") {
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "follows the symlinks in the trees it reads") || !strings.Contains(logs.String(), "operation not permitted") {
 		t.Fatalf("log: %s", logs.String())
 	}
 	if p, _ := s.ping(context.Background(), nil); p.Sandbox.NoSymfollow || !strings.Contains(p.Sandbox.NoSymfollowError, "operation not permitted") {
 		t.Fatalf("ping %+v", p.Sandbox)
 	}
+	// and without the private /etc: restic then reads resolv.conf, hosts
+	// and passwd by their inodes, which the host's renames leave behind
+	logs.Reset()
+	s.noSymfollow, s.noSymfollowErr = true, nil
+	s.privateEtcErr = errors.New("--etc: a tmpfs on /etc: permission denied")
+	s.logSandbox()
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "by inode") || !strings.Contains(logs.String(), "a tmpfs on /etc") {
+		t.Fatalf("log: %s", logs.String())
+	}
+	if p, _ := s.ping(context.Background(), nil); p.Sandbox.PrivateEtc || !strings.Contains(p.Sandbox.PrivateEtcError, "a tmpfs on /etc") || !p.Sandbox.NoSymfollow {
+		t.Fatalf("ping %+v", p.Sandbox)
+	}
+	logs.Reset()
+	s.privateEtc, s.privateEtcErr = true, nil
+	s.logSandbox()
+	if strings.Contains(logs.String(), "WARN") || !strings.Contains(logs.String(), "private_etc=true") {
+		t.Fatalf("log: %s", logs.String())
+	}
 	// the agent finds out as it starts; it needs root to mount, which a
-	// test is not
+	// test is not — with Landlock and without: the view needs none
 	s.probeNoSymfollow(context.Background())
-	if os.Geteuid() != 0 && (s.noSymfollow || s.noSymfollowErr == nil || !strings.Contains(s.noSymfollowErr.Error(), "root")) {
-		t.Fatalf("probe as a user: %v %v", s.noSymfollow, s.noSymfollowErr)
+	if os.Geteuid() != 0 && (s.noSymfollow || s.noSymfollowErr == nil || !strings.Contains(s.noSymfollowErr.Error(), "root") || s.privateEtc || s.privateEtcErr == nil) {
+		t.Fatalf("probe as a user: %v %v %v %v", s.noSymfollow, s.noSymfollowErr, s.privateEtc, s.privateEtcErr)
 	}
 	s.landlock = 0
 	s.probeNoSymfollow(context.Background())
-	if s.noSymfollow || s.noSymfollowErr != nil {
-		t.Fatalf("probe without Landlock: %v %v", s.noSymfollow, s.noSymfollowErr)
+	if os.Geteuid() != 0 && (s.noSymfollow || s.noSymfollowErr == nil || s.privateEtc || s.privateEtcErr != nil) {
+		t.Fatalf("probe without Landlock: %v %v %v %v", s.noSymfollow, s.noSymfollowErr, s.privateEtc, s.privateEtcErr)
 	}
 	// the agent as it runs knows its kernel
 	abi, err := sandbox.ABI()
@@ -600,6 +767,19 @@ func TestResticSFTPThroughTheMaster(t *testing.T) {
 	if !strings.Contains(out.String(), "argv -o sftp.command=/usr/bin/ssh -F none ") {
 		t.Fatalf("restic's ssh goes through the master: %s", out.String())
 	}
+	// and so through a private /etc, which an agent that may mount gives
+	// restic: the ssh in the sandbox finds there what it reads of /etc
+	s.privateEtc = true
+	plan, err = s.planTool(&call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plan.close()
+	got, code := runConfined(t, plan, bin, userNS(t))
+	if code != 0 {
+		t.Fatalf("restic over sftp in a private /etc: exit %d\n%s", code, got)
+	}
+	wantLines(t, got, "sftp: version 3", "read "+filepath.Join(dir, "client")+": denied")
 }
 
 // userNS is the attribute that starts a program as root of a user namespace
@@ -648,28 +828,33 @@ func runConfined(t *testing.T, plan *toolPlan, bin string, attr *syscall.SysProc
 // A server backup reads the panel's configuration and every home besides
 // alex's: Landlock grants those trees however they are reached, so with it
 // alone a directory alex swapped for a symlink to the configuration or to
-// bob's home has restic read the secret key or bob's files as alex's own.
-// In the view of the web root that follows no symlink — what the agent runs
-// a backup with when it may mount — they lead nowhere, while the trees
-// themselves are read as before.
+// bob's home has restic read the secret key or bob's files as alex's own —
+// and the API, whose certificates and dumps the backup reads as well, can do
+// the same with a directory of its own there. In the views without symlinks
+// of the trees a backup reads — what the agent runs a backup with when it may
+// mount — they lead nowhere, while the trees themselves are read as before;
+// and so without Landlock, where the view is all there is.
 func TestResticServerBackupFollowsNoSymlinkInTheWebRoot(t *testing.T) {
 	s, bin := sandboxServer(t, needLandlock(t))
 	home, bob := filepath.Join(s.cfg.WWWRoot, "alex"), filepath.Join(s.cfg.WWWRoot, "bob")
-	mkdirs(t, filepath.Join(home, "data"), bob)
+	certs := filepath.Join(s.cfg.DataDir, "certs")
+	mkdirs(t, filepath.Join(home, "data"), bob, certs)
 	writeFileT(t, filepath.Join(home, "data", "index.php"), "<?php")
 	writeFileT(t, filepath.Join(bob, "wp-config.php"), "bob's password")
 	writeFileT(t, filepath.Join(s.cfg.ConfigDir, "secret.key"), "panel-secret")
-	for link, to := range map[string]string{"a": s.cfg.ConfigDir, "b": bob} {
-		if err := os.Symlink(to, filepath.Join(home, link)); err != nil {
+	writeFileT(t, filepath.Join(certs, "example.com.pem"), "a certificate")
+	for link, to := range map[string]string{filepath.Join(home, "a"): s.cfg.ConfigDir, filepath.Join(home, "b"): bob, filepath.Join(certs, "x"): s.cfg.ConfigDir} {
+		if err := os.Symlink(to, link); err != nil {
 			t.Fatal(err)
 		}
 	}
 	repo := filepath.Join(t.TempDir(), "repo")
 	mkdirs(t, repo)
-	call := withEnv(tc(modeTool, "restic", "backup", "--json", "--tag", "monopanel", "--tag", "scope=server", s.cfg.WWWRoot, s.cfg.ConfigDir), "RESTIC_REPOSITORY="+repo, "RESTIC_PASSWORD=pw")
+	call := withEnv(tc(modeTool, "restic", "backup", "--json", "--tag", "monopanel", "--tag", "scope=server", s.cfg.WWWRoot, s.cfg.ConfigDir, certs), "RESTIC_REPOSITORY="+repo, "RESTIC_PASSWORD=pw")
 	t.Setenv(fakeResticEnv, "1")
-	t.Setenv("MP_FAKE_RESTIC_READ", strings.Join([]string{filepath.Join(home, "a", "secret.key"), filepath.Join(home, "b", "wp-config.php")}, " "))
-	stolen := []string{"read " + filepath.Join(home, "a", "secret.key") + ": ok panel-secret", "read " + filepath.Join(home, "b", "wp-config.php") + ": ok bob's password"}
+	through := []string{filepath.Join(home, "a", "secret.key"), filepath.Join(home, "b", "wp-config.php"), filepath.Join(certs, "x", "secret.key")}
+	t.Setenv("MP_FAKE_RESTIC_READ", strings.Join(through, " "))
+	stolen := []string{"read " + through[0] + ": ok panel-secret", "read " + through[1] + ": ok bob's password", "read " + through[2] + ": ok panel-secret"}
 
 	// Landlock alone: what the view is for
 	plan, err := s.planTool(&call)
@@ -684,57 +869,96 @@ func TestResticServerBackupFollowsNoSymlinkInTheWebRoot(t *testing.T) {
 	wantLines(t, out.String(), stolen...)
 
 	s.noSymfollow = true
-	if acc, err := s.resticRules(bin, call.args, repo); err != nil || len(acc.noSymlinks) != 1 || acc.noSymlinks[0] != s.cfg.WWWRoot {
-		t.Fatalf("a backup of the web root without its view: %+v %v", acc, err)
+	if acc, err := s.resticRules(bin, call.args, repo); err != nil || !slices.Equal(acc.noSymlinks, []string{s.cfg.WWWRoot, s.cfg.ConfigDir, s.cfg.DataDir}) {
+		t.Fatalf("a server backup without its views: %+v %v", acc, err)
 	}
-	plan, err = s.planTool(&call)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer plan.close()
-	got, code := runConfined(t, plan, bin, userNS(t))
-	if code != 0 {
-		t.Fatalf("restic: exit %d\n%s", code, got)
-	}
-	for _, l := range stolen {
-		if strings.Contains(got, l) {
-			t.Errorf("read through alex's symlink: %s", l)
+	attr := userNS(t)
+	for _, landlock := range []int{s.landlock, 0} {
+		s.landlock = landlock
+		plan, err = s.planTool(&call)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer plan.close()
+		if plan.confine == nil {
+			t.Fatalf("Landlock %d: a backup runs in its view", landlock)
+		}
+		if landlock == 0 {
+			c, err := plan.confine(context.Background(), bin, plan.args, &bytes.Buffer{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "sandbox-exec --no-landlock --nosymfollow " + s.cfg.WWWRoot + " --nosymfollow " + s.cfg.ConfigDir + " --nosymfollow " + s.cfg.DataDir + " -- " + bin + " backup"
+			if !strings.HasPrefix(strings.Join(c.args, " "), want) || len(c.files) != 0 || len(c.env) != 0 || len(plan.closers) != 0 {
+				t.Fatalf("without Landlock: %q files %d env %q pinned %d", c.args, len(c.files), c.env, len(plan.closers))
+			}
+			c.done()
+		}
+		got, code := runConfined(t, plan, bin, attr)
+		if code != 0 {
+			t.Fatalf("Landlock %d: restic: exit %d\n%s", landlock, code, got)
+		}
+		for _, l := range stolen {
+			if strings.Contains(got, l) {
+				t.Errorf("Landlock %d: read through a symlink: %s", landlock, l)
+			}
+		}
+		wantLines(t, got,
+			"read "+filepath.Join(home, "data", "index.php")+": ok <?php",
+			"read "+filepath.Join(bob, "wp-config.php")+": ok bob's password",
+			"read "+filepath.Join(s.cfg.ConfigDir, "secret.key")+": ok panel-secret",
+			"read "+filepath.Join(certs, "example.com.pem")+": ok a certificate",
+		)
+		for _, p := range through {
+			wantLines(t, got, "read "+p+": open "+p+": too many levels of symbolic links")
 		}
 	}
-	wantLines(t, got,
-		"read "+filepath.Join(home, "data", "index.php")+": ok <?php",
-		"read "+filepath.Join(bob, "wp-config.php")+": ok bob's password",
-		"read "+filepath.Join(s.cfg.ConfigDir, "secret.key")+": ok panel-secret",
-		"read "+filepath.Join(home, "a", "secret.key")+": open "+filepath.Join(home, "a", "secret.key")+": too many levels of symbolic links",
-		"read "+filepath.Join(home, "b", "wp-config.php")+": open "+filepath.Join(home, "b", "wp-config.php")+": too many levels of symbolic links",
-	)
 }
 
-// The view of the web root is a backup's that reads in it, nothing else's:
-// not a backup of the dumps alone, not a restore, not a listing.
+// The views are a backup's, one for each tree it reads — the web root, the
+// configuration directory, the data directory with the certificates, the
+// ACME account and the run's dumps —, nothing else's: not a restore, not a
+// listing. The data directory is the API's, and so are the certificates and
+// dumps in it: a view on those would leave with them when the API renames
+// them, and the view goes on the data directory, whose name in /var/lib only
+// root may change.
 func TestResticNoSymlinksPerPlan(t *testing.T) {
 	s, bin := sandboxServer(t, 5)
 	s.noSymfollow = true
 	home := filepath.Join(s.cfg.WWWRoot, "alex")
-	dump := filepath.Join(s.backupTmpDir(), "run-1", "alex_wp.sql")
+	run := filepath.Join(s.backupTmpDir(), "run-1")
+	dump := filepath.Join(run, "alex_wp.sql")
+	mkdirs(t, home, run, filepath.Join(s.cfg.DataDir, "certs"))
+	www, conf, data := s.cfg.WWWRoot, s.cfg.ConfigDir, s.cfg.DataDir
 	for _, c := range []struct {
 		args []string
-		view bool
+		view []string
 	}{
-		{[]string{"backup", "--json", "--tag", "monopanel", "--tag", "scope=user:alex", home, dump}, true},
-		{[]string{"backup", "--json", "--tag", "monopanel", "--tag", "scope=site:example.com", filepath.Join(home, "example.com")}, true},
-		{[]string{"backup", "--json", "--tag", "monopanel", "--tag", "scope=db:alex_wp", dump}, false},
-		{[]string{"restore", strings.Repeat("ab", 32), "--target", filepath.Join(RestoreDir, "1a2b3c4d"), "--include", home}, false},
-		{[]string{"snapshots", "--json", "--tag", "monopanel"}, false},
+		{[]string{"backup", "--json", "--tag", "monopanel", "--tag", "scope=user:alex", home, dump}, []string{www, data}},
+		{[]string{"backup", "--json", "--tag", "monopanel", "--tag", "scope=site:example.com", filepath.Join(home, "example.com")}, []string{www}},
+		{[]string{"backup", "--json", "--tag", "monopanel", "--tag", "scope=db:alex_wp", dump}, []string{data}},
+		{[]string{"backup", "--json", "--tag", "monopanel", "--tag", "scope=server", www, conf, filepath.Join(data, "certs"), filepath.Join(data, "acme"), dump, filepath.Join(run, "panel.db"), "--exclude=" + s.restoreArea()}, []string{www, conf, data}},
+		{[]string{"restore", strings.Repeat("ab", 32), "--target", filepath.Join(RestoreDir, "1a2b3c4d"), "--include", home}, nil},
+		{[]string{"snapshots", "--json", "--tag", "monopanel"}, nil},
 	} {
 		acc, err := s.resticRules(bin, c.args, "s3:https://s3.example.com/b")
-		if err != nil || (len(acc.noSymlinks) > 0) != c.view {
-			t.Errorf("%q: view %v, want %v (%v)", c.args, acc.noSymlinks, c.view, err)
+		if err != nil || !slices.Equal(acc.noSymlinks, c.view) {
+			t.Errorf("%q: views %q, want %q (%v)", c.args, acc.noSymlinks, c.view, err)
 		}
 	}
 	s.noSymfollow = false
 	if acc, err := s.resticRules(bin, []string{"backup", "--json", "--tag", "monopanel", "--tag", "scope=user:alex", home}, ""); err != nil || acc.noSymlinks != nil {
 		t.Errorf("an agent that cannot mount: %v %v", acc.noSymlinks, err)
+	}
+	// a tree in a directory somebody else may rearrange gets its view one
+	// level up, where the name is root's alone
+	s.noSymfollow = true
+	if err := os.Chmod(filepath.Dir(data), 0o777); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(filepath.Dir(data), 0o755) })
+	if acc, err := s.resticRules(bin, []string{"backup", "--json", "--tag", "monopanel", "--tag", "scope=db:alex_wp", dump}, ""); err != nil || !slices.Equal(acc.noSymlinks, []string{filepath.Dir(data)}) {
+		t.Errorf("a data directory others may rename: %q %v", acc.noSymlinks, err)
 	}
 }
 

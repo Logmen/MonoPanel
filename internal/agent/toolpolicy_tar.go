@@ -60,7 +60,7 @@ func (s *Server) planTarCreate(c *toolCall) (*toolPlan, error) {
 		}
 	}
 	dir := a[4]
-	if !cleanAbs(dir) || !(below(dir, s.cfg.WWWRoot) || below(dir, mailStore)) {
+	if !cleanAbs(dir) || !(below(dir, s.cfg.WWWRoot) || below(dir, mailStore)) || s.inRestoreArea(dir) {
 		return nil, notAllowed("archiving "+dir, "the panel archives a home or a mail domain")
 	}
 	root := s.cfg.WWWRoot
@@ -154,7 +154,7 @@ func (s *Server) planTarExtract(c *toolCall) (*toolPlan, error) {
 	sphinx := osprofile.Sphinx(s.profile).InstallDir
 	var root string
 	switch {
-	case !cleanAbs(dest):
+	case !cleanAbs(dest), s.inRestoreArea(dest):
 	case below(dest, s.cfg.WWWRoot):
 		root = s.cfg.WWWRoot
 	case below(dest, mailStore):

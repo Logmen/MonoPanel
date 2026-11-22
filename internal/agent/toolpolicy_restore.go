@@ -357,6 +357,12 @@ func (m *restoreMerge) entry(sp, dp int, name, dst string) {
 		m.skip("files that are root's (config.yaml, the secret key)")
 		return
 	}
+	if m.s.inRestoreArea(dst) {
+		// the staging of in-place restores, which a snapshot made by hand
+		// may hold: the agent's own, never one of the snapshot's
+		m.skip("the agent's restore area")
+		return
+	}
 	if m.guard.isMount(dst) {
 		m.skip("mount points of shared folders (the folder comes back with its site)")
 		return

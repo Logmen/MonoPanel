@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -44,6 +45,25 @@ type Rules struct {
 	// when a backup reads both. A symlink is still read as one (lstat,
 	// readlink), as restic stores it. See noSymlinksBelow.
 	NoSymlinks []string
+	// Etc are the system's files and directories below /etc the program
+	// reads (the account databases, name resolution, CA certificates): it
+	// sees them in a private /etc that holds nothing else — a file as a
+	// copy of what it is as the sandbox is built, a directory bound as it
+	// is — which Landlock grants as one tree. A rule on a file holds its
+	// inode, and the host replaces /etc/resolv.conf, /etc/hosts or
+	// /etc/passwd by renaming another file over it (NetworkManager,
+	// dhclient, useradd): the program would lose them halfway through a
+	// run. See privateEtc.
+	Etc []string
+	// EtcBind are paths below /etc the program sees as they are — the
+	// panel's configuration that a backup saves, a resolv.conf that is a
+	// symlink into /run: bound into the private /etc, a file too, with its
+	// owner, mode and times, and a symlink made again.
+	EtcBind []string
+	// NoLandlock builds the mounts alone — the view without symlinks, the
+	// private /etc — on a kernel that has no Landlock: RO, RW, RX and the
+	// descriptors are then refused, since nothing would enforce them.
+	NoLandlock bool
 }
 
 // Command is the argv of sandbox-exec running program with args under r
@@ -65,8 +85,16 @@ func (r *Rules) CheckCommand() ([]string, []*os.File) {
 
 func (r *Rules) argv() ([]string, []*os.File) {
 	argv := []string{"sandbox-exec"}
-	for _, p := range r.NoSymlinks {
-		argv = append(argv, "--nosymfollow", p)
+	if r.NoLandlock {
+		argv = append(argv, "--no-landlock")
+	}
+	for _, l := range []struct {
+		flag  string
+		paths []string
+	}{{"--etc", r.Etc}, {"--etc-bind", r.EtcBind}, {"--nosymfollow", r.NoSymlinks}} {
+		for _, p := range l.paths {
+			argv = append(argv, l.flag, p)
+		}
 	}
 	for _, l := range []struct {
 		flag  string
@@ -104,15 +132,22 @@ func (r rule) String() string {
 }
 
 // cmdline is what sandbox-exec was asked: the rules, the trees without
-// symlinks, and the program with its arguments — or, with --check, none.
+// symlinks, the private /etc, and the program with its arguments — or, with
+// --check, none.
 type cmdline struct {
 	rules      []rule
 	noSymlinks []string
+	etc        []string
+	etcBind    []string
+	noLandlock bool
 	check      bool
 	argv       []string
 }
 
-const usage = "usage: sandbox-exec [--nosymfollow <dir>]… [--ro|--rw|--rx <path>]… [--ro-fd|--rw-fd|--rx-fd <n>]… -- <program> [args…] | --check"
+// privateEtc tells whether the program gets a private /etc.
+func (c *cmdline) privateEtc() bool { return len(c.etc)+len(c.etcBind) > 0 }
+
+const usage = "usage: sandbox-exec [--no-landlock] [--etc|--etc-bind <path below /etc>]… [--nosymfollow <dir>]… [--ro|--rw|--rx <path>]… [--ro-fd|--rw-fd|--rx-fd <n>]… -- <program> [args…] | --check"
 
 // parse reads the command line of sandbox-exec: the rules, then "--" and the
 // program with its arguments, which run as they are given, or --check.
@@ -127,17 +162,20 @@ func parse(args []string) (*cmdline, error) {
 				return nil, errors.New("the program after -- must be an absolute path")
 			}
 			c.argv = argv
-			return c, nil
+			return c, c.valid()
 		case "--check":
 			if i != len(args)-1 {
 				return nil, errors.New("--check ends the command line: it runs no program")
 			}
 			c.check = true
-			return c, nil
+			return c, c.valid()
+		case "--no-landlock":
+			c.noLandlock = true
+			continue
 		}
 		flag, value, inline := strings.Cut(a, "=")
 		if !inline {
-			if flag != "--nosymfollow" && strings.TrimSuffix(flag, "-fd") != "--ro" && strings.TrimSuffix(flag, "-fd") != "--rx" && strings.TrimSuffix(flag, "-fd") != "--rw" {
+			if flag != "--nosymfollow" && flag != "--etc" && flag != "--etc-bind" && strings.TrimSuffix(flag, "-fd") != "--ro" && strings.TrimSuffix(flag, "-fd") != "--rx" && strings.TrimSuffix(flag, "-fd") != "--rw" {
 				return nil, fmt.Errorf("unknown argument %q (%s)", a, usage)
 			}
 			if i+1 >= len(args) {
@@ -146,11 +184,22 @@ func parse(args []string) (*cmdline, error) {
 			i++
 			value = args[i]
 		}
-		if flag == "--nosymfollow" {
+		switch flag {
+		case "--nosymfollow":
 			if !filepath.IsAbs(value) || filepath.Clean(value) != value {
 				return nil, fmt.Errorf("%s %q: a clean absolute path", flag, value)
 			}
 			c.noSymlinks = append(c.noSymlinks, value)
+			continue
+		case "--etc", "--etc-bind":
+			if filepath.Clean(value) != value || !strings.HasPrefix(value, etcDir+"/") {
+				return nil, fmt.Errorf("%s %q: a clean path below %s", flag, value, etcDir)
+			}
+			if flag == "--etc" {
+				c.etc = append(c.etc, value)
+			} else {
+				c.etcBind = append(c.etcBind, value)
+			}
 			continue
 		}
 		var access Access
@@ -181,6 +230,34 @@ func parse(args []string) (*cmdline, error) {
 	return nil, errors.New("-- and the program are missing")
 }
 
+// valid refuses what cannot be built as asked: rules without Landlock to
+// enforce them, and an entry of the private /etc below another one — a
+// directory is bound as it is, and what is made for an entry below it would
+// be made in the system's own /etc.
+func (c *cmdline) valid() error {
+	if c.noLandlock && len(c.rules) > 0 {
+		return fmt.Errorf("--no-landlock builds no ruleset: --%s %s would not be enforced", c.rules[0].access, c.rules[0])
+	}
+	all := append(append([]string{}, c.etc...), c.etcBind...)
+	for _, a := range all {
+		for _, b := range all {
+			if strings.HasPrefix(a, b+"/") {
+				return fmt.Errorf("--etc %s lies below --etc %s: the private /etc takes no entry below another one", a, b)
+			}
+		}
+	}
+	// a view below /etc is made in the private /etc, of what is there
+	for _, d := range c.noSymlinks {
+		if !c.privateEtc() || !strings.HasPrefix(d, etcDir+"/") {
+			continue
+		}
+		if !slices.ContainsFunc(all, func(e string) bool { return d == e || strings.HasPrefix(d, e+"/") }) {
+			return fmt.Errorf("--nosymfollow %s: below %s, which is a private one, it lies in no --etc-bind entry", d, etcDir)
+		}
+	}
+	return nil
+}
+
 // Main is `monopanel sandbox-exec`: it builds the Landlock ruleset from its
 // arguments, restricts itself and execs the program in its place with its
 // environment as it is. It returns only when it fails, with ExitSetup,
@@ -191,8 +268,13 @@ func parse(args []string) (*cmdline, error) {
 // program reads files and lists directories, below --rx it also executes,
 // below --rw it makes, writes and removes; outside them it reaches nothing it
 // opens after the start — the descriptors it inherited stay what they are.
-// Below a --nosymfollow directory it follows no symlink. The network is not
-// restricted.
+// Below a --nosymfollow directory it follows no symlink. With --etc or
+// --etc-bind its /etc is a private one, granted read-only. The network is
+// not restricted.
+//
+// With --no-landlock only the mounts are made: the view without symlinks
+// and the private /etc need a mount namespace, not Landlock, and a kernel
+// that has none (or a boot that left it out) still gets them.
 func Main(args []string) int {
 	fail := func(code int, err error) int {
 		fmt.Fprintln(os.Stderr, "sandbox-exec:", err)
@@ -202,9 +284,11 @@ func Main(args []string) int {
 	if err != nil {
 		return fail(ExitSetup, err)
 	}
-	abi, err := ABI()
-	if err != nil {
-		return fail(ExitSetup, err)
+	abi := 0
+	if !c.noLandlock {
+		if abi, err = ABI(); err != nil {
+			return fail(ExitSetup, err)
+		}
 	}
 	// Landlock, no_new_privs and the mount namespace apply to the thread
 	// that asks, and execve hands that thread's to the program: everything
@@ -212,23 +296,31 @@ func Main(args []string) int {
 	runtime.LockOSThread()
 	// The mounts first: Landlock refuses every mount to a thread it
 	// restricts.
-	if len(c.noSymlinks) > 0 {
-		if err := noSymlinksBelow(c.noSymlinks); err != nil {
+	if c.privateEtc() || len(c.noSymlinks) > 0 {
+		if err := buildMounts(c); err != nil {
 			return fail(ExitSetup, err)
 		}
 	}
-	rs, err := newRuleset(abi)
-	if err != nil {
-		return fail(ExitSetup, err)
-	}
-	defer rs.close()
-	for _, r := range c.rules {
-		if err := addRule(rs, r); err != nil {
+	if !c.noLandlock {
+		rs, err := newRuleset(abi)
+		if err != nil {
 			return fail(ExitSetup, err)
 		}
-	}
-	if err := rs.restrictSelf(); err != nil {
-		return fail(ExitSetup, err)
+		defer rs.close()
+		rules := c.rules
+		if c.privateEtc() {
+			// the private /etc is the program's own and holds only what it
+			// was asked to: granted as one tree, its bind mounts with it
+			rules = append([]rule{{access: ReadOnly, path: etcDir, fd: -1}}, rules...)
+		}
+		for _, r := range rules {
+			if err := addRule(rs, r); err != nil {
+				return fail(ExitSetup, err)
+			}
+		}
+		if err := rs.restrictSelf(); err != nil {
+			return fail(ExitSetup, err)
+		}
 	}
 	if c.check {
 		return 0

@@ -4,8 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +14,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -28,7 +27,10 @@ import (
 // <RestoreDir>/<snapshot>: root's alone. Under the API's data directory the
 // service user could swap the directory for a symlink while restic writes,
 // and restic would write the snapshot — whose content the API chooses, it
-// holds the repository's password — wherever the link points.
+// holds the repository's password — wherever the link points. An in-place
+// restore of the trees outside the web root is staged here too; what goes
+// into the web root is staged in the web root's restore area
+// (restore_staging.go).
 //
 // It lies in the agent's default state directory (config.DefaultAgentStateDir):
 // the API names it as the target of the restore and has no other way to know
@@ -91,6 +93,12 @@ func (s *Server) planRestic(c *toolCall) (*toolPlan, error) {
 				return nil, err
 			}
 		}
+		// The restore area is the agent's, not the web root's: a backup of
+		// the web root that saved an in-place restore staged there would
+		// restore it in place later, too.
+		if area := s.restoreArea(); slices.ContainsFunc(a[6:], func(p string) bool { return below(area, p) }) {
+			plan.args = append(append([]string{}, a...), "--exclude="+resticPattern(area))
+		}
 	case len(a) >= 4 && a[0] == "restore":
 		if _, err := s.planResticRestore(plan); err != nil {
 			return nil, err
@@ -127,6 +135,9 @@ func (s *Server) resticBackupPath(p string) error {
 	if root == "" {
 		return refuse("the panel backs up the web root, its configuration, certificates and the run's dumps")
 	}
+	if s.inRestoreArea(p) {
+		return refuse(s.restoreAreaErr(p).Error())
+	}
 	dir := filepath.Dir(p)
 	if !atOrBelow(dir, root) {
 		return nil // the tree itself: nothing of anybody else's on the way
@@ -156,6 +167,19 @@ func (s *Server) resticBackupRoot(p string) string {
 		return s.cfg.DataDir
 	}
 	return ""
+}
+
+// resticPattern is p as a pattern of restic's --exclude, which matches with
+// filepath.Match: a path matches itself only once its wildcards are escaped.
+func resticPattern(p string) string {
+	var b strings.Builder
+	for _, r := range p {
+		if strings.ContainsRune(`*?[\`, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // resticEnv vets the repository's environment: the repository, its password
@@ -354,6 +378,9 @@ func (s *Server) planResticRestore(plan *toolPlan) (*toolPlan, error) {
 		if s.protected(inc) {
 			return nil, notAllowed("restoring "+inc+" in place", "config.yaml and the secret key are root's")
 		}
+		if s.inRestoreArea(inc) {
+			return nil, notAllowed("restoring "+inc+" in place", s.restoreAreaErr(inc).Error())
+		}
 		if _, ok := s.inPlaceRoot(inc); !ok {
 			return nil, notAllowed("restoring "+inc+" in place", "in place only the web root, the panel's configuration, certificates, ACME account and dumps; restore it aside into "+filepath.Join(RestoreDir, snap)+" and copy what is needed")
 		}
@@ -411,8 +438,24 @@ func (s *Server) inPlaceRoot(p string) (inPlaceRoot, bool) {
 // one — would hold symlinks of the API's choosing where this snapshot has
 // directories, and restic before 0.17 makes a snapshot's directories with
 // MkdirAll, which follows them.
+//
+// RestoreDir lies on the root file system, next to MySQL, the journal and
+// the mail queue: what the snapshot's listing says the restore brings is
+// checked for room before restic writes (checkRoom), as the staging of an
+// in-place restore is — whose refusal points here. Includes that are
+// patterns leave the selection to restic's matching, and the restore
+// unchecked.
 func (s *Server) restoreAside(ctx context.Context, run toolRun, snap, target string, includes []string, out io.Writer) (int, error) {
-	id, code, err := s.vetSnapshot(run, snap)
+	var need stageNeed
+	count := func(p, typ string, size uint64) {
+		if len(includes) == 0 || slices.ContainsFunc(includes, func(inc string) bool { return atOrBelow(p, inc) }) {
+			need.add(typ, size)
+		}
+	}
+	if slices.ContainsFunc(includes, func(inc string) bool { return strings.ContainsAny(inc, `*?[\`) }) {
+		count = nil
+	}
+	id, code, err := s.vetSnapshot(run, snap, count)
 	if err != nil || code != 0 {
 		return code, err
 	}
@@ -426,6 +469,19 @@ func (s *Server) restoreAside(ctx context.Context, run toolRun, snap, target str
 	}
 	if err := ctx.Err(); err != nil {
 		return 0, err
+	}
+	if count != nil {
+		// once the earlier restore is gone: it gives back its room
+		base := filepath.Dir(target)
+		fd, err := openDirTrusted(base)
+		if err != nil {
+			return 0, err
+		}
+		err = checkRoom(fd, base, need, "restoring "+snap+" aside", "free some space there, or restore only the paths needed (--include)")
+		unix.Close(fd) //nolint:errcheck // a directory opened for its file system
+		if err != nil {
+			return 0, err
+		}
 	}
 	args := []string{"restore", id, "--target", target}
 	for _, inc := range includes {
@@ -462,9 +518,12 @@ func (s *Server) restoreAside(ctx context.Context, run toolRun, snap, target str
 // in that same pass. In a tree without two entries of one name and without
 // names such as ".." or "a/b", every path has one entry, symlinks are
 // leaves, and nothing restic makes is ever walked through.
-func (s *Server) vetSnapshot(run toolRun, snap string) (string, int, error) {
+//
+// count, when set, gets every node of the listing: what an in-place restore
+// is going to stage.
+func (s *Server) vetSnapshot(run toolRun, snap string, count func(p, typ string, size uint64)) (string, int, error) {
 	pr, pw := io.Pipe()
-	chk := &snapshotCheck{}
+	chk := &snapshotCheck{count: count}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -494,6 +553,7 @@ type snapshotCheck struct {
 	id    string
 	stack []snapshotDir
 	err   error
+	count func(p, typ string, size uint64)
 }
 
 type snapshotDir struct {
@@ -528,6 +588,7 @@ func (c *snapshotCheck) line(b []byte) {
 		Name        string `json:"name"`
 		Type        string `json:"type"`
 		Path        string `json:"path"`
+		Size        uint64 `json:"size"`
 	}
 	if err := json.Unmarshal(b, &n); err != nil {
 		c.err = fmt.Errorf("restic ls printed something else than JSON: %v", err)
@@ -546,7 +607,9 @@ func (c *snapshotCheck) line(b []byte) {
 		c.id = n.ID
 		c.stack = []snapshotDir{{path: "/", names: map[string]struct{}{}}}
 	case "node":
-		c.node(n.Name, n.Type, n.Path)
+		if c.node(n.Name, n.Type, n.Path); c.err == nil && c.count != nil {
+			c.count(n.Path, n.Type, n.Size)
+		}
 	}
 }
 
@@ -579,58 +642,78 @@ func (c *snapshotCheck) node(name, typ, p string) {
 	}
 }
 
-// restoreInPlace has restic restore into a directory of the agent's, which
+// restoreInPlace has restic restore into directories of the agent's, which
 // nobody else can enter, and then moves what came out into place itself,
 // without following a symlink (see restoreMerge). restic restores a
 // snapshot's owners, modes, device nodes and file capabilities, and the API
 // chooses the snapshot: written straight over /, a setuid root binary or
 // /dev/sda would land in a home, and a symlink an account left in its home
 // would carry the write anywhere.
+//
+// What goes into the web root is staged in its restore area, the rest in
+// RestoreDir (restore_staging.go): each on the file system it goes to, so
+// that the merge renames instead of copying, and each checked for room before
+// restic writes anything — the listing that vets the snapshot says how much
+// it brings.
 func (s *Server) restoreInPlace(ctx context.Context, run toolRun, snap string, includes []string, out io.Writer) (int, error) {
-	id, code, err := s.vetSnapshot(run, snap)
+	stages := s.inPlaceStages(includes)
+	id, code, err := s.vetSnapshot(run, snap, func(p, typ string, size uint64) {
+		for _, st := range stages {
+			if st.covers(p) {
+				st.need.add(typ, size)
+				return
+			}
+		}
+	})
 	if err != nil || code != 0 {
 		return code, err
 	}
-	rfd, err := ensureRootDir(RestoreDir, 0o700)
-	if err != nil {
+	defer func() {
+		for _, st := range stages {
+			st.remove()
+		}
+	}()
+	for _, st := range stages {
+		if err := st.make(s); err != nil {
+			return 0, err
+		}
+	}
+	if err := checkStagesSpace(stages); err != nil {
 		return 0, err
 	}
-	defer unix.Close(rfd) //nolint:errcheck // a directory opened for reading
-	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
-		return 0, err
-	}
-	name := ".in-place-" + hex.EncodeToString(b)
-	if err := unix.Mkdirat(rfd, name, 0o700); err != nil {
-		return 0, &os.PathError{Op: "mkdir", Path: filepath.Join(RestoreDir, name), Err: err}
-	}
-	staging := filepath.Join(RestoreDir, name)
-	defer os.RemoveAll(staging) //nolint:errcheck // what was not moved goes with it
-	return s.stageAndMerge(ctx, run, staging, id, includes, out)
+	return s.stageAndMerge(ctx, run, stages, id, out)
 }
 
-// stageAndMerge has restic restore the vetted snapshot id into staging (a
-// directory of root's alone), makes what came out safe and moves it into
-// place.
-func (s *Server) stageAndMerge(ctx context.Context, run toolRun, staging, id string, includes []string, out io.Writer) (int, error) {
-	args := []string{"restore", id, "--target", staging}
-	for _, inc := range includes {
-		args = append(args, "--include", inc)
+// stageAndMerge has restic restore the vetted snapshot id into each stage's
+// directory (root's alone) and, once all of them are there, makes what came
+// out safe and moves it into place.
+func (s *Server) stageAndMerge(ctx context.Context, run toolRun, stages []*inPlaceStage, id string, out io.Writer) (int, error) {
+	var includes []string
+	for _, st := range stages {
+		args := []string{"restore", id, "--target", st.dir}
+		for _, inc := range st.includes {
+			args = append(args, "--include", inc)
+		}
+		code, err := run(args, nil)
+		if err != nil || code != 0 {
+			return code, err
+		}
+		includes = append(includes, st.includes...)
 	}
-	code, err := run(args, nil)
-	if err != nil || code != 0 {
-		return code, err
-	}
-	sfd, err := unix.Open(staging, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return 0, &os.PathError{Op: "open", Path: staging, Err: err}
-	}
-	defer unix.Close(sfd) //nolint:errcheck // a directory opened for reading
 	m := &restoreMerge{s: s, ctx: ctx, out: out}
-	if err := m.sanitize(staging); err != nil {
-		return 0, err
+	for _, st := range stages {
+		if err := m.sanitize(st.dir); err != nil {
+			return 0, err
+		}
 	}
-	m.merge(sfd, staging, includes)
+	for _, st := range stages {
+		sfd, err := unix.Open(st.dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err != nil {
+			return 0, &os.PathError{Op: "open", Path: st.dir, Err: err}
+		}
+		m.merge(sfd, st.dir, st.includes)
+		unix.Close(sfd) //nolint:errcheck // a directory opened for reading
+	}
 	fmt.Fprintf(out, "in place: %d moved into place, %d left out (%s), %d failed\n", m.moved, m.skipped, m.skippedWhy(), m.failed)
 	s.relabelTrees(ctx, includes, out)
 	if m.failed > 0 {

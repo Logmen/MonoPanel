@@ -502,13 +502,19 @@ func fdFile(fd int, name string) *os.File {
 // (restic's cache, restored snapshots), out of the service user's reach. It
 // returns the directory opened.
 func ensureRootDir(p string, mode uint32) (int, error) {
+	return ensureRootDirAs(p, mode, 0)
+}
+
+// ensureRootDirAs is ensureRootDir for a root of uid rootUID: 0, or the
+// test's own uid standing for root (Server.rootUID).
+func ensureRootDirAs(p string, mode uint32, rootUID int) (int, error) {
 	if !cleanAbs(p) || p == "/" {
 		return -1, fmt.Errorf("%s is not a directory the agent makes", p)
 	}
 	parent, err := openDirNoFollow(filepath.Dir(p))
 	if errors.Is(err, os.ErrNotExist) {
 		var pfd int
-		if pfd, err = ensureRootDir(filepath.Dir(p), mode); err == nil {
+		if pfd, err = ensureRootDirAs(filepath.Dir(p), mode, rootUID); err == nil {
 			unix.Close(pfd) //nolint:errcheck // a directory opened for reading
 			parent, err = openDirNoFollow(filepath.Dir(p))
 		}
@@ -521,7 +527,7 @@ func ensureRootDir(p string, mode uint32) (int, error) {
 	if err := unix.Fstat(parent, &st); err != nil {
 		return -1, err
 	}
-	if st.Uid != 0 || (st.Mode&0o022 != 0 && st.Mode&unix.S_ISVTX == 0) {
+	if int(st.Uid) != rootUID || (st.Mode&0o022 != 0 && st.Mode&unix.S_ISVTX == 0) {
 		return -1, fmt.Errorf("%s must belong to root and be writable by root alone", filepath.Dir(p))
 	}
 	fd, err := openDirAt(parent, filepath.Dir(p), filepath.Base(p), true, mode)
@@ -532,7 +538,7 @@ func ensureRootDir(p string, mode uint32) (int, error) {
 		unix.Close(fd) //nolint:errcheck // a directory opened for reading
 		return -1, err
 	}
-	if st.Uid != 0 {
+	if int(st.Uid) != rootUID {
 		unix.Close(fd) //nolint:errcheck // a directory opened for reading
 		return -1, fmt.Errorf("%s belongs to uid %d, not root", p, st.Uid)
 	}

@@ -122,4 +122,25 @@ func TestDoctorResticSandbox(t *testing.T) {
 	if c := find(); c == nil || c.Status != "ok" {
 		t.Fatalf("Landlock 5 and the view: %+v", c)
 	}
+	f.agent.Sandbox = &agent.SandboxInfo{Landlock: 5, NoSymfollow: true, PrivateEtc: true}
+	if c := find(); c == nil || c.Status != "ok" || c.Detail != "Landlock ABI 5" {
+		t.Fatalf("Landlock 5, the view and a private /etc: %+v", c)
+	}
+	// no private /etc: a host that replaces resolv.conf during a backup
+	// takes name resolution away from restic
+	f.agent.Sandbox = &agent.SandboxInfo{Landlock: 5, NoSymfollow: true, PrivateEtcError: "--etc: a tmpfs on /etc: permission denied"}
+	if c := find(); c == nil || c.Status != "warn" || !strings.Contains(c.Detail, "resolv.conf") || !strings.Contains(c.Detail, "a tmpfs on /etc: permission denied") {
+		t.Fatalf("no private /etc: %+v", c)
+	}
+	// Landlock built in but not enabled (Oracle Linux's UEK): how to turn it
+	// on, and that a backup still reads in its view without symlinks
+	hint := "Landlock is built into this kernel but not enabled: add it to the kernel's lsm= list and reboot — grubby --update-kernel=ALL --args=lsm=lockdown,capability,yama,selinux,bpf,landlock"
+	f.agent.Sandbox = &agent.SandboxInfo{Error: "landlock: operation not supported", Hint: hint, NoSymfollow: true}
+	if c := find(); c == nil || c.Status != "warn" || !strings.Contains(c.Detail, hint) || !strings.Contains(c.Detail, "view that follows no symlink") {
+		t.Fatalf("no Landlock, the view: %+v", c)
+	}
+	f.agent.Sandbox = &agent.SandboxInfo{Error: "landlock: operation not supported", Hint: hint, NoSymfollowError: "the agent does not run as root"}
+	if c := find(); c == nil || c.Status != "warn" || !strings.Contains(c.Detail, hint) || !strings.Contains(c.Detail, "stored as its own") || !strings.Contains(c.Detail, "does not run as root") {
+		t.Fatalf("no Landlock, no view: %+v", c)
+	}
 }

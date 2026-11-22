@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"monopanel/internal/osprofile"
 	"monopanel/internal/sandbox"
 )
 
@@ -30,23 +31,31 @@ import (
 // below the paths it backs up, pinned by descriptor when the policy checked
 // them, a restore writes only below its target, and both reach besides only
 // restic's cache and temporary directory, a local repository and the
-// world-readable system files restic and ssh read. Landlock decides on the
-// file a path resolves to, so a link that leads out of those trees leads
-// nowhere, and restic reports the file as one it could not read. It grants a
-// tree however it is reached, though, and a server backup reads the panel's
-// configuration, certificates and dumps and every home: so a backup also
-// reads the web root in a view of it that follows no symlink at all
-// (sandbox.Rules.NoSymlinks), where the agent may mount.
+// world-readable system files restic and ssh read — those of /etc in a
+// private /etc of restic's own, where the host can rename nothing away from
+// under it (sandbox.Rules.Etc). Landlock decides on the file a path resolves
+// to, so a link that leads out of those trees leads nowhere, and restic
+// reports the file as one it could not read. It grants a tree however it is
+// reached, though, and a server backup reads the panel's configuration,
+// certificates and dumps and every home: so a backup also reads every tree it
+// saves in a view that follows no symlink at all (sandbox.Rules.NoSymlinks),
+// where the agent may mount.
+//
+// That view needs a mount namespace, not Landlock, and restic stores a
+// symlink as one and follows none: on a kernel without Landlock — older than
+// 5.13, or booted with an lsm= list that leaves it out, as Oracle Linux's UEK
+// is — a backup still runs in it (sandbox-exec --no-landlock), and the race
+// stays closed there too; what such a kernel loses is the rest of the
+// confinement. The agent says so when it starts and the doctor shows it, with
+// how to turn Landlock on.
 //
 // Every check of the policy stays as it is (resticBackupPath, resticEnv, the
-// shapes): the sandbox is a second wall, not the first. Without Landlock —
-// a kernel before 5.13, or booted with an lsm= list that leaves it out —
-// restic runs as before; the agent says so when it starts and the doctor
-// shows it.
+// shapes): the sandbox is a second wall, not the first.
 
 // resticSystemReads are the system's files restic and the programs it runs
 // read: the account databases (restic records owners by name, ssh needs
-// root's entry), name resolution, the time zone, the CA certificates of the
+// root's entry), name resolution (mdns.allow: Go's resolver looks for it when
+// nsswitch.conf names mdns), the time zone, the CA certificates of the
 // remote backends where Go's crypto/x509 looks for them, the configuration
 // of OpenSSL and of EL's crypto policies (ssh's libcrypto reads it), and the
 // dynamic loader's cache and preloads. All of them are world-readable; what
@@ -55,13 +64,29 @@ import (
 // whatever a backed-up home points at there.
 var resticSystemReads = []string{
 	"/etc/passwd", "/etc/group", "/etc/nsswitch.conf",
-	"/etc/hosts", "/etc/host.conf", "/etc/resolv.conf", "/etc/gai.conf", "/etc/services", "/etc/protocols",
+	"/etc/hosts", "/etc/host.conf", "/etc/resolv.conf", "/etc/gai.conf", "/etc/services", "/etc/protocols", "/etc/mdns.allow",
 	"/etc/localtime", "/usr/share/zoneinfo",
 	"/etc/ssl/certs", "/etc/ssl/openssl.cnf", "/etc/pki/tls/certs", "/etc/pki/tls/openssl.cnf", "/etc/pki/ca-trust",
 	"/etc/ca-certificates", "/usr/share/ca-certificates", "/usr/local/share/ca-certificates",
 	"/etc/crypto-policies", "/usr/share/crypto-policies",
 	"/etc/ld.so.cache", "/etc/ld.so.preload",
 	"/dev/urandom",
+}
+
+// The names of resticSystemReads below /etc and the rest: the former go into
+// the private /etc where the agent may mount (resticRules).
+var resticEtcReads, resticOtherReads = splitEtc(resticSystemReads)
+
+// splitEtc tells the paths below /etc from the others.
+func splitEtc(paths []string) (etc, other []string) {
+	for _, p := range paths {
+		if below(p, "/etc") {
+			etc = append(etc, p)
+		} else {
+			other = append(other, p)
+		}
+	}
+	return etc, other
 }
 
 // resticSystemExecs are the dynamic loader and the libraries: some
@@ -73,45 +98,109 @@ var sshBinaries = []string{"/usr/bin/ssh"}
 
 // logSandbox says once, when the agent starts, how restic runs.
 func (s *Server) logSandbox() {
-	if s.landlock > 0 && s.noSymfollowErr != nil {
-		s.log.Warn("restic runs in a Landlock sandbox, but a backup follows the symlinks in the web root: during a server backup, which reads the panel's configuration, certificates and dumps as well, an account that swaps a directory of its own for a symlink can have those, or another account's files, stored as its own", "abi", s.landlock, "err", s.noSymfollowErr)
+	if s.landlock < 1 {
+		attrs := []any{"err", s.landlockErr}
+		if hint := s.landlockHint(); hint != "" {
+			attrs = append(attrs, "enable", hint)
+		}
+		if s.noSymfollow {
+			s.log.Warn("Landlock is unavailable: restic backs up and restores as root without its sandbox; a backup still reads every tree it saves in a view that follows no symlink, so a directory an account swaps for a symlink leads nowhere, but nothing else confines restic", attrs...)
+			return
+		}
+		attrs = append(attrs, "nosymfollow_err", s.noSymfollowErr)
+		s.log.Warn("Landlock is unavailable: restic backs up and restores as root without its sandbox, and an account that swaps a directory of its own for a symlink while a backup reads its home can have root store files outside it (/etc/shadow, root's keys) as the account's own; boot a kernel with landlock in its lsm= list", attrs...)
 		return
 	}
-	if s.landlock > 0 {
-		s.log.Info("restic runs in a Landlock sandbox", "abi", s.landlock, "nosymfollow", s.noSymfollow)
-		return
+	if s.noSymfollowErr != nil {
+		s.log.Warn("restic runs in a Landlock sandbox, but a backup follows the symlinks in the trees it reads: during a server backup, which reads the panel's configuration, certificates and dumps as well, an account that swaps a directory of its own for a symlink can have those, or another account's files, stored as its own", "abi", s.landlock, "err", s.noSymfollowErr)
 	}
-	s.log.Warn("Landlock is unavailable: restic backs up and restores as root without its sandbox, and an account that swaps a directory of its own for a symlink while a backup reads its home can have root store files outside it (/etc/shadow, root's keys) as the account's own; boot a kernel with landlock in its lsm= list", "err", s.landlockErr)
+	if s.privateEtcErr != nil {
+		s.log.Warn("restic reads /etc/resolv.conf, /etc/hosts and /etc/passwd in its sandbox by inode: when the host replaces one of them during a run (NetworkManager, dhclient, useradd), restic loses name resolution, and with it a remote repository, or owner names; the agent cannot give it a private /etc", "abi", s.landlock, "err", s.privateEtcErr)
+	}
+	if s.noSymfollowErr == nil && s.privateEtcErr == nil {
+		s.log.Info("restic runs in a Landlock sandbox", "abi", s.landlock, "nosymfollow", s.noSymfollow, "private_etc", s.privateEtc)
+	}
 }
 
-// probeNoSymfollow finds out once, as the agent starts, whether a backup's
-// restic can be given its view of the web root without symlinks
-// (sandbox.Rules.NoSymlinks, resticRules): that takes a mount namespace and
-// the new mount API (Linux 5.14), which a container's profile may refuse.
-// Without it restic still runs in the Landlock sandbox, and the agent and the
+// landlockHint says how to turn Landlock on where the kernel has it built in
+// but the boot left it out of its LSM list (EOPNOTSUPP), "" where there is
+// nothing to turn on (ENOSYS: the kernel lacks it). Oracle Linux's UEK is
+// such a kernel; its Red Hat compatible kernel, like the one of RHEL and its
+// rebuilds, has Landlock on.
+func (s *Server) landlockHint() string {
+	if !errors.Is(s.landlockErr, unix.EOPNOTSUPP) {
+		return ""
+	}
+	var uts unix.Utsname
+	kernel := ""
+	if unix.Uname(&uts) == nil {
+		kernel = unix.ByteSliceToString(uts.Release[:])
+	}
+	lsm, _ := os.ReadFile("/sys/kernel/security/lsm")
+	return landlockHint(s.profile, kernel, strings.TrimSpace(string(lsm)))
+}
+
+// landlockHint is the advice for a kernel of that release whose active LSMs
+// are lsm (/sys/kernel/security/lsm): the same list with landlock added, as
+// the boot parameter that sets it. lsm= replaces the kernel's list, so the
+// modules it has (SELinux, AppArmor) stay in it.
+func landlockHint(profile osprofile.Profile, kernel, lsm string) string {
+	list := "landlock"
+	if lsm != "" {
+		list = lsm + ",landlock"
+	}
+	h := "Landlock is built into this kernel but not enabled: add it to the kernel's lsm= list and reboot — "
+	if profile != nil && profile.Family() == osprofile.FamilyDebian {
+		h += "lsm=" + list + " in GRUB_CMDLINE_LINUX of /etc/default/grub, then update-grub"
+	} else {
+		h += "grubby --update-kernel=ALL --args=lsm=" + list
+	}
+	if strings.Contains(kernel, "uek") {
+		h += "; or boot the Red Hat compatible kernel, which has it on (dnf install kernel, then grubby --set-default=/boot/vmlinuz-<its version>)"
+	}
+	return h
+}
+
+// probeNoSymfollow finds out once, as the agent starts, what restic's
+// sandbox can be given besides Landlock: the view without symlinks of the
+// trees a backup reads (sandbox.Rules.NoSymlinks, resticRules) — with
+// Landlock or, where the kernel has none, without — and, with Landlock, the
+// private /etc (sandbox.Rules.Etc). Both take a mount namespace, the view the
+// new mount API (Linux 5.14), which a container's profile may refuse.
+// Without them restic still runs as the kernel allows, and the agent and the
 // doctor say what that leaves open.
 func (s *Server) probeNoSymfollow(ctx context.Context) {
 	s.noSymfollow, s.noSymfollowErr = false, nil
-	if s.landlock < 1 {
-		return
-	}
+	s.privateEtc, s.privateEtcErr = false, nil
 	if os.Geteuid() != 0 {
 		s.noSymfollowErr = errors.New("the agent does not run as root")
+		if s.landlock > 0 {
+			s.privateEtcErr = s.noSymfollowErr
+		}
 		return
 	}
 	dir, err := filepath.EvalSymlinks(s.cfg.WWWRoot)
 	if err != nil || !filepath.IsAbs(dir) {
 		dir = os.TempDir() // no web root yet: any directory tells as much
 	}
-	rules := sandbox.Rules{NoSymlinks: []string{dir}}
-	argv, _ := rules.CheckCommand()
-	pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	if out, err := exec.CommandContext(pctx, s.sandboxExe, argv...).CombinedOutput(); err != nil {
-		s.noSymfollowErr = fmt.Errorf("%v: %s", err, firstLines(string(out), "nothing said"))
+	probe := func(rules sandbox.Rules) error {
+		argv, _ := rules.CheckCommand()
+		pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		if out, err := exec.CommandContext(pctx, s.sandboxExe, argv...).CombinedOutput(); err != nil {
+			return fmt.Errorf("%v: %s", err, firstLines(string(out), "nothing said"))
+		}
+		return nil
+	}
+	if s.noSymfollowErr = probe(sandbox.Rules{NoSymlinks: []string{dir}, NoLandlock: s.landlock < 1}); s.noSymfollowErr == nil {
+		s.noSymfollow = true
+	}
+	if s.landlock < 1 {
 		return
 	}
-	s.noSymfollow = true
+	if s.privateEtcErr = probe(sandbox.Rules{Etc: resticEtcReads}); s.privateEtcErr == nil {
+		s.privateEtc = true
+	}
 }
 
 // sandboxRestic has each run of the plan's restic go through the sandbox.
@@ -123,23 +212,30 @@ func (s *Server) probeNoSymfollow(ctx context.Context) {
 // restic links a snapshot's hard links wherever they are. The restore
 // writes into a directory of the agent's alone anyway, and the agent moves
 // what came out into place itself (restoreInPlace).
+//
+// Without Landlock a backup still goes through sandbox-exec, for its view
+// without symlinks alone; the rest runs as it is.
 func (s *Server) sandboxRestic(plan *toolPlan, sources []*os.File) {
 	for _, f := range sources {
 		plan.closers = append(plan.closers, f)
 	}
-	if s.landlock < 1 || plan.args[0] == "restore" && s.landlock < 2 {
-		return
-	}
-	prepare := plan.prepare
-	plan.prepare = func() error {
-		if err := prepare(); err != nil {
+	switch {
+	case s.landlock >= 2, s.landlock == 1 && plan.args[0] != "restore":
+		prepare := plan.prepare
+		plan.prepare = func() error {
+			if err := prepare(); err != nil {
+				return err
+			}
+			fd, err := ensureRootDir(s.resticTmpDir(), 0o700)
+			if err == nil {
+				unix.Close(fd) //nolint:errcheck // a directory opened for reading
+			}
 			return err
 		}
-		fd, err := ensureRootDir(s.resticTmpDir(), 0o700)
-		if err == nil {
-			unix.Close(fd) //nolint:errcheck // a directory opened for reading
-		}
-		return err
+	case s.landlock < 1 && s.noSymfollow && plan.args[0] == "backup":
+		// the view alone (confineRestic)
+	default:
+		return
 	}
 	repo := ""
 	for _, e := range plan.env {
@@ -218,23 +314,29 @@ type resticAccess struct {
 	// temporary directory, /dev/null, the restic and ssh binaries and the
 	// libraries, with the system's symlinks resolved.
 	ro, rw, rx []string
+	// etc are the system's files of /etc restic reads, in a private /etc
+	// where the agent may mount (sandbox.Rules.Etc) — then not in ro — and
+	// etcBind what a backup saves below /etc (the panel's configuration),
+	// bound into it as it is.
+	etc, etcBind []string
 	// sources: a backup reads the backed-up paths (sandboxRestic's).
 	sources bool
-	// target is a restore's target below RestoreDir, made when missing.
+	// target is a restore's target below RestoreDir or the restore area of
+	// the web root (restoreInPlace), made when missing.
 	target string
 	// repo is a local repository, written to.
 	repo string
 	// sftp is the server of an sftp repository: ssh reaches it through a
 	// connection the agent opens outside the sandbox (sshMaster).
 	sftp *sftpRemote
-	// noSymlinks is the web root, resolved, for a backup that reads in it:
-	// restic follows no symlink below it (sandbox.Rules.NoSymlinks). The
-	// Landlock rules alone would let a home's symlink lead into every other
-	// tree the run reads — a server backup reads the panel's
-	// configuration, certificates and dumps and all the homes — and restic
-	// never follows one there itself: a symlink it backs up it stores as
-	// one, and the policy accepts no path with a symlink on the way below
-	// the web root (resticBackupPath).
+	// noSymlinks are the trees a backup reads, resolved (viewRoots): restic
+	// follows no symlink below them (sandbox.Rules.NoSymlinks). The Landlock
+	// rules alone would let a home's symlink lead into every other tree the
+	// run reads — a server backup reads the panel's configuration,
+	// certificates and dumps and all the homes — and without Landlock into
+	// anything at all; restic never follows one there itself: a symlink it
+	// backs up it stores as one, and the policy accepts no path with a
+	// symlink on the way below a tree (resticBackupPath).
 	noSymlinks []string
 }
 
@@ -245,9 +347,25 @@ func (s *Server) resticRules(bin string, args []string, repo string) (*resticAcc
 	if len(args) == 0 {
 		return nil, errors.New("restic: no command")
 	}
+	paths := resticBackupArgs(args)
 	acc := &resticAccess{
-		ro: systemPaths(resticSystemReads),
 		rw: systemPaths([]string{s.resticCacheDir(), s.resticTmpDir(), "/dev/null"}),
+	}
+	if bind, ok := etcSources(paths); s.privateEtc && ok {
+		acc.etc, acc.etcBind = existingPaths(resticEtcReads), bind
+		acc.ro = systemPaths(resticOtherReads)
+		// resolv.conf as a symlink into /run (systemd-resolved,
+		// NetworkManager) stays one, and its directory is granted, as
+		// without the private /etc: a copy would keep the name servers
+		// of the start, the directory follows them
+		if dir, ok := runLinkDir(resolvConf); ok {
+			acc.etc = slices.DeleteFunc(acc.etc, func(p string) bool { return p == resolvConf })
+			acc.etcBind = append(acc.etcBind, resolvConf)
+			acc.ro = append(acc.ro, dir)
+		}
+	} else {
+		// a rule per file, as the host has them now
+		acc.ro = systemPaths(resticSystemReads)
 	}
 	execs := append([]string{bin}, resticSystemExecs...)
 	switch {
@@ -265,17 +383,17 @@ func (s *Server) resticRules(bin string, args []string, repo string) (*resticAcc
 	switch args[0] {
 	case "backup":
 		acc.sources = true
-		if s.noSymfollow && len(args) > 6 && slices.ContainsFunc(args[6:], func(p string) bool { return atOrBelow(p, s.cfg.WWWRoot) }) {
-			www, err := filepath.EvalSymlinks(s.cfg.WWWRoot)
+		if s.noSymfollow {
+			roots, err := s.viewRoots(paths)
 			if err != nil {
-				return nil, fmt.Errorf("the web root: %w", err)
+				return nil, err
 			}
-			acc.noSymlinks = []string{www}
+			acc.noSymlinks = roots
 		}
 	case "restore":
 		i := slices.Index(args, "--target")
-		if i < 0 || i+1 >= len(args) || !cleanAbs(args[i+1]) || !below(args[i+1], RestoreDir) {
-			return nil, notAllowed("a restore of "+strings.Join(args, " "), "restic restores into "+RestoreDir+" alone")
+		if i < 0 || i+1 >= len(args) || !cleanAbs(args[i+1]) || s.restoreBase(args[i+1]) == "" {
+			return nil, notAllowed("a restore of "+strings.Join(args, " "), "restic restores into "+RestoreDir+" and the agent's staging of in-place restores alone")
 		}
 		acc.target = args[i+1]
 	case "ls", "snapshots", "cat", "init", "forget":
@@ -283,6 +401,151 @@ func (s *Server) resticRules(bin string, args []string, repo string) (*resticAcc
 		return nil, notAllowed("restic "+args[0]+" in the sandbox", "not a command the panel runs")
 	}
 	return acc, nil
+}
+
+// resticBackupArgs are the paths a restic backup of args saves: what follows
+// its tags, without the options the agent added (--exclude=).
+func resticBackupArgs(args []string) []string {
+	if len(args) < 7 || args[0] != "backup" {
+		return nil
+	}
+	var out []string
+	for _, a := range args[6:] {
+		if !strings.HasPrefix(a, "-") {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// etcSources are the backed-up paths below /etc, which a private /etc has to
+// hold as they are: the panel's configuration. ok is false when one cannot be
+// put there next to the system's entries — it is /etc itself, or holds one
+// of them or lies in one — and the run then reads the system's /etc by the
+// rules of its files.
+func etcSources(paths []string) ([]string, bool) {
+	var out []string
+	for _, p := range paths {
+		if !atOrBelow(p, "/etc") {
+			continue
+		}
+		if p == "/etc" || slices.ContainsFunc(resticEtcReads, func(e string) bool { return atOrBelow(p, e) || below(e, p) }) {
+			return nil, false
+		}
+		out = append(out, p)
+	}
+	return outermost(out), true
+}
+
+// outermost are dirs without duplicates and without those below another one
+// of them, in their order.
+func outermost(dirs []string) []string {
+	var out []string
+	for _, d := range dirs {
+		if !slices.ContainsFunc(dirs, func(o string) bool { return below(d, o) }) && !slices.Contains(out, d) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// existingPaths are the paths there are, followed through their symlinks.
+func existingPaths(paths []string) []string {
+	var out []string
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// viewRoots are the directories a backup of paths sees without symlinks:
+// the tree each path lies in — the web root, the configuration directory,
+// the data directory, which holds the certificates, the ACME account and the
+// run's dumps — reached as the system's directories are and resolved
+// (viewRoot), each once, none below another.
+func (s *Server) viewRoots(paths []string) ([]string, error) {
+	var out []string
+	for _, p := range paths {
+		tree := s.resticBackupRoot(p)
+		if tree == "" {
+			continue // not a path the policy lets through
+		}
+		d, err := s.viewRoot(tree)
+		if errors.Is(err, os.ErrNotExist) {
+			continue // nothing to read below it: restic says so
+		}
+		if err != nil {
+			return nil, notAllowed("a backup of "+p, "the view of "+tree+" without symlinks: "+err.Error())
+		}
+		out = append(out, d)
+	}
+	return outermost(out), nil
+}
+
+// viewRoot is where the view without symlinks of the tree goes: the tree,
+// resolved — or the directory above it whose name nobody but root may change.
+// A view is mounted on a directory, not on its name: one in a directory the
+// API may rearrange would leave with its directory when the API renames that,
+// and whatever the API puts under the name is read as it is. The data
+// directory is the API's, but it lies in root's /var/lib, so the view goes
+// on the data directory, not on the certificates and dumps in it.
+func (s *Server) viewRoot(tree string) (string, error) {
+	fd, err := openDirTrusted(tree)
+	if err != nil {
+		return "", err
+	}
+	real, err := os.Readlink("/proc/self/fd/" + strconv.Itoa(fd))
+	unix.Close(fd) //nolint:errcheck // a directory opened for its path
+	if err != nil {
+		return "", err
+	}
+	t := s.trust()
+	for d := real; d != "/"; d = filepath.Dir(d) {
+		var parent, self unix.Stat_t
+		if err := unix.Lstat(filepath.Dir(d), &parent); err != nil {
+			return "", &os.PathError{Op: "stat", Path: filepath.Dir(d), Err: err}
+		}
+		if err := unix.Lstat(d, &self); err != nil {
+			return "", &os.PathError{Op: "stat", Path: d, Err: err}
+		}
+		// in a sticky directory of root's only an entry's owner renames it
+		if t.rootOwned(parent.Uid) && (parent.Mode&0o022 == 0 || parent.Mode&unix.S_ISVTX != 0 && t.rootOwned(self.Uid)) {
+			return d, nil
+		}
+	}
+	return "", fmt.Errorf("no directory above %s has a name only root may change", real)
+}
+
+// resolvConf is where the resolvers look for their name servers.
+const resolvConf = "/etc/resolv.conf"
+
+// runLinkDir is the directory in /run that the symlink link leads to
+// straight away — not through another name of /etc, which a private /etc
+// lacks — and that holds the file it ends at.
+func runLinkDir(link string) (string, bool) {
+	target, err := os.Readlink(link)
+	if err != nil {
+		return "", false
+	}
+	resolved, err := filepath.EvalSymlinks(link)
+	if err != nil {
+		return "", false
+	}
+	return linkDirIn(link, target, resolved, "/run")
+}
+
+// linkDirIn is runLinkDir of a link with that target that resolves to
+// resolved, for the directory run.
+func linkDirIn(link, target, resolved, run string) (string, bool) {
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(link), target)
+	}
+	if !below(filepath.Clean(target), run) || !below(resolved, run) {
+		return "", false
+	}
+	return filepath.Dir(resolved), true
 }
 
 // systemPaths are paths with the system's own symlinks resolved — the
@@ -298,7 +561,7 @@ func systemPaths(paths []string) []string {
 		if err != nil {
 			continue
 		}
-		if p == "/etc/resolv.conf" && strings.HasPrefix(r, "/run/") {
+		if p == resolvConf && strings.HasPrefix(r, "/run/") {
 			r = filepath.Dir(r)
 		}
 		if !slices.Contains(out, r) {
@@ -309,14 +572,20 @@ func systemPaths(paths []string) []string {
 }
 
 // confineRestic turns a run of restic into one through sandbox-exec under
-// resticRules.
+// resticRules — without Landlock, into one in the view without symlinks of
+// what a backup reads, and nothing else.
 func (s *Server) confineRestic(repo string, sources []*os.File) func(ctx context.Context, bin string, args []string, out io.Writer) (*confinedRun, error) {
 	return func(ctx context.Context, bin string, args []string, out io.Writer) (*confinedRun, error) {
 		acc, err := s.resticRules(bin, args, repo)
 		if err != nil {
 			return nil, err
 		}
-		rules := sandbox.Rules{RO: acc.ro, RW: acc.rw, RX: acc.rx, NoSymlinks: acc.noSymlinks}
+		if s.landlock < 1 {
+			rules := sandbox.Rules{NoLandlock: true, NoSymlinks: acc.noSymlinks}
+			argv, _ := rules.Command(bin, args)
+			return &confinedRun{path: s.sandboxExe, args: argv, done: func() {}}, nil
+		}
+		rules := sandbox.Rules{RO: acc.ro, RW: acc.rw, RX: acc.rx, NoSymlinks: acc.noSymlinks, Etc: acc.etc, EtcBind: acc.etcBind}
 		if acc.sources {
 			rules.ROFiles = sources
 		}
@@ -329,9 +598,9 @@ func (s *Server) confineRestic(repo string, sources []*os.File) func(ctx context
 			}
 		}
 		if acc.target != "" {
-			// RestoreDir is root's and 0700: what is made below it stays the
-			// agent's own until restic has written
-			fd, err := openDirBelow(RestoreDir, acc.target, true, 0o700)
+			// RestoreDir and the restore area are root's and 0700: what is
+			// made below them stays the agent's own until restic has written
+			fd, err := openDirBelow(s.restoreBase(acc.target), acc.target, true, 0o700)
 			if err != nil {
 				return nil, err
 			}

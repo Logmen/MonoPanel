@@ -23,16 +23,93 @@ import (
 // childEnv makes the test binary the program the sandbox runs (child).
 const childEnv = "MP_SANDBOX_TEST_CHILD"
 
+// hostEnv makes the test binary the host a sandbox runs on (host): a process
+// with a user and a mount namespace of its own, whose mounts and /etc the
+// test may change while the sandboxed program runs.
+const hostEnv = "MP_SANDBOX_TEST_HOST"
+
 // The test binary is both sandbox-exec and the program it runs: a Go program
 // that tries what it is told and prints what came of it.
 func TestMain(m *testing.M) {
 	switch {
 	case len(os.Args) > 1 && os.Args[1] == "sandbox-exec":
 		os.Exit(Main(os.Args[2:]))
+	case os.Getenv(hostEnv) != "":
+		os.Exit(host(os.Args[1:]))
 	case os.Getenv(childEnv) != "":
 		os.Exit(child(os.Args[1:]))
 	}
 	os.Exit(m.Run())
+}
+
+// host runs the command of its arguments (sandbox-exec and its program) on a
+// host the environment describes, and does to it what the environment says
+// once the program waits: MP_HOST_SHARED makes a directory a shared mount of
+// its own, MP_HOST_ETC binds a directory over /etc — the host's /etc, as the
+// program finds it; while the program waits MP_HOST_MOUNT gets a tmpfs with a
+// symlink "link" to MP_HOST_LINK in it, and each "from to" pair of
+// MP_HOST_RENAME is renamed, as a package manager or NetworkManager replace a
+// file.
+func host(args []string) int {
+	fail := func(err error) int {
+		fmt.Println("host:", err)
+		return 98
+	}
+	if d := os.Getenv("MP_HOST_SHARED"); d != "" {
+		if err := unix.Mount(d, d, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
+			return fail(err)
+		}
+		if err := unix.Mount("none", d, "", unix.MS_SHARED, ""); err != nil {
+			return fail(err)
+		}
+	}
+	if e := os.Getenv("MP_HOST_ETC"); e != "" {
+		if err := unix.Mount(e, "/etc", "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
+			return fail(err)
+		}
+	}
+	cmd := exec.Command(args[0], args[1:]...)
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, hostEnv+"=") {
+			cmd.Env = append(cmd.Env, e)
+		}
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fail(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fail(err)
+	}
+	cmd.Stderr = os.Stdout
+	if err := cmd.Start(); err != nil {
+		return fail(err)
+	}
+	sc := bufio.NewScanner(stdout)
+	for sc.Scan() {
+		fmt.Println(sc.Text())
+		if sc.Text() != "waiting" {
+			continue
+		}
+		if d := os.Getenv("MP_HOST_MOUNT"); d != "" {
+			if err := unix.Mount("tmpfs", d, "tmpfs", 0, ""); err != nil {
+				fmt.Println("host: mount:", err)
+			} else if err := os.Symlink(os.Getenv("MP_HOST_LINK"), filepath.Join(d, "link")); err != nil {
+				fmt.Println("host: symlink:", err)
+			}
+		}
+		pairs := strings.Fields(os.Getenv("MP_HOST_RENAME"))
+		for i := 0; i+1 < len(pairs); i += 2 {
+			if err := os.Rename(pairs[i], pairs[i+1]); err != nil {
+				fmt.Println("host: rename:", err)
+			}
+		}
+		io.WriteString(stdin, "go\n") //nolint:errcheck // a program that is gone says so
+		stdin.Close()
+	}
+	cmd.Wait() //nolint:errcheck // the exit status is what counts
+	return cmd.ProcessState.ExitCode()
 }
 
 // child runs the operations of its arguments one after another and prints a
@@ -525,6 +602,14 @@ func TestBadRules(t *testing.T) {
 		{[]string{"--nosymfollow", dir + "/../x", "--", self}, "a clean absolute path"},
 		{[]string{"--nosymfollow"}, "needs a value"},
 		{[]string{"--check", "--", self}, "--check ends the command line"},
+		{[]string{"--etc", "relative", "--", self}, "a clean path below /etc"},
+		{[]string{"--etc", "/etc", "--", self}, "a clean path below /etc"},
+		{[]string{"--etc", "/var/lib/x", "--", self}, "a clean path below /etc"},
+		{[]string{"--etc-bind", "/etc/a/../../root", "--", self}, "a clean path below /etc"},
+		{[]string{"--etc", "/etc/ssl", "--etc", "/etc/ssl/certs", "--", self}, "below --etc /etc/ssl"},
+		{[]string{"--etc", "/etc/hosts", "--nosymfollow", "/etc/monopanel", "--", self}, "lies in no --etc-bind entry"},
+		{[]string{"--no-landlock", "--rw", dir, "--", self}, "would not be enforced"},
+		{[]string{"--no-landlock", "--ro-fd", "3", "--check"}, "would not be enforced"},
 	} {
 		cmd := exec.Command(self, append([]string{"sandbox-exec"}, c.args...)...)
 		cmd.Env = append(os.Environ(), childEnv+"=1")
@@ -599,6 +684,16 @@ func TestCommand(t *testing.T) {
 	}
 	if c, err := parse(argv[1:]); err != nil || !c.check || c.argv != nil || len(c.rules) != 5 || len(c.noSymlinks) != 1 {
 		t.Fatalf("parse --check: %+v %v", c, err)
+	}
+	// the mounts alone, on a kernel without Landlock, and the private /etc
+	r = Rules{NoLandlock: true, Etc: []string{"/etc/hosts", "/etc/ssl/certs"}, EtcBind: []string{"/etc/monopanel"}, NoSymlinks: []string{"/var/www", "/etc/monopanel"}}
+	argv, files = r.Command("/usr/bin/restic", []string{"backup"})
+	if want := "sandbox-exec --no-landlock --etc /etc/hosts --etc /etc/ssl/certs --etc-bind /etc/monopanel --nosymfollow /var/www --nosymfollow /etc/monopanel -- /usr/bin/restic backup"; strings.Join(argv, " ") != want || len(files) != 0 {
+		t.Fatalf("%q %v", argv, files)
+	}
+	c, err = parse(argv[1:])
+	if err != nil || !c.noLandlock || !slices.Equal(c.etc, r.Etc) || !slices.Equal(c.etcBind, r.EtcBind) || !slices.Equal(c.noSymlinks, r.NoSymlinks) || !c.privateEtc() || len(c.rules) != 0 {
+		t.Fatalf("parse: %+v %v", c, err)
 	}
 }
 
@@ -736,6 +831,199 @@ func TestCheck(t *testing.T) {
 		cmd = exec.Command(self, "sandbox-exec", "--nosymfollow", dir, "--check")
 		if out, code := run(t, cmd); code != ExitSetup || !strings.Contains(out, "--nosymfollow: a mount namespace") {
 			t.Fatalf("check without the right to mount: exit %d: %s", code, out)
+		}
+	}
+}
+
+// inHostNS has cmd start as root of a user and a mount namespace of its own
+// (the test's uid and gid mapped to 0): the host of host(), whose mounts the
+// test may change. It skips the test where such namespaces are refused.
+func inHostNS(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
+	inUserNS(t, cmd)
+	cmd.SysProcAttr.Cloneflags |= syscall.CLONE_NEWNS
+}
+
+// Without Landlock — a kernel that has it built in but not enabled, as
+// Oracle Linux's UEK — the view without symlinks needs only a mount
+// namespace: --no-landlock builds it and nothing else. The directory an
+// account swapped for a symlink leads nowhere, while what lies outside the
+// tree is not confined (no Landlock to do that).
+func TestNoLandlockViewAlone(t *testing.T) {
+	for _, nosym := range []bool{false, true} {
+		dir := t.TempDir()
+		www, conf := filepath.Join(dir, "www"), filepath.Join(dir, "etc")
+		home := filepath.Join(www, "alex")
+		writeFile(t, filepath.Join(home, "a", "secret.key"), "the account's own")
+		writeFile(t, filepath.Join(conf, "secret.key"), "panel-secret")
+		self, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		args := []string{"sandbox-exec", "--no-landlock"}
+		if nosym {
+			args = append(args, "--nosymfollow", www)
+		}
+		args = append(args, "--", self, "list", filepath.Join(home, "a"), "wait", "read", filepath.Join(home, "a", "secret.key"), "read", filepath.Join(conf, "secret.key"))
+		cmd := exec.Command(self, args...)
+		cmd.Env = append(os.Environ(), childEnv+"=1")
+		if nosym {
+			inUserNS(t, cmd)
+		}
+		out := raceRun(t, cmd, func() {
+			if err := os.Rename(filepath.Join(home, "a"), filepath.Join(home, "a.old")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(conf, filepath.Join(home, "a")); err != nil {
+				t.Fatal(err)
+			}
+		})
+		stolen := "read " + filepath.Join(home, "a", "secret.key") + ": ok panel-secret"
+		if !nosym {
+			// nothing at all: what the view is for
+			wantLines(t, out, stolen)
+			continue
+		}
+		if strings.Contains(out, stolen) {
+			t.Errorf("read through the account's symlink without Landlock:\n%s", out)
+		}
+		wantLines(t, out,
+			"read "+filepath.Join(home, "a", "secret.key")+": open "+filepath.Join(home, "a", "secret.key")+": too many levels of symbolic links",
+			"read "+filepath.Join(conf, "secret.key")+": ok panel-secret")
+	}
+	// rules without Landlock to enforce them are refused, nothing runs
+	self, _ := os.Executable()
+	cmd := exec.Command(self, "sandbox-exec", "--no-landlock", "--ro", t.TempDir(), "--", self, "exit", "0")
+	cmd.Env = append(os.Environ(), childEnv+"=1")
+	if out, code := run(t, cmd); code != ExitSetup || !strings.Contains(out, "would not be enforced") {
+		t.Fatalf("--no-landlock with a rule: exit %d: %s", code, out)
+	}
+	// and the check builds the view alone
+	cmd = exec.Command(self, "sandbox-exec", "--no-landlock", "--nosymfollow", t.TempDir(), "--check")
+	inUserNS(t, cmd)
+	if out, code := run(t, cmd); code != 0 || out != "" {
+		t.Fatalf("--no-landlock --check: exit %d: %s", code, out)
+	}
+}
+
+// The view is a copy of the host's mounts made as the program starts: a
+// mount the host makes below the tree afterwards — a shared folder started
+// during a backup — must not come into it, where it would arrive without
+// nosymfollow and a symlink in it would be followed again. The host here has
+// the tree as a shared mount, as systemd makes /; it mounts a tmpfs with a
+// symlink to the outside below the tree while the program waits.
+func TestViewTakesInNoLaterMounts(t *testing.T) {
+	dir := t.TempDir()
+	www, outside := filepath.Join(dir, "www"), filepath.Join(dir, "outside")
+	writeFile(t, filepath.Join(outside, "secret"), "secret")
+	if err := os.MkdirAll(filepath.Join(www, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(www, "sub", "link")
+	cmd := exec.Command(self, self, "sandbox-exec", "--no-landlock", "--nosymfollow", www, "--",
+		self, "list", filepath.Join(www, "sub"), "wait", "readlink", link, "read", filepath.Join(link, "secret"))
+	cmd.Env = append(os.Environ(), hostEnv+"=1", childEnv+"=1", "MP_HOST_SHARED="+www, "MP_HOST_MOUNT="+filepath.Join(www, "sub"), "MP_HOST_LINK="+outside)
+	inHostNS(t, cmd)
+	out, code := run(t, cmd)
+	if code != 0 || strings.Contains(out, "host:") {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	if strings.Contains(out, "readlink "+link+": ok") || strings.Contains(out, ": ok secret") {
+		t.Fatalf("the host's later mount came into the view:\n%s", out)
+	}
+	wantLines(t, out,
+		"list "+filepath.Join(www, "sub")+": ok",
+		"readlink "+link+": readlink "+link+": no such file or directory",
+		"read "+filepath.Join(link, "secret")+": open "+filepath.Join(link, "secret")+": no such file or directory")
+}
+
+// The private /etc: the program reads the system's files as they were when
+// it started, though the host renames others over them meanwhile (as
+// NetworkManager does resolv.conf), and a directory bound there as it is
+// (the CA certificates) shows what the host puts in it later; what it was
+// not given (/etc/shadow) is not there at all, a symlink of the system's is
+// read through, and a view without symlinks below /etc is made of what the
+// private /etc binds there; a symlink bound there stays one. With a Landlock
+// rule on the file instead — what a host that refuses the mount gets — the
+// renamed file is out of reach.
+func TestPrivateEtc(t *testing.T) {
+	needLandlock(t)
+	for _, private := range []bool{true, false} {
+		dir := t.TempDir()
+		etc := filepath.Join(dir, "etc")
+		for p, body := range map[string]string{
+			"resolv.conf": "nameserver 192.0.2.1", "resolv.conf.new": "nameserver 192.0.2.2", "hosts": "127.0.0.1 localhost",
+			"passwd": "root:x:0:0:root:/root:/bin/sh", "shadow": "root:hash",
+			"pki/tls/certs/ca.pem": "the CA", "pki/tls/certs/.new.pem": "a new CA", "monopanel/secret.key": "panel-secret",
+		} {
+			writeFile(t, filepath.Join(etc, p), body)
+		}
+		writeFile(t, filepath.Join(dir, "zoneinfo", "UTC"), "TZif")
+		for link, to := range map[string]string{"ssl/certs": "../pki/tls/certs", "localtime": filepath.Join(dir, "zoneinfo", "UTC"), "monopanel/link": "secret.key", "panel": "monopanel"} {
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(etc, link)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(to, filepath.Join(etc, link)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		self, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		rules := []string{"--ro", "/etc/resolv.conf"}
+		if private {
+			rules = []string{"--etc", "/etc/resolv.conf", "--etc", "/etc/hosts", "--etc", "/etc/passwd", "--etc", "/etc/missing",
+				"--etc", "/etc/ssl/certs", "--etc", "/etc/localtime", "--etc-bind", "/etc/monopanel", "--nosymfollow", "/etc/monopanel", "--etc-bind", "/etc/panel"}
+		}
+		ops := []string{"read", "/etc/resolv.conf", "wait", "read", "/etc/resolv.conf"}
+		if private {
+			ops = append(ops, "read", "/etc/hosts", "read", "/etc/passwd", "read", "/etc/shadow", "read", "/etc/missing", "read", "/etc/localtime",
+				"read", "/etc/ssl/certs/ca.pem", "read", "/etc/ssl/certs/new.pem", "read", "/etc/monopanel/secret.key",
+				"readlink", "/etc/monopanel/link", "read", "/etc/monopanel/link", "readlink", "/etc/panel", "write", "/etc/hosts", "list", "/etc")
+		}
+		args := append([]string{self, "sandbox-exec"}, rules...)
+		args = append(append(args, selfRules(t)...), "--", self)
+		cmd := exec.Command(self, append(args, ops...)...)
+		cmd.Env = append(os.Environ(), hostEnv+"=1", childEnv+"=1", "MP_HOST_ETC="+etc,
+			"MP_HOST_RENAME=/etc/resolv.conf.new /etc/resolv.conf /etc/pki/tls/certs/.new.pem /etc/pki/tls/certs/new.pem")
+		inHostNS(t, cmd)
+		out, code := run(t, cmd)
+		if code != 0 || strings.Contains(out, "host:") {
+			t.Fatalf("private %v: exit %d: %s", private, code, out)
+		}
+		if !private {
+			// the finding this is for: the rule stayed with the old inode
+			wantLines(t, out, "read /etc/resolv.conf: ok nameserver 192.0.2.1", "read /etc/resolv.conf: denied")
+			continue
+		}
+		if strings.Contains(out, "read /etc/resolv.conf: denied") || strings.Contains(out, "root:hash") {
+			t.Errorf("private /etc:\n%s", out)
+		}
+		if n := strings.Count(out, "read /etc/resolv.conf: ok nameserver 192.0.2.1\n"); n != 2 {
+			t.Errorf("resolv.conf read %d times as it was:\n%s", n, out)
+		}
+		wantLines(t, out,
+			"read /etc/hosts: ok 127.0.0.1 localhost",
+			"read /etc/passwd: ok root:x:0:0:root:/root:/bin/sh",
+			"read /etc/shadow: open /etc/shadow: no such file or directory",
+			"read /etc/missing: open /etc/missing: no such file or directory",
+			"read /etc/localtime: ok TZif",
+			"read /etc/ssl/certs/ca.pem: ok the CA",
+			"read /etc/ssl/certs/new.pem: ok a new CA",
+			"read /etc/monopanel/secret.key: ok panel-secret",
+			"readlink /etc/monopanel/link: ok secret.key",
+			"read /etc/monopanel/link: open /etc/monopanel/link: too many levels of symbolic links",
+			"readlink /etc/panel: ok monopanel",
+			"list /etc: ok",
+		)
+		// read-only twice over: the mount, and Landlock
+		if !strings.Contains(out, "write /etc/hosts: ") || strings.Contains(out, "write /etc/hosts: ok") {
+			t.Errorf("a write to the private /etc:\n%s", out)
 		}
 	}
 }

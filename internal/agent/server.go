@@ -60,11 +60,15 @@ type Server struct {
 	// why, and restic then runs as it is.
 	landlock    int
 	landlockErr error
-	// noSymfollow: a backup's restic gets a view of the web root in which
-	// no symlink is followed (restic_sandbox.go), which ListenAndServe
-	// finds out once; noSymfollowErr says why not.
+	// noSymfollow: a backup's restic gets a view of the trees it reads in
+	// which no symlink is followed (restic_sandbox.go), Landlock or not,
+	// which ListenAndServe finds out once; noSymfollowErr says why not.
 	noSymfollow    bool
 	noSymfollowErr error
+	// privateEtc: restic in its Landlock sandbox reads the system's files of
+	// /etc in a private /etc of its own; privateEtcErr says why not.
+	privateEtc    bool
+	privateEtcErr error
 	// sandboxExe is the binary sandbox-exec runs from: the agent's own,
 	// /proc/self/exe — the one running, even when an update replaced the
 	// file meanwhile.
@@ -72,6 +76,9 @@ type Server struct {
 	// resticCache and resticTmp are restic's cache and temporary directory,
 	// root's alone: resticCacheDir and resticTmpDir. Tests move them.
 	resticCache, resticTmp string
+	// restoreRoot is RestoreDir, where an in-place restore of the trees
+	// outside the web root is staged; tests move it.
+	restoreRoot string
 }
 
 // NewServer builds an agent.
@@ -82,7 +89,7 @@ func NewServer(cfg config.Config, profile osprofile.Profile, log *slog.Logger) *
 	abi, err := sandbox.ABI()
 	return &Server{cfg: cfg, profile: profile, log: log, rootUID: os.Geteuid(), unitDir: systemUnitDir,
 		lookupIP: net.DefaultResolver.LookupIPAddr, daemonReload: systemdReload,
-		landlock: abi, landlockErr: err, sandboxExe: "/proc/self/exe", resticCache: resticCacheDir, resticTmp: resticTmpDir}
+		landlock: abi, landlockErr: err, sandboxExe: "/proc/self/exe", resticCache: resticCacheDir, resticTmp: resticTmpDir, restoreRoot: RestoreDir}
 }
 
 // Handler returns the RPC router.
@@ -157,12 +164,17 @@ func writeErr(w http.ResponseWriter, e *Error) {
 
 func (s *Server) ping(ctx context.Context, _ *struct{}) (*PingResponse, error) {
 	host, _ := os.Hostname()
-	resp := &PingResponse{OK: true, Version: buildinfo.Version, Hostname: host, PeerUID: -1, Sandbox: &SandboxInfo{Landlock: s.landlock, NoSymfollow: s.noSymfollow}}
+	resp := &PingResponse{OK: true, Version: buildinfo.Version, Hostname: host, PeerUID: -1,
+		Sandbox: &SandboxInfo{Landlock: s.landlock, NoSymfollow: s.noSymfollow, PrivateEtc: s.privateEtc}}
 	if s.landlockErr != nil {
 		resp.Sandbox.Error = s.landlockErr.Error()
+		resp.Sandbox.Hint = s.landlockHint()
 	}
 	if s.noSymfollowErr != nil {
 		resp.Sandbox.NoSymfollowError = s.noSymfollowErr.Error()
+	}
+	if s.privateEtcErr != nil {
+		resp.Sandbox.PrivateEtcError = s.privateEtcErr.Error()
 	}
 	if c, ok := peercred.FromContext(ctx); ok {
 		resp.PeerUID = int(c.UID)
@@ -182,6 +194,10 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	s.prepareDirs(ctx)
 	s.probeNoSymfollow(ctx)
 	s.logSandbox()
+	// What in-place restores an earlier agent was killed in the middle of
+	// left behind: listed now, before any restore can start, removed in
+	// the background — a staged home may take a while.
+	go s.removeStaging(s.staleStaging())
 	if os.Geteuid() == 0 {
 		// before the API, which starts after the agent, can start anything
 		// that pulls such a unit in (sharemount.go)

@@ -208,7 +208,7 @@ type ChownResponse struct {
 func (s *Server) chown(ctx context.Context, req *ChownRequest) (*ChownResponse, error) {
 	p := filepath.Clean(req.Path)
 	inMail := below(p, mailStore)
-	if !filepath.IsAbs(req.Path) || !(below(p, s.cfg.WWWRoot) || inMail) || s.coversProtected(p) {
+	if !filepath.IsAbs(req.Path) || !(below(p, s.cfg.WWWRoot) || inMail) || s.coversProtected(p) || s.inRestoreArea(p) {
 		return nil, notAllowed("chown of "+req.Path, "only trees in the accounts' homes and the mail store change owner")
 	}
 	w, err := s.chownTarget(req, inMail)

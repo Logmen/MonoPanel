@@ -227,8 +227,8 @@ func ensureHomeDirGuarded(root string, d DirSpec, g *shareGuard) (created bool, 
 func (s *Server) dirAllowed(p string) bool {
 	// A directory made in place of config.yaml or the secret key, or a
 	// change of mode or owner of the directory that holds them, is a write
-	// to them as well.
-	if s.coversProtected(p) || s.inRootTree(p) {
+	// to them as well; the restore area is the agent's (restore_staging.go).
+	if s.coversProtected(p) || s.inRootTree(p) || s.inRestoreArea(p) {
 		return false
 	}
 	if s.pathAllowed(strings.TrimSuffix(p, "/") + "/") {

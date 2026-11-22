@@ -54,7 +54,7 @@ func (s *Server) planDu(c *toolCall) (*toolPlan, error) {
 		return nil, refuseArgs("du", c.args, "the panel only asks du -sb <directory>")
 	}
 	dir := c.args[1]
-	if !cleanAbs(dir) || !(below(dir, s.cfg.WWWRoot) || below(dir, mailStore)) {
+	if !cleanAbs(dir) || !(below(dir, s.cfg.WWWRoot) || below(dir, mailStore)) || s.inRestoreArea(dir) {
 		return nil, notAllowed("du of "+dir, "only the accounts' homes and the mail store are measured")
 	}
 	root := s.cfg.WWWRoot
