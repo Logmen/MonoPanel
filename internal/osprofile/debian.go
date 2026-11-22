@@ -48,8 +48,10 @@ const aptLockWait = "DPkg::Lock::Timeout=600"
 // changed its Label. apt refuses that by default until someone confirms it
 // interactively, and then every index update fails — as on every Ubuntu with
 // ppa:ondrej/php when the PPA was relabelled "PPA for PHP (deprecated)" in
-// November 2026. The label is cosmetic (unlike Origin, Suite or Codename,
-// which apt keeps guarding).
+// November 2026. The panel's own source of the PPA goes when the host moves
+// to packages.sury.org, but an administrator's (add-apt-repository) stays,
+// and with it the relabel. The label is cosmetic (unlike Origin, Suite or
+// Codename, which apt keeps guarding).
 const aptLabelChange = "Acquire::AllowReleaseInfoChange::Label=true"
 
 func (aptManager) UpdateIndexArgv() []string {

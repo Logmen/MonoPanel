@@ -23,17 +23,20 @@ type aptSource struct {
 	host, path, keyring string
 }
 
-// aptSources are the panel's apt repositories.
+// aptSources are the panel's apt repositories. PHP comes from
+// packages.sury.org on Ubuntu as on Debian: ppa:ondrej/php, which the panel
+// set up on Ubuntu up to 0.8.19 (ondrej-php.list, ondrej-php.asc), is not
+// written any more. The API moves such a host to Sury and removes the PPA's
+// two files (paths/remove, which the write allow-list decides).
 var aptSources = []aptSource{
 	{"nginx.org", "/packages/", "/etc/apt/keyrings/nginx.asc"},
-	{"ppa.launchpadcontent.net", "/ondrej/php/", "/etc/apt/keyrings/ondrej-php.asc"},
 	{"packages.sury.org", "/php/", "/etc/apt/keyrings/sury-php.gpg"},
 	{"repo.mysql.com", "/apt/", "/etc/apt/keyrings/mysql.asc"},
 }
 
 // aptKeyrings are the keyrings the panel downloads: armored (.asc) or
 // binary (.gpg) public keys.
-var aptKeyrings = map[string]bool{"nginx.asc": true, "ondrej-php.asc": true, "sury-php.gpg": true, "mysql.asc": true}
+var aptKeyrings = map[string]bool{"nginx.asc": true, "sury-php.gpg": true, "mysql.asc": true}
 
 func isApt(p string) bool { return under(p, "/etc/apt") }
 
@@ -144,7 +147,7 @@ func aptRepository(raw string) (aptSource, error) {
 			return s, nil
 		}
 	}
-	return aptSource{}, fmt.Errorf("the panel adds the repositories of nginx.org, ppa:ondrej/php, packages.sury.org/php and repo.mysql.com; a package from anywhere else runs its scripts as root")
+	return aptSource{}, fmt.Errorf("the panel adds the repositories of nginx.org, packages.sury.org/php and repo.mysql.com; a package from anywhere else runs its scripts as root")
 }
 
 // checkAptPreferences allows pins with a priority from 1 to 999: from 1000

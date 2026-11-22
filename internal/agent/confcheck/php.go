@@ -39,7 +39,8 @@ func checkPHP(c *checker, p string, content []byte) error {
 }
 
 // The distributions' own pool. The php-fpm package of every branch ships
-// one, [www]: Debian's and Ubuntu's (Sury, ondrej, Ubuntu's own packages)
+// one, [www]: Debian's and Ubuntu's (Sury's, Ubuntu's own, the builds of
+// ppa:ondrej/php that panels up to 0.8.19 installed on Ubuntu)
 // pool.d/www.conf runs PHP as www-data on /run/php/php<v>-fpm.sock, in the
 // directory www-data owns where the root master also writes its pid file
 // and chowns the socket by path; Remi's php-fpm.d/www.conf runs it as

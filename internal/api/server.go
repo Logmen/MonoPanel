@@ -176,11 +176,11 @@ func (s *Server) SetPortProbe(fn func(port int, banner bool) (bool, string)) {
 func (s *Server) SetReach(fn func(ip string, port int) bool) { s.reach = fn }
 
 // SetOutbound routes the panel's own downloads (repository keys, release
-// packages, the PPA probe) through rt. Intended for the demo, which has no
-// internet access; it affects every Server in the process.
+// packages, the probe of packages.sury.org) through rt. Intended for the
+// demo, which has no internet access; it affects every Server in the process.
 func SetOutbound(rt http.RoundTripper) {
 	fetchClient = &http.Client{Transport: rt}
-	ppaClient = &http.Client{Transport: rt, Timeout: 20 * time.Second}
+	repoProbeClient = &http.Client{Transport: rt, Timeout: 20 * time.Second}
 }
 
 var secured = []map[string][]string{{"bearer": {}}, {"session": {}}}

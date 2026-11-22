@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"monopanel/internal/agent/confcheck"
 	"monopanel/internal/config"
 	"monopanel/internal/osprofile"
 	"monopanel/internal/peercred"
@@ -171,6 +172,30 @@ func TestPathAllowed(t *testing.T) {
 	} {
 		if got := s.pathAllowed(filepath.Clean(p)); got != want {
 			t.Errorf("%s: got %v want %v", p, got, want)
+		}
+	}
+}
+
+// ppa:ondrej/php as panels up to 0.8.19 set it up on Ubuntu: the API moves
+// such a host to packages.sury.org and removes the PPA's source and keyring
+// with paths/remove, which goes by the write allow-list (root's symlinks
+// followed above the apt directories only), while config/apply refuses to
+// write either of them again (confcheck).
+func TestOndrejPPARemovableNotWritable(t *testing.T) {
+	s := &Server{cfg: config.Default()}
+	files := map[string]string{
+		"/etc/apt/sources.list.d/ondrej-php.list": "deb [signed-by=/etc/apt/keyrings/ondrej-php.asc] https://ppa.launchpadcontent.net/ondrej/php/ubuntu noble main\n",
+		"/etc/apt/keyrings/ondrej-php.asc":        "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nxsFNBFt...\n-----END PGP PUBLIC KEY BLOCK-----\n",
+	}
+	for p, content := range files {
+		if !s.pathAllowed(p) || s.coversProtected(p) || s.inRootTree(p) {
+			t.Errorf("%s: paths/remove refuses it", p)
+		}
+		if got := s.managedDepth(p); got != 3 {
+			t.Errorf("%s: root's symlinks followed in %d components, want 3 (/etc/apt/<dir>)", p, got)
+		}
+		if err := confcheck.Check(p, []byte(content)); err == nil {
+			t.Errorf("%s: config/apply writes it", p)
 		}
 	}
 }

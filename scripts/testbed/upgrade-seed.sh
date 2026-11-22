@@ -21,11 +21,11 @@
 #             path in tbupsf's chroot — the exposure the upgrade closes
 #
 # and leaves /root/tbup.env (the release, the marker, the snapshot, the
-# share units, the swapped share) for checks.sh, which TB_CARRIED=1 makes
-# look at all of it after the upgrade. Only commands and flags that 0.8.19
-# already has. Passwords are random and go to mp on stdin; the one mp backup
-# target add makes up and prints goes to /dev/null, as nothing needs it —
-# the panel restores through itself.
+# share units, the swapped share, where PHP comes from) for checks.sh, which
+# TB_CARRIED=1 makes look at all of it after the upgrade. Only commands and
+# flags that 0.8.19 already has. Passwords are random and go to mp on stdin;
+# the one mp backup target add makes up and prints goes to /dev/null, as
+# nothing needs it — the panel restores through itself.
 set -euo pipefail
 export MP_LANG=en DEBIAN_FRONTEND=noninteractive
 umask 077
@@ -141,6 +141,17 @@ units=""
 for f in /etc/systemd/system/"$(systemd-escape --path "$www")"-*.mount; do
 	if [ -f "$f" ]; then units+="${units:+ }${f##*/}"; fi
 done
+# Where this release takes PHP from: on Ubuntu up to 0.8.19 its own source of
+# ppa:ondrej/php, which the next build moves to packages.sury.org at its
+# start, upgrading nothing; the branches' php-fpm builds that must still be
+# installed then.
+php_ppa=0 php_fpm=""
+if [ "$deb" = 1 ]; then
+	[ ! -f /etc/apt/sources.list.d/ondrej-php.list ] || php_ppa=1
+	# shellcheck disable=SC2016 # dpkg-query's own fields
+	php_fpm=$(dpkg-query -W -f '${Package}=${Version} ${db:Status-Status}\n' 'php*-fpm' 2>/dev/null | awk '$2 == "installed" && $1 ~ /^php[0-9]\.[0-9]-fpm=/ { printf "%s%s", sep, $1; sep = " " }' || true)
+fi
+log "PHP: $([ "$php_ppa" = 1 ] && echo "ppa:ondrej/php" || echo "not from the panel's ppa:ondrej/php")${php_fpm:+, $php_fpm}"
 
 umask 077
 cat >/root/tbup.env <<EOF
@@ -151,5 +162,7 @@ snap=$snap
 units="$units"
 attack=$attack
 attack_dir=attack
+php_ppa=$php_ppa
+php_fpm="$php_fpm"
 EOF
 log "seeded with mp $from: $own, $sh, $sf$([ "$deb" = 1 ] && echo ", $apa"), tbupbak, composer, the swapped share $attack ($units)"

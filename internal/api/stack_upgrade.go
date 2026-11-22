@@ -23,7 +23,7 @@ import (
 )
 
 // mp stack upgrade brings the panel's vendor packages — nginx from
-// nginx.org, the PHP branches from Sury, ppa:ondrej/php or Remi, Apache, the
+// nginx.org, the PHP branches from Sury or Remi, Apache, the
 // database server from Percona or MySQL — to what the repositories the panel
 // added offer, and then what runs them: validated first, reloaded or
 // restarted after. A daily run does it for nginx, PHP and Apache. Up to

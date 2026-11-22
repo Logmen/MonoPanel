@@ -400,7 +400,7 @@ upgrade_skip() {
 	local v=${1#v}
 	# at or below 0.8.19 (sort -V puts the lower one first)
 	if [ "$2" = ubuntu2604 ] && [ "$(printf '%s\n%s\n' "$v" 0.8.19 | sort -V | head -1)" = "$v" ]; then
-		echo "$v cannot install PHP on Ubuntu 26.04 now that ppa:ondrej/php publishes resolute: it pins only the PPA's rsa1024 key, which apt 3 refuses"
+		echo "$v cannot install PHP on Ubuntu 26.04 now that ppa:ondrej/php publishes resolute (an empty suite): it takes the PPA there and pins only its rsa1024 key, which apt 3 refuses"
 		return 0
 	fi
 	return 1

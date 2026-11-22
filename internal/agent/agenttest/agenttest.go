@@ -111,6 +111,13 @@ type Agent struct {
 	// InstallFails makes "install" fail with the given output when the
 	// request names the package: a dependency no enabled repository carries.
 	InstallFails map[string]string
+	// PkgFails makes these actions of the package manager fail with the
+	// given output ("update-index": a repository apt cannot read); PkgOutput
+	// is what the others answer with by action (default "ok"; for
+	// "available" what apt-cache policy prints of the sources written, see
+	// aptPolicy).
+	PkgFails  map[string]string
+	PkgOutput map[string]string
 	// PackageVersions overrides the version "query" and "available" report
 	// (default 1.0-test).
 	PackageVersions map[string]string
@@ -340,6 +347,7 @@ func (a *Agent) handle(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/v1/pkg" && !failing {
 		var req agent.PkgRequest
 		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		msg, failing = a.PkgFails[req.Action]
 		for _, p := range req.Packages {
 			if out, ok := a.InstallFails[p]; ok && req.Action == "install" {
 				msg, failing = out, true
@@ -727,10 +735,17 @@ func (a *Agent) respond(path string, body []byte) any {
 				}
 			}
 		}
+		out, ok := a.PkgOutput[req.Action]
 		if req.Action == "available" {
-			return agent.PkgResponse{Available: versions, Output: "ok"}
+			if !ok {
+				out = a.aptPolicy(req.Packages, versions)
+			}
+			return agent.PkgResponse{Available: versions, Output: out}
 		}
-		return agent.PkgResponse{Installed: versions, Output: "ok"}
+		if !ok {
+			out = "ok"
+		}
+		return agent.PkgResponse{Installed: versions, Output: out}
 
 	case "/v1/dir/list":
 		var req agent.ListDirRequest

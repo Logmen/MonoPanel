@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/url"
 	"path"
 	"regexp"
 	"slices"
@@ -26,24 +27,21 @@ import (
 )
 
 const (
-	suryKeyURL = "https://packages.sury.org/php/apt.gpg"
-	// ondrejKeyFingerprint is the key Launchpad made for ppa:ondrej/php in
-	// 2024 (rsa4096, the PPA's signing_key_fingerprint). The PPA's InRelease
-	// still carries a signature by its 2012 key as well (rsa1024,
-	// 14AA40EC0831756756D7F66C4F4EA0AAE5267A6C), which apt 3 on Ubuntu 26.04
-	// refuses ("untrusted public key algorithm"): with only that key in the
-	// keyring every apt-get update there fails, and older apt versions
-	// accept the new key just as well.
-	ondrejKeyFingerprint = "B8DC7E53946656EFBCE4C1DD71DAEAAB4AD4CAB6"
-	ondrejKeyURL         = "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x" + ondrejKeyFingerprint
-	ondrejKeyring        = "/etc/apt/keyrings/ondrej-php.asc"
-	ondrejSource         = "/etc/apt/sources.list.d/ondrej-php.list"
-	remiReleaseURL       = "https://rpms.remirepo.net/enterprise/remi-release-%s.rpm"
-	settingPHPRepo       = "php.repo"
-	settingTZ            = "php.timezone"
-	// settingOndrejKey holds the fingerprint of the key the panel last put
-	// into the PPA's keyring.
-	settingOndrejKey = "php.repo.ondrej_key"
+	suryKeyURL  = "https://packages.sury.org/php/apt.gpg"
+	suryKeyring = "/etc/apt/keyrings/sury-php.gpg"
+	surySource  = "/etc/apt/sources.list.d/sury-php.list"
+	// ondrejSource and ondrejKeyring are ppa:ondrej/php as the panel set it
+	// up on Ubuntu up to 0.8.19. It writes neither again: a host that has
+	// them moves to packages.sury.org at the start of the API
+	// (switchPHPRepoToSury).
+	ondrejSource   = "/etc/apt/sources.list.d/ondrej-php.list"
+	ondrejKeyring  = "/etc/apt/keyrings/ondrej-php.asc"
+	remiReleaseURL = "https://rpms.remirepo.net/enterprise/remi-release-%s.rpm"
+	settingPHPRepo = "php.repo"
+	settingTZ      = "php.timezone"
+	// settingPHPRepoSwitch holds why the last start of the API did not move
+	// the host from ppa:ondrej/php to packages.sury.org, for the doctor.
+	settingPHPRepoSwitch = "php.repo.switch"
 )
 
 type phpListOutput struct {
@@ -133,25 +131,22 @@ func (s *Server) registerPHP() {
 	})
 }
 
-// phpRepoDistro is the setting value for an Ubuntu whose release the ondrej
-// PPA does not build for yet: only Ubuntu's own PHP packages are there, and
-// the PPA is probed again at the next installation.
+// phpRepoDistro is the setting value for an Ubuntu whose release
+// packages.sury.org does not publish yet: only Ubuntu's own PHP packages are
+// there, and Sury is probed again at the next installation.
 const phpRepoDistro = "distro"
 
-// ppaClient asks Launchpad and packages.sury.org; SetOutbound replaces it.
-var ppaClient = &http.Client{Timeout: 20 * time.Second}
+// repoProbeClient asks packages.sury.org which releases it publishes;
+// SetOutbound replaces it.
+var repoProbeClient = &http.Client{Timeout: 20 * time.Second}
 
-// ppaHasRelease reports whether ppa:ondrej/php publishes packages for an
-// Ubuntu codename. Tests replace it.
-var ppaHasRelease = func(ctx context.Context, codename string) (bool, error) {
-	return repoHasRelease(ctx, "https://ppa.launchpadcontent.net/ondrej/php/ubuntu/dists/"+codename+"/Release")
-}
-
-// suryHasRelease reports whether packages.sury.org/php, the same maintainer's
-// own repository, publishes a codename. For a new Ubuntu it usually does long
-// before the PPA (Ubuntu 26.04: all branches 5.6–8.6 while the PPA had none),
-// and it is signed with the key the panel already pins for Debian. Tests
-// replace it.
+// suryHasRelease reports whether packages.sury.org/php publishes a codename:
+// every Debian the panel supports, and an Ubuntu release once its maintainer
+// builds for it (22.04, 24.04 and 26.04 in November 2026, none of the
+// interim releases). Ubuntu used to take the same maintainer's
+// ppa:ondrej/php, which he marked deprecated then: its suite for 26.04 stayed
+// empty while Sury carried every branch. Sury signs with the key the panel
+// pins for Debian. Tests replace it.
 var suryHasRelease = func(ctx context.Context, codename string) (bool, error) {
 	return repoHasRelease(ctx, "https://packages.sury.org/php/dists/"+codename+"/Release")
 }
@@ -161,7 +156,7 @@ func repoHasRelease(ctx context.Context, url string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	res, err := ppaClient.Do(req)
+	res, err := repoProbeClient.Do(req)
 	if err != nil {
 		return false, err
 	}
@@ -176,10 +171,10 @@ func repoHasRelease(ctx context.Context, url string) (bool, error) {
 	}
 }
 
-// ensurePHPRepo configures Sury (Debian), the ondrej PPA (Ubuntu) or Remi (EL)
-// once and remembers it in settings. A fresh Ubuntu release has no PPA builds
-// for a while; then the panel stays with Ubuntu's own packages and looks
-// again next time instead of writing a source that apt cannot read.
+// ensurePHPRepo configures packages.sury.org (Debian and Ubuntu) or Remi
+// (EL) once and remembers it in settings. A fresh Ubuntu release is not on
+// Sury for a while; then the panel stays with Ubuntu's own packages and
+// looks again next time instead of writing a source that apt cannot read.
 func (s *Server) ensurePHPRepo(ctx context.Context, jc *jobs.Context) error {
 	rel := s.profile.Release()
 	key := settingPHPRepo + "." + string(s.profile.Family())
@@ -189,74 +184,53 @@ func (s *Server) ensurePHPRepo(ctx context.Context, jc *jobs.Context) error {
 	jc.Progress(5, "PHP repository")
 	switch s.profile.Family() {
 	case osprofile.FamilyDebian:
-		var files []agent.FileSpec
-		useSury := !strings.EqualFold(rel.ID, "ubuntu")
-		if !useSury {
-			if ok, err := ppaHasRelease(ctx, rel.Codename); err != nil {
-				jc.Logf("cannot check ppa:ondrej/php for %s (%v), trying it anyway", rel.Codename, err)
+		if s.onUbuntu() {
+			if ok, err := suryHasRelease(ctx, rel.Codename); err != nil {
+				jc.Logf("cannot check packages.sury.org/php for %s (%v), trying it anyway", rel.Codename, err)
 			} else if !ok {
-				// An earlier attempt may have left the source behind, and
-				// with it every apt-get update fails.
-				if _, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: []string{"/etc/apt/sources.list.d/ondrej-php.list"}}); err != nil {
-					jc.Logf("cannot remove the stale PPA source: %v", err)
-				}
-				if has, err := suryHasRelease(ctx, rel.Codename); err == nil && has {
-					jc.Logf("ppa:ondrej/php has no packages for Ubuntu %s (%s) yet; packages.sury.org/php does: using it", rel.VersionID, rel.Codename)
-					useSury = true
-				} else {
-					if err != nil {
-						jc.Logf("cannot check packages.sury.org/php for %s: %v", rel.Codename, err)
-					}
-					jc.Logf("neither ppa:ondrej/php nor packages.sury.org/php has packages for Ubuntu %s (%s) yet: using Ubuntu's own PHP", rel.VersionID, rel.Codename)
-					return s.db.SetSetting(ctx, key, phpRepoDistro)
-				}
+				jc.Logf("packages.sury.org/php has no packages for Ubuntu %s (%s) yet: using Ubuntu's own PHP", rel.VersionID, rel.Codename)
+				return s.db.SetSetting(ctx, key, phpRepoDistro)
 			}
 		}
-		if !useSury {
-			keyPEM, err := ondrejKey(ctx)
-			if err != nil {
-				return err
-			}
-			files = []agent.FileSpec{
-				{Path: ondrejKeyring, Content: keyPEM, Mode: 0o644},
-				{Path: ondrejSource, Content: fmt.Sprintf("deb [signed-by=%s] https://ppa.launchpadcontent.net/ondrej/php/ubuntu %s main\n", ondrejKeyring, rel.Codename), Mode: 0o644},
-			}
-			jc.Logf("repository: ppa:ondrej/php (%s)", rel.Codename)
+		if s.suryIndexed(ctx, rel.Codename) {
+			// An administrator who set Sury up himself, as its README says,
+			// has a source of his own signed by a keyring of his own
+			// (/etc/apt/sources.list.d/php.list,
+			// /usr/share/keyrings/deb.sury.org-php.gpg), and apt reads Sury
+			// from it. The panel's source beside it would make apt refuse
+			// both ("Conflicting values set for option Signed-By"), and with
+			// them every other source: no index update would work on the
+			// host, nor this install.
+			jc.Logf("repository: packages.sury.org/php (%s), which apt reads already from a source on the host: the panel adds none", rel.Codename)
+			return s.db.SetSetting(ctx, key, "ready")
 		}
-		if useSury {
-			keyBin, err := fetchBytes(ctx, suryKeyURL)
-			if err != nil {
-				return fmt.Errorf("download packages.sury.org key: %w", err)
-			}
-			files = []agent.FileSpec{
-				{Path: "/etc/apt/keyrings/sury-php.gpg", ContentBase64: base64.StdEncoding.EncodeToString(keyBin), Mode: 0o644},
-				{Path: "/etc/apt/sources.list.d/sury-php.list", Content: fmt.Sprintf("deb [signed-by=/etc/apt/keyrings/sury-php.gpg] https://packages.sury.org/php/ %s main\n", rel.Codename), Mode: 0o644},
-			}
-			jc.Logf("repository: packages.sury.org/php (%s)", rel.Codename)
+		files, err := suryRepoFiles(ctx, rel.Codename)
+		if err != nil {
+			return err
 		}
+		jc.Logf("repository: packages.sury.org/php (%s)", rel.Codename)
 		if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Origin: "php:repo"}); err != nil {
 			return err
 		}
-		if !useSury {
-			// Spares the start-up refresh a download it does not need.
-			s.db.SetSetting(ctx, settingOndrejKey, ondrejKeyFingerprint) //nolint:errcheck // the refresh only downloads the key once more
-		}
 		res, err := s.agent.Pkg(ctx, "update-index")
+		if err == nil && !s.suryIndexed(ctx, rel.Codename) {
+			// The update ended well and apt has no index of Sury all the
+			// same: apt takes a name that did not resolve or a timeout for
+			// passing trouble, warns and leaves the source out. Marked
+			// ready then, the host would install the branches its
+			// distribution ships from there and call every other one not
+			// available, until some later index update.
+			err = errors.New(suryUnread(res, nil))
+		}
 		if err != nil {
-			// The source just written is the likely cause (a key apt
-			// refuses, a repository that went away): left behind, it would
-			// fail every later update-index on the host, a mail or nginx
-			// install included. The next PHP install writes it again.
-			var srcs []string
-			for _, f := range files {
-				if strings.HasPrefix(f.Path, "/etc/apt/sources.list.d/") {
-					srcs = append(srcs, f.Path)
-				}
-			}
-			if _, rerr := s.agent.RemovePaths(context.WithoutCancel(ctx), &agent.RemovePathsRequest{Paths: srcs}); rerr != nil {
+			// The source just written is the likely cause of a failure (a
+			// key apt refuses, a repository that went away): left behind,
+			// it would fail every later update-index on the host, a mail or
+			// nginx install included. The next PHP install writes it again.
+			if _, rerr := s.agent.RemovePaths(context.WithoutCancel(ctx), &agent.RemovePathsRequest{Paths: []string{surySource}}); rerr != nil {
 				jc.Logf("cannot remove the repository source after the failed index update: %v", rerr)
 			} else {
-				jc.Logf("repository source %s removed again: apt could not read it", strings.Join(srcs, ", "))
+				jc.Logf("repository source %s removed again: apt could not read it", surySource)
 			}
 			return err
 		}
@@ -270,6 +244,26 @@ func (s *Server) ensurePHPRepo(ctx context.Context, jc *jobs.Context) error {
 		return errors.New("no PHP package source for this OS")
 	}
 	return s.db.SetSetting(ctx, key, "ready")
+}
+
+// suryRepoFiles are packages.sury.org's keyring, downloaded, and its source
+// for a codename.
+func suryRepoFiles(ctx context.Context, codename string) ([]agent.FileSpec, error) {
+	keyBin, err := fetchBytes(ctx, suryKeyURL)
+	if err != nil {
+		return nil, fmt.Errorf("download packages.sury.org key: %w", err)
+	}
+	return []agent.FileSpec{
+		{Path: suryKeyring, ContentBase64: base64.StdEncoding.EncodeToString(keyBin), Mode: 0o644},
+		{Path: surySource, Content: fmt.Sprintf("deb [signed-by=%s] https://packages.sury.org/php/ %s main\n", suryKeyring, codename), Mode: 0o644},
+	}, nil
+}
+
+// onUbuntu tells an Ubuntu from the other distributions of the Debian
+// family: its PHP took ppa:ondrej/php up to panel 0.8.19, and a release of
+// it may not be on packages.sury.org yet.
+func (s *Server) onUbuntu() bool {
+	return s.profile.Family() == osprofile.FamilyDebian && strings.EqualFold(s.profile.Release().ID, "ubuntu")
 }
 
 // phpPackagesExist fails with a readable reason when no repository carries
@@ -292,8 +286,8 @@ type phpUnavailableError struct{ msg string }
 
 func (e *phpUnavailableError) Error() string { return e.msg }
 
-// phpUnavailableNote explains a missing branch: on an Ubuntu the PPA does not
-// build for yet it names what Ubuntu itself ships.
+// phpUnavailableNote explains a missing branch: on an Ubuntu that
+// packages.sury.org does not publish yet it names what Ubuntu itself ships.
 func (s *Server) phpUnavailableNote(ctx context.Context, version string) string {
 	rel := s.profile.Release()
 	if v, _ := s.db.GetSetting(ctx, settingPHPRepo+"."+string(s.profile.Family())); v == phpRepoDistro {
@@ -304,7 +298,7 @@ func (s *Server) phpUnavailableNote(ctx context.Context, version string) string 
 				native, _, _ = strings.Cut(ver, "+")
 			}
 		}
-		note := "neither ppa:ondrej/php nor packages.sury.org/php has packages for Ubuntu " + rel.VersionID + " (" + rel.Codename + ") yet"
+		note := "packages.sury.org/php has no packages for Ubuntu " + rel.VersionID + " (" + rel.Codename + ") yet"
 		if native != "" {
 			note += "; Ubuntu itself ships only PHP " + native
 		}
@@ -314,7 +308,7 @@ func (s *Server) phpUnavailableNote(ctx context.Context, version string) string 
 }
 
 // phpAvailable is the availability matrix for this host. On an Ubuntu that
-// runs without the PPA it asks apt which branches actually exist.
+// runs without packages.sury.org it asks apt which branches actually exist.
 func (s *Server) phpAvailable(ctx context.Context) []osprofile.PHPVersionInfo {
 	list := osprofile.PHPVersions(s.profile)
 	if v, _ := s.db.GetSetting(ctx, settingPHPRepo+"."+string(s.profile.Family())); v != phpRepoDistro {
@@ -876,46 +870,213 @@ func (s *Server) refreshPHPCLIIni(ctx context.Context, layout *osprofile.PHPLayo
 	return err
 }
 
-// ondrejKey downloads the PPA's signing key from keyserver.ubuntu.com.
-var ondrejKey = func(ctx context.Context) (string, error) {
-	keyPEM, err := fetchText(ctx, ondrejKeyURL)
-	if err != nil {
-		return "", fmt.Errorf("download ondrej PPA key: %w", err)
+// switchPHPRepoToSury moves an Ubuntu that takes PHP from ppa:ondrej/php, as
+// panels up to 0.8.19 set it up, to packages.sury.org/php, where the same
+// maintainer builds first (he marked the PPA deprecated in November 2026).
+// It runs at every start of the API until the panel's source of the PPA is
+// gone:
+//
+//   - only when Sury publishes the release; until then the PPA stays, and
+//     the doctor says why (phpRepoCheck);
+//   - Sury's keyring and source go in beside the PPA's, and the index is
+//     read with both; the PPA's source and keyring go only once apt has
+//     Sury's index. The agent no longer writes the PPA, so a source taken
+//     away first could not be put back: this way a move that fails leaves
+//     the host with the repository it had, and Sury's files go again;
+//   - when apt reads Sury already, from a source of it an administrator
+//     added, the PPA alone goes: a source of the panel's beside his would
+//     make apt refuse both for their different keyrings;
+//   - nothing is upgraded or reinstalled (php-fpm would restart): Sury's
+//     builds sort above the PPA's, and the next upgrade of the branches —
+//     the daily one, or mp stack upgrade php — takes them.
+//
+// A source of the PPA that an administrator added (add-apt-repository
+// writes ondrej-ubuntu-php-<codename>.sources or .list) is not the panel's
+// and stays.
+func (s *Server) switchPHPRepoToSury(ctx context.Context) {
+	if !s.onUbuntu() {
+		return
 	}
-	if !strings.Contains(keyPEM, "BEGIN PGP PUBLIC KEY BLOCK") {
-		return "", errors.New("unexpected content from keyserver.ubuntu.com")
+	st, err := s.agent.Stat(ctx, ondrejSource, ondrejKeyring)
+	if err != nil || len(st.Entries) != 2 {
+		s.log.Warn("PHP repository: cannot look for the panel's source of ppa:ondrej/php", "err", err)
+		return
 	}
-	return keyPEM, nil
+	if !st.Entries[0].Exists {
+		if st.Entries[1].Exists {
+			// What 0.8.19 left on Ubuntu 26.04, where apt refused the
+			// PPA's key and the source went again: nothing reads it.
+			if _, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: []string{ondrejKeyring}}); err != nil {
+				s.log.Warn("PHP repository: the keyring of ppa:ondrej/php without its source", "err", err)
+			}
+		}
+		return
+	}
+	why := s.moveToSury(ctx)
+	if why == "" {
+		if err := s.db.DeleteSetting(context.WithoutCancel(ctx), settingPHPRepoSwitch); err != nil {
+			s.log.Warn("PHP repository", "err", err)
+		}
+		return
+	}
+	s.log.Warn("PHP repository: ppa:ondrej/php stays; the move to packages.sury.org/php is tried again at the next start of the API", "why", why)
+	if err := s.db.SetSetting(context.WithoutCancel(ctx), settingPHPRepoSwitch, why); err != nil {
+		s.log.Warn("PHP repository", "err", err)
+	}
 }
 
-// refreshOndrejKey gives a host that took ppa:ondrej/php before 0.8.20 the
-// PPA's current key, once: its keyring holds the 2012 key alone, which apt
-// on Ubuntu 26.04 already refuses and the others will in time. Nothing
-// happens without the PPA's source; a failed download tries again at the
-// next start.
-func (s *Server) refreshOndrejKey(ctx context.Context) {
-	if s.profile.Family() != osprofile.FamilyDebian || !strings.EqualFold(s.profile.Release().ID, "ubuntu") {
-		return
+// moveToSury is switchPHPRepoToSury's move; it tells why it did not happen,
+// "" when it did.
+func (s *Server) moveToSury(ctx context.Context) string {
+	rel := s.profile.Release()
+	switch ok, err := suryHasRelease(ctx, rel.Codename); {
+	case err != nil:
+		return fmt.Sprintf("cannot ask packages.sury.org whether it publishes %s: %v", rel.Codename, err)
+	case !ok:
+		return fmt.Sprintf("packages.sury.org/php does not publish Ubuntu %s (%s) yet", rel.VersionID, rel.Codename)
 	}
-	if v, _ := s.db.GetSetting(ctx, settingOndrejKey); v == ondrejKeyFingerprint {
-		return
+	// An administrator who set Sury up himself, as its README says, has a
+	// source of his own signed by a keyring of his own
+	// (/etc/apt/sources.list.d/php.list,
+	// /usr/share/keyrings/deb.sury.org-php.gpg), and apt reads Sury from it
+	// already. The panel's source beside it would make apt refuse both
+	// ("Conflicting values set for option Signed-By"), and with them every
+	// other source: the move would fail at every start.
+	if s.suryIndexed(ctx, rel.Codename) {
+		return s.dropPPA(ctx, rel.Codename, "a source of packages.sury.org apt read before the move")
+	}
+	files, err := suryRepoFiles(ctx, rel.Codename)
+	if err != nil {
+		return err.Error()
+	}
+	if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Origin: "php:repo"}); err != nil {
+		return "writing the source of packages.sury.org: " + err.Error()
+	}
+	// Whether apt has Sury's index now decides, not how the update ended:
+	// it fails when any source fails (the PPA itself, or an
+	// administrator's), and it ends well when Sury failed for what apt takes
+	// for a passing network trouble — a name that did not resolve, a
+	// timeout — which is a warning, Sury left out. The PPA taken away then
+	// would leave the host with neither.
+	upd, uerr := s.agent.Pkg(ctx, "update-index")
+	if !s.suryIndexed(ctx, rel.Codename) {
+		why := suryUnread(upd, uerr)
+		if aptSignedByConflict(uerr) {
+			// Another source of Sury, one apt had not read yet: the look
+			// before the write did not find it.
+			why = strings.TrimSuffix(why, ".") + "; another source of packages.sury.org names another keyring (yours?): remove it, and the next start of the API puts the panel's in its place, or remove " + ondrejSource + " to keep yours"
+		}
+		if _, rerr := s.agent.RemovePaths(context.WithoutCancel(ctx), &agent.RemovePathsRequest{Paths: []string{surySource, suryKeyring}}); rerr != nil {
+			// Left beside the PPA's, a source apt cannot read fails or
+			// holds up every index update.
+			why += "; its source could not be removed again (" + rerr.Error() + "): remove " + surySource
+		}
+		return why
+	}
+	if uerr != nil {
+		s.log.Warn("PHP repository: the index update failed, but apt has the index of packages.sury.org/php", "err", pkgFailure(uerr))
+	}
+	return s.dropPPA(ctx, rel.Codename, surySource)
+}
+
+// dropPPA ends the move once apt has the index of packages.sury.org from
+// source: the panel's source and keyring of ppa:ondrej/php go, and apt
+// drops the PPA's index. It tells why it did not, "" when it did.
+func (s *Server) dropPPA(ctx context.Context, codename, source string) string {
+	res, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: []string{ondrejSource, ondrejKeyring}})
+	if err != nil {
+		return "packages.sury.org/php is in place, but the source of the PPA could not be removed: " + err.Error()
+	}
+	// Once more without the PPA: apt drops its index.
+	if _, err := s.agent.Pkg(ctx, "update-index"); err != nil {
+		s.log.Warn("PHP repository: the index update without ppa:ondrej/php", "err", pkgFailure(err))
+	}
+	s.log.Info("PHP repository: moved from ppa:ondrej/php to packages.sury.org/php; the installed branches take its builds at their next upgrade (the daily one, or mp stack upgrade php)", "codename", codename, "source", source, "removed", res.Removed)
+	return ""
+}
+
+// suryUnread tells why apt has no index of packages.sury.org after an index
+// update: the update's failure, or apt's warning about Sury when it ended
+// well all the same.
+func suryUnread(upd *agent.PkgResponse, uerr error) string {
+	var reason string
+	switch {
+	case uerr != nil:
+		reason = pkgFailure(uerr)
+	case upd != nil:
+		reason = aptSaidAbout(upd.Output, "packages.sury.org")
+	}
+	if reason == "" {
+		reason = "the index update ended without it"
+	}
+	return "apt could not read packages.sury.org/php: " + reason
+}
+
+// aptSignedByConflict tells apt's refusal of two sources of one repository
+// signed by different keyrings; apt reads no source at all then.
+func aptSignedByConflict(err error) bool {
+	var ae *agent.Error
+	return errors.As(err, &ae) && strings.Contains(ae.Output, "Conflicting values set for option Signed-By")
+}
+
+// suryIndexed tells whether apt has the index of packages.sury.org/php for a
+// release: before the panel writes a source of it (an administrator may
+// have one of his own), and after the index update that follows, however
+// that ended (ensurePHPRepo, moveToSury). apt-cache policy lists the version
+// of php-common, which Sury has for every release, from each source that
+// has it, in lines like
+// "500 https://packages.sury.org/php noble/main amd64 Packages". Only Sury's
+// PHP repository counts: before the write, any source that carries it
+// stands in for the panel's.
+func (s *Server) suryIndexed(ctx context.Context, codename string) bool {
+	res, err := s.agent.Pkg(ctx, "available", "php-common")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(res.Output, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 || !strings.HasPrefix(f[2], codename+"/") {
+			continue
+		}
+		if _, err := strconv.Atoi(f[0]); err != nil {
+			continue
+		}
+		if u, err := url.Parse(f[1]); err == nil && u.Hostname() == "packages.sury.org" && strings.HasPrefix(path.Clean(u.Path)+"/", "/php/") {
+			return true
+		}
+	}
+	return false
+}
+
+// aptSaidAbout is the first warning or error apt-get update printed about a
+// host ("W: Failed to fetch https://packages.sury.org/php/dists/noble/InRelease
+// Temporary failure resolving 'packages.sury.org'"), "" when there is none.
+func aptSaidAbout(out, host string) string {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if (strings.HasPrefix(line, "W:") || strings.HasPrefix(line, "E:")) && strings.Contains(line, host) {
+			return oneLine(line, 300)
+		}
+	}
+	return ""
+}
+
+// phpRepoCheck is the doctor's line while an Ubuntu still takes PHP from
+// ppa:ondrej/php as panels up to 0.8.19 set it up: the start of the API moves
+// it to packages.sury.org once it can, and the line says why that has not
+// happened. Nothing once the panel's source of the PPA is gone.
+func (s *Server) phpRepoCheck(ctx context.Context) *apitypes.Check {
+	if !s.onUbuntu() {
+		return nil
 	}
 	st, err := s.agent.Stat(ctx, ondrejSource)
 	if err != nil || len(st.Entries) != 1 || !st.Entries[0].Exists {
-		return
+		return nil
 	}
-	keyPEM, err := ondrejKey(ctx)
-	if err != nil {
-		s.log.Warn("ppa:ondrej/php key", "err", err)
-		return
+	why, _ := s.db.GetSetting(ctx, settingPHPRepoSwitch)
+	if why = strings.TrimRight(why, ". "); why == "" {
+		why = "the start of the API has not got to it yet"
 	}
-	if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: []agent.FileSpec{{Path: ondrejKeyring, Content: keyPEM, Mode: 0o644}}, Origin: "php:repo"}); err != nil {
-		s.log.Warn("ppa:ondrej/php key", "err", err)
-		return
-	}
-	if err := s.db.SetSetting(ctx, settingOndrejKey, ondrejKeyFingerprint); err != nil {
-		s.log.Warn("ppa:ondrej/php key", "err", err)
-		return
-	}
-	s.log.Info("ppa:ondrej/php key renewed", "fingerprint", ondrejKeyFingerprint)
+	c := check("php repository", "warn", "PHP still comes from ppa:ondrej/php ("+ondrejSource+"), which the panel no longer uses: the move to packages.sury.org/php did not happen — "+why+". The panel tries again at every start of the API: systemctl restart monopanel-api (journalctl -u monopanel-api says how it went)")
+	return &c
 }

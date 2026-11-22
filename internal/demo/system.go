@@ -57,7 +57,8 @@ var packageVersions = map[string]string{
 	"curl":                  "8.5.0-2ubuntu10.6",
 }
 
-// phpVersions are the ondrej/php builds for noble.
+// phpVersions are the builds of packages.sury.org for noble (candidate adds
+// Sury's suffix).
 var phpVersions = map[string]string{
 	"5.6": "5.6.40-103", "7.0": "7.0.33-91", "7.1": "7.1.33-79", "7.2": "7.2.34-65", "7.3": "7.3.33-34",
 	"7.4": "1:7.4.33-30", "8.0": "1:8.0.30-24", "8.1": "8.1.34-8", "8.2": "8.2.34-1", "8.3": "8.3.33-1",
@@ -97,7 +98,7 @@ func candidate(name string) (string, bool) {
 		if v, ok := peclVersions[m[2]]; ok {
 			base = v
 		}
-		return base + "+ubuntu24.04.1+deb.sury.org+1", true
+		return base + "+debsuryorg24.04.1+1", true
 	}
 	return "", false
 }
@@ -153,6 +154,18 @@ func (a *Agent) pkg(_ context.Context, req *agent.PkgRequest) (*agent.PkgRespons
 		for _, p := range req.Packages {
 			if v, ok := candidate(p); ok {
 				out.Available[p] = v
+			}
+		}
+		// The panel reads in apt-cache policy of php-common whether apt has
+		// the index of packages.sury.org, which the pretend host has once
+		// the panel wrote its source there.
+		if _, sury := a.st.Files["/etc/apt/sources.list.d/sury-php.list"]; sury {
+			for _, p := range req.Packages {
+				if p == "php-common" {
+					const v = "2:102+debsuryorg24.04.1+3"
+					out.Available[p] = v
+					out.Output = "php-common:\n  Installed: (none)\n  Candidate: " + v + "\n  Version table:\n     " + v + " 500\n        500 https://packages.sury.org/php noble/main amd64 Packages\n"
+				}
 			}
 		}
 		return out, nil

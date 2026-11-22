@@ -45,6 +45,13 @@
 #   php-fpm       the distribution's [www] pool idle: nobody, a root-only socket
 #   composer      refuses root, runs as an account
 #   repositories  the panel's vendor sources are https
+#   php repo      Debian/Ubuntu: PHP from packages.sury.org with the release's
+#                 codename, no ppa:ondrej/php of the panel's left, every
+#                 branch's php-fpm and its candidate Sury's builds; after an
+#                 upgrade from a release with the PPA, the API's start moved
+#                 the host, upgrading nothing (the PPA's build still in),
+#                 apt-get update is clean, and mp stack upgrade php brings
+#                 Sury's builds in
 #   restic        a backup through the panel, restored aside, a repository
 #                 directory holding other files refused
 #   restore nodes a snapshot with a FIFO and a set-uid file: restores in place
@@ -1373,13 +1380,125 @@ composer_section() {
 repos_section() {
 	section "the panel's vendor repositories over https (R6)"
 	local f bad n=0
-	for f in /etc/apt/sources.list.d/nginx.list /etc/apt/sources.list.d/mysql.list /etc/apt/sources.list.d/ondrej-php.list /etc/apt/sources.list.d/sury-php.list /etc/yum.repos.d/nginx.repo /etc/yum.repos.d/mysql-community.repo; do
+	for f in /etc/apt/sources.list.d/nginx.list /etc/apt/sources.list.d/mysql.list /etc/apt/sources.list.d/sury-php.list /etc/yum.repos.d/nginx.repo /etc/yum.repos.d/mysql-community.repo; do
 		[ -f "$f" ] || continue
 		n=$((n + 1))
 		bad=$(grep -vE '^[[:space:]]*#' "$f" | grep -m1 'http://')
 		if [ -n "$bad" ]; then fail "$f names a plain http source: $(cut -c1-160 <<<"$bad")"; else pass "$f: https only"; fi
 	done
 	if [ "$n" -eq 0 ]; then fail "none of the panel's repository files is here (nginx.list, nginx.repo)"; fi
+}
+
+# -------------------------------------------------------- php repository ----
+# policy_of <package>: "<installed> <candidate> <host of the installed>
+# <host of the candidate>" from apt-cache policy, "-" for what it does not
+# name; the host is the first repository the version table lists for that
+# version (an installed build no source has any more shows none)
+policy_of() {
+	LC_ALL=C apt-cache policy "$1" 2>/dev/null | python3 -c 'import re, sys
+inst = cand = "-"
+hosts = {}
+cur = None
+for line in sys.stdin:
+    s = line.strip()
+    if s.startswith("Installed:"):
+        inst = s.split(":", 1)[1].strip()
+    elif s.startswith("Candidate:"):
+        cand = s.split(":", 1)[1].strip()
+    else:
+        f = s.lstrip("*").split()
+        if len(f) == 2 and f[1].isdigit():
+            cur = f[0]
+        elif cur and len(f) >= 2 and f[0].isdigit() and "://" in f[1]:
+            hosts.setdefault(cur, re.sub(r"^[a-z+]+://([^/:]+).*$", r"\1", f[1]))
+print(inst, cand, hosts.get(inst, "-"), hosts.get(cand, "-"))'
+}
+# php_moved: the API logged its move off ppa:ondrej/php, which it does once
+# the move's last index update is through
+php_moved() { journalctl -b -u monopanel-api -o cat --no-pager 2>/dev/null | grep -q 'PHP repository: moved from ppa:ondrej/php'; }
+# phprepo_section: where PHP comes from on Debian and Ubuntu (H21a). The
+# panel's source is packages.sury.org with this release's codename, signed by
+# its keyring, and nothing of ppa:ondrej/php that panels up to 0.8.19 set up
+# on Ubuntu is left; every installed branch's php-fpm is Sury's build, and so
+# is its candidate. After an upgrade from a release that had the PPA
+# (upgrade-seed.sh: php_ppa=1) the API's start moved the host — its last
+# step, so it is waited for — and upgraded nothing: the PPA's builds are
+# still installed and running, with Sury's as the candidates, and a plain
+# apt-get update (no -o for the PPA's relabel) is clean. Then mp stack
+# upgrade php brings Sury's builds in, as the daily upgrade would: the
+# doctor then sees no update waiting.
+phprepo_section() {
+	section "PHP from packages.sury.org (H21a)"
+	if [ "$deb" != 1 ]; then
+		skip "EL: PHP comes from Remi"
+		return
+	fi
+	local src=/etc/apt/sources.list.d/sury-php.list key=/etc/apt/keyrings/sury-php.gpg
+	local ppa=/etc/apt/sources.list.d/ondrej-php.list ppakey=/etc/apt/keyrings/ondrej-php.asc
+	local php_ppa=0 php_fpm="" want line f pv pkg was inst cand ihost chost out rc bad v
+	if [ "$context" = upgrade ] && [ -r /root/tbup.env ]; then
+		php_ppa=$(sed -n 's/^php_ppa=//p' /root/tbup.env)
+		php_fpm=$(sed -n 's/^php_fpm=//p' /root/tbup.env | tr -d '"')
+		case "$php_ppa" in
+		1) info "before the upgrade: the panel's ppa:ondrej/php${php_fpm:+, $php_fpm}" ;;
+		0) info "before the upgrade: no ppa:ondrej/php of the panel's${php_fpm:+, $php_fpm}" ;;
+		*) info "/root/tbup.env does not say where PHP came from before the upgrade (php_ppa=): an upgrade-seed.sh older than these checks" ;;
+		esac
+	fi
+	if [ "$php_ppa" = 1 ]; then
+		# The PPA's files go before the move's last index update, and a plain
+		# apt-get update meanwhile would find apt's lock taken: the API logs
+		# the move once that update is through.
+		if wait_until 600 php_moved && [ ! -e "$ppa" ]; then
+			pass "the API's start moved the host off ppa:ondrej/php, $ppa is gone: $(journalctl -b -u monopanel-api -o cat --no-pager 2>/dev/null | grep -m1 'PHP repository: moved' | cut -c1-200)"
+		else
+			fail "no move off ppa:ondrej/php logged ten minutes after the upgrade ($ppa $([ -e "$ppa" ] && echo 'still there' || echo gone)): $(doctor_line 'php repository' | cut -c1-240)"
+		fi
+	fi
+	want="deb [signed-by=$key] https://packages.sury.org/php/ ${VERSION_CODENAME:-} main"
+	line=$(grep -vE '^[[:space:]]*(#|$)' "$src" 2>/dev/null)
+	if [ "$line" = "$want" ] && [ -s "$key" ]; then
+		pass "$src: $line ($key there)"
+	else
+		fail "$src: ${line:-missing}, want $want; $key $([ -s "$key" ] && echo there || echo missing)"
+	fi
+	for f in "$ppa" "$ppakey"; do
+		if [ ! -e "$f" ]; then pass "no $f"; else fail "$f is there: $(head -c 160 "$f" | tr '\n' ' ')"; fi
+	done
+	if [ "$php_ppa" = 1 ]; then
+		[ -n "$php_fpm" ] || fail "/root/tbup.env names no php-fpm build of the previous release (php_fpm=): an upgrade-seed.sh older than these checks"
+		for pv in $php_fpm; do
+			pkg=${pv%%=*} was=${pv#*=}
+			read -r inst cand ihost chost <<<"$(policy_of "$pkg")"
+			if [ "$inst" = "$was" ] && [ "$chost" = packages.sury.org ] && [ "$cand" != "$inst" ] && unit_active "$pkg.service"; then
+				pass "$pkg: the PPA's build $was still installed and running, the move upgraded nothing; the candidate is Sury's $cand"
+			else
+				fail "$pkg: installed $inst (before the upgrade $was), candidate $cand from $chost, the service $(systemctl is-active "$pkg.service" 2>&1)"
+			fi
+		done
+		out=$(LC_ALL=C timeout 600 apt-get -q update </dev/null 2>&1)
+		rc=$?
+		bad=$(grep -E '^(Err:|W:|E:)' <<<"$out")
+		if [ "$rc" = 0 ] && ! grep -qiE 'sury|launchpad|ondrej' <<<"$bad"; then
+			pass "apt-get update as an administrator runs it: exit 0, nothing about packages.sury.org or the PPA"
+		else
+			fail "apt-get update: exit $rc; $(head -3 <<<"$bad" | tr '\n' ' ' | cut -c1-300)"
+		fi
+		[ -z "$bad" ] || info "apt-get update said: $(head -3 <<<"$bad" | tr '\n' ' ' | cut -c1-300)"
+		if timeout 1800 mp stack upgrade php </dev/null >"$tmp/out" 2>&1; then
+			info "mp stack upgrade php: $(last "$tmp/out")"
+		else
+			fail "mp stack upgrade php: $(last "$tmp/out" 3)"
+		fi
+	fi
+	for v in $(mp --json php list </dev/null 2>/dev/null | pj '[v["version"] for v in d.get("installed") or [] if v.get("status") == "installed"]'); do
+		read -r inst cand ihost chost <<<"$(policy_of "php$v-fpm")"
+		if [ "$ihost" = packages.sury.org ] && [ "$chost" = packages.sury.org ] && unit_active "php$v-fpm.service"; then
+			pass "php$v-fpm $inst from packages.sury.org, and so is the candidate$([ "$cand" = "$inst" ] || echo " $cand")"
+		else
+			fail "php$v-fpm: installed $inst from $ihost, candidate $cand from $chost, the service $(systemctl is-active "php$v-fpm.service" 2>&1)"
+		fi
+	done
 }
 
 # ---------------------------------------------------------------- restic ----
@@ -1860,6 +1979,7 @@ apache_section
 fpm_section
 composer_section
 repos_section
+phprepo_section
 restic_section
 nodes_section
 pkgfiles_section

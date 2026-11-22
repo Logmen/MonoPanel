@@ -16,7 +16,7 @@ import (
 )
 
 // Upgrades of the panel's vendor packages (mp stack upgrade): nginx.org's
-// nginx, the PHP branches from Sury, ppa:ondrej/php or Remi, Apache and the
+// nginx, the PHP branches from Sury or Remi, Apache and the
 // database server. Nothing else upgrades them — unattended-upgrades takes the
 // distribution's origins only, EL has no dnf-automatic — and the API must
 // not write a rule into /etc/apt/apt.conf.d (apt runs the commands of those

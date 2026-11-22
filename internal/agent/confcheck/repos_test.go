@@ -7,7 +7,13 @@ func TestAptRefusals(t *testing.T) {
 	const nginxKey = "[signed-by=/etc/apt/keyrings/nginx.asc]"
 	runRefusals(t, []refusal{
 		{"other host", list, "deb " + nginxKey + " http://evil.example/packages/debian trixie nginx\n", []string{"evil.example"}},
-		{"other path", "/etc/apt/sources.list.d/ondrej-php.list", "deb [signed-by=/etc/apt/keyrings/ondrej-php.asc] https://ppa.launchpadcontent.net/attacker/ppa/ubuntu noble main\n", []string{"attacker"}},
+		{"other path", "/etc/apt/sources.list.d/sury-php.list", "deb [signed-by=/etc/apt/keyrings/sury-php.gpg] https://packages.sury.org/attacker/ noble main\n", []string{"attacker"}},
+		// ppa:ondrej/php, which the panel set up on Ubuntu up to 0.8.19:
+		// the API moves such a host to packages.sury.org and writes it no
+		// more (removing its two files stays allowed: paths/remove).
+		{"ppa:ondrej/php", "/etc/apt/sources.list.d/ondrej-php.list", "deb [signed-by=/etc/apt/keyrings/ondrej-php.asc] https://ppa.launchpadcontent.net/ondrej/php/ubuntu noble main\n", []string{"ppa.launchpadcontent.net", "packages.sury.org/php"}},
+		{"ppa:ondrej/php signed by Sury's key", "/etc/apt/sources.list.d/sury-php.list", "deb [signed-by=/etc/apt/keyrings/sury-php.gpg] https://ppa.launchpadcontent.net/ondrej/php/ubuntu noble main\n", []string{"ppa.launchpadcontent.net"}},
+		{"ppa:ondrej/php keyring", "/etc/apt/keyrings/ondrej-php.asc", "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nxsFNBFt...\n-----END PGP PUBLIC KEY BLOCK-----\n", []string{"ondrej-php.asc"}},
 		{"plain http", list, "deb " + nginxKey + " http://nginx.org/packages/debian trixie nginx\n", []string{"https"}},
 		{"plain http mysql", "/etc/apt/sources.list.d/mysql.list", "deb [signed-by=/etc/apt/keyrings/mysql.asc] http://repo.mysql.com/apt/debian/ trixie mysql-8.4-lts\n", []string{"https"}},
 		{"path walks up", list, "deb " + nginxKey + " https://nginx.org/packages/../evil/ trixie nginx\n", []string{"nginx.org"}},

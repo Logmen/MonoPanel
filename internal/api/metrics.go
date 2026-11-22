@@ -550,6 +550,9 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 	if c := s.siteLogsCheck(actx); c != nil {
 		add(*c)
 	}
+	if c := s.phpRepoCheck(actx); c != nil {
+		add(*c)
+	}
 	for _, c := range s.phpDistroChecks(actx) {
 		add(c)
 	}

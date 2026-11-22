@@ -31,8 +31,10 @@ log "$PRETTY_NAME, kernel $(uname -r)"
 case "$pkg" in
 *.deb)
 	log "installing $(basename "$pkg")"
-	# The ondrej PPA changed its Label ("PPA for PHP (deprecated)"); apt
-	# refuses such a change until it is accepted.
+	# A VM an older panel set up may still have ppa:ondrej/php (the new
+	# panel moves it to packages.sury.org at its start), and the PPA changed
+	# its Label ("PPA for PHP (deprecated)"): apt refuses such a change
+	# until it is accepted.
 	apt-get -q -o Acquire::AllowReleaseInfoChange::Label=true update >/dev/null
 	# A development build (0.7.0~3-g…) sorts below the release it follows;
 	# on a test VM any direction is fine.
@@ -77,8 +79,9 @@ step() { # step <label> <command...>
 	fi
 }
 installed nginx || step "mp stack install nginx" mp stack install nginx
-# The wanted branch may not exist on this OS (Ubuntu 26.04 has only 8.5 until
-# the PPA builds for it): then take the newest branch the panel calls available.
+# The wanted branch may not exist on this OS (an Ubuntu release that
+# packages.sury.org does not publish yet has only Ubuntu's own branch): then
+# take the newest branch the panel calls available.
 if ! php_installed "$TB_PHP"; then
 	if ! mp php install "$TB_PHP" >/dev/null 2>"/tmp/bootstrap-$$.err"; then
 		if grep -q "is not available on this OS" "/tmp/bootstrap-$$.err"; then

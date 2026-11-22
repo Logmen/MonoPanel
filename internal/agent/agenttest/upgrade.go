@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path"
 	"slices"
 	"strings"
 
@@ -133,6 +134,62 @@ func (a *Agent) candidates(pkgs []string) any {
 		}
 	}
 	return resp
+}
+
+// aptPolicy is what apt-cache policy prints of the packages the repositories
+// have (versions), the answer of "available" unless PkgOutput gives one:
+// each one's candidate, offered by every source config/apply wrote under
+// /etc/apt/sources.list.d in the one-line format, in lines like
+// "500 https://packages.sury.org/php trixie/main amd64 Packages". The API
+// reads in them whether apt has a repository's index. The fake does not
+// know which source carries what: every one offers every package. A line
+// without a suite and a component is left out, as apt refuses it. The
+// caller holds mu.
+func (a *Agent) aptPolicy(pkgs []string, versions map[string]string) string {
+	var lists []string
+	for p := range a.files {
+		if path.Dir(p) == "/etc/apt/sources.list.d" && strings.HasSuffix(p, ".list") {
+			lists = append(lists, p)
+		}
+	}
+	slices.Sort(lists)
+	var origins []string
+	for _, p := range lists {
+		for _, line := range strings.Split(a.files[p].Content, "\n") {
+			f := strings.Fields(line)
+			if len(f) == 0 || f[0] != "deb" {
+				continue
+			}
+			f = f[1:]
+			if len(f) > 0 && strings.HasPrefix(f[0], "[") {
+				// The options, up to the word that closes them.
+				for len(f) > 0 && !strings.HasSuffix(f[0], "]") {
+					f = f[1:]
+				}
+				if len(f) > 0 {
+					f = f[1:]
+				}
+			}
+			if len(f) < 3 {
+				continue
+			}
+			for _, component := range f[2:] {
+				origins = append(origins, fmt.Sprintf("500 %s %s/%s amd64 Packages", strings.TrimSuffix(f[0], "/"), f[1], component))
+			}
+		}
+	}
+	var b strings.Builder
+	for _, p := range pkgs {
+		v, ok := versions[p]
+		if !ok {
+			continue
+		}
+		fmt.Fprintf(&b, "%s:\n  Installed: (none)\n  Candidate: %s\n  Version table:\n     %s 500\n", p, v, v)
+		for _, o := range origins {
+			b.WriteString("        " + o + "\n")
+		}
+	}
+	return b.String()
 }
 
 // upgrade installs what Upgrades offers. Like the agent it takes the panel's

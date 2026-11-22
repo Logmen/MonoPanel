@@ -27,15 +27,12 @@ func withOSRelease(t *testing.T, osRelease string) {
 	t.Cleanup(func() { fixtureOSRelease = prev })
 }
 
-// A fresh Ubuntu has no ppa:ondrej/php builds for months. The panel must not
-// write a source apt cannot read; it stays with Ubuntu's own packages, says
-// which branches exist there, and explains a branch that does not.
-func TestPHPUbuntuWithoutPPAStaysWithDistroPackages(t *testing.T) {
+// A fresh Ubuntu release is not on packages.sury.org for a while. The panel
+// must not write a source apt cannot read; it stays with Ubuntu's own
+// packages, says which branches exist there, and explains a branch that does
+// not.
+func TestPHPUbuntuWithoutSuryStaysWithDistroPackages(t *testing.T) {
 	withOSRelease(t, "ID=ubuntu\nVERSION_ID=26.04\nVERSION_CODENAME=resolute\n")
-	stubOndrejKey(t)
-	prev := ppaHasRelease
-	ppaHasRelease = func(context.Context, string) (bool, error) { return false, nil }
-	t.Cleanup(func() { ppaHasRelease = prev })
 	stubSury(t, false)
 	f := newSiteFixture(t)
 	f.agent.MissingPackages = map[string]bool{"php8.3-fpm": true}
@@ -45,7 +42,7 @@ func TestPHPUbuntuWithoutPPAStaysWithDistroPackages(t *testing.T) {
 	}
 	f.call(http.MethodPost, "/php/versions", map[string]any{"version": "8.3"}, http.StatusAccepted, &ref)
 	job := f.waitJob(ref.JobID)
-	if job.Status != store.JobFailed || !strings.Contains(job.Error, "neither ppa:ondrej/php nor packages.sury.org/php has packages for Ubuntu 26.04 (resolute)") {
+	if job.Status != store.JobFailed || !strings.Contains(job.Error, "packages.sury.org/php has no packages for Ubuntu 26.04 (resolute)") || strings.Contains(job.Error, "ondrej") {
 		t.Fatalf("install of a branch Ubuntu lacks: status=%s error=%q", job.Status, job.Error)
 	}
 	// A branch this OS cannot install must not linger as a phantom row in error.
@@ -53,8 +50,8 @@ func TestPHPUbuntuWithoutPPAStaysWithDistroPackages(t *testing.T) {
 		t.Error("недоступная ветка осталась в списке PHP")
 	}
 	for _, c := range f.agent.Calls() {
-		if c.Path == "/v1/config/apply" && strings.Contains(string(c.Body), "ondrej-php.list") {
-			t.Fatal("the PPA source was written although the PPA has no release")
+		if c.Path == "/v1/config/apply" && (strings.Contains(string(c.Body), "sury-php.list") || strings.Contains(string(c.Body), "ondrej-php")) {
+			t.Fatalf("a PHP source was written although Sury has no release: %s", c.Body)
 		}
 	}
 
@@ -87,21 +84,18 @@ func TestPHPUbuntuWithoutPPAStaysWithDistroPackages(t *testing.T) {
 	// And a second request for the missing branch is refused before any job.
 	f.call(http.MethodPost, "/php/versions", map[string]any{"version": "8.3"}, http.StatusUnprocessableEntity, nil)
 
-	// When the PPA appears the next installation picks it up.
-	ppaHasRelease = func(context.Context, string) (bool, error) { return true, nil }
+	// When Sury publishes the release the next installation picks it up.
+	stubSury(t, true)
 	f.agent.MissingPackages = nil
 	f.call(http.MethodPost, "/php/versions", map[string]any{"version": "8.3"}, http.StatusAccepted, &ref)
 	if job := f.waitJob(ref.JobID); job.Status != store.JobDone {
-		t.Fatalf("install with the PPA present: %s %s", job.Status, job.Error)
+		t.Fatalf("install with Sury publishing resolute: %s %s", job.Status, job.Error)
 	}
-	written := false
-	for _, c := range f.agent.Calls() {
-		if c.Path == "/v1/config/apply" && strings.Contains(string(c.Body), "ondrej-php.list") {
-			written = true
-		}
+	if src, ok := f.agent.File(surySource); !ok || src != "deb [signed-by=/etc/apt/keyrings/sury-php.gpg] https://packages.sury.org/php/ resolute main\n" {
+		t.Fatalf("Sury's source once it had the release: %q (written %v)", src, ok)
 	}
-	if !written {
-		t.Fatal("the PPA source was not written once the PPA had the release")
+	if w := ppaWrites(f, 0); len(w) > 0 {
+		t.Fatalf("ppa:ondrej/php was written: %v", w)
 	}
 }
 
@@ -132,15 +126,11 @@ type roundTrip func(*http.Request) (*http.Response, error)
 
 func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-// Ubuntu 26.04 had no ppa:ondrej/php builds for months while the same
-// maintainer's packages.sury.org carried every branch for it. The panel takes
-// Sury then: the matrix is whole again, and even a host that already settled
-// on Ubuntu's own packages switches at its next installation.
-func TestPHPUbuntuWithoutPPAUsesSury(t *testing.T) {
+// A host that settled on Ubuntu's own packages while packages.sury.org did
+// not publish its release (Ubuntu 26.04 under older panels) has the whole
+// matrix again once Sury does, and takes Sury at its next installation.
+func TestPHPUbuntuDistroHostTakesSury(t *testing.T) {
 	withOSRelease(t, "ID=ubuntu\nVERSION_ID=26.04\nVERSION_CODENAME=resolute\n")
-	prev := ppaHasRelease
-	ppaHasRelease = func(context.Context, string) (bool, error) { return false, nil }
-	t.Cleanup(func() { ppaHasRelease = prev })
 	stubSury(t, true)
 	f := newSiteFixture(t)
 	// A host that ran an older panel: it settled on Ubuntu's own packages.
@@ -168,21 +158,11 @@ func TestPHPUbuntuWithoutPPAUsesSury(t *testing.T) {
 	if job := f.waitJob(ref.JobID); job.Status != store.JobDone {
 		t.Fatalf("install 8.3 via Sury: %s %s", job.Status, job.Error)
 	}
-	sury, ppa := false, false
-	for _, c := range f.agent.Calls() {
-		if c.Path != "/v1/config/apply" {
-			continue
-		}
-		body := string(c.Body)
-		if strings.Contains(body, "sury-php.list") && strings.Contains(body, "packages.sury.org/php/ resolute main") {
-			sury = true
-		}
-		if strings.Contains(body, "ondrej-php.list") {
-			ppa = true
-		}
+	if src, _ := f.agent.File(surySource); !strings.Contains(src, "https://packages.sury.org/php/ resolute main") {
+		t.Fatalf("Sury's source: %q", src)
 	}
-	if !sury || ppa {
-		t.Fatalf("sources written: sury=%v ppa=%v", sury, ppa)
+	if w := ppaWrites(f, 0); len(w) > 0 {
+		t.Fatalf("ppa:ondrej/php was written: %v", w)
 	}
 	if v, _ := f.db.GetSetting(f.ctx, settingPHPRepo+".debian"); v != "ready" {
 		t.Fatalf("repository state after the switch: %q", v)

@@ -38,8 +38,9 @@ type siteFixture struct {
 func newSiteFixture(t *testing.T) *siteFixture { return newFixture(t, nil) }
 
 // fixtureOSRelease is the /etc/os-release the fixture's panel believes it
-// runs on; a test that needs another family sets it and restores it.
-var fixtureOSRelease = "ID=debian\nVERSION_ID=13\n"
+// runs on; a test that needs another family sets it and restores it. The
+// codename goes into the vendors' apt sources, as on a real Debian 13.
+var fixtureOSRelease = "ID=debian\nVERSION_ID=13\nVERSION_CODENAME=trixie\n"
 
 // newFixture is newSiteFixture with a say in the configuration, for tests that
 // need a pinned release key or another data directory.

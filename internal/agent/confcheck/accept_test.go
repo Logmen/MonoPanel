@@ -542,10 +542,10 @@ func TestRepositoryContentPasses(t *testing.T) {
 		add("nginx.repo EL"+major, "/etc/yum.repos.d/nginx.repo", fmt.Sprintf("[nginx-stable]\nname=nginx stable repo\nbaseurl=https://nginx.org/packages/centos/%s/$basearch/\ngpgcheck=1\nenabled=1\ngpgkey=https://nginx.org/keys/nginx_signing.key\nmodule_hotfixes=true\n", major))
 		add("mysql.repo EL"+major, "/etc/yum.repos.d/mysql-community.repo", fmt.Sprintf("[mysql-8.4-lts-community]\nname=MySQL 8.4 LTS Community Server\nbaseurl=https://repo.mysql.com/yum/mysql-8.4-community/el/%s/$basearch/\nenabled=1\ngpgcheck=1\ngpgkey=%s\n", major, "https://repo.mysql.com/RPM-GPG-KEY-mysql-2023"))
 	}
-	// ops_php.go ensurePHPRepo
-	add("ondrej", "/etc/apt/sources.list.d/ondrej-php.list", "deb [signed-by=/etc/apt/keyrings/ondrej-php.asc] https://ppa.launchpadcontent.net/ondrej/php/ubuntu noble main\n")
-	add("ondrej key", "/etc/apt/keyrings/ondrej-php.asc", "-----BEGIN PGP PUBLIC KEY BLOCK-----\nComment: Hostname: \n\nxsFNBFt...\n-----END PGP PUBLIC KEY BLOCK-----\n")
-	add("sury", "/etc/apt/sources.list.d/sury-php.list", "deb [signed-by=/etc/apt/keyrings/sury-php.gpg] https://packages.sury.org/php/ trixie main\n")
+	// ops_php.go suryRepoFiles: Debian and Ubuntu alike
+	for _, codename := range []string{"bookworm", "trixie", "jammy", "noble", "resolute"} {
+		add("sury "+codename, "/etc/apt/sources.list.d/sury-php.list", "deb [signed-by=/etc/apt/keyrings/sury-php.gpg] https://packages.sury.org/php/ "+codename+" main\n")
+	}
 	// A binary key: an old-format public-key packet (tag 6, two length octets).
 	key, _ := base64.StdEncoding.DecodeString("mQINBF4ZtJcBEADC")
 	add("sury key", "/etc/apt/keyrings/sury-php.gpg", string(key))

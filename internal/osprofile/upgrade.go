@@ -6,7 +6,7 @@ import (
 )
 
 // The vendor packages the panel installs keep their vendors' repositories
-// (nginx.org, Sury or ppa:ondrej/php, Remi, Percona, MySQL) but nothing on
+// (nginx.org, Sury, Remi, Percona, MySQL) but nothing on
 // the host upgrades from them: unattended-upgrades takes only the
 // distribution's origins, and EL has no dnf-automatic. mp stack upgrade and
 // its daily run do, for these sets. The agent upgrades a name only when it is

@@ -296,8 +296,8 @@ func (s *Server) startupRefresh(ctx context.Context) {
 	s.moveAppEnvOutOfUnits(ctx)
 	s.refreshComposerWrapper(ctx)
 	s.refreshRepoSchemes(ctx)
-	// Last: it may wait on keyserver.ubuntu.com.
-	s.refreshOndrejKey(ctx)
+	// Last: it may wait on packages.sury.org and two index updates.
+	s.switchPHPRepoToSury(ctx)
 	s.refreshed.Store(true)
 }
 
