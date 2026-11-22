@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -15,17 +16,16 @@ import (
 	"monopanel/internal/apitypes"
 )
 
-// Where the HTTPS listener came from, once Run has it (Server.listenVia).
+// Where the HTTPS listener came from, once Serve has it (Server.listenVia).
 const (
-	viaNone   int32 = iota // Run has not listened (tests)
+	viaNone   int32 = iota // Serve has not run (tests)
 	viaSocket              // the socket systemd passed: monopanel-api.socket
 	viaSelf                // a listener of this process's own
 )
 
-// listenViaName is listenVia as the system status names it: mp doctor warns
-// when the socket is enabled but the API listens on its own (the socket
-// failed, was stopped, or holds another address), as the port is free while
-// the API restarts then.
+// listenViaName is listenVia as the system status names it: the doctor
+// warns when the socket is enabled but the API listens on its own
+// (apiSocketCheck).
 func (s *Server) listenViaName() string {
 	switch s.listenVia.Load() {
 	case viaSocket:
@@ -34,6 +34,53 @@ func (s *Server) listenViaName() string {
 		return apitypes.ListenViaItself
 	}
 	return ""
+}
+
+// apiSocketCheck is the doctor's word on the socket that keeps the panel's
+// port bound while the API restarts. A warning when the socket is enabled
+// yet the API listens on the port itself — the socket failed or was stopped
+// (the API unit stops it before a binary of 0.8.19 or older, as after a
+// self-update that rolled back), or it listens elsewhere than web.listen —
+// so that the port is free for any local account during a restart. All is
+// well on the socket, without one (disabled, masked: the administrator's
+// choice), and for a port below ip_unprivileged_port_start, which the socket
+// leaves to the API on purpose: no account can take it. It is the API's
+// line, judged on its own host — listener, web.listen, sysctl, the socket's
+// state — so the summary, --json, the dashboard and the TUI carry it, and mp
+// --server judges the right host; nil before Serve listened (tests).
+func (s *Server) apiSocketCheck(ctx context.Context) *apitypes.Check {
+	const name = "api socket"
+	unit := s.cfg.APISocketUnit()
+	var c apitypes.Check
+	switch s.listenVia.Load() {
+	case viaNone:
+		return nil
+	case viaSocket:
+		c = check(name, "ok", unit+" holds the port while monopanel-api restarts")
+		return &c
+	}
+	port := 0
+	if a, ok := s.listenAddr.Load().(*net.TCPAddr); ok {
+		port = a.Port
+	} else if _, p, err := net.SplitHostPort(s.cfg.Web.Listen); err == nil {
+		port, _ = strconv.Atoi(p)
+	}
+	if start := s.portStart(); port > 0 && port < start {
+		c = check(name, "ok", fmt.Sprintf("monopanel-api listens on port %d itself, below net.ipv4.ip_unprivileged_port_start (%d): no account can take it while the API restarts", port, start))
+		return &c
+	}
+	st, err := s.agent.Service(ctx, unit, "status")
+	switch {
+	case err != nil:
+		c = check(name, "warn", "monopanel-api listens on the port itself, and the state of "+unit+" is unknown: "+err.Error())
+	case st.Status.UnitFileState == "enabled" || st.Status.UnitFileState == "enabled-runtime":
+		c = check(name, "warn", fmt.Sprintf("%s is enabled, but monopanel-api listens on the port itself: while it restarts, any local account can take the port. See journalctl -u monopanel-api -u %s for why, then run mp setup", unit, unit))
+	case st.Status.LoadState == "not-found":
+		c = check(name, "ok", "monopanel-api listens on the port itself: there is no "+unit)
+	default:
+		c = check(name, "ok", "monopanel-api listens on the port itself: "+unit+" is "+st.Status.UnitFileState)
+	}
+	return &c
 }
 
 // httpsListener is where the panel serves HTTPS. A socket systemd passed
@@ -154,8 +201,8 @@ func heldCopy(ln net.Listener) (*os.File, error) {
 // the full ten seconds): a port closed that early would be anybody's while
 // the socket moves to a new address, and wherever there is no socket. With
 // the socket listening this changes nothing: PID 1 holds a copy of its own.
-// Run lets go when it is done; the daemon not before the process ends
-// (KeepPortUntilExit), since after Run it waits for the jobs in flight.
+// Serve lets go when it is done; the daemon not before the process ends
+// (KeepPortUntilExit), since after Serve it waits for the jobs in flight.
 func (s *Server) holdPort(ln net.Listener) (release func()) {
 	held, err := heldCopy(ln)
 	if err != nil {

@@ -35,8 +35,8 @@ import (
 
 // Server wires the API together.
 type Server struct {
-	// listenAddr is the address the HTTPS listener is bound to once Run has
-	// it (a net.Addr): the console reaches the API there, an address no
+	// listenAddr is the address the HTTPS listener is bound to once Serve
+	// has it (a net.Addr): the console reaches the API there, an address no
 	// other process can hold at the same time. listenV6Only says that it is
 	// the IPv6 wildcard without IPv4, listenVia where the listener came from
 	// (viaSocket, viaSelf).
@@ -49,7 +49,7 @@ type Server struct {
 	// on another address (httpsListener).
 	activation    func() ([]net.Listener, error)
 	stopAPISocket func(ctx context.Context) error
-	// keepPort makes Run leave its copy of the HTTPS socket (keptPort) open
+	// keepPort makes Serve leave its copy of the HTTPS socket (keptPort) open
 	// for the exit of the process to close (KeepPortUntilExit).
 	keepPort atomic.Bool
 	keptPort atomic.Pointer[os.File]
@@ -145,11 +145,11 @@ func (s *Server) SetUnprivilegedPortStart(fn func() int) { s.portStart = fn }
 // SetHostIPs overrides the host's addresses. Intended for tests.
 func (s *Server) SetHostIPs(fn func() []string) { s.hostIPs = fn }
 
-// KeepPortUntilExit makes Run leave a copy of the HTTPS socket open for the
-// end of the process to close, for monopanel api: after Run it waits for the
+// KeepPortUntilExit makes Serve leave a copy of the HTTPS socket open for the
+// end of the process to close, for monopanel api: after Serve it waits for the
 // jobs in flight, and a port closed before that would be anybody's while the
 // socket moves to a new address, or wherever there is no socket. In a
-// process that runs the server again (the demo, tests) Run closes it.
+// process that runs the server again (the demo, tests) Serve closes it.
 func (s *Server) KeepPortUntilExit() { s.keepPort.Store(true) }
 
 // SetHostIPv6s replaces the host's IPv6 address list (tests, the demo).

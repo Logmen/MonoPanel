@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -766,6 +767,8 @@ func TestAPISocketSyncProbe(t *testing.T) {
 // listens on the port itself: the port is free while the API restarts. Not
 // when the socket holds it, when the socket is off, when the API is too old
 // to say, nor for a port no account may bind, which the socket leaves alone.
+// That is mp's own judgement for an API whose doctor does not judge the
+// socket itself; one that does is taken as it is.
 func TestDoctorWarnsOfTheIdleSocket(t *testing.T) {
 	start := unprivilegedPortStart
 	unprivilegedPortStart = func() int { return 1024 }
@@ -827,6 +830,38 @@ func TestDoctorWarnsOfTheIdleSocket(t *testing.T) {
 	if out, err := mp(t, "", "--config", conf(":8443"), "--json", "doctor"); err != nil || strings.Contains(out, "api socket") {
 		t.Fatalf("--json: %v\n%s", err, out)
 	}
+
+	// The API's own line, judged on its host, counted in its summary: mp
+	// adds nothing and asks nothing more, whatever its own config.yaml says.
+	judged := fakeResp{body: map[string]any{"summary": "2 checks, 0 failed, 1 warning", "checks": []map[string]any{
+		{"name": "agent", "status": "ok", "detail": "version test"},
+		{"name": "api socket", "status": "warn", "detail": "monopanel-api.socket is enabled, but monopanel-api listens on the port itself"},
+	}}}
+	f := newFakeAPI(t, map[string]fakeResp{"GET /system/doctor": judged, "GET /system/status": status("itself"), "GET /services/monopanel-api.socket": socket("enabled")})
+	out, err := mp(t, "", "--config", conf("203.0.113.5:443"), "doctor")
+	if err != nil || strings.Count(out, "api socket") != 1 || !strings.HasSuffix(out, "2 checks, 0 failed, 1 warning\n") {
+		t.Fatalf("an API that judges the socket: %v\n%s", err, out)
+	}
+	f.none(t, "GET", "/system/status")
+	f.none(t, "GET", "/services/monopanel-api.socket")
+}
+
+// mp doctor prints a check per line: a detail with the output of apt-get or
+// of a validator in it is folded onto it, and what a stranger could have put
+// into it (an escape sequence) does not reach the terminal.
+func TestDoctorPrintsALinePerCheck(t *testing.T) {
+	newFakeAPI(t, map[string]fakeResp{"GET /system/doctor": {body: map[string]any{"summary": "1 check, 0 failed, 1 warning", "checks": []map[string]any{
+		{"name": "stack upgrade", "status": "warn", "detail": "the upgrade failed: E: Failed to fetch\nW: Some index files failed\x1b]52;c;cHduZWQ=\x07 to download"},
+		{"name": "api socket", "status": "ok", "detail": "monopanel-api.socket holds the port while monopanel-api restarts"},
+	}}}})
+	out, err := mp(t, "", "doctor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "[WARN] stack upgrade                    the upgrade failed: E: Failed to fetch W: Some index files failed to download\n"
+	if !strings.HasPrefix(out, want) || strings.Contains(out, "\x1b") || strings.Count(out, "\n") != 3 {
+		t.Fatalf("doctor:\n%q", out)
+	}
 }
 
 // A start of the API that monopanel-api.socket made and that fails lingers
@@ -862,6 +897,152 @@ func TestAPIFailedStartLingersUnderTheSocket(t *testing.T) {
 	t.Setenv("LISTEN_PID", fmt.Sprint(os.Getpid()))
 	if took := run(); took < failedStartPause {
 		t.Errorf("started by the socket the failure took only %v", took)
+	}
+}
+
+// A start of the API that cannot listen — web.listen's port held by another
+// process — returns its error at once instead of running on without its
+// port, its job workers and start-up refresh changing the host: systemd sees
+// it fail and starts it again, the socket's start after the unit's restart
+// pause. The local socket it made is gone again.
+func TestAPIFailedListenReturns(t *testing.T) {
+	pause := failedStartPause
+	t.Cleanup(func() { failedStartPause = pause })
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { busy.Close() })
+	dir := t.TempDir()
+	// A unix socket's path stays short.
+	run, err := os.MkdirTemp("", "mpapi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(run) })
+	if err := os.Mkdir(filepath.Join(dir, "data"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.yaml")
+	conf := fmt.Sprintf("data_dir: %q\nrun_dir: %q\nlog_dir: %q\ntemplates_dir: %q\nsecret_key_file: %q\nagent:\n  socket: %q\nweb:\n  listen: %q\nlog:\n  level: error\n  audit_file: %q\n",
+		filepath.Join(dir, "data"), run, filepath.Join(dir, "log"), filepath.Join(dir, "templates"), filepath.Join(dir, "secret.key"), filepath.Join(run, "agent.sock"), busy.Addr().String(), filepath.Join(dir, "audit.log"))
+	if err := os.WriteFile(path, []byte(conf), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	start := func() time.Duration {
+		t.Helper()
+		begun := time.Now()
+		done := make(chan error, 1)
+		go func() {
+			_, err := mp(t, "", "--config", path, "api")
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if !errors.Is(err, syscall.EADDRINUSE) {
+				t.Fatalf("a busy web.listen: %v", err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("monopanel api runs on without its port")
+		}
+		if _, err := os.Stat(filepath.Join(run, "api.sock")); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("api.sock stays behind: %v", err)
+		}
+		return time.Since(begun)
+	}
+	// By hand it does not linger: a pause far longer than a start takes, also
+	// one under the race detector (CI), whose store, routes and certificate
+	// take seconds there, would show.
+	failedStartPause = 20 * time.Second
+	if took := start(); took >= failedStartPause {
+		t.Errorf("by hand the failure took %v", took)
+	}
+	// Started by the socket: LISTEN_FDS=0 hands over no descriptor, as this
+	// test process has none at 3 to give; Listen unsets both again.
+	failedStartPause = 400 * time.Millisecond
+	t.Setenv("LISTEN_FDS", "0")
+	t.Setenv("LISTEN_PID", fmt.Sprint(os.Getpid()))
+	if took := start(); took < failedStartPause {
+		t.Errorf("started by the socket the failure took only %v", took)
+	}
+}
+
+// mainRun runs the binary's Main as the process would and returns its exit
+// code and what it wrote to stderr. Main takes the language from the
+// environment: English, as the other tests expect it.
+func mainRun(t *testing.T, args ...string) (int, string) {
+	t.Helper()
+	t.Setenv("MP_LANG", "en")
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	out := make(chan string)
+	go func() { b, _ := io.ReadAll(r); out <- string(b) }()
+	code := Main(args)
+	os.Stderr = old
+	w.Close()
+	return code, <-out
+}
+
+// The word on who may use the panel's socket follows a refused connection
+// to it, and nothing else that lacks a permission: not the API that cannot
+// read its TLS key (it would send the administrator reading the journal
+// after the socket's group), not fsop that cannot read a file in a home
+// (its error goes back to the API, and on to the file manager or the log
+// tail). All of them exit with 4, permission denied.
+func TestPermissionHintOnlyForThePanelSocket(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads and connects past the modes")
+	}
+	const hint = "monopanel-cli"
+	run, err := os.MkdirTemp("", "mpsock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(run) })
+	ln, err := net.Listen("unix", filepath.Join(run, "api.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	if err := os.Chmod(filepath.Join(run, "api.sock"), 0); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	key := filepath.Join(dir, "panel.key")
+	for p, mode := range map[string]os.FileMode{key: 0, filepath.Join(dir, "panel.crt"): 0o644} {
+		if err := os.WriteFile(p, []byte("x\n"), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(dir, "data"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	conf := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(conf, []byte(fmt.Sprintf("data_dir: %q\nrun_dir: %q\nlog_dir: %q\ntemplates_dir: %q\nsecret_key_file: %q\nagent:\n  socket: %q\nweb:\n  listen: 127.0.0.1:0\n  tls_cert: %q\n  tls_key: %q\nlog:\n  level: error\n  audit_file: %q\n",
+		filepath.Join(dir, "data"), run, filepath.Join(dir, "log"), filepath.Join(dir, "templates"), filepath.Join(dir, "secret.key"), filepath.Join(run, "agent.sock"), filepath.Join(dir, "panel.crt"), key, filepath.Join(dir, "audit.log"))), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MP_SERVER", "")
+	if code, stderr := mainRun(t, "--config", conf, "status"); code != 4 || !strings.Contains(stderr, hint) {
+		t.Errorf("mp refused by the socket: %d %q", code, stderr)
+	}
+	if code, stderr := mainRun(t, "--config", conf, "api"); code != 4 || !strings.Contains(stderr, "permission denied") || strings.Contains(stderr, hint) {
+		t.Errorf("the API that cannot read its key: %d %q", code, stderr)
+	}
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "data", "logs"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "data", "logs", "example.com.access.log"), []byte("GET /\n"), 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	if code, stderr := mainRun(t, "fsop", "tail", "data/logs/example.com.access.log", "400"); code != 4 || !strings.Contains(stderr, "permission denied") || strings.Contains(stderr, hint) {
+		t.Errorf("fsop that cannot read a file of the account's: %d %q", code, stderr)
 	}
 }
 

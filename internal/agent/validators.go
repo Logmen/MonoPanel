@@ -15,8 +15,10 @@ import (
 // MySQL/Percona check (ops_db.go; mariadbd is the same server under its own
 // name), logrotate on the panel's site rotation (logrotate.go),
 // fail2ban-client -t (fail2ban.go), postfix check and doveconf -n
-// (ops_mail.go). The check of an account's Apache has a login in it
-// (apacheInstanceCheck).
+// (ops_mail.go), and on Debian apache2ctl -t of the shared apache2.service,
+// which an unfinished move from 0.8.19 keeps serving the sites that did not
+// move (stack_upgrade.go). The check of an account's Apache has a login in
+// it (apacheInstanceCheck).
 func (s *Server) panelValidators() [][]string {
 	web := s.profile.Web()
 	out := [][]string{
@@ -33,6 +35,9 @@ func (s *Server) panelValidators() [][]string {
 		if l := osprofile.PHP(s.profile, v.Version); l != nil {
 			out = append(out, l.FPMCheckArgv)
 		}
+	}
+	if s.profile.Family() == osprofile.FamilyDebian {
+		out = append(out, confcheck.ApacheSharedCheck())
 	}
 	return append(out, extraValidators...)
 }

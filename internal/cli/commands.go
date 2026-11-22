@@ -687,7 +687,13 @@ func stackCmd() *cobra.Command {
 			rows = append(rows, []string{comp.Name, ver, state, stackUpdateCell(comp)})
 		}
 		table([]string{"COMPONENT", "VERSION", "STATE", "UPDATE"}, rows)
-		printUpdatesHint(comps)
+		printUpdatesHint(comps, func() *apitypes.StackAutoUpgrade {
+			st, err := cl.StackAutoUpgrade(cmd.Context())
+			if err != nil {
+				return nil
+			}
+			return st
+		})
 		return nil
 	}}
 	install := &cobra.Command{Use: "install <component>", Short: T("установить компонент: nginx, apache, percona, mysql, fail2ban, memcached, jpegoptim, git, composer, sphinx, valkey (PHP: mp php install)", "install a component: nginx, apache, percona, mysql, fail2ban, memcached, jpegoptim, git, composer, sphinx, valkey (PHP: mp php install)"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {

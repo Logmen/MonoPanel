@@ -125,6 +125,23 @@ func oneLine(s string, n int) string {
 	return s
 }
 
+// oneLineEnds is s on one line, cut to about n bytes by leaving out its
+// middle: a third from its start, the rest from its end. A package
+// manager's output says what went wrong last (E: …, dpkg: error processing
+// …), after pages of what went well, and the panel's note on what it did
+// then follows it; the start says what failed.
+func oneLineEnds(s string, n int) string {
+	s = oneLine(s, len(s))
+	if len(s) <= n {
+		return s
+	}
+	from := len(s) - (n - n/3)
+	for from < len(s) && !utf8.RuneStart(s[from]) {
+		from++
+	}
+	return oneLine(s, n/3) + " " + s[from:]
+}
+
 // settingSiteMoves holds the sites that have not moved (siteMoves), as JSON.
 const settingSiteMoves = "sites.moves"
 
@@ -238,6 +255,16 @@ func (s *Server) siteUnmoved(ctx context.Context, id int64) bool {
 	}
 	_, ok := m.Sites[id]
 	return ok
+}
+
+// siteLogsPending tells whether the site still logs into its account's
+// data/logs: listed among the moves once the list was made for the log tree
+// it has (siteUnmoved counts a list not made yet as well, where the site
+// logs as it did, for the moves; the clients' log tail reads the tree then).
+func (s *Server) siteLogsPending(ctx context.Context, id int64) bool {
+	m := s.siteMovesState(ctx)
+	_, ok := m.Sites[id]
+	return ok && m.Logs == s.siteLogsRoot()
 }
 
 // lockSite takes a site for one apply and returns the release. Two jobs of

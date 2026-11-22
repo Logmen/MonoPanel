@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -396,5 +397,130 @@ func TestServicesPageRestartsTheSocketWithTheAPI(t *testing.T) {
 	waitServiceActions(t, f, "monopanel-api.socket stop", "monopanel-api.service restart", "monopanel-api.socket stop")
 	if entries := serviceAudit(f, "service.restart"); len(entries) != 1 || entries[0].Target != "monopanel-api.socket" || entries[0].Details["after_answer"] != true {
 		t.Fatalf("audit: %+v", entries)
+	}
+}
+
+// A start that cannot listen gives up before anything of it changes the
+// host: the error comes back, the local socket it made is gone again, the
+// sockets systemd passed are closed (PID 1 keeps its own copy) and the agent
+// heard nothing. Once the listeners exist, the start-up refresh begins with
+// Serve, not before, and ends with it.
+func TestListenFailsBeforeAnythingStarts(t *testing.T) {
+	busy := tcpListen(t, "127.0.0.1:0")
+	f := newFixture(t, func(c *config.Config) { c.Web.Listen = busy.Addr().String() })
+	f.s.activation = func() ([]net.Listener, error) { return nil, nil }
+	f.agent.Reset()
+	if _, err := f.s.Listen(f.ctx); !errors.Is(err, syscall.EADDRINUSE) {
+		t.Fatalf("a busy web.listen: %v", err)
+	}
+	gone := func() bool {
+		_, err := os.Stat(f.s.cfg.APISocket())
+		return errors.Is(err, os.ErrNotExist)
+	}
+	if !gone() {
+		t.Fatal("api.sock stays behind")
+	}
+
+	// An unreadable key, with the socket systemd passed on web.listen.
+	passed := tcpListen(t, "127.0.0.1:0")
+	cert := filepath.Join(t.TempDir(), "panel.crt")
+	if err := os.WriteFile(cert, []byte("not a certificate\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.s.cfg.Web.Listen = passed.Addr().String()
+	f.s.cfg.Web.TLSCert, f.s.cfg.Web.TLSKey = cert, t.TempDir()
+	f.s.tls = newCertHolder(f.s.cfg, f.s.log)
+	f.s.activation = func() ([]net.Listener, error) { return []net.Listener{passed}, nil }
+	if _, err := f.s.Listen(f.ctx); err == nil || !closed(passed) || !gone() {
+		t.Fatalf("an unreadable key: %v, the passed socket closed %v", err, closed(passed))
+	}
+	if calls := f.agent.Calls(); len(calls) != 0 {
+		t.Fatalf("a start that failed reached the agent: %v", calls)
+	}
+
+	f.s.cfg.Web.Listen = "127.0.0.1:0"
+	f.s.cfg.Web.TLSCert, f.s.cfg.Web.TLSKey = "", ""
+	f.s.tls = newCertHolder(f.s.cfg, f.s.log)
+	f.s.activation = func() ([]net.Listener, error) { return nil, nil }
+	ln, err := f.s.Listen(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if f.agent.Called("/v1/ping") || f.s.refreshed.Load() {
+		t.Fatal("the start-up refresh began before Serve")
+	}
+	ctx, cancel := context.WithCancel(f.ctx)
+	defer cancel()
+	served := make(chan error, 1)
+	go func() { served <- f.s.Serve(ctx, ln) }()
+	deadline := time.Now().Add(20 * time.Second)
+	for !f.s.refreshed.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("the start-up refresh did not run with Serve")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatalf("serve: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("Serve did not return")
+	}
+}
+
+// The doctor's line on the socket of the panel's port, judged on the API's
+// own host: a warning when the socket is enabled but the API listens on the
+// port itself, counted in the summary; all well on the socket, without one,
+// and on a port no account may bind (the socket is not even asked about);
+// nothing before Serve listened.
+func TestDoctorJudgesTheAPISocket(t *testing.T) {
+	f := newSiteFixture(t)
+	if c := f.s.apiSocketCheck(f.ctx); c != nil {
+		t.Fatalf("before Serve: %+v", c)
+	}
+	line := func() (string, string) {
+		t.Helper()
+		d := f.s.doctor(f.ctx)
+		for _, c := range d.Checks {
+			if c.Name == "api socket" {
+				return c.Status + ": " + c.Detail, d.Summary
+			}
+		}
+		return "", d.Summary
+	}
+	f.s.listenVia.Store(viaSocket)
+	if got, _ := line(); got != "ok: monopanel-api.socket holds the port while monopanel-api restarts" {
+		t.Errorf("on the socket: %q", got)
+	}
+	f.s.listenVia.Store(viaSelf)
+	f.s.listenAddr.Store(&net.TCPAddr{IP: net.IPv4zero, Port: 8443})
+	// The fake's units are enabled unless told otherwise.
+	got, summary := line()
+	if !strings.HasPrefix(got, "warn: monopanel-api.socket is enabled, but monopanel-api listens on the port itself") {
+		t.Errorf("the socket enabled, the API on its own: %q", got)
+	}
+	f.s.listenVia.Store(viaSocket)
+	if _, onSocket := line(); summary == onSocket {
+		t.Errorf("the warning is not counted: %q, on the socket %q", summary, onSocket)
+	}
+	f.s.listenVia.Store(viaSelf)
+	f.agent.UnitFileState = map[string]string{"monopanel-api.socket": "disabled"}
+	if got, _ := line(); got != "ok: monopanel-api listens on the port itself: monopanel-api.socket is disabled" {
+		t.Errorf("no socket: %q", got)
+	}
+	f.agent.UnitFileState = nil
+	f.s.listenAddr.Store(&net.TCPAddr{IP: net.IPv4zero, Port: 443})
+	f.agent.Reset()
+	if c := f.s.apiSocketCheck(f.ctx); c == nil || c.Status != "ok" || !strings.HasPrefix(c.Detail, "monopanel-api listens on port 443 itself, below net.ipv4.ip_unprivileged_port_start (1024)") || f.agent.Called("/v1/service") {
+		t.Errorf("a privileged port: %+v", c)
+	}
+	f.s.listenAddr.Store(&net.TCPAddr{IP: net.IPv4zero, Port: 8443})
+	f.agent.Fail["/v1/service"] = "Failed to connect to bus"
+	if c := f.s.apiSocketCheck(f.ctx); c == nil || c.Status != "warn" || !strings.Contains(c.Detail, "the state of monopanel-api.socket is unknown") {
+		t.Errorf("the agent cannot tell: %+v", c)
 	}
 }

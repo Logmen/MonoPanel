@@ -18,37 +18,63 @@ import (
 	"monopanel/internal/peercred"
 )
 
-// Run serves HTTPS on cfg.Web.Listen — on the socket systemd passed when it
-// is there (httpsListener) — and plain HTTP on the local unix socket until
-// ctx is cancelled.
-func (s *Server) Run(ctx context.Context) error {
+// Listeners are what the API serves on: the HTTPS listener — the socket
+// systemd passed (onSocket) or one of the process's own — and the local unix
+// socket. Listen takes them, Serve serves them.
+type Listeners struct {
+	tcp      net.Listener
+	onSocket bool
+	unix     net.Listener
+	sock     string
+}
+
+// Close lets go of what Listen took, for a caller that does not serve it
+// after all. Closing the unix listener removes its socket file.
+func (l *Listeners) Close() {
+	_ = l.tcp.Close()
+	_ = l.unix.Close()
+}
+
+// Listen takes what the API serves on before anything else of a start
+// happens: the sockets systemd passed, the certificate, the local unix
+// socket and, last, the HTTPS listener, which may stop monopanel-api.socket
+// on the way. A start that fails here — the port of web.listen held by
+// another process, an unreadable TLS key, an api.sock the API cannot
+// replace — leaves nothing open and changes nothing on the host: the job
+// workers and the start-up refresh start only once Listen has succeeded
+// (Serve, and the daemon between the two), so that the process can exit at
+// once and systemd start it again, instead of running on without its port
+// while the workers and the refresh change the host.
+func (s *Server) Listen(ctx context.Context) (_ *Listeners, err error) {
 	// The sockets systemd passed come first: activation unsets LISTEN_FDS
 	// and marks them close-on-exec, so that no child of this process (the
 	// console's mp) inherits the panel's port.
-	passed, err := s.activation()
-	if err != nil {
-		s.log.Warn("the sockets systemd passed", "err", err)
+	passed, aerr := s.activation()
+	if aerr != nil {
+		s.log.Warn("the sockets systemd passed", "err", aerr)
 	}
+	defer func() {
+		// The process's copies only: PID 1 keeps the socket bound with its
+		// own, and starts the API again on the next connection.
+		if err != nil {
+			for _, p := range passed {
+				if p != nil {
+					_ = p.Close()
+				}
+			}
+		}
+	}()
 	if err := s.tls.Reload(); err != nil {
-		return err
+		return nil, err
 	}
-	s.revokeForgedMigrationTokens(ctx)
-	tlsSrv := &http.Server{
-		Addr:              s.cfg.Web.Listen,
-		Handler:           s.Handler(),
-		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: s.tls.GetCertificate, NextProtos: []string{"h2", "http/1.1"}},
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}
-
 	sock := s.cfg.APISocket()
 	if err := os.MkdirAll(filepath.Dir(sock), 0o771); err != nil {
-		return err
+		return nil, err
 	}
 	_ = os.Remove(sock)
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Only root and the CLI group — the service user and accounts with shell
 	// access — may connect; the peer uid still decides what they can do. Open
@@ -61,18 +87,37 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}
 	_ = os.Chmod(sock, 0o660)
-	unixSrv := &http.Server{Handler: s.Handler(), ConnContext: peercred.ConnContext, ReadHeaderTimeout: 10 * time.Second}
-
-	go s.startupRefresh(ctx)
-
 	tcp, onSocket, err := s.httpsListener(ctx, passed)
 	if err != nil {
-		return err
+		// Closing it removes the socket file: mp gets "no such file" rather
+		// than a socket nobody serves.
+		_ = ln.Close()
+		return nil, err
 	}
+	return &Listeners{tcp: tcp, onSocket: onSocket, unix: ln, sock: sock}, nil
+}
+
+// Serve serves HTTPS on what Listen took and plain HTTP on the local unix
+// socket until ctx is cancelled, and runs the start-up refresh and the
+// loops beside them (certificates, metrics, webhooks, updates, the daily
+// upgrade, the hourly tick). It returns when ctx ends or a server fails;
+// either way everything it started stops.
+func (s *Server) Serve(ctx context.Context, l *Listeners) error {
+	// Before the first request: a forged migration token must not get one.
+	s.revokeForgedMigrationTokens(ctx)
+	tlsSrv := &http.Server{
+		Addr:              s.cfg.Web.Listen,
+		Handler:           s.Handler(),
+		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: s.tls.GetCertificate, NextProtos: []string{"h2", "http/1.1"}},
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	unixSrv := &http.Server{Handler: s.Handler(), ConnContext: peercred.ConnContext, ReadHeaderTimeout: 10 * time.Second}
+	tcp, sock := l.tcp, l.sock
 	s.listenAddr.Store(tcp.Addr())
 	s.listenV6Only.Store(v6Only(tcp))
 	from := "itself"
-	if onSocket {
+	if l.onSocket {
 		s.listenVia.Store(viaSocket)
 		from = s.cfg.APISocketUnit()
 	} else {
@@ -80,6 +125,9 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	defer s.holdPort(tcp)()
 	g, gctx := errgroup.WithContext(ctx)
+	// The listeners exist: the host may change now. The refresh ends with
+	// the servers, a failed one as well.
+	go s.startupRefresh(gctx)
 	g.Go(func() error {
 		s.log.Info("api listening", "https", tcp.Addr().String(), "from", from, "socket", sock)
 		if err := tlsSrv.ServeTLS(tcp, "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -88,7 +136,7 @@ func (s *Server) Run(ctx context.Context) error {
 		return nil
 	})
 	g.Go(func() error {
-		if err := unixSrv.Serve(&peercred.Listener{Listener: ln}); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := unixSrv.Serve(&peercred.Listener{Listener: l.unix}); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
 		return nil

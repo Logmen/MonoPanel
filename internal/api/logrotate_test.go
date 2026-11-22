@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -216,6 +217,56 @@ func TestSiteLogsEndpointReadsTheTree(t *testing.T) {
 	f.call(http.MethodGet, "/sites/example.com/logs/php?lines=1", nil, http.StatusOK, &tail)
 	if tail.Path != "/var/log/monopanel/sites/alex/example.com.php.error.log" || !slices.Equal(tail.Lines, []string{"PHP Warning: two"}) {
 		t.Fatalf("tail: %+v", tail)
+	}
+}
+
+// A site that has not moved yet logs into its account's data/logs, while
+// its file in the tree stays empty: its log tail is the old file's, read as
+// the account (root reads nothing in a home), and the tree's again once it
+// moved — or for a log that is not in data/logs.
+func TestSiteLogsEndpointReadsAnUnmovedSiteAsTheAccount(t *testing.T) {
+	f := newSiteFixture(t)
+	site := f.createSite(map[string]any{"domain": "example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	moves, _ := json.Marshal(siteMoves{Logs: f.s.siteLogsRoot(), Sites: map[int64]*siteMove{site.ID: {Domain: site.Domain}}})
+	if err := f.db.SetSetting(f.ctx, settingSiteMoves, string(moves)); err != nil {
+		t.Fatal(err)
+	}
+	const tree = "/var/log/monopanel/sites/alex/example.com.php.error.log"
+	f.agent.ReadFile[tree] = ""
+	old := map[string]string{"data/logs/example.com.php.error.log": "PHP Warning: old one\nPHP Warning: old two\n"}
+	f.agent.RunAsHook = func(req agent.RunAsUserRequest) *agent.RunAsUserResponse {
+		if len(req.Args) != 3 || req.Args[0] != "tail" || req.Login != "alex" {
+			return nil
+		}
+		out := map[string]any{"missing": true}
+		if c, ok := old[req.Args[1]]; ok {
+			out = map[string]any{"size": len(c), "content": c}
+		}
+		b, _ := json.Marshal(out)
+		return &agent.RunAsUserResponse{StdoutBase64: base64.StdEncoding.EncodeToString(b)}
+	}
+	f.agent.Reset()
+	var tail apitypes.LogTail
+	f.call(http.MethodGet, "/sites/example.com/logs/php?lines=1", nil, http.StatusOK, &tail)
+	if tail.Path != "/var/www/alex/data/logs/example.com.php.error.log" || tail.Size != 42 || !slices.Equal(tail.Lines, []string{"PHP Warning: old two"}) {
+		t.Fatalf("an unmoved site: %+v", tail)
+	}
+	if f.agent.Called("/v1/file/read") {
+		t.Fatal("root read the log")
+	}
+	// Not in data/logs: the tree's.
+	tail = apitypes.LogTail{}
+	f.call(http.MethodGet, "/sites/example.com/logs/access", nil, http.StatusOK, &tail)
+	if tail.Path != "/var/log/monopanel/sites/alex/example.com.access.log" {
+		t.Fatalf("a log not in data/logs: %+v", tail)
+	}
+	// Moved: the tree's.
+	f.s.siteMoved(f.ctx, site.ID, f.s.siteLogsRoot())
+	f.agent.Reset()
+	tail = apitypes.LogTail{}
+	f.call(http.MethodGet, "/sites/example.com/logs/php", nil, http.StatusOK, &tail)
+	if tail.Path != tree || f.agent.Called("/v1/runas") {
+		t.Fatalf("a moved site: %+v", tail)
 	}
 }
 

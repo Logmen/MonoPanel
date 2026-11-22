@@ -810,3 +810,83 @@ func TestApacheOfOneAccountTakesOneSiteAtATime(t *testing.T) {
 		}
 	}
 }
+
+// unmovedApacheSite is a site of 0.8.19 in Apache mode of a new account
+// bob that the move has not reached: the shared apache2.service serves it,
+// bob has no Apache of his own yet (no httpd.conf), and the move of the
+// upgrade has not finished.
+func (f *siteFixture) unmovedApacheSite(domain string) *store.Site {
+	f.t.Helper()
+	uid := 1501
+	bob := &store.User{Login: "bob", Role: store.RoleUser, Status: store.UserActive, UnixUID: &uid, UnixGID: &uid, Home: "/var/www/bob"}
+	if err := f.db.CreateUser(f.ctx, bob); err != nil {
+		f.t.Fatal(err)
+	}
+	site := &store.Site{UserID: bob.ID, Domain: domain, Mode: store.ModeApache, PHPVersion: "8.4", Docroot: "/var/www/bob/data/www/" + domain, SSL: "none", Status: store.SiteActive}
+	if err := f.db.CreateSite(f.ctx, site); err != nil {
+		f.t.Fatal(err)
+	}
+	moves, _ := json.Marshal(siteMoves{Logs: f.s.siteLogsRoot(), Sites: map[int64]*siteMove{site.ID: {Domain: domain}}})
+	for k, v := range map[string]string{settingSiteMoves: string(moves), settingApacheInstances: ""} {
+		if err := f.db.SetSetting(f.ctx, k, v); err != nil {
+			f.t.Fatal(err)
+		}
+	}
+	return site
+}
+
+// While the move of an upgrade has not finished, the doctor judges the
+// Apaches by where the sites are: an account none of whose sites moved yet
+// has no Apache to check — no failed service, no failed apache2 -t —, one
+// warning names the sites that wait, and the shared apache2.service that
+// still serves them must run: down, it is a failure, whether enabled or
+// not, never the advice to disable it nor an all-clear.
+func TestDoctorDuringTheApacheMove(t *testing.T) {
+	f := newApacheFixture(t)
+	f.createSite(map[string]any{"domain": "a.example.com", "user": "alex", "php_version": "8.4", "ssl": "none", "mode": "apache"})
+	f.unmovedApacheSite("c.example.com")
+	checks := func() map[string]apitypes.Check {
+		t.Helper()
+		out := map[string]apitypes.Check{}
+		for _, c := range f.s.doctor(f.ctx).Checks {
+			out[c.Name] = c
+		}
+		return out
+	}
+	const bobApache = "monopanel-apache@bob.service"
+	got := checks()
+	for _, name := range []string{"service " + bobApache, "config " + bobApache} {
+		if c, ok := got[name]; ok {
+			t.Errorf("bob's Apache, which no site of his has reached, is judged: %+v", c)
+		}
+	}
+	if got["service "+alexApache].Status != "ok" || got["config "+alexApache].Status != "ok" {
+		t.Errorf("alex's Apache, which serves a moved site: %+v %+v", got["service "+alexApache], got["config "+alexApache])
+	}
+	if c := got["apache move"]; c.Status != "warn" || c.Detail != "waits for the move: the shared apache2.service still serves c.example.com; the Apache of bob starts with the first of its account's sites that moves, and is checked from then on" {
+		t.Errorf("the sites that wait: %+v", c)
+	}
+	if c := got["service apache2.service"]; c.Status != "warn" || !strings.Contains(c.Detail, "the move of the upgrade: not tried yet") {
+		t.Errorf("the shared Apache running: %+v", c)
+	}
+	for _, state := range []string{"enabled", "disabled"} {
+		f.agent.ActiveState = map[string]string{"apache2.service": "failed"}
+		f.agent.UnitFileState = map[string]string{"apache2.service": state}
+		c := checks()["service apache2.service"]
+		if c.Status != "fail" || !strings.Contains(c.Detail, "but it still serves c.example.com") || !strings.Contains(c.Detail, "systemctl start apache2.service") || strings.Contains(c.Detail, "disable") {
+			t.Errorf("the shared Apache down, %s: %+v", state, c)
+		}
+	}
+	// The move done: off and disabled is how it should be.
+	if err := f.db.SetSetting(f.ctx, settingApacheInstances, "yes"); err != nil {
+		t.Fatal(err)
+	}
+	f.agent.ActiveState = map[string]string{"apache2.service": "inactive"}
+	got = checks()
+	if c := got["service apache2.service"]; c.Status != "ok" {
+		t.Errorf("after the move: %+v", c)
+	}
+	if _, ok := got["apache move"]; ok {
+		t.Error("the move is done, yet sites wait for it")
+	}
+}

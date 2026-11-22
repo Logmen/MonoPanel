@@ -18,6 +18,9 @@ func TestValidatorAllowed(t *testing.T) {
 		// an account's Apache (Debian): apache2 -t on its own httpd.conf
 		{deb, []string{"/usr/sbin/apache2", "-t", "-f", "/etc/apache2/monopanel/accounts/alex/httpd.conf"}},
 		{deb, []string{"/usr/sbin/apache2", "-t", "-f", "/etc/apache2/monopanel/accounts/shop_2/httpd.conf"}},
+		// the shared apache2.service, which an unfinished move from 0.8.19
+		// keeps serving the sites that did not move (Debian)
+		{deb, []string{"/usr/sbin/apache2ctl", "-t"}},
 		{deb, []string{"/usr/sbin/php-fpm8.4", "-t", "-y", "/etc/php/8.4/fpm/php-fpm.conf"}},
 		{deb, []string{"/usr/sbin/php-fpm5.6", "-t", "-y", "/etc/php/5.6/fpm/php-fpm.conf"}},
 		{el, []string{"/opt/remi/php83/root/usr/sbin/php-fpm", "-t", "-y", "/etc/opt/remi/php83/php-fpm.conf"}},
@@ -43,9 +46,8 @@ func TestValidatorAllowed(t *testing.T) {
 		{"/usr/sbin/nginx", "-c", "/tmp/x"},
 		{"/usr/local/sbin/nginx", "-t", "-q"},
 		{"/usr/sbin/apachectl", "-t"},
-		// the shared Apache of 0.8.19 is checked no more: it serves no site
-		{"/usr/sbin/apache2ctl", "-t"},
 		{"/usr/sbin/apache2ctl", "-t", "-f", "/tmp/httpd.conf"},
+		{"/usr/sbin/apache2ctl", "-t", "-D", "X"},
 		{"/usr/sbin/apache2ctl", "-k", "start", "-C", "LoadModule x /tmp/x.so"},
 		{"/usr/sbin/apache2", "-t", "-f", "/tmp/httpd.conf"},
 		{"/usr/sbin/apache2", "-t", "-f", "/etc/apache2/monopanel/accounts/root/httpd.conf"},
@@ -72,8 +74,11 @@ func TestValidatorAllowed(t *testing.T) {
 			t.Errorf("%q must be refused", argv)
 		}
 	}
-	// EL has no Apache mode.
+	// EL has no Apache mode, and no shared Apache of the panel's.
 	if err := el.validatorAllowed([]string{"/usr/sbin/apache2", "-t", "-f", "/etc/apache2/monopanel/accounts/alex/httpd.conf"}); err == nil {
 		t.Error("the check of an account's Apache passed on EL")
+	}
+	if err := el.validatorAllowed([]string{"/usr/sbin/apache2ctl", "-t"}); err == nil {
+		t.Error("the check of the shared Apache passed on EL")
 	}
 }

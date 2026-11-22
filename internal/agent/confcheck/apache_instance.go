@@ -57,6 +57,8 @@ const (
 	ApacheInstancePort = 81
 	// ApacheBinary is Debian's Apache, which the unit starts with -f.
 	ApacheBinary = "/usr/sbin/apache2"
+	// apacheCtl is Debian's apache2ctl, which reads envvars first.
+	apacheCtl = "/usr/sbin/apache2ctl"
 	// apacheModuleDir is where Debian's apache2-bin keeps the modules.
 	apacheModuleDir = "/usr/lib/apache2/modules"
 	// apacheInstanceUnitPrefix names the template's instances.
@@ -102,6 +104,14 @@ func ApacheInstanceAddr(uid int) (string, error) {
 	}
 	return fmt.Sprintf("127.%d.%d.%d:%d", hi, (uid>>8)&255, uid&255, ApacheInstancePort), nil
 }
+
+// ApacheSharedCheck is apache2ctl -t, the check of the distribution's
+// apache2.service: the shared configuration of /etc/apache2 with Debian's
+// envvars, root's files and those the panel wrote there, checked as the
+// rest of /etc/apache2 is. While the move of an upgrade from 0.8.19 has not
+// finished, that Apache still serves the sites that did not move, and mp
+// stack upgrade checks it before Apache's packages restart it.
+func ApacheSharedCheck() []string { return []string{apacheCtl, "-t"} }
 
 // ApacheInstanceDir is an account's directory of its Apache configuration.
 func ApacheInstanceDir(login string) string { return path.Join(ApacheInstanceRoot, login) }

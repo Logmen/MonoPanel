@@ -129,6 +129,11 @@ type Agent struct {
 	// package: a configuration the old binary took and the new one refuses.
 	CheckFails       map[string]string
 	NewBinaryRefuses map[string]Refusal
+	// RestartFails makes a config/apply whose checks passed fail when it
+	// reloads or restarts one of these units, with the output, as the agent
+	// does ("files applied but restart failed", 500): the unit is down from
+	// then on (status reports it failed, an account's Apache inactive).
+	RestartFails map[string]string
 	// ToolHook, when set, may answer a tool call itself (nil = default).
 	ToolHook func(req agent.ToolRequest) *agent.ToolResponse
 	// Sandbox is what ping says of restic's sandbox (nil: nothing, as an
@@ -143,8 +148,10 @@ type Agent struct {
 	RunAsHook func(req agent.RunAsUserRequest) *agent.RunAsUserResponse
 	// Dirs answers agent.ListDir: directory path -> names inside it.
 	DirEntries map[string][]string
-	// MemTotalBytes is the RAM agent.SystemInfo reports (0 by default).
+	// MemTotalBytes is the RAM agent.SystemInfo reports (0 by default),
+	// Container the container it says it runs in ("" for none).
 	MemTotalBytes uint64
+	Container     string
 	// Shadow answers agent.UnixShadow: login -> password hash.
 	Shadow map[string]string
 	// Streams records the streaming calls (tar, mysqldump) with the bytes that
@@ -338,12 +345,22 @@ func (a *Agent) handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	restartFailed := ""
 	if r.URL.Path == "/v1/config/apply" && !failing {
 		if out, ok := a.refusedCheck(body); ok {
 			msg, failing, status = out, true, http.StatusUnprocessableEntity
+		} else {
+			restartFailed = a.failedRestart(body)
 		}
 	}
 	a.mu.Unlock()
+
+	if restartFailed != "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(agent.Error{Status: http.StatusInternalServerError, Message: "files applied but restart failed", Output: restartFailed}) //nolint:errcheck // test double
+		return
+	}
 
 	if failing {
 		if status == 0 {
@@ -846,7 +863,7 @@ func (a *Agent) respond(path string, body []byte) any {
 		return agent.UnixShadowResponse{}
 
 	case "/v1/system/info":
-		return map[string]any{"hostname": "test-host", "cpus": 2, "mem_total_bytes": a.MemTotalBytes}
+		return map[string]any{"hostname": "test-host", "cpus": 2, "mem_total_bytes": a.MemTotalBytes, "container": a.Container}
 
 	case "/v1/apache/ctl":
 		// Like the agent: switching something of the distribution's Apache

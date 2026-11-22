@@ -128,6 +128,25 @@ type StackComponent struct {
 	Upgrade *StackUpgrade `json:"upgrade,omitempty"`
 }
 
+// UpgradeComponent is how mp stack upgrade names the row's component, the
+// one that installs its update and restarts its service after a check:
+// nginx, apache, php or db; "" for a row it does not upgrade (fail2ban, the
+// tools), whose service on a replaced binary only a restart by hand brings
+// onto the new one. The web UI's Stack page maps the rows the same way.
+func (c StackComponent) UpgradeComponent() string {
+	switch {
+	case c.Upgrade != nil:
+		return c.Upgrade.Component
+	case c.Name == "nginx" || c.Name == "apache":
+		return c.Name
+	case c.Kind == "php":
+		return "php"
+	case c.Kind == "db":
+		return "db"
+	}
+	return ""
+}
+
 // StackInstances is how many of a component's per-account servers run;
 // Replaced, how many of the running ones on a binary an upgrade replaced
 // (they run the old code until mp stack upgrade restarts them).
@@ -427,8 +446,10 @@ type Check struct {
 	Status string `json:"status" enum:"ok,warn,fail"`
 	Detail string `json:"detail,omitempty"`
 	// Action names what the panel can do about the finding, for a button in
-	// the UI: site.fix (Target: the domain, or * for every site) or
-	// selinux.enforcing.
+	// the UI: site.fix (Target: the domain, or * for every site),
+	// selinux.enforcing, or stack.upgrade (Target: the component, nginx,
+	// php, apache or db — an update waiting, or a service on the binary an
+	// upgrade replaced, which mp stack upgrade restarts after its check).
 	Action string `json:"action,omitempty"`
 	Target string `json:"target,omitempty"`
 }

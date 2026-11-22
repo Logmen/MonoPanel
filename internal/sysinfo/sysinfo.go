@@ -30,6 +30,9 @@ type Info struct {
 	SwapFreeBytes     uint64            `json:"swap_free_bytes"`
 	Disks             []Disk            `json:"disks"`
 	Time              time.Time         `json:"time"`
+	// Container names the container the agent runs in (Container), empty
+	// on a host or a VM; an agent that does not say leaves it out.
+	Container string `json:"container,omitempty"`
 }
 
 // Disk is filesystem usage for one mount.

@@ -97,6 +97,13 @@ func (d *DB) SetPHPStatus(ctx context.Context, version, status, lastError string
 	return err
 }
 
+// SetPHPPackageVersion records the version of the branch's FPM package as
+// it is installed now, and nothing else of the row.
+func (d *DB) SetPHPPackageVersion(ctx context.Context, version, pkgVersion string) error {
+	_, err := d.sql.ExecContext(ctx, `UPDATE php_versions SET package_version=?, updated_at=? WHERE version=?`, pkgVersion, now(), version)
+	return err
+}
+
 // DeletePHPVersion removes the row.
 func (d *DB) DeletePHPVersion(ctx context.Context, version string) error {
 	_, err := d.sql.ExecContext(ctx, `DELETE FROM php_versions WHERE version=?`, version)

@@ -290,10 +290,11 @@ func (s *Server) checkEnsureClient(req *EnsureUnixUserRequest, existing *user.Us
 
 // fsopCommands are the subcommands of monopanel fsop the API runs as a client
 // (internal/api/ops_files.go, cms.go, ops_mail_webmail.go,
-// migrate_foreign.go).
+// migrate_foreign.go, and tail for the logs of a site that has not moved
+// yet, metrics.go).
 var fsopCommands = map[string]bool{
 	"list": true, "mkdir": true, "rm": true, "mv": true, "chmod": true, "read": true,
-	"write": true, "extract": true, "run": true, "touch": true, "size": true,
+	"tail": true, "write": true, "extract": true, "run": true, "touch": true, "size": true,
 }
 
 // hardlinksProtected tells whether the kernel stops users from linking files

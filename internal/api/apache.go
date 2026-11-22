@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path"
 	"slices"
@@ -455,22 +456,84 @@ func (s *Server) retireApacheInstanceLocked(ctx context.Context, logf func(strin
 	return nil
 }
 
+// apacheMoveWait is what the move of an upgrade (moveToApacheInstances)
+// has left on the shared Apache while it has not finished: the sites in
+// Apache mode that have not moved (siteUnmoved), which the shared
+// apache2.service still serves, and the accounts all of whose sites in
+// Apache mode are among them, by login. Such an account has no Apache of its
+// own yet — its httpd.conf comes with its first site that moves, and its
+// unit does not start before (ConditionPathExists) — so there is nothing of
+// it to check, and a failed service or apache2 -t of it would be no fault.
+// Nothing once the move finished.
+type apacheMoveWait struct {
+	sites    []string
+	accounts map[string]bool
+}
+
+func (s *Server) apacheMoveWaits(ctx context.Context) apacheMoveWait {
+	var w apacheMoveWait
+	if v, _ := s.db.GetSetting(ctx, settingApacheInstances); v == "yes" || !s.apacheInstalled(ctx) {
+		return w
+	}
+	users, err := s.apacheAccounts(ctx)
+	if err != nil {
+		return w
+	}
+	m := s.siteMovesState(ctx)
+	unmoved := func(id int64) bool { _, ok := m.Sites[id]; return m.Logs == "" || ok }
+	w.accounts = map[string]bool{}
+	for _, u := range users {
+		sites, err := s.apacheSitesOf(ctx, u.ID, 0)
+		if err != nil || len(sites) == 0 {
+			continue
+		}
+		all := true
+		for _, site := range sites {
+			if unmoved(site.ID) {
+				w.sites = append(w.sites, site.Domain)
+			} else {
+				all = false
+			}
+		}
+		if all {
+			w.accounts[u.Login] = true
+		}
+	}
+	slices.Sort(w.sites)
+	return w
+}
+
 // apacheDoctor checks what keeps the accounts' Apaches apart: the shared
 // Apache of 0.8.19 must not run (its children ran as www-data for every
 // account), nor start at boot, no account may bind the Apaches' port, and
-// each Apache answers what nginx sends alone.
-func (s *Server) apacheDoctor(ctx context.Context) []apitypes.Check {
+// each Apache answers what nginx sends alone. While the move of an upgrade
+// has not finished, the shared Apache still serves the sites that did not
+// move (wait): it must run then, and the accounts that have no site moved
+// yet have no Apache to check.
+func (s *Server) apacheDoctor(ctx context.Context, wait apacheMoveWait) []apitypes.Check {
 	var out []apitypes.Check
 	web := s.profile.Web()
 	if st, err := s.agent.Service(ctx, web.ApacheService, "status"); err == nil && st.Status.LoadState == "loaded" {
 		switch {
 		case st.Status.ActiveState == "active":
 			detail := "the shared Apache of 0.8.19 and older still runs, its children as " + web.ApacheUser + " for every account: mp stack install apache moves the sites still on it to their accounts' own Apaches and stops it"
+			var c apitypes.Check
 			if v, _ := s.db.GetSetting(ctx, settingApacheInstances); v != "yes" {
 				// The move of an upgrade has not finished: where it stands.
 				detail += "; the move of the upgrade: " + s.apacheMigrateState(ctx).describe(ctx, s.db)
+				if st.Status.BinaryReplaced {
+					// The upgrade settles it as long as it serves sites.
+					detail += "; it runs the binary an upgrade replaced: mp stack upgrade apache restarts it after apache2ctl -t"
+					c.Action, c.Target = "stack.upgrade", osprofile.UpgradeApache
+				}
 			}
-			out = append(out, check("service "+web.ApacheService, "warn", detail))
+			c.Name, c.Status, c.Detail = "service "+web.ApacheService, "warn", detail
+			out = append(out, c)
+		case len(wait.sites) > 0:
+			// Down while sites still run on it: they answer 502. Disabling
+			// it, or calling it well, would keep them down.
+			out = append(out, check("service "+web.ApacheService, "fail", fmt.Sprintf("%s (%s), but it still serves %s, whose move to their accounts' own Apaches has not finished: they answer 502 until it runs again; systemctl start %s; the move of the upgrade: %s",
+				st.Status.ActiveState, st.Status.SubState, strings.Join(shortList(wait.sites, 10), ", "), web.ApacheService, s.apacheMigrateState(ctx).describe(ctx, s.db))))
 		case st.Status.UnitFileState == "enabled":
 			// Off now, it would start at the next boot with whatever
 			// configuration it has: the shared one, its children as www-data
@@ -480,10 +543,26 @@ func (s *Server) apacheDoctor(ctx context.Context) []apitypes.Check {
 			out = append(out, check("service "+web.ApacheService, "ok", "off and disabled: the sites in Apache mode run on their accounts' own Apaches"))
 		}
 	}
+	if len(wait.sites) > 0 {
+		detail := "waits for the move: the shared " + web.ApacheService + " still serves " + strings.Join(shortList(wait.sites, 10), ", ")
+		if len(wait.accounts) > 0 {
+			logins := slices.Sorted(maps.Keys(wait.accounts))
+			detail += "; the Apache of " + strings.Join(shortList(logins, 10), ", ") + " starts with the first of its account's sites that moves, and is checked from then on"
+		}
+		out = append(out, check("apache move", "warn", detail))
+	}
 	if err := s.apachePortHeld(); err != nil {
 		out = append(out, check("apache port", "warn", err.Error()))
 	}
 	return append(out, s.apacheBackendDoctor(ctx)...)
+}
+
+// shortList is list cut to its first n entries and how many more there are.
+func shortList(list []string, n int) []string {
+	if len(list) <= n {
+		return list
+	}
+	return append(slices.Clone(list[:n]), fmt.Sprintf("%d more", len(list)-n))
 }
 
 // ---------------------------------------------------------- upgrade ----

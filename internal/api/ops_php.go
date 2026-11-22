@@ -73,6 +73,7 @@ func (s *Server) registerPHP() {
 		if installed == nil {
 			installed = []*store.PHPVersion{}
 		}
+		s.livePHPPackages(ctx, installed)
 		return &phpListOutput{Body: apitypes.PHPVersions{Installed: installed, Available: s.phpAvailable(ctx)}}, nil
 	})
 
@@ -665,6 +666,42 @@ func (s *Server) jobPHPRemove(ctx context.Context, jc *jobs.Context) error {
 	}
 	jc.Progress(100, "PHP "+p.Version+" removed")
 	return nil
+}
+
+// livePHPPackages puts on the installed branches the version of their FPM
+// package as it is installed now, one query for them all, as the stack list
+// shows it (annotateUpgrades): the record is that of the install or of the
+// panel's last upgrade, and an apt-get upgrade by hand, or the
+// distribution's, leaves it behind — the PHP page and the stack would
+// disagree. The record follows, its version alone; a query that fails
+// leaves the recorded versions.
+func (s *Server) livePHPPackages(ctx context.Context, versions []*store.PHPVersion) {
+	branch := map[string]*store.PHPVersion{}
+	var pkgs []string
+	for _, v := range versions {
+		if l := phpLayout(s, v.Version); l != nil && l.FPMPackage != "" && v.Status == store.PHPInstalled {
+			branch[l.FPMPackage] = v
+			pkgs = append(pkgs, l.FPMPackage)
+		}
+	}
+	if len(pkgs) == 0 {
+		return
+	}
+	q, err := s.agent.Pkg(ctx, "query", pkgs...)
+	if err != nil {
+		s.log.Debug("php list: the installed packages", "err", err)
+		return
+	}
+	for pkg, v := range branch {
+		live := q.Installed[pkg]
+		if live == "" || live == v.PackageVersion {
+			continue
+		}
+		v.PackageVersion = live
+		if err := s.db.SetPHPPackageVersion(context.WithoutCancel(ctx), v.Version, live); err != nil {
+			s.log.Warn("the PHP branch's package version", "version", v.Version, "err", err)
+		}
+	}
 }
 
 func phpLayout(s *Server, version string) *osprofile.PHPLayout {

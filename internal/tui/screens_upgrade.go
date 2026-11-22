@@ -17,20 +17,8 @@ func runsReplacedBinary(c apitypes.StackComponent) bool {
 }
 
 // upgradeComponentOf is how mp stack upgrade names a stack row's component,
-// "" for a row it does not upgrade.
-func upgradeComponentOf(c apitypes.StackComponent) string {
-	switch {
-	case c.Upgrade != nil:
-		return c.Upgrade.Component
-	case c.Name == "nginx" || c.Name == "apache":
-		return c.Name
-	case c.Kind == "php":
-		return "php"
-	case c.Kind == "db":
-		return "db"
-	}
-	return ""
-}
+// "" for a row it does not upgrade: as mp stack list says it.
+func upgradeComponentOf(c apitypes.StackComponent) string { return c.UpgradeComponent() }
 
 // stackUpgradeNote: what an upgrade installs and restarts, as the web UI's
 // dialog says it.

@@ -176,6 +176,10 @@ func (a *Agent) Handler() http.Handler {
 	r.Post("/v1/service", handle(a.service))
 	r.Post("/v1/pkg", handle(a.pkg))
 	r.Post("/v1/panel/install", handle(a.installPanel))
+	// The panel's own address, logging and workers stay as the image has
+	// them; Front refuses PUT /system/config too, but the console's mp
+	// reaches the API past it.
+	r.Post("/v1/panel/config", notInDemo)
 	r.Post("/v1/chown", handle(a.chown))
 	r.Post("/v1/user/shadow", handle(a.unixShadow))
 	r.Post("/v1/units/apply", handle(a.applyUnit))

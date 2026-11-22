@@ -14,6 +14,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 
 	"monopanel/internal/agent"
+	"monopanel/internal/agent/confcheck"
 	"monopanel/internal/apitypes"
 	"monopanel/internal/jobs"
 	"monopanel/internal/osprofile"
@@ -100,18 +101,27 @@ func (s *Server) autoUpgradeView(ctx context.Context, now time.Time) apitypes.St
 	c := s.loadAutoUpgrade(ctx)
 	v := apitypes.StackAutoUpgrade{Enabled: !c.Off, Hour: c.hour(), Timezone: zoneName(now), Last: s.lastUpgrade(ctx)}
 	if v.Enabled {
-		next := nextUpgradeAt(now, v.Hour, v.Last)
+		next := nextUpgradeAt(now, v.Hour, s.upgradeQueuedOn(ctx, now))
 		v.NextRun = &next
 	}
 	return v
 }
 
+// upgradeQueuedOn tells whether the scheduler queued the daily upgrade of
+// now's day already: its idempotency key is the day's (scheduledStackUpgrade),
+// so it queues none more that day, at whatever hour — not after the hour
+// was moved later, nor after an upgrade by hand. The record of the last
+// upgrade cannot tell: a run by hand after the day's replaces it.
+func (s *Server) upgradeQueuedOn(ctx context.Context, now time.Time) bool {
+	_, err := s.db.JobByIdempotencyKey(ctx, "stack.upgrade:"+now.Format(time.DateOnly))
+	return err == nil
+}
+
 // nextUpgradeAt is when the daily upgrade runs next: today at the hour, or —
-// once it ran today, or the hour is over — tomorrow.
-func nextUpgradeAt(now time.Time, hour int, last *apitypes.StackUpgradeRun) time.Time {
+// once the scheduler queued today's, or the hour is over — tomorrow.
+func nextUpgradeAt(now time.Time, hour int, queuedToday bool) time.Time {
 	today := time.Date(now.Year(), now.Month(), now.Day(), hour, 0, 0, 0, now.Location())
-	ranToday := last != nil && last.Scheduled && last.At.In(now.Location()).Format(time.DateOnly) == now.Format(time.DateOnly)
-	if now.Before(today) || (now.Hour() == hour && !ranToday) {
+	if !queuedToday && (now.Before(today) || now.Hour() == hour) {
 		return today
 	}
 	return today.AddDate(0, 0, 1)
@@ -132,7 +142,9 @@ func zoneName(now time.Time) string {
 }
 
 type stackUpgradeInput struct {
-	Body apitypes.StackUpgradeRequest
+	// A pointer: the body is optional, none is all (huma requires a body
+	// held by value).
+	Body *apitypes.StackUpgradeRequest
 }
 
 type autoUpgradeOutput struct {
@@ -148,7 +160,10 @@ func (s *Server) registerStackUpgrade() {
 		OperationID: "stack-upgrade", Method: http.MethodPost, Path: "/stack/upgrade", Summary: "Upgrade the panel's packages of a component from their repositories (async)", Tags: []string{"stack"}, Security: secured, Metadata: adminOnly, DefaultStatus: http.StatusAccepted,
 	}, func(ctx context.Context, in *stackUpgradeInput) (*jobRefOutput, error) {
 		p := principalFrom(ctx)
-		comp := in.Body.Component
+		comp := ""
+		if in.Body != nil {
+			comp = in.Body.Component
+		}
 		if comp == "" {
 			comp = upgradeAll
 		}
@@ -392,11 +407,20 @@ func (s *Server) jobStackUpgrade(ctx context.Context, jc *jobs.Context) error {
 		return err
 	}
 	if err != nil {
-		run.Error = err.Error()
+		// The record is what the doctor, Settings and the TUI show until an
+		// upgrade succeeds: a line, not the package manager's whole output
+		// (an apt-get that failed brings up to 256 KB of it), which stays in
+		// the job's error and log (mp job show). Its end stays in the line:
+		// that is where apt-get and dnf say why.
+		run.Error = oneLineEnds(err.Error(), upgradeErrorLen)
 	}
 	s.saveUpgradeRun(context.WithoutCancel(ctx), run)
 	return err
 }
+
+// upgradeErrorLen is about how much of a failed upgrade's error the record
+// keeps.
+const upgradeErrorLen = 300
 
 // stackUpgrade upgrades the component's packages that have an update, one
 // component after the other, and settles what runs them. A component that
@@ -506,7 +530,9 @@ func (s *Server) upgradeComponent(ctx context.Context, jc *jobs.Context, comp st
 // upgrade (and on Debian kills the old master when the new one does not come
 // up), Debian's php-fpm and the database server's packages restart the
 // server and go on when that fails. Apache's packages restart none of the
-// accounts' Apaches, each of which is checked before its own restart.
+// accounts' Apaches, each of which is checked before its own restart; the
+// shared apache2.service they do restart, which an unfinished move keeps
+// running, upgradePrecheck checks.
 func (s *Server) upgradeCheckArgv(t upgradeTarget) []string {
 	switch t.component {
 	case osprofile.UpgradeNginx:
@@ -532,6 +558,15 @@ func (s *Server) upgradePrecheck(ctx context.Context, ts []upgradeTarget, st *up
 	var refused []string
 	for _, t := range ts {
 		argv := s.upgradeCheckArgv(t)
+		restarts := "its package would restart it"
+		if t.component == osprofile.UpgradeApache && st.byName[t.name] != nil {
+			// Apache's packages restart the shared apache2.service, which
+			// an unfinished move keeps running for the sites still on it.
+			if s.sharedApacheRuns(ctx) {
+				argv = confcheck.ApacheSharedCheck()
+				restarts = "its package would restart " + s.profile.Web().ApacheService + ", which still serves the sites that have not moved,"
+			}
+		}
 		if st.byName[t.name] == nil || argv == nil {
 			keep = append(keep, t)
 			continue
@@ -543,8 +578,8 @@ func (s *Server) upgradePrecheck(ctx context.Context, ts []upgradeTarget, st *up
 			req.Restore = []string{"/run/nginx.pid"}
 		}
 		if _, err := s.agent.ApplyConfigSet(ctx, req); err != nil {
-			refused = append(refused, fmt.Sprintf("%s: %s fails with the version that runs now: %v; not upgraded, as its package would restart it on this configuration and take it down (fix the configuration, then mp stack upgrade %s)",
-				t.name, strings.Join(argv, " "), err, t.component))
+			refused = append(refused, fmt.Sprintf("%s: %s fails with the version that runs now: %v; not upgraded, as %s on this configuration and take it down (fix the configuration, then mp stack upgrade %s)",
+				t.name, strings.Join(argv, " "), err, restarts, t.component))
 			continue
 		}
 		keep = append(keep, t)
@@ -606,7 +641,7 @@ func (s *Server) upgradeAndSettle(ctx context.Context, jc *jobs.Context, comp st
 	case osprofile.UpgradePHP:
 		err = s.settlePHP(ctx, jc, ts, before, changed)
 	case osprofile.UpgradeApache:
-		err = s.settleApache(ctx, jc, upgraded)
+		err = s.settleApache(ctx, jc, before, upgraded)
 	case osprofile.UpgradeDB:
 		err = s.settleDB(ctx, jc, before, upgraded)
 	}
@@ -636,6 +671,12 @@ func (s *Server) upgradeUnits(ctx context.Context, comp string, ts []upgradeTarg
 			}
 		}
 		return out
+	case osprofile.UpgradeApache:
+		// The accounts' Apaches are read one by one as they are settled;
+		// the shared one when it is in the way (settleSharedApache).
+		if s.sharedApacheRuns(ctx) {
+			return []string{s.profile.Web().ApacheService}
+		}
 	case osprofile.UpgradeDB:
 		if inst, err := s.dbInstance(ctx); err == nil {
 			return []string{inst.Service}
@@ -689,7 +730,7 @@ func (s *Server) settleNginx(ctx context.Context, jc *jobs.Context, before map[s
 		req.Reload = []string{unit}
 	}
 	if _, err := s.agent.ApplyConfigSet(ctx, req); err != nil {
-		return fmt.Errorf("%s with the new nginx: %w; %s", strings.Join(web.NginxCheckArgv, " "), err, leftAs(unit, now, "nginx was not reloaded and runs on as it was"))
+		return fmt.Errorf("%s with the new nginx: %w; %s", strings.Join(web.NginxCheckArgv, " "), err, s.settleFailure(ctx, unit, now, err, "nginx was not reloaded and runs on as it was"))
 	}
 	jc.Logf("%s: the configuration is valid with the new nginx; %s %s", strings.Join(web.NginxCheckArgv, " "), unit, how)
 	return s.upgradedUnitRuns(ctx, unit)
@@ -739,7 +780,7 @@ func (s *Server) settlePHP(ctx context.Context, jc *jobs.Context, ts []upgradeTa
 			jc.Logf("%s did not run before the upgrade and stays so", l.FPMService)
 		default:
 			if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Validate: [][]string{l.FPMCheckArgv}, Restart: []string{l.FPMService}, Force: true, Origin: "php:" + t.php}); err != nil {
-				errs = append(errs, fmt.Sprintf("PHP %s: %s with the new php-fpm: %v; %s", t.php, strings.Join(l.FPMCheckArgv, " "), err, leftAs(l.FPMService, now, "php-fpm was not restarted and runs on as it was")))
+				errs = append(errs, fmt.Sprintf("PHP %s: %s with the new php-fpm: %v; %s", t.php, strings.Join(l.FPMCheckArgv, " "), err, s.settleFailure(ctx, l.FPMService, now, err, "php-fpm was not restarted and runs on as it was")))
 				continue
 			}
 			jc.Logf("%s: php-fpm -t passed with the new PHP %s; restarted", l.FPMService, t.php)
@@ -779,12 +820,15 @@ func (s *Server) recordPHPPackage(ctx context.Context, version, pkg string) {
 // it — a graceful restart keeps the parent, and with it the old binary,
 // running. The package restarts none of them: they are the panel's units.
 // An Apache that does not run is left to the site.apply that needs it.
-func (s *Server) settleApache(ctx context.Context, jc *jobs.Context, changed bool) error {
+func (s *Server) settleApache(ctx context.Context, jc *jobs.Context, before map[string]systemd.Status, changed bool) error {
+	var errs []string
+	if err := s.settleSharedApache(ctx, jc, before[s.profile.Web().ApacheService], changed); err != nil {
+		errs = append(errs, err.Error())
+	}
 	users, err := s.apacheAccounts(ctx)
 	if err != nil {
-		return err
+		return errors.New(strings.Join(append(errs, err.Error()), "; "))
 	}
-	var errs []string
 	for _, u := range users {
 		inst, err := s.apacheInstanceFor(u)
 		if err != nil {
@@ -822,7 +866,7 @@ func (s *Server) upgradeApacheInstance(ctx context.Context, jc *jobs.Context, u 
 		req.Reload = []string{inst.unit}
 	}
 	if _, err := s.agent.ApplyConfigSet(ctx, req); err != nil {
-		return fmt.Errorf("apache2 -t with the new Apache: %w; it was not restarted and runs on as it was", err)
+		return fmt.Errorf("apache2 -t with the new Apache: %w; %s", err, s.settleFailure(ctx, inst.unit, now, err, "it was not restarted and runs on as it was"))
 	}
 	if now.BinaryReplaced {
 		if err := s.waitApache(ctx, inst); err != nil {
@@ -831,6 +875,59 @@ func (s *Server) upgradeApacheInstance(ctx context.Context, jc *jobs.Context, u 
 	}
 	jc.Logf("Apache of %s: apache2 -t passed; %s %s", u.Login, inst.unit, how)
 	return s.upgradedUnitRuns(ctx, inst.unit)
+}
+
+// sharedApacheRuns tells whether the shared apache2.service of 0.8.19 runs
+// and is the upgrade's to look after: while the move of an upgrade has not
+// finished it serves the sites that did not move, and Apache's packages
+// restart or reload it themselves (Debian's scripts act on an enabled unit)
+// — the upgrade checks its configuration before and settles it after, as it
+// does nginx's. Once the move finished it is off and none of the panel's.
+func (s *Server) sharedApacheRuns(ctx context.Context) bool {
+	if s.profile.Family() != osprofile.FamilyDebian {
+		return false
+	}
+	if v, _ := s.db.GetSetting(ctx, settingApacheInstances); v == "yes" {
+		return false
+	}
+	st, err := s.agent.Service(ctx, s.profile.Web().ApacheService, "status")
+	return err == nil && st.Status.ActiveState == "active"
+}
+
+// settleSharedApache brings the shared apache2.service, which ran before
+// the upgrade (was), onto the new Apache as the accounts' Apaches are
+// brought there, after apache2ctl -t: a graceful restart when the binary it
+// runs is in place (its modules load anew), a restart when it still runs the
+// one the upgrade replaced — a graceful reload by its package keeps the
+// parent, and with it the old binary — or when the package's restart took
+// it down. One the check refuses stays as it is, and the job says so.
+func (s *Server) settleSharedApache(ctx context.Context, jc *jobs.Context, was systemd.Status, changed bool) error {
+	unit := s.profile.Web().ApacheService
+	if was.ActiveState != "active" {
+		return nil
+	}
+	cur, err := s.agent.Service(ctx, unit, "status")
+	if err != nil {
+		return err
+	}
+	now := cur.Status
+	req := &agent.ApplyConfigSetRequest{Validate: [][]string{confcheck.ApacheSharedCheck()}, Force: true, Origin: "stack:upgrade"}
+	how := "graceful restart"
+	switch {
+	case !changed && !now.BinaryReplaced:
+		return nil
+	case now.ActiveState != "active":
+		req.Restart, how = []string{unit}, "started again: it stopped during the upgrade"
+	case now.BinaryReplaced:
+		req.Restart, how = []string{unit}, "restarted: a graceful restart keeps the replaced binary running"
+	default:
+		req.Reload = []string{unit}
+	}
+	if _, err := s.agent.ApplyConfigSet(ctx, req); err != nil {
+		return fmt.Errorf("%s with the new Apache: %w; %s", strings.Join(confcheck.ApacheSharedCheck(), " "), err, s.settleFailure(ctx, unit, now, err, unit+" was not restarted and runs on as it was"))
+	}
+	jc.Logf("%s: the shared configuration is valid with the new Apache; %s %s", strings.Join(confcheck.ApacheSharedCheck(), " "), unit, how)
+	return s.upgradedUnitRuns(ctx, unit)
 }
 
 // settleDB brings the database server onto its new version when its
@@ -855,7 +952,7 @@ func (s *Server) settleDB(ctx context.Context, jc *jobs.Context, before map[stri
 		jc.Logf("%s: its package restarted it during the upgrade", inst.Service)
 	default:
 		if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Validate: [][]string{{mysqldBinary, "--validate-config", "--user=mysql"}}, Restart: []string{inst.Service}, Force: true, Origin: "db:upgrade"}); err != nil {
-			return fmt.Errorf("mysqld --validate-config with the new server: %w; %s", err, leftAs(inst.Service, now, "it was not restarted and runs on as it was"))
+			return fmt.Errorf("mysqld --validate-config with the new server: %w; %s", err, s.settleFailure(ctx, inst.Service, now, err, "it was not restarted and runs on as it was"))
 		}
 		jc.Logf("%s: mysqld --validate-config passed; restarted", inst.Service)
 	}
@@ -897,6 +994,28 @@ func leftAs(unit string, now systemd.Status, ran string) string {
 		return ran
 	}
 	return fmt.Sprintf("%s is %s since its package restarted it during the upgrade, and the panel did not start it again: fix the configuration, then systemctl start %s (journalctl -u %s)", unit, now.ActiveState, unit, unit)
+}
+
+// settleFailure says what became of a service after the config/apply that
+// was to check its configuration with the new version and then reload or
+// restart it failed, from its status read again (now, read before, when
+// that read fails): a check that failed (422) touched nothing, and the
+// service runs on as it was (ran) unless its package's own restart took it
+// down (leftAs); a reload or restart that failed after the check passed
+// ("files applied but restart failed") took it down itself, and saying that
+// it runs on would hide that its sites are down.
+func (s *Server) settleFailure(ctx context.Context, unit string, now systemd.Status, err error, ran string) string {
+	if st, serr := s.agent.Service(ctx, unit, "status"); serr == nil {
+		now = st.Status
+	}
+	var ae *agent.Error
+	if errors.As(err, &ae) && ae.Status == http.StatusUnprocessableEntity {
+		return leftAs(unit, now, ran)
+	}
+	if now.ActiveState != "active" {
+		return fmt.Sprintf("%s was restarted but did not come up (%s): journalctl -u %s", unit, now.ActiveState, unit)
+	}
+	return ran
 }
 
 // upgradedUnitRuns checks a service after it was settled: running, and on

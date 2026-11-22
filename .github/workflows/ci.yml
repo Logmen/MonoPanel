@@ -23,8 +23,11 @@ jobs:
       - run: go vet ./...
       # The live demo's build (demo/README.md) must keep compiling.
       - run: go vet -tags demo ./internal/cli/ && make demo
+      # internal/api alone takes about ten times as long under the race
+      # detector (some 15 minutes on these runners with 0.8.20's tests), more
+      # than go test's default limit of 10 minutes for a package.
       - name: test (race detector, coverage)
-        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+        run: go test -race -timeout 40m -covermode=atomic -coverprofile=coverage.out ./...
       - name: coverage summary
         run: |
           go tool cover -func=coverage.out | tail -1 >> "$GITHUB_STEP_SUMMARY"

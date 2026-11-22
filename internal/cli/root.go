@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"monopanel/internal/termsafe"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -65,7 +66,9 @@ func Main(args []string) int {
 		}
 		fmt.Fprintln(os.Stderr, "error:", termsafe.Text(err.Error()))
 		if errors.Is(err, fs.ErrPermission) {
-			fmt.Fprintln(os.Stderr, T("сокет панели открыт root и аккаунтам с shell-доступом (группа monopanel-cli); остальным — --server и --token", "the panel socket is open to root and to accounts with shell access (group monopanel-cli); everyone else uses --server and --token"))
+			if panelSocketRefused(err) {
+				fmt.Fprintln(os.Stderr, T("сокет панели открыт root и аккаунтам с shell-доступом (группа monopanel-cli); остальным — --server и --token", "the panel socket is open to root and to accounts with shell access (group monopanel-cli); everyone else uses --server and --token"))
+			}
 			return 4
 		}
 		var ae *client.APIError
@@ -80,6 +83,17 @@ func Main(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// panelSocketRefused tells that err is mp's connection to the local socket
+// of the panel refused for want of permission, which the word on who may use
+// that socket explains. The same refusal elsewhere has another cause: the
+// API that cannot read its TLS key (its error goes to the journal), fsop
+// that cannot read a file in the account's home (its error goes back to the
+// API, and on to the file manager or the log tail).
+func panelSocketRefused(err error) bool {
+	var oe *net.OpError
+	return errors.As(err, &oe) && oe.Op == "dial" && oe.Net == "unix"
 }
 
 // extraCommands are added by build variants: the demo build (-tags demo)

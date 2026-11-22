@@ -148,6 +148,9 @@ func openDoctor(m *model) screen {
 		{path: "site fix", key: "f", label: T("Починить сайт", "Fix the site"), args: []string{"target"}, quick: true, when: fixable("")},
 		{path: "site fix", key: "f", label: T("Починить все сайты", "Fix every site"), args: []string{"target"}, when: fixable("*"), run: fixAllSites},
 		{path: "selinux", key: "f", label: T("Включить enforcing", "Switch to enforcing"), args: []string{"=enforcing"}, quick: true, when: func(v map[string]string) bool { return v["action"] == "selinux.enforcing" }},
+		// An update waiting, a service on a binary an upgrade replaced: the
+		// upgrade of its component, which says what it restarts first.
+		{path: "stack upgrade", key: "u", label: T("Обновить", "Upgrade"), args: []string{"target"}, when: func(v map[string]string) bool { return v["action"] == "stack.upgrade" && v["target"] != "" }},
 		{path: "doctor", quick: true},
 	}
 	return s

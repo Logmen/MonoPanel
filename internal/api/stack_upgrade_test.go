@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"monopanel/internal/agent"
 	"monopanel/internal/agent/agenttest"
@@ -248,6 +250,48 @@ func TestStackUpgradeFailedCheckReloadsNothing(t *testing.T) {
 			t.Fatalf("a service was touched after the package manager failed: %s", l)
 		}
 	}
+
+	// The package manager's whole output stays with the job; the record the
+	// doctor, Settings and the TUI show keeps a line of it: what failed, and
+	// the reason apt-get gives last.
+	var apt strings.Builder
+	for i := range 120 {
+		fmt.Fprintf(&apt, "Get:%d http://nginx.org/packages/debian trixie/nginx amd64 Packages [%d kB]\n", i, i)
+	}
+	apt.WriteString("E: Sub-process /usr/bin/dpkg returned an error code (1)\n")
+	f.agent.SetUpgrades(map[string]osprofile.Candidate{"nginx": {Version: "1.30.9-1~trixie"}})
+	f.agent.UpgradeFails = map[string]string{"nginx": apt.String()}
+	job = f.stackJob(t, http.MethodPost, "/stack/upgrade", map[string]any{"component": "nginx"})
+	last := f.s.lastUpgrade(f.ctx)
+	if job.Status != store.JobFailed || !strings.Contains(job.Error, "E: Sub-process /usr/bin/dpkg") || last == nil || last.JobID != job.ID {
+		t.Fatalf("a failed apt-get with its output: %s %.200s; %+v", job.Status, job.Error, last)
+	}
+	const why = "E: Sub-process /usr/bin/dpkg returned an error code (1) (the panel restarted no service"
+	if strings.Contains(last.Error, "\n") || len(last.Error) > upgradeErrorLen+len("… ") || !strings.HasPrefix(last.Error, "nginx: ") || !strings.Contains(last.Error, why) {
+		t.Fatalf("the record keeps %d bytes: %q", len(last.Error), last.Error)
+	}
+	if got := f.doctorCheck("stack upgrade"); strings.Contains(got, "\n") || len(got) > 600 || !strings.Contains(got, fmt.Sprintf("mp job show %d", job.ID)) || !strings.Contains(got, why) {
+		t.Fatalf("the doctor's line: %q", got)
+	}
+}
+
+// oneLineEnds folds a text onto one line and, when it is longer than asked,
+// keeps a third of it from the start and the rest from the end, cut between
+// characters, not inside one.
+func TestOneLineEnds(t *testing.T) {
+	if got := oneLineEnds("apt-get upgrade failed:\n  E: no space left\n", 300); got != "apt-get upgrade failed: E: no space left" {
+		t.Errorf("a short one: %q", got)
+	}
+	long := "nginx: apt-get upgrade failed: " + strings.Repeat("Get:1 http://nginx.org/packages ", 40) + "E: Sub-process /usr/bin/dpkg returned an error code (1)"
+	got := oneLineEnds(long, 300)
+	if !strings.HasPrefix(got, "nginx: apt-get upgrade failed: Get:1") || !strings.Contains(got, "… ") || !strings.HasSuffix(got, "E: Sub-process /usr/bin/dpkg returned an error code (1)") || len(got) > 300+len("… ") {
+		t.Errorf("a long one (%d bytes): %q", len(got), got)
+	}
+	for n := 290; n < 310; n++ {
+		if got := oneLineEnds(strings.Repeat("ошибка ", 100), n); !utf8.ValidString(got) {
+			t.Errorf("cut inside a character at %d: %q", n, got)
+		}
+	}
 }
 
 // A configuration that fails its check already with the version that runs
@@ -357,9 +401,13 @@ func TestStackUpgradeApacheInstances(t *testing.T) {
 }
 
 // What the panel did not install is no upgrade, and the request takes the
-// components it knows.
+// components it knows; its body is optional (none is all), in the API
+// reference too.
 func TestStackUpgradeRefusals(t *testing.T) {
 	f := newSiteFixture(t)
+	if op := f.s.api.OpenAPI().Paths["/stack/upgrade"].Post; op.RequestBody == nil || op.RequestBody.Required {
+		t.Errorf("POST /stack/upgrade requires a body: %+v", op.RequestBody)
+	}
 	f.call(http.MethodPost, "/stack/upgrade", map[string]any{"component": "apache"}, http.StatusUnprocessableEntity, nil)
 	f.call(http.MethodPost, "/stack/upgrade", map[string]any{"component": "db"}, http.StatusUnprocessableEntity, nil)
 	f.call(http.MethodPost, "/stack/upgrade", map[string]any{"component": "postfix"}, http.StatusUnprocessableEntity, nil)
@@ -400,6 +448,32 @@ func TestAutoUpgradeSchedule(t *testing.T) {
 	if last := f.s.lastUpgrade(f.ctx); last == nil || !last.Scheduled || last.JobID != j.ID {
 		t.Fatalf("the record of the daily upgrade: %+v", last)
 	}
+	// The day's run is the scheduler's key: moved later that day, or after
+	// an upgrade by hand, the next run is tomorrow's, at the hour.
+	if !f.s.upgradeQueuedOn(f.ctx, at(22, 4, 30)) || f.s.upgradeQueuedOn(f.ctx, at(23, 4, 30)) {
+		t.Fatalf("today's key: %q", j.IdempotencyKey)
+	}
+	five := 5
+	if err := f.s.saveAutoUpgrade(f.ctx, autoUpgradeConfig{Hour: &five}); err != nil {
+		t.Fatal(err)
+	}
+	if v := f.s.autoUpgradeView(f.ctx, at(22, 4, 30)); v.NextRun == nil || !v.NextRun.Equal(at(23, 5, 0)) {
+		t.Fatalf("the hour moved later after the day's run: next %v", v.NextRun)
+	}
+	if again := f.s.scheduledStackUpgrade(f.ctx, at(22, 5, 5)); again == nil || again.ID != j.ID {
+		t.Fatalf("a second run the same day: %+v", again)
+	}
+	if err := f.s.saveAutoUpgrade(f.ctx, autoUpgradeConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	if by := f.stackJob(t, http.MethodPost, "/stack/upgrade", nil); by.Status != store.JobDone {
+		t.Fatalf("by hand, no body (all): %s %s", by.Status, by.Error)
+	} else if last := f.s.lastUpgrade(f.ctx); last == nil || last.Scheduled || last.JobID != by.ID || last.Component != "all" {
+		t.Fatalf("the record of the upgrade by hand: %+v", last)
+	}
+	if v := f.s.autoUpgradeView(f.ctx, at(22, 4, 40)); v.NextRun == nil || !v.NextRun.Equal(at(23, 4, 0)) {
+		t.Fatalf("after an upgrade by hand that followed the day's: next %v", v.NextRun)
+	}
 	if next := f.s.scheduledStackUpgrade(f.ctx, at(23, 4, 1)); next == nil || next.ID == j.ID {
 		t.Fatalf("the next day: %+v", next)
 	}
@@ -431,18 +505,23 @@ func TestAutoUpgradeSchedule(t *testing.T) {
 	}
 
 	for _, c := range []struct {
-		now  time.Time
-		last *apitypes.StackUpgradeRun
-		want time.Time
+		now    time.Time
+		hour   int
+		queued bool
+		want   time.Time
 	}{
-		{at(22, 3, 0), nil, at(22, 4, 0)},
-		{at(22, 5, 0), nil, at(23, 4, 0)},
-		{at(22, 4, 30), nil, at(22, 4, 0)},
-		{at(22, 4, 30), &apitypes.StackUpgradeRun{Scheduled: true, At: at(22, 4, 5).UTC()}, at(23, 4, 0)},
-		{at(22, 4, 30), &apitypes.StackUpgradeRun{At: at(22, 4, 5).UTC()}, at(22, 4, 0)},
+		{at(22, 3, 0), 4, false, at(22, 4, 0)},
+		{at(22, 5, 0), 4, false, at(23, 4, 0)},
+		// In the hour, not queued yet: the scheduler looks every ten minutes.
+		{at(22, 4, 30), 4, false, at(22, 4, 0)},
+		{at(22, 4, 30), 4, true, at(23, 4, 0)},
+		// The hour moved later after the day's run, or earlier past it.
+		{at(22, 4, 30), 5, true, at(23, 5, 0)},
+		{at(22, 4, 30), 5, false, at(22, 5, 0)},
+		{at(22, 4, 30), 3, false, at(23, 3, 0)},
 	} {
-		if got := nextUpgradeAt(c.now, 4, c.last); !got.Equal(c.want) {
-			t.Errorf("next run at %s (last %+v): %s, want %s", c.now, c.last, got, c.want)
+		if got := nextUpgradeAt(c.now, c.hour, c.queued); !got.Equal(c.want) {
+			t.Errorf("next run at %s (hour %d, queued today %v): %s, want %s", c.now, c.hour, c.queued, got, c.want)
 		}
 	}
 }
@@ -583,7 +662,7 @@ func TestDoctorKernelModules(t *testing.T) {
 	write(mods, "ext4 1060864 1 - Live 0x0000000000000000\nnf_tables 376832 1 - Live 0x0000000000000000\n")
 	write(builtin, "kernel/fs/ext4/ext4.ko\n")
 	check := func() string {
-		c := f.s.kernelModulesCheck()
+		c := f.s.kernelModulesCheck("")
 		return c.Status + ": " + c.Detail
 	}
 
@@ -606,6 +685,16 @@ func TestDoctorKernelModules(t *testing.T) {
 	write(builtin, "kernel/net/tipc/tipc.ko\n")
 	if got := check(); !strings.HasPrefix(got, "warn: tipc is built into the kernel") {
 		t.Errorf("tipc built in: %q", got)
+	}
+
+	// In a container the host's modprobe configuration decides: no all-clear
+	// from the container's own file, no rmmod nobody there can run.
+	write(builtin, "")
+	write(mods, "sctp 487424 4 - Live 0x0000000000000000\n")
+	f.agent.Container = "lxc"
+	got := f.doctorCheck("kernel modules")
+	if !strings.HasPrefix(got, "warn: the panel runs in a container (lxc): the host's kernel loads the modules with the host's modprobe configuration") || !strings.Contains(got, "sctp, dccp, rds, tipc") || strings.Contains(got, "rmmod") {
+		t.Errorf("in a container: %q", got)
 	}
 }
 
@@ -655,5 +744,143 @@ func TestStackUpgradeLeavesHeldPackages(t *testing.T) {
 	}
 	if v := f.agent.InstalledVersion("php8.4-fpm"); v != "8.4.28-1" {
 		t.Errorf("php was not upgraded next to the held nginx: %s", v)
+	}
+}
+
+// A restart that fails after the check passed ("files applied but restart
+// failed") has taken the service down: the job says that it was restarted
+// and did not come up, and where to look — for nginx, php-fpm, an account's
+// Apache and the database server — never that it runs on as it was.
+func TestStackUpgradeSaysARestartTookItDown(t *testing.T) {
+	f := newApacheFixture(t)
+	f.createSite(map[string]any{"domain": "a.example.com", "user": "alex", "php_version": "8.4", "ssl": "none", "mode": "apache"})
+	if err := f.db.UpsertDBInstance(f.ctx, &store.DBInstance{Engine: "percona", Version: "8.4.6-6", Socket: "/var/run/mysqld/mysqld.sock", Service: "mysql.service", Status: store.DBReady}); err != nil {
+		t.Fatal(err)
+	}
+	f.agent.PackageVersions = map[string]string{"apache2": "2.4.65-2", "apache2-bin": "2.4.65-2"}
+	f.agent.SetUpgrades(map[string]osprofile.Candidate{"nginx": {Version: "1.30.7-1~trixie"}, "php8.4-fpm": {Version: "8.4.28-1"}, "apache2-bin": {Version: "2.4.65-3"}, "percona-server-server": {Version: "8.4.7-7-1.trixie"}})
+	f.agent.SetBinaryReplaced("nginx.service", alexApache, "mysql.service")
+	f.agent.RestartFails = map[string]string{}
+	for _, u := range []string{"nginx.service", "php8.4-fpm.service", alexApache, "mysql.service"} {
+		f.agent.RestartFails[u] = "Job for " + u + " failed because the control process exited with error code."
+	}
+	job := f.stackJob(t, http.MethodPost, "/stack/upgrade", map[string]any{})
+	if job.Status != store.JobFailed || strings.Contains(job.Error, "runs on as it was") {
+		t.Fatalf("upgrade: %s %s", job.Status, job.Error)
+	}
+	for _, unit := range []string{"nginx.service", "php8.4-fpm.service", alexApache} {
+		if !strings.Contains(job.Error, unit+" was restarted but did not come up") || !strings.Contains(job.Error, "journalctl -u "+unit) {
+			t.Errorf("%s: %s", unit, job.Error)
+		}
+	}
+	job = f.stackJob(t, http.MethodPost, "/stack/upgrade", map[string]any{"component": "db"})
+	if job.Status != store.JobFailed || !strings.Contains(job.Error, "mysql.service was restarted but did not come up (failed): journalctl -u mysql.service") || strings.Contains(job.Error, "runs on as it was") {
+		t.Fatalf("db: %s %s", job.Status, job.Error)
+	}
+}
+
+// While the move of an upgrade has not finished, the shared apache2.service
+// still serves the sites that did not move, and Apache's packages restart or
+// reload it themselves: the upgrade checks its configuration first
+// (apache2ctl -t) and leaves Apache out when that fails, reads its state
+// before and after, and restarts it after the check when it still runs the
+// binary the upgrade replaced — which the doctor reports, leading to the
+// upgrade.
+func TestStackUpgradeTheSharedApacheDuringTheMove(t *testing.T) {
+	f := newApacheFixture(t)
+	f.createSite(map[string]any{"domain": "a.example.com", "user": "alex", "php_version": "8.4", "ssl": "none", "mode": "apache"})
+	f.unmovedApacheSite("c.example.com")
+	f.agent.PackageVersions = map[string]string{"apache2": "2.4.65-2", "apache2-bin": "2.4.65-2"}
+	f.agent.SetUpgrades(map[string]osprofile.Candidate{"apache2": {Version: "2.4.65-3"}, "apache2-bin": {Version: "2.4.65-3"}})
+
+	// Its configuration fails already: Apache is not upgraded.
+	f.agent.CheckFails = map[string]string{"/usr/sbin/apache2ctl": "AH00526: Syntax error on line 3 of /etc/apache2/monopanel/sites/c.example.com.d/custom.conf"}
+	from := len(f.agent.Calls())
+	job := f.stackJob(t, http.MethodPost, "/stack/upgrade", map[string]any{"component": "apache"})
+	if job.Status != store.JobFailed || !strings.Contains(job.Error, "/usr/sbin/apache2ctl -t fails with the version that runs now") || !strings.Contains(job.Error, "apache2.service, which still serves the sites that have not moved") {
+		t.Fatalf("a shared configuration that fails: %s %s", job.Status, job.Error)
+	}
+	if got := withoutCandidates(upgradeTrace(f, from)); !slices.Equal(got, []string{"pkg update-index", "check /usr/sbin/apache2ctl"}) {
+		t.Fatalf("Apache upgraded on a configuration that fails:\n%s", strings.Join(got, "\n"))
+	}
+
+	// The package reloads it gracefully: the parent stays on the old binary.
+	f.agent.CheckFails = nil
+	f.agent.SetBefore(func(p string, body []byte) {
+		var req agent.PkgRequest
+		if p == "/v1/pkg" && json.Unmarshal(body, &req) == nil && req.Action == "upgrade" {
+			f.agent.SetBinaryReplaced("apache2.service")
+		}
+	})
+	t.Cleanup(func() { f.agent.SetBefore(nil) })
+	from = len(f.agent.Calls())
+	if job := f.stackJob(t, http.MethodPost, "/stack/upgrade", map[string]any{"component": "apache"}); job.Status != store.JobDone {
+		t.Fatalf("apache: %s %s", job.Status, job.Error)
+	}
+	want := []string{"pkg update-index", "check /usr/sbin/apache2ctl", "pkg upgrade apache2 apache2-bin", "check /usr/sbin/apache2ctl restart apache2.service", "check /usr/sbin/apache2 reload " + alexApache}
+	if got := withoutCandidates(upgradeTrace(f, from)); !slices.Equal(got, want) {
+		t.Fatalf("apache during the move:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if f.agent.RunsReplacedBinary("apache2.service") {
+		t.Fatal("the shared Apache still runs the old binary")
+	}
+
+	// The distribution's upgrade left it on a replaced binary: the doctor
+	// says so and leads to the upgrade, which restarts it.
+	f.agent.SetBefore(nil)
+	f.agent.SetBinaryReplaced("apache2.service")
+	for _, c := range f.s.doctor(f.ctx).Checks {
+		if c.Name == "service apache2.service" && (c.Action != "stack.upgrade" || c.Target != "apache" || !strings.Contains(c.Detail, "mp stack upgrade apache restarts it after apache2ctl -t")) {
+			t.Errorf("the doctor on the shared Apache's replaced binary: %+v", c)
+		}
+	}
+	from = len(f.agent.Calls())
+	if job := f.stackJob(t, http.MethodPost, "/stack/upgrade", map[string]any{"component": "apache"}); job.Status != store.JobDone {
+		t.Fatalf("apache: %s %s", job.Status, job.Error)
+	}
+	if got := withoutCandidates(upgradeTrace(f, from)); !slices.Equal(got, []string{"pkg update-index", "check /usr/sbin/apache2ctl restart apache2.service"}) {
+		t.Fatalf("the shared Apache on a replaced binary, nothing to install:\n%s", strings.Join(got, "\n"))
+	}
+
+	// The move done: the shared Apache is none of the upgrade's.
+	if err := f.db.SetSetting(f.ctx, settingApacheInstances, "yes"); err != nil {
+		t.Fatal(err)
+	}
+	f.agent.SetUpgrades(map[string]osprofile.Candidate{"apache2-bin": {Version: "2.4.65-4"}})
+	f.agent.SetBinaryReplaced("apache2.service")
+	from = len(f.agent.Calls())
+	f.stackJob(t, http.MethodPost, "/stack/upgrade", map[string]any{"component": "apache"})
+	for _, l := range upgradeTrace(f, from) {
+		if strings.Contains(l, "apache2ctl") || strings.Contains(l, "apache2.service") {
+			t.Fatalf("the shared Apache touched after the move: %s", l)
+		}
+	}
+}
+
+// After an upgrade outside the panel (apt-get upgrade by hand), the PHP
+// views show the version installed now, as the stack list does, and the
+// record follows; an agent that cannot say leaves the recorded one.
+func TestPHPListShowsTheInstalledPackage(t *testing.T) {
+	f := newSiteFixture(t)
+	if err := f.db.UpsertPHPVersion(f.ctx, &store.PHPVersion{Version: "8.4", Source: "sury", Status: store.PHPInstalled, PackageVersion: "8.4.26-1", Extensions: []string{"opcache"}}); err != nil {
+		t.Fatal(err)
+	}
+	f.agent.PackageVersions = map[string]string{"php8.4-fpm": "8.4.28-1"}
+	var list apitypes.PHPVersions
+	f.call(http.MethodGet, "/php/versions", nil, http.StatusOK, &list)
+	var comps []apitypes.StackComponent
+	f.call(http.MethodGet, "/stack", nil, http.StatusOK, &comps)
+	if len(list.Installed) != 1 || list.Installed[0].PackageVersion != "8.4.28-1" || component(t, comps, "php-8.4").Version != list.Installed[0].PackageVersion {
+		t.Fatalf("the PHP list %+v, the stack's php-8.4 %q", list.Installed, component(t, comps, "php-8.4").Version)
+	}
+	if row, _ := f.db.GetPHPVersion(f.ctx, "8.4"); row.PackageVersion != "8.4.28-1" || !slices.Equal(row.Extensions, []string{"opcache"}) {
+		t.Fatalf("the record: %+v", row)
+	}
+	f.agent.PackageVersions = map[string]string{"php8.4-fpm": "8.4.29-1"}
+	f.agent.Fail["/v1/pkg"] = "dpkg-query: database locked"
+	list = apitypes.PHPVersions{}
+	f.call(http.MethodGet, "/php/versions", nil, http.StatusOK, &list)
+	if list.Installed[0].PackageVersion != "8.4.28-1" {
+		t.Fatalf("without the agent: %+v", list.Installed[0])
 	}
 }

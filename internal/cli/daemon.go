@@ -58,7 +58,7 @@ var failedStartPause = 2 * time.Second
 
 // startedBySocket tells whether systemd passed this process listening
 // sockets: monopanel-api.socket started it (sd_listen_fds(3)). It is asked
-// before Run takes them, which unsets the variables.
+// before Listen takes them, which unsets the variables.
 func startedBySocket() bool {
 	return os.Getenv("LISTEN_FDS") != "" && os.Getenv("LISTEN_PID") == strconv.Itoa(os.Getpid())
 }
@@ -110,9 +110,25 @@ func apiCmd() *cobra.Command {
 		runner := jobs.NewRunner(db, cfg.Jobs.Workers, logger)
 		srv := api.New(cfg, db, agent.NewClient(cfg.AgentSocket()), runner, profile, logger)
 		srv.KeepPortUntilExit()
-		runner.Start(ctx)
 		logger.Info("monopanel api starting", "version", buildinfo.Version, "config", cfg.Path())
-		err = srv.Run(ctx)
+		// The listeners first: a start that cannot have them changes nothing
+		// on the host and returns, so that systemd starts it again
+		// (Restart=, lingerAfterFailure) and the journal says why.
+		ln, err := srv.Listen(ctx)
+		if err != nil {
+			logger.Error("monopanel api cannot start, and exits having changed nothing", "err", err)
+			return err
+		}
+		// The workers end with the servers: a Serve that failed must not
+		// leave them running while nothing serves the panel.
+		rctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		runner.Start(rctx)
+		err = srv.Serve(rctx, ln)
+		if err != nil && ctx.Err() == nil {
+			logger.Error("monopanel api stopped", "err", err)
+		}
+		cancel()
 		runner.Wait()
 		return err
 	}}

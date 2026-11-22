@@ -649,13 +649,13 @@ func rootDaemonTrees(unit string) (php, logs bool) {
 
 // validatorOpensSiteLogs tells the configuration checks that open the site
 // logs as root: nginx -t and php-fpm -t open every log their configuration
-// names (php-fpm -t binds no socket), and an account's apache2 -t, which
-// opens none, is counted with them.
+// names (php-fpm -t binds no socket), and the apache2 -t of an account's
+// Apache and of the shared one, which open none, are counted with them.
 func (s *Server) validatorOpensSiteLogs(argv []string) bool {
 	if s.profile == nil {
 		return false
 	}
-	if s.apacheInstanceCheck(argv) || equalArgs(argv, s.profile.Web().NginxCheckArgv) {
+	if s.apacheInstanceCheck(argv) || equalArgs(argv, s.profile.Web().NginxCheckArgv) || equalArgs(argv, confcheck.ApacheSharedCheck()) {
 		return true
 	}
 	for _, v := range osprofile.PHPVersions(s.profile) {

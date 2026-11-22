@@ -380,17 +380,26 @@ func doctorCmd() *cobra.Command {
 			return printJSON(d)
 		}
 		fails := 0
+		socketLine := false
 		for _, c := range d.Checks {
 			mark := map[string]string{"ok": " ok ", "warn": "WARN", "fail": "FAIL"}[c.Status]
 			if c.Status == "fail" {
 				fails++
 			}
-			fmt.Printf("[%s] %-32s %s\n", mark, c.Name, c.Detail)
+			socketLine = socketLine || c.Name == apiSocketCheck
+			// A detail is the server's text, an apt-get's or a validator's
+			// output among it: one line each, and no escape sequence of
+			// theirs reaches the terminal.
+			fmt.Printf("[%s] %-32s %s\n", mark, termsafe.Line(c.Name), termsafe.Line(c.Detail))
 		}
-		if w := apiSocketWarning(cmd.Context(), cl); w != "" {
-			fmt.Printf("[WARN] %-32s %s\n", "api socket", w)
+		// The API judges the socket itself since 0.8.20; mp judges it only
+		// for an API that does not.
+		if !socketLine {
+			if w := apiSocketWarning(cmd.Context(), cl); w != "" {
+				fmt.Printf("[WARN] %-32s %s\n", apiSocketCheck, w)
+			}
 		}
-		fmt.Println(d.Summary)
+		fmt.Println(termsafe.Line(d.Summary))
 		if fails > 0 {
 			return &exitError{code: 3}
 		}
@@ -398,16 +407,21 @@ func doctorCmd() *cobra.Command {
 	}}
 }
 
+// apiSocketCheck names the doctor's line on the socket of the panel's port.
+const apiSocketCheck = "api socket"
+
 // apiSocketWarning is the doctor's word on the socket that keeps the panel's
-// port bound while the API restarts: enabled, yet the API listens on the
-// port itself — the socket failed or was stopped (the API unit stops it
-// before a binary of 0.8.19 or older, as after a self-update that rolled
-// back), or it listens elsewhere than web.listen — so that the port is free
-// for any local account during a restart. Nothing when all is well, when
-// the API does not say where it listens (older than 0.8.20), and for a
-// port below ip_unprivileged_port_start, which the socket leaves to the API
-// on purpose: no account can take it. config.yaml names the port where mp
-// can read it (root on the server), else the default one stands.
+// port bound while the API restarts, for an API whose doctor does not judge
+// it itself (its own "api socket" line, which is judged on the API's host):
+// enabled, yet the API listens on the port itself — the socket failed or was
+// stopped (the API unit stops it before a binary of 0.8.19 or older, as
+// after a self-update that rolled back), or it listens elsewhere than
+// web.listen — so that the port is free for any local account during a
+// restart. Nothing when all is well, when the API does not say where it
+// listens (older than 0.8.20), and for a port below
+// ip_unprivileged_port_start, which the socket leaves to the API on
+// purpose: no account can take it. config.yaml names the port where mp can
+// read it (root on the server), else the default one stands.
 func apiSocketWarning(ctx context.Context, cl *client.Client) string {
 	st, err := cl.Status(ctx)
 	if err != nil || st.Panel.ListenVia != apitypes.ListenViaItself {

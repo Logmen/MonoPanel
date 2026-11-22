@@ -41,6 +41,37 @@ func (a *Agent) refusedCheck(body []byte) (string, bool) {
 	return "", false
 }
 
+// failedRestart is the output of a config/apply body whose reload or
+// restart of a unit RestartFails names, which is down from then on; "" for
+// none. The caller holds mu.
+func (a *Agent) failedRestart(body []byte) string {
+	var req agent.ApplyConfigSetRequest
+	if len(a.RestartFails) == 0 || json.Unmarshal(body, &req) != nil {
+		return ""
+	}
+	for _, u := range append(append([]string{}, req.Reload...), req.Restart...) {
+		if !strings.Contains(u, ".") {
+			u += ".service"
+		}
+		out, ok := a.RestartFails[u]
+		if !ok {
+			continue
+		}
+		a.units[u] = "restart"
+		if strings.Contains(u, "@") {
+			a.instance(u).active = false
+		} else {
+			if a.ActiveState == nil {
+				a.ActiveState = map[string]string{}
+			}
+			a.ActiveState[u] = "failed"
+		}
+		delete(a.BinaryReplaced, u)
+		return out
+	}
+	return ""
+}
+
 // SetActiveState has status report the unit in the state ("" forgets it):
 // what a package's own restart left behind, set from a SetBefore hook in the
 // middle of a job.

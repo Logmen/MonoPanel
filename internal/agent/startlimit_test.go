@@ -323,11 +323,12 @@ func TestStartLimitRetryPassesTheChecksAgain(t *testing.T) {
 	}
 }
 
-// The retry of a shared folder's mount checks its mount point again, as the
-// first try did: one that is no longer root's alone by then — the home of
-// the SFTP-only guest made writable for its group — is refused before the
-// unit is reset or mounted, from /v1/service and from config/apply alike.
-func TestStartLimitRetryChecksTheMountPointAgain(t *testing.T) {
+// A shared folder's mount unit is refused before systemd is asked, from
+// /v1/service and from config/apply alike (vetMountStart): the agent binds
+// the shared folders itself, so the retry after a start-limit refusal never
+// meets one, and the checks it runs before the retry (vetStart) refuse it
+// all the same.
+func TestStartLimitRetryNeverMountsAShare(t *testing.T) {
 	ctx := context.Background()
 	h := newShareHost(t)
 	where := filepath.Join(h.home, "kaspy")
@@ -347,17 +348,18 @@ func TestStartLimitRetryChecksTheMountPointAgain(t *testing.T) {
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			chmods(t, map[string]uint32{h.home: 0o750})
 			sd := withFakeSystemd(t)
 			sd.script(unit, fakeJob{"failed", "start-limit-hit"})
-			sd.afterJob = func(string, string) { chmods(t, map[string]uint32{h.home: 0o770}) }
 			err := c.call()
-			if agentStatus(err) != http.StatusForbidden || !strings.Contains(err.Error(), "mount point") || !strings.Contains(err.Error(), "writable by the group") {
-				t.Fatalf("got %v, want the refusal of the mount point", err)
+			if agentStatus(err) != http.StatusForbidden || !strings.Contains(err.Error(), "the agent binds the shared folders itself") {
+				t.Fatalf("got %v, want the refusal of a mount by path", err)
 			}
-			if got := sd.asked(); strings.Contains(got, "reset-failed") || strings.Count(got, unit) != 1 {
+			if got := sd.asked(); got != "" {
 				t.Fatalf("asked systemd: %s", got)
 			}
 		})
+	}
+	if err := h.s.vetStart(ctx, unit, "restart"); agentStatus(err) != http.StatusForbidden {
+		t.Fatalf("the check before the retry: %v, want a refusal", err)
 	}
 }

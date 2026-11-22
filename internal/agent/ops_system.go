@@ -7,13 +7,20 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"sync"
 
 	"monopanel/internal/sysinfo"
 )
 
 func (s *Server) systemInfo(_ context.Context, _ *struct{}) (*sysinfo.Info, error) {
-	return sysinfo.Collect(s.profile, s.cfg.WWWRoot, "/var/lib/mysql"), nil
+	info := sysinfo.Collect(s.profile, s.cfg.WWWRoot, "/var/lib/mysql")
+	info.Container = hostContainer()
+	return info, nil
 }
+
+// hostContainer is the container the agent runs in, asked once: it does not
+// change while the process runs.
+var hostContainer = sync.OnceValue(sysinfo.Container)
 
 // ensureGroup makes the groups the panel uses (internal/api/ops_users.go,
 // stack.go, ops_mail_install.go): the web group, the CLI and SFTP groups and

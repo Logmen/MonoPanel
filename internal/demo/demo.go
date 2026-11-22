@@ -245,13 +245,22 @@ func start(ctx context.Context, o Options, cfg config.Config, ag *Agent) (*runni
 		_ = db.Close()
 		return nil, err
 	}
+	// As monopanel api does it: the listeners, then the workers.
+	ln, err := srv.Listen(cctx)
+	if err != nil {
+		cancel()
+		_ = db.Close()
+		return nil, err
+	}
 	runner.Start(cctx)
 	r := &running{db: db, cancel: cancel, done: make(chan struct{})}
 	go func() {
 		defer close(r.done)
-		if err := srv.Run(cctx); err != nil {
+		if err := srv.Serve(cctx, ln); err != nil {
 			log.Error("demo api", "err", err)
 		}
+		// A Serve that failed stops the workers too.
+		cancel()
 		runner.Wait()
 		<-agentDone
 	}()

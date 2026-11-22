@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -235,8 +236,32 @@ func (s *Server) registerMetrics() {
 			return nil, err
 		}
 		suffix := map[string]string{"access": ".access.log", "error": ".error.log", "php": ".php.error.log", "slow": ".php.slow.log", "apache-access": ".apache.access.log", "apache-error": ".apache.error.log"}[in.Type]
+		limit := int64(in.Lines) * 400
+		if s.siteLogsPending(ctx, site.ID) {
+			// The site has not moved yet: its servers still write into the
+			// account's data/logs, while the tree has an empty file. Root
+			// reads nothing there for it (the agent refuses the homes); the
+			// account does, as for a download. A log missing there may be
+			// in the tree already (a partial apply in Apache mode).
+			old := path.Join(s.layoutFor(site, user).data, "logs", site.Domain+suffix)
+			out, err := s.fsop(ctx, user, nil, "tail", path.Join("data", "logs", site.Domain+suffix), strconv.FormatInt(limit, 10))
+			if err != nil {
+				return nil, err
+			}
+			var tail struct {
+				Size    int64  `json:"size"`
+				Content string `json:"content"`
+				Missing bool   `json:"missing"`
+			}
+			if err := json.Unmarshal(out, &tail); err != nil {
+				return nil, huma.Error502BadGateway("the log of " + old + ": " + err.Error())
+			}
+			if !tail.Missing {
+				return &logsOutput{Body: apitypes.LogTail{Path: old, Size: tail.Size, Lines: lastLines(tail.Content, in.Lines)}}, nil
+			}
+		}
 		p := path.Join(s.siteLogDir(user.Login), site.Domain+suffix)
-		res, err := s.agent.ReadFile(ctx, p, int64(in.Lines)*400)
+		res, err := s.agent.ReadFile(ctx, p, limit)
 		if err != nil {
 			return nil, huma.Error502BadGateway(err.Error())
 		}
@@ -342,9 +367,15 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 	units := []string{web.NginxService}
 	validators := [][]string{web.NginxCheckArgv}
 	// The accounts' Apaches: each its unit and apache2 -t on its httpd.conf
-	// (whose runtime directory apache2 -t wants to see).
+	// (whose runtime directory apache2 -t wants to see) — but those an
+	// unfinished move has not reached yet, which have neither (apacheDoctor
+	// says that they wait).
+	wait := s.apacheMoveWaits(actx)
 	for _, unit := range s.apacheUnits(actx) {
 		login, _ := confcheck.ApacheInstanceLoginOf(unit)
+		if wait.accounts[login] {
+			continue
+		}
 		inst := apacheInstanceOf(login)
 		units = append(units, unit)
 		if err := s.ensureApacheRunDir(actx, inst); err == nil {
@@ -352,7 +383,7 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 		}
 	}
 	if s.apacheInstalled(actx) {
-		for _, c := range s.apacheDoctor(actx) {
+		for _, c := range s.apacheDoctor(actx, wait) {
 			add(c)
 		}
 	}
@@ -401,7 +432,9 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 			add(check(name, "ok", "syntax ok"))
 		}
 	}
+	container := ""
 	if info, err := s.agent.SystemInfo(actx); err == nil {
+		container = info.Container
 		for _, d := range info.Disks {
 			pct := 100.0
 			if d.TotalBytes > 0 {
@@ -459,24 +492,9 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 		}
 		add(check("update attempt", "warn", detail))
 	}
-	if jobs, err := s.db.ListJobs(actx, 200, store.JobFailed); err == nil {
-		// A failure a later run of the same work (same lock key) has fixed
-		// is history, not a problem: the site applied fine the next time.
-		fixed := map[string]int64{}
-		if done, err := s.db.ListJobs(actx, 500, store.JobDone); err == nil {
-			for _, j := range done {
-				if j.LockKey != "" && j.ID > fixed[j.LockKey] {
-					fixed[j.LockKey] = j.ID
-				}
-			}
-		}
-		recent := 0
-		for _, j := range jobs {
-			if time.Since(j.CreatedAt.Std()) < 24*time.Hour && (j.LockKey == "" || fixed[j.LockKey] < j.ID) {
-				recent++
-			}
-		}
-		if recent > 0 {
+	if failed, err := s.db.ListJobs(actx, 200, store.JobFailed); err == nil {
+		done, _ := s.db.ListJobs(actx, 500, store.JobDone)
+		if recent := openFailures(failed, done, time.Now()); recent > 0 {
 			add(check("jobs", "warn", fmt.Sprintf("%d failed in the last 24h (mp job list --status failed)", recent)))
 		} else {
 			add(check("jobs", "ok", "no failures in 24h"))
@@ -513,7 +531,7 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 	if c := s.shareDoctorCheck(actx); c != nil {
 		add(*c)
 	}
-	add(s.kernelModulesCheck())
+	add(s.kernelModulesCheck(container))
 	if h := s.cfg.Web.Hostname; h != "" {
 		addrs, err := s.lookup(actx, h)
 		local := map[string]bool{}
@@ -568,6 +586,9 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 			}
 		}
 	}
+	if c := s.apiSocketCheck(actx); c != nil {
+		add(*c)
+	}
 	fails, warns := 0, 0
 	for _, c := range out.Checks {
 		switch c.Status {
@@ -585,4 +606,65 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 	}
 	out.Summary = fmt.Sprintf("%s, %d failed, %s", count(len(out.Checks), "check"), fails, count(warns, "warning"))
 	return out
+}
+
+// openFailures counts the jobs of the last 24 hours that failed and that no
+// later run of the same work fixed: a failure fixed since is history, not a
+// problem — the site applied fine the next time. The same work is the same
+// type and lock key, and for the stack's jobs, which share one lock to run
+// one after another, the same component as well: an apache.backend that
+// went through says nothing of the apache.migrate before it, nor the
+// nightly upgrade of nginx, PHP and Apache of a failed mp stack install
+// memcached. A job without a lock key stays a failure.
+func openFailures(failed, done []*store.Job, now time.Time) int {
+	fixed := map[string]int64{}
+	for _, j := range done {
+		if j.LockKey == "" {
+			continue
+		}
+		for _, k := range jobFixes(j) {
+			if j.ID > fixed[k] {
+				fixed[k] = j.ID
+			}
+		}
+	}
+	n := 0
+	for _, j := range failed {
+		if now.Sub(j.CreatedAt.Std()) < 24*time.Hour && (j.LockKey == "" || fixed[jobWork(j)] < j.ID) {
+			n++
+		}
+	}
+	return n
+}
+
+// jobFixes are the works a job that went through has done: its own, and
+// for mp stack install apache — the repair the doctor and the journal name
+// for a move of the sites onto their accounts' Apaches that failed — the
+// move (apache.migrate) and the backend secrets (apache.backend) as well,
+// which it runs in full, for every site in Apache mode, and goes through
+// only when both did. Without them the jobs line would warn of the move for
+// a day after the repair the doctor itself pointed to.
+func jobFixes(j *store.Job) []string {
+	own := jobWork(j)
+	if own != jobWork(&store.Job{Type: "stack.install", LockKey: j.LockKey, Payload: json.RawMessage(`{"component":"apache"}`)}) {
+		return []string{own}
+	}
+	return []string{own, jobWork(&store.Job{Type: "apache.migrate", LockKey: j.LockKey}), jobWork(&store.Job{Type: "apache.backend", LockKey: j.LockKey})}
+}
+
+// jobWork names the work a job did, for openFailures.
+func jobWork(j *store.Job) string {
+	key := j.Type + "\x00" + j.LockKey
+	switch j.Type {
+	case "stack.install", "stack.remove", "stack.upgrade":
+		var p struct {
+			Component string `json:"component"`
+		}
+		_ = json.Unmarshal(j.Payload, &p)
+		if p.Component == "" && j.Type == "stack.upgrade" {
+			p.Component = upgradeAll
+		}
+		key += "\x00" + p.Component
+	}
+	return key
 }

@@ -263,8 +263,17 @@ func (s *Server) SetKernelSources(rules []string, modules, builtin string) {
 // setup writes it on an install without the package; the rule keeps a
 // module from loading but does not unload one that is loaded already, and
 // cannot stop one built into the kernel. A module the administrator's
-// /etc/modprobe.d/monopanel.conf lets load again is their choice.
-func (s *Server) kernelModulesCheck() apitypes.Check {
+// /etc/modprobe.d/monopanel.conf lets load again is their choice. In a
+// container (the agent says which) none of this is the panel's: an
+// account's socket(AF_INET, SOCK_STREAM, IPPROTO_SCTP) has the host's
+// kernel run the host's modprobe with the host's configuration, the
+// container's file changes nothing, and its /proc/modules lists the host's
+// modules, which nobody in the container can unload.
+func (s *Server) kernelModulesCheck(container string) apitypes.Check {
+	if container != "" {
+		return check("kernel modules", "warn", fmt.Sprintf("the panel runs in a container (%s): the host's kernel loads the modules with the host's modprobe configuration, which %s in the container does not change. Any account here can have the host load %s unless the host has install <module> /bin/false for them in its /etc/modprobe.d (SCTP had a local root with no kernel fix in November 2026)",
+			container, osprofile.ModprobePackageFile, strings.Join(osprofile.BlockedModules, ", ")))
+	}
 	src := s.kernelSourcesOf()
 	rule, blocked, err := modprobeRule(src.rules)
 	if err != nil {

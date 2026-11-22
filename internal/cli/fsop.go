@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -138,6 +139,17 @@ func fsopCmd() *cobra.Command {
 		_, err = io.Copy(os.Stdout, io.LimitReader(f, 512<<20))
 		return err
 	}}
+	tail := &cobra.Command{Use: "tail <path> <bytes>", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
+		p, err := inside(args[0])
+		if err != nil {
+			return err
+		}
+		n, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil || n < 1 || n > fsopTailMax {
+			return fmt.Errorf("bytes must be 1 to %d", fsopTailMax)
+		}
+		return fsopTail(p, n, os.Stdout)
+	}}
 	write := &cobra.Command{Use: "write <path>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		p, err := inside(args[0])
 		if err != nil {
@@ -233,8 +245,47 @@ func fsopCmd() *cobra.Command {
 		fmt.Println(total)
 		return nil
 	}}
-	c.AddCommand(list, mkdir, touch, rm, mv, chmod, read, write, extract, run, size)
+	c.AddCommand(list, mkdir, touch, rm, mv, chmod, read, tail, write, extract, run, size)
 	return c
+}
+
+// fsopTailMax caps fsop tail: the tail of a log, not the log.
+const fsopTailMax = 16 << 20
+
+// fsopTailOut is what fsop tail prints: the file's size and its last bytes
+// (Missing when there is no such file); the API reads it (metrics.go).
+type fsopTailOut struct {
+	Size    int64  `json:"size"`
+	Content string `json:"content"`
+	Missing bool   `json:"missing,omitempty"`
+}
+
+// fsopTail writes the last n bytes of the regular file at p, read as the
+// account (the logs a site of an older panel still writes into its data/logs,
+// which root does not read for it). A FIFO or a device the account put
+// there is refused, and O_NONBLOCK keeps a FIFO from holding the open.
+func fsopTail(p string, n int64, w io.Writer) error {
+	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return json.NewEncoder(w).Encode(fsopTailOut{Missing: true})
+	}
+	if err != nil {
+		return err
+	}
+	defer f.Close() //nolint:errcheck // read-only
+	st, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !st.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", filepath.Base(p))
+	}
+	b := make([]byte, min(n, st.Size()))
+	k, err := f.ReadAt(b, st.Size()-int64(len(b)))
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	return json.NewEncoder(w).Encode(fsopTailOut{Size: st.Size(), Content: string(b[:k])})
 }
 
 func safeJoin(dest, name string) (string, error) {

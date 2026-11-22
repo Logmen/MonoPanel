@@ -20,6 +20,7 @@ func TestStackUpgradeCommands(t *testing.T) {
 				"upgrade": map[string]any{"component": "db", "from": "8.4.6-6-1.noble", "to": "8.4.7-7-1.noble", "packages": []any{}}},
 			{"name": "memcached", "installed": true, "version": "1.6.24-1ubuntu0.3", "kind": "tool"},
 			{"name": "apache", "installed": true, "version": "2.4.58-1ubuntu8.9", "kind": "web", "instances": map[string]any{"running": 2, "total": 2, "replaced": 1}},
+			{"name": "fail2ban", "installed": true, "version": "1.0.2-3ubuntu0.1", "kind": "security", "service": map[string]any{"unit": "fail2ban.service", "active_state": "active", "binary_replaced": true}},
 		}},
 		"POST /stack/upgrade":     {status: http.StatusAccepted, body: map[string]any{"job_id": 42}},
 		"GET /stack/auto-upgrade": {body: auto},
@@ -30,18 +31,41 @@ func TestStackUpgradeCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	// An Apache on the binary the distribution's upgrade replaced: the
-	// upgrade restarts it, with nothing to install.
-	for _, want := range []string{"UPDATE", "→ 1.30.7-1~noble (nginx.org)", "→ 8.4.7-7-1.noble", "updates wait: mp stack upgrade (nginx, PHP, Apache)", "mp stack upgrade db (the server restarts)",
-		"2 of 2 running · on a replaced binary", "a service runs a binary an upgrade replaced"} {
+	// upgrade restarts it, with nothing to install. fail2ban on a Python
+	// the distribution upgraded is none of the upgrade's: a restart by hand.
+	for _, want := range []string{"UPDATE", "→ 1.30.7-1~noble (nginx.org)", "→ 8.4.7-7-1.noble", "updates wait: mp stack upgrade (nginx, PHP, Apache), or the daily upgrade at 04:00 installs them\n", "mp stack upgrade db (the server restarts)",
+		"2 of 2 running · on a replaced binary", "apache runs a binary an upgrade replaced: mp stack upgrade apache restarts it after checking the configuration\n",
+		"fail2ban runs a binary an upgrade replaced: the new version takes effect after systemctl restart fail2ban.service\n"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("stack list lacks %q:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "mp stack upgrade fail2ban") {
+		t.Errorf("the upgrade restarts fail2ban:\n%s", out)
 	}
 	for _, line := range strings.Split(out, "\n") {
 		if strings.HasPrefix(line, "memcached") && !strings.HasSuffix(strings.TrimSpace(line), " -") {
 			t.Errorf("memcached has no update: %q", line)
 		}
 	}
+
+	// The daily upgrade off, or not to be read: the hint says so, or
+	// nothing of it.
+	for state, want := range map[string]string{
+		"off":        "updates wait: mp stack upgrade (nginx, PHP, Apache); the daily upgrade is off: mp stack auto-upgrade --on\n",
+		"unreadable": "updates wait: mp stack upgrade (nginx, PHP, Apache)\n",
+	} {
+		resp := fakeResp{body: map[string]any{"enabled": false, "hour": 4, "timezone": "Asia/Almaty"}}
+		if state == "unreadable" {
+			resp = fakeResp{status: http.StatusBadGateway, body: map[string]any{"title": "Bad Gateway", "status": 502}}
+		}
+		newFakeAPI(t, map[string]fakeResp{"GET /stack": f.routes["GET /stack"], "GET /stack/auto-upgrade": resp})
+		out, err := mp(t, "", "stack", "list")
+		if err != nil || !strings.Contains(out, want) {
+			t.Errorf("daily upgrade %s: %v\n%s", state, err, out)
+		}
+	}
+	f = newFakeAPI(t, f.routes)
 
 	if _, err := mp(t, "", "--no-wait", "stack", "upgrade"); err != nil {
 		t.Fatal(err)

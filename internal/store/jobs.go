@@ -148,6 +148,12 @@ func (d *DB) FinishJob(ctx context.Context, id int64, status, errMsg string) err
 	return err
 }
 
+// JobByIdempotencyKey returns the job an idempotency key was given to;
+// ErrNotFound when none was.
+func (d *DB) JobByIdempotencyKey(ctx context.Context, key string) (*Job, error) {
+	return scanJob(d.sql.QueryRowContext(ctx, `SELECT `+jobCols+` FROM jobs WHERE idempotency_key=?`, key))
+}
+
 // GetJob returns a job by id.
 func (d *DB) GetJob(ctx context.Context, id int64) (*Job, error) {
 	return scanJob(d.sql.QueryRowContext(ctx, `SELECT `+jobCols+` FROM jobs WHERE id=?`, id))

@@ -24,17 +24,20 @@ func stackUpdateCell(c apitypes.StackComponent) string {
 
 // stackReplaced tells that a component's service, or one of its accounts'
 // Apaches, still runs the binary an upgrade replaced: the old code until a
-// restart, which mp stack upgrade makes after its check.
+// restart — mp stack upgrade's after its check for nginx, PHP, Apache and
+// the database server, one by hand for the rest (fail2ban, the tools).
 func stackReplaced(c apitypes.StackComponent) bool {
 	return c.Installed && ((c.Service != nil && c.Service.BinaryReplaced) || (c.Instances != nil && c.Instances.Replaced > 0))
 }
 
 // printUpdatesHint says how the updates that wait get installed, and the
-// restarts that wait.
-func printUpdatesHint(comps []apitypes.StackComponent) {
-	stack, db, replaced := false, false, false
+// restarts that wait, row by row: what mp stack upgrade restarts after its
+// check, and what only a restart by hand brings onto the new binary.
+// daily is the daily upgrade, asked for only when updates wait (nil: it
+// could not be read, and nothing is said of it).
+func printUpdatesHint(comps []apitypes.StackComponent, daily func() *apitypes.StackAutoUpgrade) {
+	stack, db := false, false
 	for _, c := range comps {
-		replaced = replaced || stackReplaced(c)
 		switch {
 		case c.Upgrade == nil:
 		case c.Upgrade.Component == "db":
@@ -44,15 +47,37 @@ func printUpdatesHint(comps []apitypes.StackComponent) {
 		}
 	}
 	if stack {
-		fmt.Println(T("ждут обновления: mp stack upgrade (nginx, PHP, Apache), или их поставит ежедневное обновление (mp stack auto-upgrade)",
-			"updates wait: mp stack upgrade (nginx, PHP, Apache), or the daily upgrade installs them (mp stack auto-upgrade)"))
+		switch auto := daily(); {
+		case auto == nil:
+			fmt.Println(T("ждут обновления: mp stack upgrade (nginx, PHP, Apache)", "updates wait: mp stack upgrade (nginx, PHP, Apache)"))
+		case !auto.Enabled:
+			fmt.Println(T("ждут обновления: mp stack upgrade (nginx, PHP, Apache); ежедневное обновление выключено: mp stack auto-upgrade --on",
+				"updates wait: mp stack upgrade (nginx, PHP, Apache); the daily upgrade is off: mp stack auto-upgrade --on"))
+		default:
+			fmt.Printf(T("ждут обновления: mp stack upgrade (nginx, PHP, Apache), или их поставит ежедневное обновление в %02d:00\n",
+				"updates wait: mp stack upgrade (nginx, PHP, Apache), or the daily upgrade at %02d:00 installs them\n"), auto.Hour)
+		}
 	}
 	if db {
 		fmt.Println(T("обновление сервера баз данных: mp stack upgrade db (сервер перезапустится)", "the database server's update: mp stack upgrade db (the server restarts)"))
 	}
-	if replaced {
-		fmt.Println(T("служба работает на бинарнике, который заменило обновление: новая версия заработает после перезапуска — mp stack upgrade перезапустит её после проверки конфигурации (сервер БД — mp stack upgrade db)",
-			"a service runs a binary an upgrade replaced: the new version takes effect after a restart — mp stack upgrade restarts it after checking the configuration (the database server: mp stack upgrade db)"))
+	for _, c := range comps {
+		if !stackReplaced(c) {
+			continue
+		}
+		name := termsafe.Line(c.Name)
+		switch comp := c.UpgradeComponent(); {
+		case comp == "db":
+			fmt.Printf(T("%s работает на бинарнике, который заменило обновление: mp stack upgrade db перезапустит сервер после mysqld --validate-config (сайты на это время останутся без баз)\n",
+				"%s runs a binary an upgrade replaced: mp stack upgrade db restarts the server after mysqld --validate-config (the sites lose their databases meanwhile)\n"), name)
+		case comp != "":
+			fmt.Printf(T("%s работает на бинарнике, который заменило обновление: mp stack upgrade %s перезапустит его после проверки конфигурации\n",
+				"%s runs a binary an upgrade replaced: mp stack upgrade %s restarts it after checking the configuration\n"), name, comp)
+		case c.Service != nil && c.Service.Unit != "":
+			// mp stack upgrade restarts none of these.
+			fmt.Printf(T("%s работает на бинарнике, который заменило обновление: новая версия заработает после systemctl restart %s\n",
+				"%s runs a binary an upgrade replaced: the new version takes effect after systemctl restart %s\n"), name, termsafe.Line(c.Service.Unit))
+		}
 	}
 }
 
