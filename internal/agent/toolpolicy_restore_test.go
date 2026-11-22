@@ -183,13 +183,13 @@ func TestRestoreInPlaceFlow(t *testing.T) {
 	}
 	var out bytes.Buffer
 	stages := []*inPlaceStage{{dir: staging, includes: []string{home}, fd: -1}}
-	if code, err := s.stageAndMerge(ctx, restic(1), stages, "1a2b3c4d", &out); err != nil || code != 1 {
+	if code, err := s.stageAndMerge(ctx, restic(1), stages, "1a2b3c4d", &out, nil); err != nil || code != 1 {
 		t.Fatalf("a failed restic: %d %v", code, err)
 	}
 	if _, err := os.Stat(filepath.Join(home, "data")); err == nil {
 		t.Fatal("a failed restore must not be moved into place")
 	}
-	code, err := s.stageAndMerge(ctx, restic(0), stages, "1a2b3c4d", &out)
+	code, err := s.stageAndMerge(ctx, restic(0), stages, "1a2b3c4d", &out, nil)
 	if err != nil || code != 0 {
 		t.Fatalf("restore: %d %v %s", code, err, out.String())
 	}
@@ -240,7 +240,7 @@ func TestVetSnapshot(t *testing.T) {
 		[3]string{"bob", "dir", "/var/www/bob"}, [3]string{"index.php", "file", "/var/www/bob/index.php"},
 	)
 	var calls [][]string
-	id, code, err := s.vetSnapshot(fakeRestic(good, &calls, nil), "latest", nil)
+	id, code, err := s.vetSnapshot(fakeRestic(good, &calls, nil), "latest", nil, nil)
 	if err != nil || code != 0 || id != snapID {
 		t.Fatalf("a good snapshot: %q %d %v", id, code, err)
 	}
@@ -250,7 +250,7 @@ func TestVetSnapshot(t *testing.T) {
 	// restic 0.17's message_type lines are read as well
 	modern := strings.ReplaceAll(good, `"struct_type":"node"`, `"message_type":"node"`)
 	modern = strings.ReplaceAll(modern, `"struct_type":"snapshot"`, `"message_type":"snapshot"`)
-	if id, _, err := s.vetSnapshot(fakeRestic(modern, &calls, nil), "latest", nil); err != nil || id != snapID {
+	if id, _, err := s.vetSnapshot(fakeRestic(modern, &calls, nil), "latest", nil, nil); err != nil || id != snapID {
 		t.Fatalf("message_type: %q %v", id, err)
 	}
 	for name, listing := range map[string]string{
@@ -266,23 +266,23 @@ func TestVetSnapshot(t *testing.T) {
 		"broken json":           lsOutput() + `{"name":"x","type":` + "\n",
 		"two snapshots":         lsOutput() + lsOutput(),
 	} {
-		_, _, err := s.vetSnapshot(fakeRestic(listing, &calls, nil), "latest", nil)
+		_, _, err := s.vetSnapshot(fakeRestic(listing, &calls, nil), "latest", nil, nil)
 		var ae *Error
 		if err == nil || (name != "no snapshot" && (!errors.As(err, &ae) || ae.Status != 403)) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
 	// a listing that is not a snapshot's at all names no id
-	if _, _, err := s.vetSnapshot(fakeRestic("", &calls, nil), "latest", nil); err == nil {
+	if _, _, err := s.vetSnapshot(fakeRestic("", &calls, nil), "latest", nil, nil); err == nil {
 		t.Error("an empty listing")
 	}
 	// a notice of restic's own between the lines is no node
-	if id, _, err := s.vetSnapshot(fakeRestic("repository 1a2b3c4d opened (version 2)\n"+good, &calls, nil), "latest", nil); err != nil || id != snapID {
+	if id, _, err := s.vetSnapshot(fakeRestic("repository 1a2b3c4d opened (version 2)\n"+good, &calls, nil), "latest", nil, nil); err != nil || id != snapID {
 		t.Errorf("a notice: %q %v", id, err)
 	}
 	// restic's own failure comes back as its exit status
 	failing := func(args []string, _ io.Writer) (int, error) { return 1, nil }
-	if _, code, err := s.vetSnapshot(failing, "latest", nil); err != nil || code != 1 {
+	if _, code, err := s.vetSnapshot(failing, "latest", nil, nil); err != nil || code != 1 {
 		t.Errorf("a failing ls: %d %v", code, err)
 	}
 }

@@ -19,10 +19,17 @@ import (
 // shareHost is an agent with a temporary web root, unit directory and state
 // directory: alex owns the site folder that is shared, guest has the home
 // www/guest, and the test's own user stands for root, as everywhere in these
-// tests.
+// tests — and for alex, the owner of the folder. The agent's thread in the
+// host's mount namespace is the caller's own, and the binds and unmounts,
+// which a test cannot make, are recorded (binds, unmounts).
 type shareHost struct {
 	s                       *Server
 	www, home, site, shares string
+	// binds are the folders bound, "<folder inode> on <mount point inode>",
+	// unmounts the mount points taken off with their flags.
+	binds, unmounts []string
+	// bindErr fails the next binds.
+	bindErr error
 }
 
 func newShareHost(t *testing.T) *shareHost {
@@ -37,16 +44,70 @@ func newShareHost(t *testing.T) *shareHost {
 	h := &shareHost{s: s, www: www, home: filepath.Join(www, "guest"), site: filepath.Join(www, "alex", "data", "www", "shop.example.com", "kaspy"), shares: filepath.Join(www, sharesDirName)}
 	mkdirs(t, s.unitDir, h.site, h.home, filepath.Join(www, "bob"))
 	chmods(t, map[string]uint32{www: 0o711, h.home: 0o750})
-	old := lookupUnitAccount
+	old, oldNS, oldBind, oldUnmount := lookupUnitAccount, inHostMountNS, bindTree, unmountAt
 	lookupUnitAccount = func(_ *Server, login string) (*UnitAccount, error) {
 		switch login {
 		case "alex", "guest", "bob":
-			return &UnitAccount{Login: login, Home: filepath.Join(www, login), Group: login}, nil
+			return &UnitAccount{Login: login, Home: filepath.Join(www, login), Group: login, UID: uint32(os.Getuid())}, nil
 		}
 		return nil, errors.New("not a panel account")
 	}
-	t.Cleanup(func() { lookupUnitAccount = old })
+	inHostMountNS = func(fn func() error) error { return fn() }
+	bindTree = func(src, dst int) error {
+		if h.bindErr != nil {
+			return h.bindErr
+		}
+		h.binds = append(h.binds, fdIno(src)+" on "+fdIno(dst))
+		return nil
+	}
+	unmountAt = func(dir int, name string, flags int) error {
+		h.unmounts = append(h.unmounts, entryIno(dir, name)+" "+strconv.Itoa(flags))
+		return nil
+	}
+	t.Cleanup(func() { lookupUnitAccount, inHostMountNS, bindTree, unmountAt = old, oldNS, oldBind, oldUnmount })
 	return h
+}
+
+// fdIno is the inode of a descriptor, as text.
+func fdIno(fd int) string {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return "?"
+	}
+	return strconv.FormatUint(st.Ino, 10)
+}
+
+// entryIno is the inode of the entry name of the directory dir, as text.
+func entryIno(dir int, name string) string {
+	var st unix.Stat_t
+	if err := unix.Fstatat(dir, name, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return "?"
+	}
+	return strconv.FormatUint(st.Ino, 10)
+}
+
+// ino is the inode of a path, as text.
+func ino(t *testing.T, p string) string {
+	t.Helper()
+	var st unix.Stat_t
+	if err := unix.Stat(p, &st); err != nil {
+		t.Fatal(err)
+	}
+	return strconv.FormatUint(st.Ino, 10)
+}
+
+// placeShare records a shared folder at where as the agent does when it
+// binds one.
+func (h *shareHost) placeShare(t *testing.T, where string) {
+	t.Helper()
+	if err := h.s.writeShareRecord(shareRecord{What: h.site, Where: where}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// bind is /v1/shares/bind of the site folder at where.
+func (h *shareHost) bind(where string) (*ShareBindResponse, error) {
+	return h.s.shareBind(context.Background(), &ShareBindRequest{What: h.site, Where: where, Origin: "test"})
 }
 
 // chmods sets modes as chmod(2) takes them, the sticky and setgid bits
@@ -116,14 +177,12 @@ func setfacl(t *testing.T, args ...string) {
 	}
 }
 
-// A shared folder's unit is written, and its mount started, only when every
-// directory from the web root down to the mount point is root's and nobody
-// else may write to it: in the root-owned home of an SFTP-only guest, in
-// .shares for a guest with a shell. A home the guest owns, a symlink on the
-// way, a directory its group or an ACL lets others write to — refused, with
-// the unit not written and the start never reaching systemd.
+// A shared folder is bound only when every directory from the web root down
+// to the mount point is root's and nobody else may write to it: in the
+// root-owned home of an SFTP-only guest, in .shares for a guest with a
+// shell. A home the guest owns, a symlink on the way, a directory its group
+// or an ACL lets others write to — refused, nothing bound, nothing recorded.
 func TestMountPointMustBeRootsAlone(t *testing.T) {
-	ctx := context.Background()
 	type setup func(t *testing.T, h *shareHost) (where string)
 	inHome := func(t *testing.T, h *shareHost) string {
 		where := filepath.Join(h.home, "kaspy")
@@ -147,15 +206,6 @@ func TestMountPointMustBeRootsAlone(t *testing.T) {
 		{"sticky shares directory", func(t *testing.T, h *shareHost) string {
 			where := inShares(t, h)
 			chmods(t, map[string]uint32{h.shares: 0o1777})
-			return where
-		}, true, ""},
-		{"mounted already", func(t *testing.T, h *shareHost) string {
-			where := inHome(t, h)
-			chmods(t, map[string]uint32{where: 0o2770})
-			pretendOwners(t, map[string]uint32{where: 1501})
-			old := mountedOn
-			mountedOn = func(int) bool { return true }
-			t.Cleanup(func() { mountedOn = old })
 			return where
 		}, true, ""},
 		{"home of the guest", func(t *testing.T, h *shareHost) string {
@@ -222,52 +272,78 @@ func TestMountPointMustBeRootsAlone(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			h := newShareHost(t)
 			where := c.setup(t, h)
-			name, content := h.mountUnit(where)
-			_, err := h.s.applyUnit(ctx, &ApplyUnitRequest{Name: name, Content: content})
-			unitFile := filepath.Join(h.s.unitDir, name)
+			res, err := h.bind(where)
+			_, recorded := h.s.recordedOK(t, where)
 			if c.ok {
-				if err != nil {
-					t.Fatalf("apply: %v", err)
+				if err != nil || !res.Mounted || !res.Changed {
+					t.Fatalf("bind: %+v %v", res, err)
 				}
-				if _, err := os.Stat(unitFile); err != nil {
-					t.Fatalf("the unit is not written: %v", err)
+				if want := ino(t, h.site) + " on " + ino(t, where); len(h.binds) != 1 || h.binds[0] != want {
+					t.Fatalf("binds %v, want %s", h.binds, want)
 				}
-				for _, action := range []string{"start", "restart", "reload-or-restart", "enable"} {
-					if err := h.s.vetMountStart(name, action); err != nil {
-						t.Fatalf("%s: %v", action, err)
-					}
+				if !recorded {
+					t.Fatal("the bound folder is not recorded")
 				}
 				return
 			}
 			if agentStatus(err) != http.StatusForbidden || !strings.Contains(err.Error(), c.why) {
-				t.Fatalf("apply: %v, want 403 saying %q", err, c.why)
+				t.Fatalf("bind: %v, want 403 saying %q", err, c.why)
 			}
-			if _, err := os.Stat(unitFile); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("a refused unit was written: %v", err)
-			}
-			// A unit already there (an older panel's) is not started either.
-			if err := os.WriteFile(unitFile, []byte(content), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			for _, action := range []string{"start", "restart", "reload", "reload-or-restart", "enable"} {
-				_, err := h.s.service(ctx, &ServiceRequest{Unit: name, Action: action})
-				if agentStatus(err) != http.StatusForbidden || !strings.Contains(err.Error(), "mount point") {
-					t.Fatalf("%s: %v, want 403", action, err)
-				}
-			}
-			for _, action := range []string{"stop", "disable", "status"} {
-				if err := h.s.vetMountStart(name, action); err != nil {
-					t.Fatalf("%s must not be held back: %v", action, err)
-				}
-			}
-			// Nor restarted as a reload of config/apply or paths/remove.
-			if _, err := h.s.applyConfigSet(ctx, &ApplyConfigSetRequest{Reload: []string{name}}); agentStatus(err) != http.StatusForbidden {
-				t.Fatalf("config/apply reload: %v", err)
-			}
-			if _, err := h.s.removePaths(ctx, &RemovePathsRequest{Reload: []string{name}}); agentStatus(err) != http.StatusForbidden {
-				t.Fatalf("paths/remove reload: %v", err)
+			if len(h.binds) != 0 || recorded {
+				t.Fatalf("a refused folder was bound %v or recorded %v", h.binds, recorded)
 			}
 		})
+	}
+}
+
+// recordedOK reads the record of the shared folder at where.
+func (s *Server) recordedOK(t *testing.T, where string) (string, bool) {
+	t.Helper()
+	recs, err := s.shareRecords()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range recs {
+		if r.Where == where {
+			return r.What, true
+		}
+	}
+	return "", false
+}
+
+// systemd mounts nothing below the web root on the agent's word: a mount
+// unit names its folder by path, and the folder's owner may have swapped
+// that path for a symlink by then. Starting, restarting, reloading or
+// enabling one is refused — a unit an older panel or an administrator
+// wrote as much as the units systemd shows for the agent's own binds — and
+// so is its restart as a reload of config/apply or paths/remove; stop,
+// disable and status pass.
+func TestVetMountStartRefusesMountsBelowTheWebRoot(t *testing.T) {
+	ctx := context.Background()
+	h := newShareHost(t)
+	mount := filepath.Join(h.home, "kaspy")
+	mkdirs(t, mount)
+	name := h.placeUnit(t, mount)
+	for _, action := range []string{"start", "restart", "reload", "reload-or-restart", "enable"} {
+		_, err := h.s.service(ctx, &ServiceRequest{Unit: name, Action: action})
+		if agentStatus(err) != http.StatusForbidden || !strings.Contains(err.Error(), "binds the shared folders itself") {
+			t.Fatalf("%s: %v, want 403", action, err)
+		}
+	}
+	// without a unit file: what systemd shows for a bind of the agent's
+	if err := h.s.vetMountStart(mountUnitName(filepath.Join(h.shares, "guest", "x")), "restart"); agentStatus(err) != http.StatusForbidden {
+		t.Fatalf("the restart of a bind of the agent's: %v", err)
+	}
+	for _, action := range []string{"stop", "disable", "status"} {
+		if err := h.s.vetMountStart(name, action); err != nil {
+			t.Fatalf("%s must not be held back: %v", action, err)
+		}
+	}
+	if _, err := h.s.applyConfigSet(ctx, &ApplyConfigSetRequest{Reload: []string{name}}); agentStatus(err) != http.StatusForbidden {
+		t.Fatalf("config/apply reload: %v", err)
+	}
+	if _, err := h.s.removePaths(ctx, &RemovePathsRequest{Reload: []string{name}}); agentStatus(err) != http.StatusForbidden {
+		t.Fatalf("paths/remove reload: %v", err)
 	}
 }
 
@@ -401,17 +477,43 @@ func TestShareGuardKeepsTheWayRoots(t *testing.T) {
 	if plan != nil {
 		plan.close()
 	}
-	// The guard is released with the plan: a unit can be written again.
-	name, content := h.mountUnit(mount)
-	if _, err := h.s.applyUnit(ctx, &ApplyUnitRequest{Name: name, Content: content}); err != nil {
-		t.Fatalf("apply after the plans: %v", err)
+	// The guard is released with the plan: a folder can be bound again.
+	if _, err := h.bind(mount); err != nil {
+		t.Fatalf("bind after the plans: %v", err)
+	}
+}
+
+// The agent's record of a folder it bound guards the way to its mount point
+// as a unit did: no other owner for the home, no removal of the mount point,
+// until the folder is unbound.
+func TestShareRecordGuardsTheWay(t *testing.T) {
+	ctx := context.Background()
+	h := newShareHost(t)
+	other := otherAccount(t)
+	mount := filepath.Join(h.home, "kaspy")
+	mkdirs(t, mount)
+	if _, err := h.bind(mount); err != nil {
+		t.Fatal(err)
+	}
+	_, err := h.s.ensureDirs(ctx, &EnsureDirsRequest{Dirs: []DirSpec{{Path: h.home, Mode: 0o710, Owner: other}}})
+	if agentStatus(err) != http.StatusConflict {
+		t.Fatalf("the home to its account: %v, want 409", err)
+	}
+	if _, err := h.s.removePaths(ctx, &RemovePathsRequest{Paths: []string{mount}}); agentStatus(err) != http.StatusConflict {
+		t.Fatalf("removing the mount point: %v, want 409", err)
+	}
+	if _, err := h.s.shareUnbind(ctx, &ShareUnbindRequest{Where: mount}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.removePaths(ctx, &RemovePathsRequest{Paths: []string{mount}}); err != nil {
+		t.Fatalf("removing the mount point once unbound: %v", err)
 	}
 }
 
 // A call under a guard — an archive's extraction below the web root here —
-// keeps a shared folder's unit from being written until it is done, but the
-// other calls below the web root go on meanwhile: the unit's write gives up
-// after a while instead of holding them back.
+// keeps a shared folder from being bound until it is done, but the other
+// calls below the web root go on meanwhile: the bind gives up after a while
+// instead of holding them back.
 func TestShareUnitWaitsForGuardedCalls(t *testing.T) {
 	ctx := context.Background()
 	h := newShareHost(t)
@@ -425,10 +527,9 @@ func TestShareUnitWaitsForGuardedCalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	name, content := h.mountUnit(mount)
 	applied := make(chan error, 1)
 	go func() {
-		_, err := h.s.applyUnit(ctx, &ApplyUnitRequest{Name: name, Content: content})
+		_, err := h.bind(mount)
 		applied <- err
 	}()
 	done := make(chan error, 1)
@@ -445,11 +546,14 @@ func TestShareUnitWaitsForGuardedCalls(t *testing.T) {
 		t.Fatal("dirs/ensure waits behind the unit")
 	}
 	if err := <-applied; agentStatus(err) != http.StatusServiceUnavailable {
-		t.Fatalf("the unit during the extraction: %v, want 503", err)
+		t.Fatalf("the bind during the extraction: %v, want 503", err)
+	}
+	if len(h.binds) != 0 {
+		t.Fatalf("bound during the extraction: %v", h.binds)
 	}
 	plan.close()
-	if _, err := h.s.applyUnit(ctx, &ApplyUnitRequest{Name: name, Content: content}); err != nil {
-		t.Fatalf("the unit after the extraction: %v", err)
+	if _, err := h.bind(mount); err != nil {
+		t.Fatalf("the bind after the extraction: %v", err)
 	}
 }
 
@@ -575,14 +679,13 @@ func TestUnescapeUnitPath(t *testing.T) {
 	}
 }
 
-// The text of a unit: the mount point of a guest with a shell is
+// The text of a bind: the mount point of a guest with a shell is
 // .shares/<login>/<name> of a panel account, one name deep; the folder it
-// shows never lies there.
-func TestCheckUnitShareMountPoints(t *testing.T) {
+// shows never lies there, nor in the restore area, nor around its mount
+// point. The units of the older panels are read by the same rules, and
+// CheckUnit refuses every mount unit, theirs too: the panel writes none.
+func TestCheckShareBindText(t *testing.T) {
 	h := testUnitHost(t)
-	unit := func(what, where string) (string, []byte) {
-		return mountUnitName(where), []byte("[Unit]\nRequiresMountsFor=" + filepath.Dir(what) + "\n\n[Mount]\nWhat=" + what + "\nWhere=" + where + "\nType=none\nOptions=bind\n\n[Install]\nWantedBy=multi-user.target\n")
-	}
 	site := "/var/www/alex/data/www/shop.example.com/kaspy"
 	for where, ok := range map[string]bool{
 		"/var/www/.shares/guest/kaspy":   true,
@@ -592,15 +695,34 @@ func TestCheckUnitShareMountPoints(t *testing.T) {
 		"/var/www/.shares/nobody/kaspy":  false,
 		"/var/www/.shares/.shares/kaspy": false,
 		"/var/www/.shares/../etc/kaspy":  false,
+		"/var/www/guest":                 false,
+		"/etc/cron.d":                    false,
 	} {
-		name, content := unit(site, where)
-		if err := CheckUnit(name, content, h); (err == nil) != ok {
+		if err := CheckShareBind(site, where, h); (err == nil) != ok {
 			t.Errorf("Where=%s: %v, want ok=%v", where, err, ok)
 		}
 	}
-	name, content := unit("/var/www/.shares/guest/kaspy", "/var/www/guest/kaspy")
-	if err := CheckUnit(name, content, h); err == nil {
-		t.Error("a folder in .shares was accepted as What=")
+	for _, what := range []string{
+		"/var/www/.shares/guest/kaspy", "/var/www/.restore/.in-place-0123456789abcdef/var/www/bob", "/var/lib/monopanel-agent/restore/x",
+		"/etc", "/var/www/alex", "/var/www/nobody/x", "/var/www/alex/../bob/x", "/var/www/guest/kaspy/x",
+	} {
+		if err := CheckShareBind(what, "/var/www/guest/kaspy", h); err == nil {
+			t.Errorf("What=%s was accepted", what)
+		}
+	}
+	unit := func(what, where string) (string, []byte) {
+		return mountUnitName(where), []byte("[Unit]\nRequiresMountsFor=" + filepath.Dir(what) + "\n\n[Mount]\nWhat=" + what + "\nWhere=" + where + "\nType=none\nOptions=bind\n\n[Install]\nWantedBy=multi-user.target\n")
+	}
+	name, content := unit(site, "/var/www/guest/kaspy")
+	if what, where, err := legacyShareUnit(name, content, h); err != nil || what != site || where != "/var/www/guest/kaspy" {
+		t.Errorf("an older panel's unit: %q %q %v", what, where, err)
+	}
+	if err := CheckUnit(name, content, h); err == nil || !strings.Contains(err.Error(), "writes no mount units") {
+		t.Errorf("CheckUnit of a mount unit: %v", err)
+	}
+	name, content = unit("/var/www/.shares/guest/kaspy", "/var/www/guest/kaspy")
+	if _, _, err := legacyShareUnit(name, content, h); err == nil {
+		t.Error("a folder in .shares was taken for an older panel's What=")
 	}
 }
 
@@ -640,9 +762,7 @@ func TestShareUnitRemovalForgetsIt(t *testing.T) {
 	}
 
 	// A reload that fails: the unit is back, and the way stays guarded.
-	if _, err := h.s.applyUnit(ctx, &ApplyUnitRequest{Name: name, Content: content}); err != nil {
-		t.Fatal(err)
-	}
+	h.placeUnit(t, mount)
 	reloadErr = errors.New("systemd unreachable")
 	if _, err := h.s.removeUnit(ctx, &RemoveUnitRequest{Name: name}); err == nil || !strings.Contains(err.Error(), "the unit is back") {
 		t.Fatalf("remove with a failing reload: %v", err)
@@ -726,68 +846,5 @@ func TestEnsureDirsLeavesAMountedFolderAlone(t *testing.T) {
 	}
 	if st, _ := os.Stat(mount); st.Mode()&(os.ModePerm|os.ModeSetgid) != 0o755 {
 		t.Fatalf("the mount point with nothing on it: %v", st.Mode())
-	}
-}
-
-// As the agent starts it takes away the units an older panel left in the
-// home of a guest with a shell: systemd mounts them at boot and whenever a
-// unit that needs them starts (an app's WorkingDirectory=, a unit that
-// wants multi-user.target), which /v1/service never sees. Disabled and
-// removed, systemd reloaded; a unit whose way is root's, one missing its
-// mount point, and one that is not the panel's own stay.
-func TestRetireUnsafeShareUnits(t *testing.T) {
-	ctx := context.Background()
-	h := newShareHost(t)
-	var disabled []string
-	reloads := 0
-	oldDisable, oldReload := disableUnit, reloadSystemd
-	disableUnit = func(_ context.Context, unit string) error { disabled = append(disabled, unit); return nil }
-	reloadSystemd = func(context.Context) error { reloads++; return nil }
-	t.Cleanup(func() { disableUnit, reloadSystemd = oldDisable, oldReload })
-
-	legacy := filepath.Join(h.home, "kaspy")     // the guest owns its home
-	sftp := filepath.Join(h.www, "bob", "kaspy") // bob's home is root's
-	missing := filepath.Join(h.www, "bob", "gone")
-	admin := filepath.Join(h.home, "media") // not in the panel's form
-	mkdirs(t, legacy, sftp, admin)
-	pretendOwners(t, map[string]uint32{h.home: 1500})
-	for _, where := range []string{legacy, sftp, missing} {
-		h.placeUnit(t, where)
-	}
-	name, content := h.mountUnit(admin)
-	adminFile := filepath.Join(h.s.unitDir, name)
-	if err := os.WriteFile(adminFile, []byte(strings.Replace(content, "Options=bind", "Options=bind,ro", 1)), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	h.s.retireUnsafeShareUnits(ctx)
-	if _, err := os.Stat(filepath.Join(h.s.unitDir, mountUnitName(legacy))); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("the unit in the guest's own home stayed: %v", err)
-	}
-	if len(disabled) != 1 || disabled[0] != mountUnitName(legacy) || reloads != 1 {
-		t.Fatalf("disabled %v, %d reloads", disabled, reloads)
-	}
-	for _, p := range []string{filepath.Join(h.s.unitDir, mountUnitName(sftp)), filepath.Join(h.s.unitDir, mountUnitName(missing)), adminFile} {
-		if _, err := os.Stat(p); err != nil {
-			t.Errorf("%s went: %v", filepath.Base(p), err)
-		}
-	}
-
-	// An entry the mask holds back refuses a new mount, but takes no
-	// working one away: only setfacl as root would bring it back.
-	if _, err := exec.LookPath("setfacl"); err != nil {
-		return
-	}
-	latent := filepath.Join(h.www, "bob", "latent")
-	mkdirs(t, latent)
-	h.placeUnit(t, latent)
-	setfacl(t, "-m", "u:nobody:rwx", filepath.Join(h.www, "bob"))
-	chmods(t, map[string]uint32{filepath.Join(h.www, "bob"): 0o750})
-	if err := h.s.checkMountPoint(latent); !errors.Is(err, errLatentWrite) {
-		t.Fatalf("the latent entry: %v", err)
-	}
-	h.s.retireUnsafeShareUnits(ctx)
-	if _, err := os.Stat(filepath.Join(h.s.unitDir, mountUnitName(latent))); err != nil {
-		t.Fatalf("a unit whose way only carries an entry the mask holds back went: %v", err)
 	}
 }

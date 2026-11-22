@@ -785,7 +785,8 @@ func (s *Server) removePaths(ctx context.Context, req *RemovePathsRequest) (*Rem
 				return nil, &Error{Status: http.StatusForbidden, Message: err.Error()}
 			}
 			// A shared folder's mount point and the way to it stay while
-			// its unit exists: the unit goes first (sharemount.go).
+			// the agent knows a shared folder there: it is unbound first
+			// (sharemount.go).
 			if guard == nil {
 				g, release, gerr := s.holdShareGuard()
 				if gerr != nil {

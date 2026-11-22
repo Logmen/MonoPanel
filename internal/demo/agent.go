@@ -180,6 +180,9 @@ func (a *Agent) Handler() http.Handler {
 	r.Post("/v1/user/shadow", handle(a.unixShadow))
 	r.Post("/v1/units/apply", handle(a.applyUnit))
 	r.Post("/v1/units/remove", handle(a.removeUnit))
+	r.Post("/v1/shares/bind", handle(a.shareBind))
+	r.Post("/v1/shares/unbind", handle(a.shareUnbind))
+	r.Post("/v1/shares/status", handle(a.shareStatus))
 	r.Post("/v1/stream/out", a.streamOut)
 	r.Post("/v1/stream/in", notInDemo)
 	return r
@@ -473,6 +476,40 @@ func (a *Agent) removeUnit(_ context.Context, req *agent.RemoveUnitRequest) (*ag
 		delete(a.st.Units, req.Name)
 	}
 	return &agent.RemoveUnitResponse{Path: p, Removed: ok}, nil
+}
+
+// shareBind pretends the bind of a shared folder: its mount, under the name
+// systemd shows it by, is active.
+func (a *Agent) shareBind(_ context.Context, req *agent.ShareBindRequest) (*agent.ShareBindResponse, error) {
+	if err := agent.CheckShareBind(req.What, req.Where, a.unitHost()); err != nil {
+		return nil, &agent.Error{Status: http.StatusForbidden, Message: "binding " + req.What + " at " + req.Where + " is not allowed: " + err.Error()}
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	u := a.unit(agent.MountUnitName(req.Where))
+	changed := !u.Active
+	u.start()
+	return &agent.ShareBindResponse{Mounted: true, Changed: changed}, nil
+}
+
+func (a *Agent) shareUnbind(_ context.Context, req *agent.ShareUnbindRequest) (*agent.ShareUnbindResponse, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	name := agent.MountUnitName(req.Where)
+	u, known := a.st.Units[name]
+	delete(a.st.Units, name)
+	return &agent.ShareUnbindResponse{Unmounted: known && u.Active}, nil
+}
+
+func (a *Agent) shareStatus(_ context.Context, req *agent.ShareStatusRequest) (*agent.ShareStatusResponse, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := &agent.ShareStatusResponse{Entries: []agent.ShareMountState{}}
+	for _, p := range req.Paths {
+		u, known := a.st.Units[agent.MountUnitName(p)]
+		out.Entries = append(out.Entries, agent.ShareMountState{Where: p, Mounted: known && u.Active, Recorded: known})
+	}
+	return out, nil
 }
 
 func (a *Agent) ensureGroup(_ context.Context, req *agent.EnsureGroupRequest) (*agent.EnsureGroupResponse, error) {

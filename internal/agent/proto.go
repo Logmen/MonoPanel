@@ -542,3 +542,57 @@ type ListDirEntry struct {
 	Name  string `json:"name"`
 	IsDir bool   `json:"is_dir"`
 }
+
+// ShareBindRequest has the agent bind a shared folder: the site folder What,
+// a directory of its owner's in the owner's home, at the mount point Where —
+// in the root-owned home of an SFTP-only guest, or
+// <www_root>/.shares/<guest>/<name> for a guest with a shell. The agent opens
+// both without following a symlink and mounts the very folder it opened, in
+// the host's mount namespace (sharebind.go); the folder mounted there
+// already stays.
+type ShareBindRequest struct {
+	What  string `json:"what"`
+	Where string `json:"where"`
+	// Origin is recorded in the log (e.g. "share:guest/kaspy").
+	Origin string `json:"origin,omitempty"`
+}
+
+// ShareBindResponse says that the folder is mounted, and whether this call
+// mounted it.
+type ShareBindResponse struct {
+	Mounted bool `json:"mounted"`
+	Changed bool `json:"changed"`
+}
+
+// ShareUnbindRequest unmounts the shared folder at the mount point Where and
+// has the agent forget it; a mount unit a panel up to 0.8.20 wrote for it
+// goes first.
+type ShareUnbindRequest struct {
+	Where string `json:"where"`
+}
+
+// ShareUnbindResponse says what went.
+type ShareUnbindResponse struct {
+	Unmounted   bool `json:"unmounted"`
+	UnitRemoved bool `json:"unit_removed"`
+}
+
+// ShareStatusRequest asks what lies at the mount points of shared folders.
+type ShareStatusRequest struct {
+	Paths []string `json:"paths"`
+}
+
+// ShareStatusResponse has an entry per path, in their order.
+type ShareStatusResponse struct {
+	Entries []ShareMountState `json:"entries"`
+}
+
+// ShareMountState is what the agent finds at a mount point: something
+// mounted on it (in the host's mount namespace), its record of a shared
+// folder it bound there, a mount unit an older panel wrote for it.
+type ShareMountState struct {
+	Where    string `json:"where"`
+	Mounted  bool   `json:"mounted"`
+	Recorded bool   `json:"recorded,omitempty"`
+	Unit     bool   `json:"unit,omitempty"`
+}

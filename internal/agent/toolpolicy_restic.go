@@ -447,15 +447,18 @@ func (s *Server) inPlaceRoot(p string) (inPlaceRoot, bool) {
 // unchecked.
 func (s *Server) restoreAside(ctx context.Context, run toolRun, snap, target string, includes []string, out io.Writer) (int, error) {
 	var need stageNeed
+	selected := func(p string) bool {
+		return len(includes) == 0 || slices.ContainsFunc(includes, func(inc string) bool { return atOrBelow(p, inc) })
+	}
 	count := func(p, typ string, size uint64) {
-		if len(includes) == 0 || slices.ContainsFunc(includes, func(inc string) bool { return atOrBelow(p, inc) }) {
+		if selected(p) {
 			need.add(typ, size)
 		}
 	}
 	if slices.ContainsFunc(includes, func(inc string) bool { return strings.ContainsAny(inc, `*?[\`) }) {
-		count = nil
+		count, selected = nil, nil
 	}
-	id, code, err := s.vetSnapshot(run, snap, count)
+	id, code, err := s.vetSnapshot(run, snap, selected, count)
 	if err != nil || code != 0 {
 		return code, err
 	}
@@ -519,11 +522,19 @@ func (s *Server) restoreAside(ctx context.Context, run toolRun, snap, target str
 // names such as ".." or "a/b", every path has one entry, symlinks are
 // leaves, and nothing restic makes is ever walked through.
 //
+// Nor does a restore bring back a node a site never needs: a device node,
+// a FIFO, a socket, a set-user-ID or set-group-ID file (refusedNode). restic
+// would make it as root, with the snapshot's owner and mode, in a staging
+// directory that is all that keeps others from it until sanitize — whoever
+// reached it meanwhile could open /dev/sda's twin or run a set-user-ID root
+// binary, and keep what it opened. selected, when set, says which paths the
+// restore brings (its includes); nil is every node.
+//
 // count, when set, gets every node of the listing: what an in-place restore
 // is going to stage.
-func (s *Server) vetSnapshot(run toolRun, snap string, count func(p, typ string, size uint64)) (string, int, error) {
+func (s *Server) vetSnapshot(run toolRun, snap string, selected func(p string) bool, count func(p, typ string, size uint64)) (string, int, error) {
 	pr, pw := io.Pipe()
-	chk := &snapshotCheck{count: count}
+	chk := &snapshotCheck{count: count, selected: selected}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -550,10 +561,11 @@ var resticFullIDRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // snapshotCheck reads the JSON lines of restic ls --json: the snapshot, then
 // its nodes depth first, each directory's entries right after it.
 type snapshotCheck struct {
-	id    string
-	stack []snapshotDir
-	err   error
-	count func(p, typ string, size uint64)
+	id       string
+	stack    []snapshotDir
+	err      error
+	count    func(p, typ string, size uint64)
+	selected func(p string) bool
 }
 
 type snapshotDir struct {
@@ -589,6 +601,8 @@ func (c *snapshotCheck) line(b []byte) {
 		Type        string `json:"type"`
 		Path        string `json:"path"`
 		Size        uint64 `json:"size"`
+		// Mode is the node's os.FileMode, as restic keeps and restores it
+		Mode uint32 `json:"mode"`
 	}
 	if err := json.Unmarshal(b, &n); err != nil {
 		c.err = fmt.Errorf("restic ls printed something else than JSON: %v", err)
@@ -607,10 +621,46 @@ func (c *snapshotCheck) line(b []byte) {
 		c.id = n.ID
 		c.stack = []snapshotDir{{path: "/", names: map[string]struct{}{}}}
 	case "node":
-		if c.node(n.Name, n.Type, n.Path); c.err == nil && c.count != nil {
+		if c.node(n.Name, n.Type, n.Path); c.err == nil && (c.selected == nil || c.selected(n.Path)) {
+			if what := refusedNode(n.Type, os.FileMode(n.Mode)); what != "" {
+				c.err = fmt.Errorf("it holds %s, %s, and a restore brings back files, directories and symlinks only: nothing a site needs is a device node, a FIFO, a socket or a set-user-ID or set-group-ID file, and restic would make it as root where it waits to be made safe; restore the paths beside it (--include)", n.Path, what)
+				return
+			}
+		}
+		if c.err == nil && c.count != nil {
 			c.count(n.Path, n.Type, n.Size)
 		}
 	}
+}
+
+// refusedNode says what of a node restic must not restore, "" for nothing:
+// any type but a file, a directory and a symlink — restic makes device
+// nodes and FIFOs with mknod, as the snapshot has them — and a file with the
+// set-user-ID or set-group-ID bit. A directory may carry set-group-ID (new
+// files take its group: the panel's own shared folders are 2770), and
+// set-user-ID means nothing on a directory, which sanitize clears.
+func refusedNode(typ string, mode os.FileMode) string {
+	switch typ {
+	case "dir", "symlink":
+		return ""
+	case "file":
+		switch {
+		case mode&os.ModeSetuid != 0:
+			return "a set-user-ID file"
+		case mode&os.ModeSetgid != 0:
+			return "a set-group-ID file"
+		}
+		return ""
+	case "dev":
+		return "a block device node"
+	case "chardev":
+		return "a character device node"
+	case "fifo":
+		return "a FIFO"
+	case "socket":
+		return "a socket"
+	}
+	return fmt.Sprintf("a node of the type %q", typ)
 }
 
 func (c *snapshotCheck) node(name, typ, p string) {
@@ -657,7 +707,10 @@ func (c *snapshotCheck) node(name, typ, p string) {
 // it brings.
 func (s *Server) restoreInPlace(ctx context.Context, run toolRun, snap string, includes []string, out io.Writer) (int, error) {
 	stages := s.inPlaceStages(includes)
-	id, code, err := s.vetSnapshot(run, snap, func(p, typ string, size uint64) {
+	selected := func(p string) bool {
+		return slices.ContainsFunc(stages, func(st *inPlaceStage) bool { return st.covers(p) })
+	}
+	id, code, err := s.vetSnapshot(run, snap, selected, func(p, typ string, size uint64) {
 		for _, st := range stages {
 			if st.covers(p) {
 				st.need.add(typ, size)
@@ -668,6 +721,15 @@ func (s *Server) restoreInPlace(ctx context.Context, run toolRun, snap string, i
 	if err != nil || code != 0 {
 		return code, err
 	}
+	// No shared folder is bound while the snapshot lies staged, from the
+	// first restic run to the end of the merge, nor unbound (shareMu): the
+	// staging is the agent's alone, and a bind takes only a folder of an
+	// account's home anyway (sharebind.go). Held until the stagings are gone.
+	g, release, err := s.holdShareGuard()
+	if err != nil {
+		return 0, err
+	}
+	defer release()
 	defer func() {
 		for _, st := range stages {
 			st.remove()
@@ -681,13 +743,14 @@ func (s *Server) restoreInPlace(ctx context.Context, run toolRun, snap string, i
 	if err := checkStagesSpace(stages); err != nil {
 		return 0, err
 	}
-	return s.stageAndMerge(ctx, run, stages, id, out)
+	return s.stageAndMerge(ctx, run, stages, id, out, g)
 }
 
 // stageAndMerge has restic restore the vetted snapshot id into each stage's
 // directory (root's alone) and, once all of them are there, makes what came
-// out safe and moves it into place.
-func (s *Server) stageAndMerge(ctx context.Context, run toolRun, stages []*inPlaceStage, id string, out io.Writer) (int, error) {
+// out safe and moves it into place, under the share guard g the caller
+// holds.
+func (s *Server) stageAndMerge(ctx context.Context, run toolRun, stages []*inPlaceStage, id string, out io.Writer, g *shareGuard) (int, error) {
 	var includes []string
 	for _, st := range stages {
 		args := []string{"restore", id, "--target", st.dir}
@@ -700,7 +763,7 @@ func (s *Server) stageAndMerge(ctx context.Context, run toolRun, stages []*inPla
 		}
 		includes = append(includes, st.includes...)
 	}
-	m := &restoreMerge{s: s, ctx: ctx, out: out}
+	m := &restoreMerge{s: s, ctx: ctx, out: out, guard: g}
 	for _, st := range stages {
 		if err := m.sanitize(st.dir); err != nil {
 			return 0, err

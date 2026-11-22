@@ -360,3 +360,21 @@ func (c *Client) Chown(ctx context.Context, req *ChownRequest) (*ChownResponse, 
 	var r ChownResponse
 	return &r, c.call(ctx, "/v1/chown", req, &r)
 }
+
+// ShareBind has the agent bind a shared folder at its mount point.
+func (c *Client) ShareBind(ctx context.Context, req *ShareBindRequest) (*ShareBindResponse, error) {
+	var r ShareBindResponse
+	return &r, c.call(ctx, "/v1/shares/bind", req, &r)
+}
+
+// ShareUnbind has the agent unmount a shared folder and forget it.
+func (c *Client) ShareUnbind(ctx context.Context, req *ShareUnbindRequest) (*ShareUnbindResponse, error) {
+	var r ShareUnbindResponse
+	return &r, c.call(ctx, "/v1/shares/unbind", req, &r)
+}
+
+// ShareStatus tells what lies at the mount points of shared folders.
+func (c *Client) ShareStatus(ctx context.Context, paths ...string) (*ShareStatusResponse, error) {
+	var r ShareStatusResponse
+	return &r, c.call(ctx, "/v1/shares/status", &ShareStatusRequest{Paths: paths}, &r)
+}

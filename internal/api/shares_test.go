@@ -12,9 +12,10 @@ import (
 	"monopanel/internal/store"
 )
 
-// A shared folder: the guest's home stays its own, the owner's folder is
-// bind-mounted into it by a unit, the guest gets ACLs, PHP in the folder is
-// denied on the site when asked, and everything is undone on removal.
+// A shared folder: the guest's home stays its own, the agent binds the
+// owner's folder into it — no mount unit, which systemd would mount by path —
+// the guest gets ACLs, PHP in the folder is denied on the site when asked,
+// and everything is undone on removal.
 func TestSharedFolderLifecycle(t *testing.T) {
 	f := newSiteFixture(t)
 	f.createSite(map[string]any{"domain": "shop.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
@@ -29,10 +30,10 @@ func TestSharedFolderLifecycle(t *testing.T) {
 	if st.Share.Name != "kaspy" || st.Where != "/var/www/guest/kaspy" || st.MountPoint != st.Where || st.Target != "/var/www/alex/data/www/shop.example.com/upload/kaspy" || !st.Mounted {
 		t.Fatalf("share: %+v where=%s target=%s", st.Share, st.Where, st.Target)
 	}
-	unit, ok := f.agent.File("/etc/systemd/system/var-www-guest-kaspy.mount")
-	if !ok || !strings.Contains(unit, "What=/var/www/alex/data/www/shop.example.com/upload/kaspy\nWhere=/var/www/guest/kaspy\nType=none\nOptions=bind") {
-		t.Fatalf("mount unit: %v %q", ok, unit)
+	if what, ok := f.agent.Share("/var/www/guest/kaspy"); !ok || what != "/var/www/alex/data/www/shop.example.com/upload/kaspy" || !f.agent.Mounted("var-www-guest-kaspy.mount") {
+		t.Fatalf("the agent's bind: %q %v", what, ok)
 	}
+	noMountUnits(t, f)
 	if st.JobID == 0 {
 		t.Fatal("no_php must re-apply the site")
 	}
@@ -64,8 +65,8 @@ func TestSharedFolderLifecycle(t *testing.T) {
 
 	var gone apitypes.ShareStatus
 	f.call(http.MethodDelete, "/users/guest/shares/kaspy", nil, http.StatusOK, &gone)
-	if _, ok := f.agent.File("/etc/systemd/system/var-www-guest-kaspy.mount"); ok {
-		t.Fatal("mount unit still there after removal")
+	if _, ok := f.agent.Share("/var/www/guest/kaspy"); ok || f.agent.Mounted("var-www-guest-kaspy.mount") {
+		t.Fatal("still bound after removal")
 	}
 	if job := f.waitJob(gone.JobID); job.Status != store.JobDone {
 		t.Fatalf("site apply after removal: %s %s", job.Status, job.Error)
@@ -76,6 +77,19 @@ func TestSharedFolderLifecycle(t *testing.T) {
 	f.call(http.MethodGet, "/users/guest/shares", nil, http.StatusOK, &list)
 	if len(list) != 0 {
 		t.Fatalf("share not forgotten: %+v", list)
+	}
+}
+
+// noMountUnits fails the test when the panel asked for a mount unit.
+func noMountUnits(t *testing.T, f *siteFixture) {
+	t.Helper()
+	for _, c := range f.agent.Calls() {
+		if c.Path == "/v1/units/apply" && strings.Contains(string(c.Body), `.mount"`) {
+			t.Fatalf("a mount unit was written: %s", c.Body)
+		}
+		if c.Path == "/v1/service" && strings.Contains(string(c.Body), `.mount"`) && !strings.Contains(string(c.Body), `"action":"status"`) {
+			t.Fatalf("systemd was asked to act on a mount: %s", c.Body)
+		}
 	}
 }
 
@@ -172,13 +186,13 @@ func TestSharedFolderOfAShellGuest(t *testing.T) {
 	if st.Where != link || st.MountPoint != mount || !st.Mounted {
 		t.Fatalf("share: where=%s mount_point=%s mounted=%v", st.Where, st.MountPoint, st.Mounted)
 	}
-	unit, ok := f.agent.File("/etc/systemd/system/var-www-.shares-dev-kaspy.mount")
-	if !ok || !strings.Contains(unit, "What=/var/www/alex/data/www/shop.example.com/upload/kaspy\nWhere="+mount+"\nType=none\nOptions=bind") {
-		t.Fatalf("mount unit: %v %q", ok, unit)
+	if what, ok := f.agent.Share(mount); !ok || what != "/var/www/alex/data/www/shop.example.com/upload/kaspy" {
+		t.Fatalf("the agent's bind: %q %v", what, ok)
 	}
-	if _, ok := f.agent.File("/etc/systemd/system/var-www-dev-kaspy.mount"); ok {
-		t.Fatal("a mount unit in the home of a guest with a shell")
+	if _, ok := f.agent.Share("/var/www/dev/kaspy"); ok || f.agent.Mounted("var-www-dev-kaspy.mount") {
+		t.Fatal("a mount point in the home of a guest with a shell")
 	}
+	noMountUnits(t, f)
 	for _, want := range []agent.DirSpec{
 		{Path: "/var/www/.shares", Mode: 0o711, Owner: "root", Group: "root"},
 		{Path: "/var/www/.shares/dev", Mode: 0o750, Owner: "root", Group: "dev"},
@@ -203,8 +217,8 @@ func TestSharedFolderOfAShellGuest(t *testing.T) {
 	f.call(http.MethodPatch, "/users/dev/shares/kaspy", map[string]any{"entry": true}, http.StatusUnprocessableEntity, nil)
 
 	f.call(http.MethodDelete, "/users/dev/shares/kaspy", nil, http.StatusOK, &st)
-	if _, ok := f.agent.File("/etc/systemd/system/var-www-.shares-dev-kaspy.mount"); ok {
-		t.Fatal("mount unit still there after removal")
+	if _, ok := f.agent.Share(mount); ok || f.agent.Mounted("var-www-.shares-dev-kaspy.mount") {
+		t.Fatal("still bound after removal")
 	}
 	if _, ok := f.agent.Symlink(link); ok {
 		t.Fatal("the guest's symlink stayed")
@@ -235,9 +249,10 @@ func dirsCall(c agenttest.Call, path, owner string) bool {
 	return false
 }
 
-// unitCall tells whether a units/apply or units/remove call is for unit.
-func unitCall(c agenttest.Call, endpoint, unit string) bool {
-	return c.Path == endpoint && strings.Contains(string(c.Body), `"name":"`+strings.ReplaceAll(unit, `\`, `\\`)+`"`)
+// shareCall tells whether a shares/bind or shares/unbind call is for the
+// mount point where.
+func shareCall(c agenttest.Call, endpoint, where string) bool {
+	return c.Path == endpoint && strings.Contains(string(c.Body), `"where":"`+where+`"`)
 }
 
 // firstCall is the index of the first call that matches, -1 for none.
@@ -275,7 +290,7 @@ func TestSwitchingShellMovesSharedFolders(t *testing.T) {
 	if job := f.waitJob(created.JobID); job.Status != store.JobDone {
 		t.Fatalf("switch to a shell: %s %s", job.Status, job.Error)
 	}
-	if _, ok := f.agent.File("/etc/systemd/system/" + inHome); ok || f.agent.Mounted(inHome) {
+	if _, ok := f.agent.Share(home + "/kaspy"); ok || f.agent.Mounted(inHome) {
 		t.Fatal("the folder is still mounted in the home")
 	}
 	if !f.agent.Mounted(inShares) {
@@ -285,11 +300,11 @@ func TestSwitchingShellMovesSharedFolders(t *testing.T) {
 		t.Fatalf("the guest's symlink: %q %v", target, ok)
 	}
 	calls := f.agent.Calls()[n:]
-	gone := firstCall(calls, func(c agenttest.Call) bool { return unitCall(c, "/v1/units/remove", inHome) })
-	moved := firstCall(calls, func(c agenttest.Call) bool { return unitCall(c, "/v1/units/apply", inShares) })
+	gone := firstCall(calls, func(c agenttest.Call) bool { return shareCall(c, "/v1/shares/unbind", home+"/kaspy") })
+	moved := firstCall(calls, func(c agenttest.Call) bool { return shareCall(c, "/v1/shares/bind", "/var/www/.shares/guest/kaspy") })
 	handed := firstCall(calls, func(c agenttest.Call) bool { return dirsCall(c, home, "guest") })
 	if gone < 0 || moved < gone || handed < moved {
-		t.Fatalf("order: unit in the home removed at %d, unit in .shares written at %d, home handed over at %d", gone, moved, handed)
+		t.Fatalf("order: unbound from the home at %d, bound in .shares at %d, home handed over at %d", gone, moved, handed)
 	}
 	var list []*apitypes.ShareStatus
 	f.call(http.MethodGet, "/users/guest/shares", nil, http.StatusOK, &list)
@@ -302,7 +317,7 @@ func TestSwitchingShellMovesSharedFolders(t *testing.T) {
 	if job := f.waitJob(created.JobID); job.Status != store.JobDone {
 		t.Fatalf("switch to SFTP-only: %s %s", job.Status, job.Error)
 	}
-	if _, ok := f.agent.File("/etc/systemd/system/" + inShares); ok || f.agent.Mounted(inShares) {
+	if _, ok := f.agent.Share("/var/www/.shares/guest/kaspy"); ok || f.agent.Mounted(inShares) {
 		t.Fatal("the folder is still mounted in .shares")
 	}
 	if !f.agent.Mounted(inHome) {
@@ -313,16 +328,19 @@ func TestSwitchingShellMovesSharedFolders(t *testing.T) {
 	}
 	calls = f.agent.Calls()[n:]
 	rooted := firstCall(calls, func(c agenttest.Call) bool { return dirsCall(c, home, "root") })
-	gone = firstCall(calls, func(c agenttest.Call) bool { return unitCall(c, "/v1/units/remove", inShares) })
-	moved = firstCall(calls, func(c agenttest.Call) bool { return unitCall(c, "/v1/units/apply", inHome) })
+	gone = firstCall(calls, func(c agenttest.Call) bool { return shareCall(c, "/v1/shares/unbind", "/var/www/.shares/guest/kaspy") })
+	moved = firstCall(calls, func(c agenttest.Call) bool { return shareCall(c, "/v1/shares/bind", home+"/kaspy") })
 	if rooted < 0 || gone < rooted || moved < gone {
-		t.Fatalf("order: home root's at %d, unit in .shares removed at %d, unit in the home written at %d", rooted, gone, moved)
+		t.Fatalf("order: home root's at %d, unbound from .shares at %d, bound in the home at %d", rooted, gone, moved)
 	}
+	noMountUnits(t, f)
 }
 
 // Up to 0.8.19 every folder was mounted in the guest's home, also in the home
-// a guest with a shell owns: at start the panel moves such a folder to
-// .shares, once, and leaves an SFTP-only guest's alone.
+// a guest with a shell owns: the agent took the unit over as it started
+// (recorded, the unit gone, the folder still mounted), and at its start the
+// panel moves such a folder to .shares, once, and leaves an SFTP-only
+// guest's alone.
 func TestRefreshShareMountsMovesFoldersOutOfShellHomes(t *testing.T) {
 	f := newSiteFixture(t)
 	site := f.createSite(map[string]any{"domain": "shop.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
@@ -345,11 +363,11 @@ func TestRefreshShareMountsMovesFoldersOutOfShellHomes(t *testing.T) {
 		t.Fatal(err)
 	}
 	const legacy, moved = "var-www-dev-upload.mount", "var-www-.shares-dev-upload.mount"
-	f.agent.SetUnit(legacy, "[Unit]\nDescription=MonoPanel shared folder shop.example.com/upload for dev\nRequiresMountsFor=/var/www/alex/data/www/shop.example.com\n\n[Mount]\nWhat=/var/www/alex/data/www/shop.example.com/upload\nWhere=/var/www/dev/upload\nType=none\nOptions=bind\n\n[Install]\nWantedBy=multi-user.target\n", true)
+	f.agent.SetShare("/var/www/dev/upload", "/var/www/alex/data/www/shop.example.com/upload", true)
 	f.agent.SetDir(agent.DirSpec{Path: "/var/www/dev/upload", Mode: 0o755, Owner: "root", Group: "root"})
 
 	f.s.refreshShareMounts(f.ctx)
-	if _, ok := f.agent.File("/etc/systemd/system/" + legacy); ok || f.agent.Mounted(legacy) {
+	if _, ok := f.agent.Share("/var/www/dev/upload"); ok || f.agent.Mounted(legacy) {
 		t.Fatal("the folder is still mounted in the home of a guest with a shell")
 	}
 	if !f.agent.Mounted(moved) {
@@ -370,7 +388,7 @@ func TestRefreshShareMountsMovesFoldersOutOfShellHomes(t *testing.T) {
 	n := len(f.agent.Calls())
 	f.s.refreshShareMounts(f.ctx)
 	for _, c := range f.agent.Calls()[n:] {
-		if c.Path != "/v1/service" || strings.Contains(string(c.Body), `"action":"status"`) == false {
+		if c.Path != "/v1/shares/status" {
 			t.Fatalf("the second start changed something: %s %s", c.Path, c.Body)
 		}
 	}
@@ -422,7 +440,9 @@ func TestReapplyingASharedFolderLeavesTheMountedFolderAlone(t *testing.T) {
 }
 
 // legacyShare is what a panel up to 0.8.19 left for the guest dev, who has a
-// shell: a share whose unit mounts the folder in dev's own home.
+// shell: a share whose unit mounts the folder in dev's own home — as the
+// agent leaves it when it could not take the unit over (systemd did not
+// reload, say).
 func legacyShare(t *testing.T, f *siteFixture) (dev *store.User, unit string) {
 	t.Helper()
 	site := f.createSite(map[string]any{"domain": "shop.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
@@ -446,9 +466,9 @@ func legacyShare(t *testing.T, f *siteFixture) (dev *store.User, unit string) {
 
 // The guest decides how long its folder stays in use. A unit in the home of
 // a guest with a shell must not stay because the folder could not be
-// unmounted: systemd would mount it there again at boot, racing the guest's
-// renames. So the move removes it all the same and marks the share failed;
-// the folder stays mounted where it was until it is free, and the next start
+// unmounted: systemd would mount it there again at boot, by path. So the
+// agent's unbind removes it first and the share is marked failed; the
+// folder stays mounted where it was until it is free, and the next start
 // finishes the move — after the session ended, or after a reboot that took
 // the old mount away and left its empty mount point in the home.
 func TestMovingAFolderInUseOutOfAShellHome(t *testing.T) {
@@ -494,8 +514,9 @@ func TestMovingAFolderInUseOutOfAShellHome(t *testing.T) {
 }
 
 // Removing a folder in use fails, and the admin tries again once it is
-// free: an SFTP-only guest's unit stays meanwhile (its home is root's), the
-// unit in the home of a guest with a shell does not.
+// free: an SFTP-only guest's folder stays bound and recorded meanwhile (its
+// home is root's), the unit an older panel left in the home of a guest with
+// a shell does not stay.
 func TestRemovingASharedFolderInUse(t *testing.T) {
 	f := newSiteFixture(t)
 	_, legacy := legacyShare(t, f)
@@ -510,8 +531,8 @@ func TestRemovingASharedFolderInUse(t *testing.T) {
 	f.agent.SetBusy(legacy, true)
 
 	f.call(http.MethodDelete, "/users/guest/shares/kaspy", nil, http.StatusBadGateway, nil)
-	if _, ok := f.agent.File("/etc/systemd/system/" + sftp); !ok || !f.agent.Mounted(sftp) {
-		t.Fatal("the unit of a folder in use in an SFTP-only home went")
+	if _, ok := f.agent.Share("/var/www/guest/kaspy"); !ok || !f.agent.Mounted(sftp) {
+		t.Fatal("a folder in use in an SFTP-only home was forgotten")
 	}
 	f.call(http.MethodDelete, "/users/dev/shares/upload", nil, http.StatusBadGateway, nil)
 	if _, ok := f.agent.File("/etc/systemd/system/" + legacy); ok {
@@ -557,10 +578,11 @@ func TestUnitInAShellHomeGoesWhateverFailsAfter(t *testing.T) {
 	}
 }
 
-// The agent removes a unit an older panel left in the home of a guest with a
-// shell as it starts (retireUnsafeShareUnits). At its own start the panel
-// mounts such a folder where it belongs: no unit there is reason enough, and
-// the empty mount point left in the home gives way to the guest's symlink.
+// The agent took over a unit an older panel left in the home of a guest with
+// a shell as it started (retireUnsafeShareUnits), and the folder is not
+// mounted (a reboot came since). At its own start the panel mounts such a
+// folder where it belongs, and the empty mount point left in the home gives
+// way to the guest's symlink.
 func TestRefreshShareMountsAppliesAFolderWithoutAUnit(t *testing.T) {
 	f := newSiteFixture(t)
 	dev, legacy := legacyShare(t, f)
@@ -577,5 +599,102 @@ func TestRefreshShareMountsAppliesAFolderWithoutAUnit(t *testing.T) {
 	}
 	if sh, err := f.db.GetShare(f.ctx, dev.ID, "upload"); err != nil || sh.Status != "active" {
 		t.Fatalf("share: %+v %v", sh, err)
+	}
+}
+
+// Nothing mounts a shared folder at boot: after a reboot the panel binds
+// every one again at its start, an SFTP-only guest's and one of a guest with
+// a shell, through the agent — only the bind, the folder and its ACLs are as
+// they were — and marks them active.
+func TestRefreshShareMountsAfterAReboot(t *testing.T) {
+	f := newSiteFixture(t)
+	f.createSite(map[string]any{"domain": "shop.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	var created struct {
+		JobID int64 `json:"job_id"`
+	}
+	f.call(http.MethodPost, "/users", map[string]any{"login": "guest", "password": "guest-password-1", "role": "user"}, http.StatusAccepted, &created)
+	f.waitJob(created.JobID)
+	f.call(http.MethodPost, "/users", map[string]any{"login": "dev", "password": "dev-password-1", "role": "user", "shell": true}, http.StatusAccepted, &created)
+	f.waitJob(created.JobID)
+	units := map[string]string{"guest": "var-www-guest-kaspy.mount", "dev": "var-www-.shares-dev-kaspy.mount"}
+	for login := range units {
+		f.call(http.MethodPost, "/users/"+login+"/shares", map[string]any{"site": "shop.example.com", "path": "kaspy"}, http.StatusCreated, nil)
+	}
+	for _, unit := range units {
+		f.agent.Unmount(unit) // a reboot: the records stay, the mounts do not
+	}
+	var list []*apitypes.ShareStatus
+	f.call(http.MethodGet, "/users/guest/shares", nil, http.StatusOK, &list)
+	if len(list) != 1 || list[0].Mounted {
+		t.Fatalf("after the reboot: %+v", list)
+	}
+
+	n := len(f.agent.Calls())
+	f.s.refreshShareMounts(f.ctx)
+	for login, unit := range units {
+		if !f.agent.Mounted(unit) {
+			t.Errorf("%s: not mounted again", login)
+		}
+		u, err := f.db.GetUserByLogin(f.ctx, login)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sh, err := f.db.GetShare(f.ctx, u.ID, "kaspy"); err != nil || sh.Status != "active" {
+			t.Errorf("%s: %+v %v", login, sh, err)
+		}
+	}
+	calls := f.agent.Calls()[n:]
+	if i := firstCall(calls, func(c agenttest.Call) bool { return c.Path == "/v1/acl/set" }); i >= 0 {
+		t.Fatalf("the folders' ACLs were set again: %s", calls[i].Body)
+	}
+	if target, ok := f.agent.Symlink("/var/www/dev/kaspy"); !ok || target != "/var/www/.shares/dev/kaspy" {
+		t.Fatalf("the shell guest's symlink: %q %v", target, ok)
+	}
+	noMountUnits(t, f)
+}
+
+// A folder the agent refuses to bind — its owner swapped it for a symlink —
+// stays unmounted after a reboot: the share is marked failed with why, and
+// the doctor names it; with every folder mounted the doctor says so.
+func TestShareRefusedAfterARebootShowsInTheDoctor(t *testing.T) {
+	f := newSiteFixture(t)
+	f.createSite(map[string]any{"domain": "shop.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	var created struct {
+		JobID int64 `json:"job_id"`
+	}
+	f.call(http.MethodPost, "/users", map[string]any{"login": "guest", "password": "guest-password-1", "role": "user"}, http.StatusAccepted, &created)
+	f.waitJob(created.JobID)
+	f.call(http.MethodPost, "/users/guest/shares", map[string]any{"site": "shop.example.com", "path": "kaspy"}, http.StatusCreated, nil)
+	shares := func() apitypes.Check {
+		t.Helper()
+		for _, c := range f.s.doctor(f.ctx).Checks {
+			if c.Name == "shared folders" {
+				return c
+			}
+		}
+		t.Fatal("the doctor has no line on the shared folders")
+		return apitypes.Check{}
+	}
+	if c := shares(); c.Status != "ok" || c.Detail != "1 mounted" {
+		t.Fatalf("doctor: %+v", c)
+	}
+
+	const folder = "/var/www/alex/data/www/shop.example.com/kaspy"
+	f.agent.SetSymlink(folder, "/var/www/bob")
+	f.agent.Unmount("var-www-guest-kaspy.mount")
+	f.s.refreshShareMounts(f.ctx)
+	if f.agent.Mounted("var-www-guest-kaspy.mount") {
+		t.Fatal("a folder swapped for a symlink was bound")
+	}
+	guest, err := f.db.GetUserByLogin(f.ctx, "guest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sh, err := f.db.GetShare(f.ctx, guest.ID, "kaspy")
+	if err != nil || sh.Status != "failed" || !strings.Contains(sh.LastError, "symlink") {
+		t.Fatalf("share: %+v %v", sh, err)
+	}
+	if c := shares(); c.Status != "warn" || !strings.Contains(c.Detail, "1 of 1 not mounted") || !strings.Contains(c.Detail, "kaspy of guest (shop.example.com/kaspy)") || !strings.Contains(c.Detail, "symlink") {
+		t.Fatalf("doctor: %+v", c)
 	}
 }

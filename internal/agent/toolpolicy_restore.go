@@ -39,10 +39,11 @@ type restoreMerge struct {
 	// aside is a restore aside: the tree stays where restic put it, and only
 	// what is unsafe anywhere is taken out of it (sanitize).
 	aside bool
-	// guard holds the shared folders' mount points while the merge runs: the
-	// way to one keeps its own owner and mode, nothing but a directory
-	// stands there, and a mount point itself is left alone — the folder it
-	// shows comes back with its site (sharemount.go).
+	// guard holds the shared folders' mount points while the merge runs —
+	// an in-place restore holds it from its first restic run on: the way
+	// to one keeps its own owner and mode, nothing but a directory stands
+	// there, and a mount point itself is left alone — the folder it shows
+	// comes back with its site (sharemount.go).
 	guard *shareGuard
 }
 
@@ -244,13 +245,17 @@ var restoreConfCheck = confcheck.Check
 // never written; the web root and the panel's configuration directory stay
 // the directories they are, with their own owner and mode.
 func (m *restoreMerge) merge(stagingFd int, staging string, includes []string) {
-	g, release, err := m.s.holdShareGuard()
-	if err != nil {
-		m.fail(m.s.cfg.WWWRoot, err)
-		return
+	if m.guard == nil {
+		// the caller holds none (restoreInPlace holds one from the first
+		// restic run on)
+		g, release, err := m.s.holdShareGuard()
+		if err != nil {
+			m.fail(m.s.cfg.WWWRoot, err)
+			return
+		}
+		defer release()
+		m.guard = g
 	}
-	defer release()
-	m.guard = g
 	sorted := append([]string{}, includes...)
 	sort.Strings(sorted)
 	var done []string

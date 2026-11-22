@@ -36,6 +36,16 @@ const fileRights = unix.LANDLOCK_ACCESS_FS_EXECUTE | unix.LANDLOCK_ACCESS_FS_WRI
 
 const readRights = unix.LANDLOCK_ACCESS_FS_READ_FILE | unix.LANDLOCK_ACCESS_FS_READ_DIR
 
+// nodeRights make device nodes, FIFOs and sockets: handled, and granted by
+// no rule. restic makes none of them for a backup — its cache, temporary
+// files and repository are files and directories, and the ssh it runs
+// connects to the agent's master, it binds no socket — and a restore makes
+// none either: the agent refuses a snapshot that would bring one
+// (vetSnapshot). So a snapshot the API composed cannot have restic make a
+// twin of /dev/sda even where that check had a gap.
+const nodeRights = unix.LANDLOCK_ACCESS_FS_MAKE_CHAR | unix.LANDLOCK_ACCESS_FS_MAKE_BLOCK |
+	unix.LANDLOCK_ACCESS_FS_MAKE_FIFO | unix.LANDLOCK_ACCESS_FS_MAKE_SOCK
+
 // ABI is the Landlock ABI version of the running kernel. An error means the
 // kernel has none: older than 5.13, built without it (ENOSYS), or booted
 // with an lsm= list that leaves it out (EOPNOTSUPP).
@@ -77,8 +87,8 @@ const (
 	ReadOnly Access = iota
 	// ReadExec: read and execute (programs, the dynamic loader, libraries).
 	ReadExec
-	// ReadWrite: every handled right but execution: make, remove, move,
-	// write and truncate files and directories.
+	// ReadWrite: every handled right but execution and nodeRights: make,
+	// remove, move, write and truncate files, directories and symlinks.
 	ReadWrite
 )
 
@@ -102,7 +112,7 @@ func (a Access) rights(dir bool, handled uint64) uint64 {
 	case ReadExec:
 		r = readRights | unix.LANDLOCK_ACCESS_FS_EXECUTE
 	case ReadWrite:
-		r = handled &^ unix.LANDLOCK_ACCESS_FS_EXECUTE
+		r = handled &^ (unix.LANDLOCK_ACCESS_FS_EXECUTE | nodeRights)
 	}
 	if !dir {
 		r &= fileRights

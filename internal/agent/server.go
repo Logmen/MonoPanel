@@ -44,12 +44,12 @@ type Server struct {
 	// unitDir is where /v1/units/* write (/etc/systemd/system), and the
 	// drop-ins of the panel's socket go.
 	unitDir string
-	// shareMu orders the writes of the shared folders' mount units (write
-	// lock, taken with TryLock: lockShareUnits) against the calls that change
-	// directories below the web root under a shareGuard (read lock): a unit
-	// appears only after the way to its mount point was checked, never while
-	// such a call that read the units before it is still at work
-	// (sharemount.go).
+	// shareMu orders the binds of the shared folders and the removal of
+	// their units (write lock, taken with TryLock: lockShareUnits) against
+	// the calls that change directories below the web root under a
+	// shareGuard (read lock): a folder is bound only after the way to its
+	// mount point was checked, never while such a call that read the mount
+	// points before it is still at work (sharemount.go, sharebind.go).
 	shareMu sync.RWMutex
 	// lookupIP resolves a host name of web.listen for the panel's socket,
 	// daemonReload reloads systemd after its drop-in changed. Tests replace
@@ -137,6 +137,9 @@ func (s *Server) Handler() http.Handler {
 	r.Post("/v1/user/shadow", handle(s.unixShadow))
 	r.Post("/v1/units/apply", handle(s.applyUnit))
 	r.Post("/v1/units/remove", handle(s.removeUnit))
+	r.Post("/v1/shares/bind", handle(s.shareBind))
+	r.Post("/v1/shares/unbind", handle(s.shareUnbind))
+	r.Post("/v1/shares/status", handle(s.shareStatus))
 	// Потоки идут мимо handle(): у них тело — это данные, а не JSON.
 	r.Post("/v1/stream/out", s.streamOut)
 	r.Post("/v1/stream/in", s.streamIn)

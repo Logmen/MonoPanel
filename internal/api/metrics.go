@@ -504,6 +504,9 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 	if c := s.catchWorkersCheck(actx); c != nil {
 		add(*c)
 	}
+	if c := s.shareDoctorCheck(actx); c != nil {
+		add(*c)
+	}
 	add(s.kernelModulesCheck())
 	if h := s.cfg.Web.Hostname; h != "" {
 		addrs, err := s.lookup(actx, h)

@@ -25,10 +25,16 @@ import (
 //
 //	monopanel-app-<login>-<name>.service        an account's app (systemd/app.service.tmpl)
 //	monopanel-valkey-<login>-<purpose>.service  an account's Valkey (systemd/valkey.service.tmpl)
-//	<escaped path>.mount                        a shared folder, bound into a guest's home or .shares (sharemount.go)
 //	monopanel-sphinx.service                    Sphinx 3 on EL (sphinx/monopanel-sphinx.service.tmpl)
 //	monopanel-firewall.service                  the panel's nftables table at boot
 //	<nginx unit>.d/monopanel.conf               restart-on-failure for nginx
+//
+// No mount unit: a shared folder is bound by the agent itself
+// (sharebind.go). A unit names its folder by path, and systemd mounts it by
+// that path at boot — through whatever symlink the folder's owner has put
+// there by then. The mount units of the shared folders a panel up to 0.8.20
+// wrote, <escaped path>.mount, are only removed (/v1/units/remove, and as
+// the agent starts: retireUnsafeShareUnits).
 //
 // The content is read the way systemd reads unit files (systemd.syntax(7))
 // and must hold exactly the sections and keys of its kind, with the values
@@ -75,6 +81,9 @@ type UnitAccount struct {
 	Home  string
 	// Group is the name of its primary group.
 	Group string
+	// UID is its uid: a shared folder is a directory of its site owner's
+	// (openShareSource).
+	UID uint32
 }
 
 // unitEntry is one assignment of a unit file.
@@ -376,7 +385,8 @@ func unitPath(key, p string) error {
 }
 
 // mountUnitName is the name systemd gives the mount unit of where (the
-// API's store.MountUnit, which the share code names its units with).
+// API's store.MountUnit): the units of the shared folders the older panels
+// wrote are named so, and the agent's records of the folders it binds.
 func mountUnitName(where string) string {
 	var b strings.Builder
 	for _, r := range strings.Trim(where, "/") {
@@ -422,7 +432,7 @@ func unitKindOf(name string, h *UnitHost) (unitKind, error) {
 	case mountUnitRe.MatchString(name) && root != "/" && strings.HasPrefix(name, strings.TrimSuffix(mountUnitName(root), ".mount")+"-"):
 		return unitMount, nil
 	}
-	return 0, fmt.Errorf("the panel writes monopanel-app-*, monopanel-valkey-*, monopanel-firewall, Sphinx's, nginx's drop-in and mount units of shared folders below %s only", root)
+	return 0, fmt.Errorf("the panel writes monopanel-app-*, monopanel-valkey-*, monopanel-firewall, Sphinx's and nginx's drop-in only, and removes the mount units of shared folders below %s that older panels wrote", root)
 }
 
 // CheckUnitName tells why name is none of the panel's units (/v1/units/remove).
@@ -448,7 +458,7 @@ func CheckUnit(name string, content []byte, h *UnitHost) error {
 	case unitValkey:
 		return checkValkeyUnit(name, entries, h)
 	case unitMount:
-		return checkMountUnit(name, entries, h)
+		return errNoMountUnits
 	case unitSphinx:
 		return checkSphinxUnit(entries, h)
 	case unitFirewall:
@@ -594,8 +604,8 @@ func checkValkeyUnit(name string, entries []unitEntry, h *UnitHost) error {
 	return errors.Join(errs...)
 }
 
-// mountPointOf checks the Where= of a shared folder's unit: inside the home
-// of a panel account (an SFTP-only guest's root-owned chroot), or
+// mountPointOf checks the mount point of a shared folder: inside the home of
+// a panel account (an SFTP-only guest's root-owned chroot), or
 // <www_root>/.shares/<login>/<name> for a panel account with a shell, whose
 // own home is no place for a mount point (sharemount.go). Whether the
 // directories on the way are root's is the agent's check of the host
@@ -648,24 +658,97 @@ func homeOf(p string, h *UnitHost) error {
 	return nil
 }
 
-func checkMountUnit(name string, entries []unitEntry, h *UnitHost) error {
+// errNoMountUnits refuses a mount unit to /v1/units/apply.
+var errNoMountUnits = errors.New("the panel writes no mount units: the agent binds a shared folder itself, from the folder it opened without following a symlink (/v1/shares/bind), and a unit would have systemd mount it at boot by its path, through whatever symlink the folder's owner put there")
+
+// CheckShareBind tells why the agent must not bind the folder what at the
+// mount point where, as far as the text goes (/v1/shares/bind; the agent's
+// doubles): both plain clean paths, what a folder inside the home of a panel
+// account — never in .shares or the restore area, which are no homes —
+// and where a mount point of a shared folder (mountPointOf), neither one
+// inside the other. Whether they are what the names say is the agent's look
+// at the host (openShareSource, checkMountPoint).
+func CheckShareBind(what, where string, h *UnitHost) error {
+	if err := shareBindShape(what, where, h.WWWRoot); err != nil {
+		return err
+	}
+	return errors.Join(homeOf(what, h), mountPointOf(where, h))
+}
+
+// shareBindShape is CheckShareBind without a look at the accounts: what a
+// folder inside a home below the web root, never in .shares or the restore
+// area, and where <www_root>/<login>/<name> or
+// <www_root>/.shares/<login>/<name>, neither one inside the other — by
+// their text alone.
+func shareBindShape(what, where, wwwRoot string) error {
+	if err := errors.Join(unitPath("What", what), unitPath("Where", where)); err != nil {
+		return err
+	}
+	root := filepath.Clean(wwwRoot)
+	rel, ok := strings.CutPrefix(what, root+"/")
+	switch {
+	case !ok || !strings.Contains(rel, "/"):
+		return fmt.Errorf("%s is not inside an account's home below %s", what, root)
+	case strings.HasPrefix(rel, "."):
+		return fmt.Errorf("%s lies in %s, the agent's own: no account's home", what, filepath.Join(root, strings.SplitN(rel, "/", 2)[0]))
+	case pathBelow(what, where) || pathBelow(where, what):
+		return fmt.Errorf("the folder %s and its mount point %s lie one inside the other", what, where)
+	}
+	wrel, ok := strings.CutPrefix(where, root+"/")
+	switch parts := strings.Split(wrel, "/"); {
+	case ok && len(parts) == 2 && !strings.HasPrefix(parts[0], "."):
+	case ok && len(parts) == 3 && parts[0] == sharesDirName && !strings.HasPrefix(parts[1], "."):
+	default:
+		return fmt.Errorf("%s is neither %s/<login>/<name> nor %s/<login>/<name>", where, root, filepath.Join(root, sharesDirName))
+	}
+	return nil
+}
+
+// shareUnitHeader begins every mount unit of a shared folder a panel wrote,
+// from 0.8.13 on (internal/api/ops_shares.go).
+const shareUnitHeader = "# Generated by MonoPanel: shared folder of "
+
+// legacyShareUnit reads a shared folder's mount unit as the panels up to
+// 0.8.20 wrote it — a bind of What=, a folder in an account's home, at the
+// Where= of a shared folder, wanted by multi-user.target — and returns What=
+// and Where=; an error says why the unit is not one of those (an
+// administrator's own, which the agent leaves as it is).
+//
+// Up to 0.8.19 the panel wrote these units through config/apply, with no look
+// at the accounts: a guest or an owner may be one the agent no longer counts
+// as a panel account (a supplementary group of the system's, a privileged
+// one). A unit whose header says it is the panel's is read by its text alone
+// all the same — systemd would go on mounting it by path at every boot — and
+// the accounts are judged where the folder is bound: by the agent's look at
+// what the unit mounted (verifyShareMounts) and at the API's next bind.
+func legacyShareUnit(name string, content []byte, h *UnitHost) (what, where string, err error) {
+	if kind, err := unitKindOf(name, h); err != nil || kind != unitMount {
+		return "", "", errors.New("not a mount unit of a shared folder")
+	}
+	entries, err := parseUnit(string(content))
+	if err != nil {
+		return "", "", err
+	}
 	v, err := collectUnit(entries, withInstall(map[string][]string{
 		"Unit":  {"Description", "RequiresMountsFor"},
 		"Mount": {"What", "Where", "Type", "Options"},
 	}))
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	if err := v.require("Mount.What", "Mount.Where", "Mount.Type", "Mount.Options"); err != nil {
-		return err
+		return "", "", err
 	}
-	what, where := v["Mount.What"], v["Mount.Where"]
-	if err := errors.Join(unitPath("What", what), unitPath("Where", where)); err != nil {
-		return err
+	what, where = v["Mount.What"], v["Mount.Where"]
+	if strings.HasPrefix(string(content), shareUnitHeader) {
+		err = shareBindShape(what, where, h.WWWRoot)
+	} else {
+		err = CheckShareBind(what, where, h)
+	}
+	if err != nil {
+		return "", "", err
 	}
 	errs := []error{
-		homeOf(what, h),
-		mountPointOf(where, h),
 		// A bind mount and nothing else: no device, no other file system,
 		// no option such as exec or suid.
 		v.is("Mount.Type", "none"),
@@ -676,8 +759,16 @@ func checkMountUnit(name string, entries []unitEntry, h *UnitHost) error {
 	if want := mountUnitName(where); name != want {
 		errs = append(errs, fmt.Errorf("the unit of Where=%s is %s, not %s", where, want, name))
 	}
-	return errors.Join(errs...)
+	if err := errors.Join(errs...); err != nil {
+		return "", "", err
+	}
+	return what, where, nil
 }
+
+// MountUnitName is the name systemd gives the mount unit of where, for the
+// agent's doubles, which keep the state of a shared folder by it as systemd
+// shows a mount by it.
+func MountUnitName(where string) string { return mountUnitName(where) }
 
 func checkSphinxUnit(entries []unitEntry, h *UnitHost) error {
 	v, err := collectUnit(entries, withInstall(map[string][]string{
@@ -807,7 +898,7 @@ func (s *Server) unitAccount(login string) (*UnitAccount, error) {
 		}
 		return nil, fmt.Errorf("a member of the group %s (gid %s): the panel runs services only for its own accounts", sg.Name, id)
 	}
-	return &UnitAccount{Login: login, Home: home, Group: g.Name}, nil
+	return &UnitAccount{Login: login, Home: home, Group: g.Name, UID: uint32(uid)}, nil
 }
 
 // unitSystemUser checks the account a system service of the panel's runs as: a
@@ -860,28 +951,12 @@ func (s *Server) unitDirectory() string {
 func (s *Server) unitFollow() int { return len(pathParts(s.unitDirectory())) }
 
 // applyUnit writes one of the panel's units (0644 root:root, atomically, the
-// previous version to the history) after CheckUnit. A shared folder's unit is
-// written only after the way to its mount point passed checkMountPoint, while
-// no call that changes directories below the web root is under way
-// (shareMu): from then on those calls keep that way as it is (shareGuard).
+// previous version to the history) after CheckUnit — never a mount unit: the
+// shared folders are the agent's to bind (sharebind.go).
 func (s *Server) applyUnit(ctx context.Context, req *ApplyUnitRequest) (*ApplyUnitResponse, error) {
 	h := s.unitHost()
 	if err := CheckUnit(req.Name, []byte(req.Content), h); err != nil {
 		return nil, &Error{Status: http.StatusForbidden, Message: "unit " + req.Name + " is not allowed: " + err.Error()}
-	}
-	if kind, _ := unitKindOf(req.Name, h); kind == unitMount {
-		unlock, err := s.lockShareUnits(ctx)
-		if err != nil {
-			return nil, err
-		}
-		defer unlock()
-		where, _, ok := isShareMountUnit(req.Name, filepath.Clean(s.cfg.WWWRoot))
-		if !ok {
-			return nil, &Error{Status: http.StatusForbidden, Message: "unit " + req.Name + " is not allowed: its mount point cannot be read from the name"}
-		}
-		if err := s.checkMountPoint(where); err != nil {
-			return nil, s.mountPointErr(where, err)
-		}
 	}
 	p := s.unitPath(req.Name)
 	tx := s.newFileTx()

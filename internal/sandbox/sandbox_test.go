@@ -162,6 +162,17 @@ func child(args []string) int {
 		case "mkdir":
 			p := next()
 			report(op, p, os.Mkdir(p, 0o700))
+		case "mkfifo":
+			p := next()
+			report(op, p, unix.Mkfifo(p, 0o600))
+		case "mksock":
+			// bind(2) of a unix socket makes the node
+			p := next()
+			l, err := net.Listen("unix", p)
+			if err == nil {
+				l.Close()
+			}
+			report(op, p, err)
 		case "remove":
 			p := next()
 			report(op, p, os.Remove(p))
@@ -682,7 +693,8 @@ func TestBadRules(t *testing.T) {
 
 // The rights a ruleset handles follow the kernel's ABI version, and a rule
 // grants within them: read on --ro, read and execute on --rx, everything but
-// execute on --rw, and a file only the rights a file can have.
+// execute and making device nodes, FIFOs and sockets on --rw, and a file
+// only the rights a file can have.
 func TestRights(t *testing.T) {
 	v1 := uint64(rightsV1)
 	for abi, want := range map[int]uint64{
@@ -707,7 +719,8 @@ func TestRights(t *testing.T) {
 		{ReadOnly, false, unix.LANDLOCK_ACCESS_FS_READ_FILE},
 		{ReadExec, true, unix.LANDLOCK_ACCESS_FS_READ_FILE | unix.LANDLOCK_ACCESS_FS_READ_DIR | unix.LANDLOCK_ACCESS_FS_EXECUTE},
 		{ReadExec, false, unix.LANDLOCK_ACCESS_FS_READ_FILE | unix.LANDLOCK_ACCESS_FS_EXECUTE},
-		{ReadWrite, true, h &^ unix.LANDLOCK_ACCESS_FS_EXECUTE},
+		// no device node, FIFO or socket below a tree restic writes to
+		{ReadWrite, true, h &^ (unix.LANDLOCK_ACCESS_FS_EXECUTE | unix.LANDLOCK_ACCESS_FS_MAKE_CHAR | unix.LANDLOCK_ACCESS_FS_MAKE_BLOCK | unix.LANDLOCK_ACCESS_FS_MAKE_FIFO | unix.LANDLOCK_ACCESS_FS_MAKE_SOCK)},
 		{ReadWrite, false, unix.LANDLOCK_ACCESS_FS_READ_FILE | unix.LANDLOCK_ACCESS_FS_WRITE_FILE | unix.LANDLOCK_ACCESS_FS_TRUNCATE | unix.LANDLOCK_ACCESS_FS_IOCTL_DEV},
 	} {
 		if got := c.access.rights(c.dir, h); got != c.want {
