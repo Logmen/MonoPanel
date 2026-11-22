@@ -297,7 +297,21 @@ func run(t *testing.T, cmd *exec.Cmd) (string, int) {
 	if err != nil && !errors.As(err, &ee) {
 		t.Fatalf("%v: %v", cmd.Args, err)
 	}
-	return string(out), cmd.ProcessState.ExitCode()
+	return withoutCoverageNoise(string(out)), cmd.ProcessState.ExitCode()
+}
+
+// withoutCoverageNoise drops what a test binary built with -cover says when,
+// run again inside the sandbox, it cannot write its coverage data there
+// (go test -coverprofile, as in CI): the sandbox refusing that is right.
+func withoutCoverageNoise(out string) string {
+	if !strings.Contains(out, "coverage") && !strings.Contains(out, "GOCOVERDIR") {
+		return out
+	}
+	lines := strings.SplitAfter(out, "\n")
+	lines = slices.DeleteFunc(lines, func(l string) bool {
+		return strings.Contains(l, "coverage meta-data emit failed") || strings.Contains(l, "coverage counter data emit failed") || strings.Contains(l, "GOCOVERDIR not set")
+	})
+	return strings.Join(lines, "")
 }
 
 func wantLines(t *testing.T, out string, lines ...string) {

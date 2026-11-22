@@ -547,7 +547,7 @@ func TestResticPrivateEtc(t *testing.T) {
 	}
 	conf := s.cfg.ConfigDir
 	s.cfg.ConfigDir = "/etc/monopanel-test"
-	if acc, err := s.resticRules(bin, backup(home, s.cfg.ConfigDir), ""); err != nil || !slices.Equal(acc.etcBind, []string{s.cfg.ConfigDir}) || acc.etc == nil {
+	if acc, err := s.resticRules(bin, backup(home, s.cfg.ConfigDir), ""); err != nil || !slices.Equal(acc.etcBind, append([]string{s.cfg.ConfigDir}, wantBind...)) || acc.etc == nil {
 		t.Errorf("the configuration below /etc: %+v %v", acc, err)
 	}
 	s.cfg.ConfigDir = "/etc/ssl"
