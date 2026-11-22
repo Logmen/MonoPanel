@@ -180,8 +180,10 @@ as_user() {
 	shift
 	(cd / && setpriv --reuid="$(id -u "$u")" --regid="$(id -g "$u")" --init-groups -- "$@")
 }
-# put <owner> <path> <content>: a file of the account's
-put() { printf '%s\n' "$3" | install -o "$1" -g "$(id -gn "$1")" -m 0644 /dev/stdin "$2"; }
+# put <owner> <path> <content>: a file of the account's, written by the
+# account itself (install(1) of uutils coreutils, Ubuntu 26.04, cannot write
+# over a file from /dev/stdin)
+put() { printf '%s\n' "$3" | as_user "$1" sh -c 'umask 022 && cat >"$1"' sh "$2"; }
 # get <host> <path> [curl args]: the status code through nginx, the body in $tmp/body
 get() {
 	local h=$1 p=$2

@@ -43,8 +43,10 @@ trap 'rm -f "$out"' EXIT
 
 log() { printf '\033[35m[seed %s]\033[0m %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 secret() { printf '%sAa1-\n' "$(head -c 24 /dev/urandom | base64 | tr -d '/+=\n')"; }
-put() { # put <owner> <path> <content>
-	printf '%s\n' "$3" | install -o "$1" -g "$(id -gn "$1")" -m 0644 /dev/stdin "$2"
+put() { # put <owner> <path> <content>: written by the account itself
+	# (install(1) of uutils coreutils cannot write over a file from /dev/stdin)
+	# shellcheck disable=SC2016 # the inner shell expands $1
+	printf '%s\n' "$3" | (cd / && setpriv --reuid="$(id -u "$1")" --regid="$(id -g "$1")" --init-groups -- sh -c 'umask 022 && cat >"$1"' sh "$2")
 }
 # step <label> <command...>: quiet, but the tail of what failed is shown
 step() {
