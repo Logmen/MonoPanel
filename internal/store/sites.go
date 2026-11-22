@@ -173,9 +173,41 @@ func (d *DB) UpdateSite(ctx context.Context, s *Site) error {
 	return nil
 }
 
+// SaveAppliedSite stores what a site.apply decided and nothing else: the
+// address it took for a site without one (unless one was set meanwhile), the
+// certificate it serves (withCert), the status and the error. The other
+// fields stay as they are now: a change made while the apply ran is the next
+// apply's to render, not to be overwritten with what this one read. The
+// status and the error, too, go in only while the status is still from, the
+// one the apply read at its start: a suspension, its end or a removal asked
+// for meanwhile has its own job queued, which waits for this apply and then
+// reads the site — it must find what was asked for, not what this apply
+// decided from the status before.
+func (d *DB) SaveAppliedSite(ctx context.Context, s *Site, from string, withCert bool) error {
+	// SQLite evaluates every expression of SET on the row as it was: both
+	// CASEs see the status before this update.
+	res, err := d.sql.ExecContext(ctx, `UPDATE sites SET ip=CASE WHEN ip='' THEN ? ELSE ip END, certificate_id=CASE WHEN ? THEN ? ELSE certificate_id END,
+		status=CASE WHEN status=? THEN ? ELSE status END, last_error=CASE WHEN status=? THEN ? ELSE last_error END, updated_at=? WHERE id=?`,
+		s.IP, boolInt(withCert), nullInt64Ptr(s.CertificateID), from, s.Status, from, s.LastError, now(), s.ID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // SetSiteStatus updates status and error only.
 func (d *DB) SetSiteStatus(ctx context.Context, id int64, status, lastError string) error {
 	_, err := d.sql.ExecContext(ctx, `UPDATE sites SET status=?, last_error=?, updated_at=? WHERE id=?`, status, lastError, now(), id)
+	return err
+}
+
+// SetSiteStatusFrom is SetSiteStatus while the status is still from, the
+// one a job read at its start (SaveAppliedSite says why).
+func (d *DB) SetSiteStatusFrom(ctx context.Context, id int64, from, status, lastError string) error {
+	_, err := d.sql.ExecContext(ctx, `UPDATE sites SET status=?, last_error=?, updated_at=? WHERE id=? AND status=?`, status, lastError, now(), id, from)
 	return err
 }
 

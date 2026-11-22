@@ -3,9 +3,12 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"monopanel/internal/agent"
 	"monopanel/internal/agent/agenttest"
@@ -216,11 +219,43 @@ func TestSiteLogsEndpointReadsTheTree(t *testing.T) {
 	}
 }
 
-// An upgraded panel switches every site to the tree once: the directories
-// and logs of each account with sites, a site.apply for every site (whose
-// log says the old files stay), the webmail on its port re-rendered. The
+// pendingMoves are the sites that have not moved their logs yet, by domain.
+func (f *siteFixture) pendingMoves() map[string]*siteMove {
+	f.t.Helper()
+	out := map[string]*siteMove{}
+	for _, mv := range f.s.siteMovesState(f.ctx).Sites {
+		out[mv.Domain] = mv
+	}
+	return out
+}
+
+// logMoveJobs are the site.apply jobs queued to move a site's logs, by site
+// ID, and the mail.apply jobs the system queued.
+func (f *siteFixture) logMoveJobs() (sites map[int64][]int64, mail int) {
+	f.t.Helper()
+	jobs, err := f.db.ListJobs(f.ctx, 500, "")
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	sites = map[int64][]int64{}
+	for _, j := range jobs {
+		var p sitePayload
+		switch {
+		case j.Type == "site.apply" && json.Unmarshal(j.Payload, &p) == nil && p.LogsMoved:
+			sites[p.SiteID] = append(sites[p.SiteID], j.ID)
+		case j.Type == "mail.apply" && j.RequestedBy == "system":
+			mail++
+		}
+	}
+	return sites, mail
+}
+
+// An upgraded panel switches every site to the tree: the directories and
+// logs of each account with sites, a site.apply for every site (whose log
+// says the old files stay), the webmail on its port re-rendered. What it
+// remembers is what finished — each site as its apply succeeds — and the
 // next start does nothing.
-func TestMoveSiteLogsOnce(t *testing.T) {
+func TestMoveSiteLogsRecordsWhatFinished(t *testing.T) {
 	f := newMailFixture(t)
 	f.createSite(map[string]any{"domain": "example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
 	f.createSite(map[string]any{"domain": "app.example.com", "user": "alex", "mode": "proxy", "backend": "http://127.0.0.1:3000", "ssl": "none"})
@@ -230,13 +265,32 @@ func TestMoveSiteLogsOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.settle()
-	// What a panel up to 0.8.19 left: no record of the move.
-	if v, _ := f.db.GetSetting(f.ctx, settingSiteLogsMoved); v != "" {
-		t.Fatalf("the move ran before the start: %q", v)
+	// What a panel up to 0.8.19 left: no list of the moves.
+	if m := f.s.siteMovesState(f.ctx); m.Logs != "" {
+		t.Fatalf("the move ran before the start: %+v", m)
 	}
 	f.agent.Reset()
+	// The first site.apply is held while it applies: the start after it
+	// queues nothing beside the jobs still queued or running.
+	held, release := heldApply(f, "/etc/nginx/monopanel/sites/example.com.conf")
 
 	f.s.moveSiteLogs(f.ctx)
+	select {
+	case <-held:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the site.apply never applied nginx")
+	}
+	f.s.moveSiteLogs(f.ctx)
+	if sites, mail := f.logMoveJobs(); len(sites) != 2 || mail != 1 {
+		t.Fatalf("queued while the first jobs run: sites %v, mail.apply %d", sites, mail)
+	} else {
+		for id, ids := range sites {
+			if len(ids) != 1 {
+				t.Fatalf("site %d queued again while its job ran: %v", id, ids)
+			}
+		}
+	}
+	release()
 	if got := f.agent.SiteLogs("alex"); !slices.Equal(got, []string{
 		"app.example.com.access.log", "app.example.com.error.log",
 		"example.com.access.log", "example.com.error.log", "example.com.php.error.log", "example.com.php.slow.log",
@@ -244,69 +298,244 @@ func TestMoveSiteLogsOnce(t *testing.T) {
 	}) {
 		t.Fatalf("logs prepared for alex: %v", got)
 	}
-	moved := func() (sites map[int64]bool, mail int) {
-		t.Helper()
-		jobs, err := f.db.ListJobs(f.ctx, 500, "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		sites = map[int64]bool{}
-		for _, j := range jobs {
-			var p sitePayload
-			switch {
-			case j.Type == "site.apply" && json.Unmarshal(j.Payload, &p) == nil && p.LogsMoved:
-				if sites[p.SiteID] {
-					t.Fatalf("site %d queued twice", p.SiteID)
-				}
-				sites[p.SiteID] = true
-			case j.Type == "mail.apply" && j.RequestedBy == "system":
-				mail++
-			}
-		}
-		return sites, mail
-	}
-	sites, mail := moved()
+	sites, mail := f.logMoveJobs()
 	all, _ := f.db.ListSites(f.ctx, 0)
 	if len(sites) != len(all) || len(all) != 2 || mail != 1 {
 		t.Fatalf("queued: sites %v of %d, mail.apply %d", sites, len(all), mail)
 	}
-	if v, _ := f.db.GetSetting(f.ctx, settingSiteLogsMoved); v != "/var/log/monopanel/sites" {
-		t.Fatalf("the move is not remembered: %q", v)
+	for id, ids := range sites {
+		if len(ids) != 1 {
+			t.Fatalf("site %d queued %d times", id, len(ids))
+		}
 	}
 	f.settle()
+	if m := f.s.siteMovesState(f.ctx); m.Logs != "/var/log/monopanel/sites" || len(m.Sites) != 0 || m.Webmail != nil {
+		t.Fatalf("after the jobs: %+v", m)
+	}
 	site, _ := f.db.GetSiteByDomain(f.ctx, "example.com")
-	jobs, _ := f.db.ListJobs(f.ctx, 500, "")
-	for _, j := range jobs {
-		var p sitePayload
-		if j.Type != "site.apply" || json.Unmarshal(j.Payload, &p) != nil || !p.LogsMoved || p.SiteID != site.ID {
-			continue
-		}
-		j = f.waitJob(j.ID) // the list leaves the logs out
-		if j.Status != store.JobDone || !strings.Contains(j.Log, "/var/www/alex/data/logs") || !strings.Contains(j.Log, "the old files stay there") {
-			t.Fatalf("site.apply after the move: %s %s\n%s", j.Status, j.Error, j.Log)
-		}
+	j := f.waitJob(sites[site.ID][0]) // the list leaves the logs out
+	if j.Status != store.JobDone || !strings.Contains(j.Log, "/var/www/alex/data/logs") || !strings.Contains(j.Log, "the old files stay there") {
+		t.Fatalf("site.apply after the move: %s %s\n%s", j.Status, j.Error, j.Log)
 	}
 	if conf, _ := f.agent.File("/etc/nginx/monopanel/sites/example.com.conf"); !strings.Contains(conf, "access_log /var/log/monopanel/sites/alex/example.com.access.log main;") {
 		t.Fatalf("the site was not rendered anew:\n%s", conf)
+	}
+	if c := f.s.siteLogsCheck(f.ctx); c == nil || c.Status != "ok" {
+		t.Fatalf("doctor: %+v", c)
 	}
 
 	// The next start: nothing.
 	f.agent.Reset()
 	f.s.moveSiteLogs(f.ctx)
-	if again, mail2 := moved(); len(again) != 2 || mail2 != 1 || f.agent.Called("/v1/sitelogs/ensure") {
+	if again, mail2 := f.logMoveJobs(); len(again) != 2 || mail2 != 1 || f.agent.Called("/v1/sitelogs/ensure") {
 		t.Fatalf("the move ran twice: sites %v, mail.apply %d, agent %v", again, mail2, f.agent.Calls())
 	}
 }
 
+// A site whose move fails stays on the list, with the job's error, and is
+// not queued again at every start: the next try waits ten minutes, then four
+// times as long each time. Meanwhile the jails watch its files in the tree,
+// which the move made and which stay empty until it moves — never its
+// data/logs — and the doctor names it with the reason. mp site apply, once
+// the cause is fixed, moves it at once; nothing is queued for it after that.
+func TestMoveSiteLogsRetriesWhatFailed(t *testing.T) {
+	f := newSiteFixture(t)
+	f.createSite(map[string]any{"domain": "a.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	b := f.createSite(map[string]any{"domain": "b.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	// b's PHP branch went away since: it cannot be applied.
+	b.PHPVersion = "7.4"
+	if err := f.db.UpdateSite(f.ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	f.s.moveSiteLogs(f.ctx)
+	f.settle()
+	pending := f.pendingMoves()
+	if len(pending) != 1 || pending["b.example.com"] == nil {
+		t.Fatalf("pending after the first try: %v", pending)
+	}
+	// The failure counts when the panel looks next — at the next start —
+	// and that start queues nothing for b.
+	before, _ := f.logMoveJobs()
+	f.s.moveSiteLogs(f.ctx)
+	after, _ := f.logMoveJobs()
+	mv := f.pendingMoves()["b.example.com"]
+	if len(after[b.ID]) != len(before[b.ID]) || mv == nil || mv.Tries != 1 || mv.Job != 0 || !strings.Contains(mv.Error, "PHP 7.4 is not installed") {
+		t.Fatalf("after the failure: jobs %v → %v, move %+v", before, after, mv)
+	}
+	if wait := time.Until(mv.Next); wait < 9*time.Minute || wait > 11*time.Minute {
+		t.Fatalf("next try in %s, want 10m", wait)
+	}
+	access, _ := f.s.fail2banSiteLogs(f.ctx)
+	if !slices.Equal(access, []string{"/var/log/monopanel/sites/alex/a.example.com.access.log", "/var/log/monopanel/sites/alex/b.example.com.access.log"}) {
+		t.Fatalf("jails: %v", access)
+	}
+	// Not made by the move (a host whose tree the agent refused): left out,
+	// the file may not be there.
+	if err := f.s.changeSiteMoves(f.ctx, func(m *siteMoves) bool {
+		m.Sites[b.ID].Made = false
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if access, _ := f.s.fail2banSiteLogs(f.ctx); !slices.Equal(access, []string{"/var/log/monopanel/sites/alex/a.example.com.access.log"}) {
+		t.Fatalf("jails without b's logs made: %v", access)
+	}
+	if err := f.s.changeSiteMoves(f.ctx, func(m *siteMoves) bool {
+		m.Sites[b.ID].Made = true
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c := f.s.siteLogsCheck(f.ctx)
+	if c == nil || c.Status != "warn" || !strings.Contains(c.Detail, "b.example.com (failed 1 time(s)") || !strings.Contains(c.Detail, "PHP 7.4 is not installed") || strings.Contains(c.Detail, "a.example.com") {
+		t.Fatalf("doctor: %+v", c)
+	}
+
+	// Its time has come: queued again, failing again, waiting four times as
+	// long.
+	if err := f.s.changeSiteMoves(f.ctx, func(m *siteMoves) bool {
+		m.Sites[b.ID].Next = time.Now().Add(-time.Second)
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.s.moveSiteLogs(f.ctx)
+	if again, _ := f.logMoveJobs(); len(again[b.ID]) != len(before[b.ID])+1 {
+		t.Fatalf("not queued again when due: %v", again)
+	}
+	f.settle()
+	f.s.moveSiteLogs(f.ctx)
+	mv = f.pendingMoves()["b.example.com"]
+	if wait := time.Until(mv.Next); mv.Tries != 2 || wait < 39*time.Minute || wait > 41*time.Minute {
+		t.Fatalf("second failure: %+v, next in %s", mv, wait)
+	}
+
+	// Fixed and applied by hand: moved, and nothing more is queued.
+	b.PHPVersion = "8.4"
+	if err := f.db.UpdateSite(f.ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	f.siteAction("b.example.com", "apply")
+	if p := f.pendingMoves(); len(p) != 0 {
+		t.Fatalf("still pending: %v", p)
+	}
+	jobs, _ := f.logMoveJobs()
+	f.s.moveSiteLogs(f.ctx)
+	if again, _ := f.logMoveJobs(); len(again[b.ID]) != len(jobs[b.ID]) {
+		t.Fatal("queued again after it moved")
+	}
+	if c := f.s.siteLogsCheck(f.ctx); c == nil || c.Status != "ok" {
+		t.Fatalf("doctor after the fix: %+v", c)
+	}
+	if access, _ := f.s.fail2banSiteLogs(f.ctx); len(access) != 2 {
+		t.Fatalf("jails after the fix: %v", access)
+	}
+}
+
 // A fresh panel has no sites to move and remembers so: its sites get the
-// tree from the start.
+// tree from the start and never enter the list, not even one whose first
+// apply failed.
 func TestMoveSiteLogsOnAFreshPanel(t *testing.T) {
 	f := newSiteFixture(t)
 	f.s.moveSiteLogs(f.ctx)
-	if v, _ := f.db.GetSetting(f.ctx, settingSiteLogsMoved); v != "/var/log/monopanel/sites" {
-		t.Fatalf("setting: %q", v)
+	if m := f.s.siteMovesState(f.ctx); m.Logs != "/var/log/monopanel/sites" || len(m.Sites) != 0 {
+		t.Fatalf("moves: %+v", m)
 	}
 	if jobs, _ := f.db.ListJobs(f.ctx, 500, ""); len(jobs) != 0 {
 		t.Fatalf("jobs on a panel without sites: %d", len(jobs))
+	}
+	if c := f.s.siteLogsCheck(f.ctx); c == nil || c.Status != "ok" {
+		t.Fatalf("doctor: %+v", c)
+	}
+	f.agent.Fail["/v1/config/apply"] = "nginx: [emerg] something else"
+	f.createSite(map[string]any{"domain": "example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	delete(f.agent.Fail, "/v1/config/apply")
+	f.s.moveSiteLogs(f.ctx)
+	if sites, _ := f.logMoveJobs(); len(sites) != 0 || len(f.pendingMoves()) != 0 {
+		t.Fatalf("a new site was taken for an old one: %v", sites)
+	}
+}
+
+// On a host with SELinux nothing switches to the tree before its label rule
+// is in place — nginx and php-fpm could not open logs labelled var_log_t —
+// and the doctor says what the sites wait for; once the rule is recorded,
+// they move. Without SELinux on the host the rule is not waited for.
+func TestMoveSiteLogsWaitsForTheSELinuxRule(t *testing.T) {
+	withOSRelease(t, elRelease)
+	enforce := filepath.Join(t.TempDir(), "enforce")
+	if err := os.WriteFile(enforce, []byte("1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev := selinuxEnforcePath
+	selinuxEnforcePath = enforce
+	t.Cleanup(func() { selinuxEnforcePath = prev })
+	f := newSiteFixture(t)
+	f.createSite(map[string]any{"domain": "example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	// A host whose rule could not be added (semanage failed at this start).
+	if err := f.db.SetSetting(f.ctx, settingSELinuxSiteLogs, ""); err != nil {
+		t.Fatal(err)
+	}
+	f.agent.Reset()
+	f.s.moveSiteLogs(f.ctx)
+	if sites, _ := f.logMoveJobs(); len(sites) != 0 || f.agent.Called("/v1/sitelogs/ensure") {
+		t.Fatalf("moved before the label rule: %v", sites)
+	}
+	if p := f.pendingMoves(); len(p) != 1 {
+		t.Fatalf("pending: %v", p)
+	}
+	// Its logs in the tree are not made yet: the jails leave it out.
+	if access, _ := f.s.fail2banSiteLogs(f.ctx); len(access) != 0 {
+		t.Fatalf("jails before the move made the logs: %v", access)
+	}
+	if c := f.s.siteLogsCheck(f.ctx); c == nil || !strings.Contains(c.Detail, "example.com (waits for the SELinux label rule of /var/log/monopanel/sites)") {
+		t.Fatalf("doctor: %+v", c)
+	}
+	if err := f.db.SetSetting(f.ctx, settingSELinuxSiteLogs, f.s.selinuxSiteLogsContext()[0]); err != nil {
+		t.Fatal(err)
+	}
+	f.s.moveSiteLogs(f.ctx)
+	f.settle()
+	if sites, _ := f.logMoveJobs(); len(sites) != 1 || len(f.pendingMoves()) != 0 {
+		t.Fatalf("after the rule: %v, pending %v", sites, f.pendingMoves())
+	}
+
+	// SELinux off: no rule to wait for.
+	selinuxEnforcePath = filepath.Join(t.TempDir(), "none")
+	g := newSiteFixture(t)
+	g.createSite(map[string]any{"domain": "example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	g.s.moveSiteLogs(g.ctx)
+	if sites, _ := g.logMoveJobs(); len(sites) != 1 {
+		t.Fatalf("SELinux off: %v", sites)
+	}
+}
+
+// Only sites whose configuration may log into data/logs move: a suspended
+// site's stub logs nothing, and a site of an account being removed goes with
+// it. A pending one moves: it may be a site in error applied again, whose
+// apply the upgrade interrupted, still on the older panel's configuration.
+func TestMoveSiteLogsLeavesSitesWithoutLogs(t *testing.T) {
+	f := newSiteFixture(t)
+	f.createSite(map[string]any{"domain": "a.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	f.createSite(map[string]any{"domain": "s.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	f.siteAction("s.example.com", "suspend")
+	owner, _ := f.db.GetUserByLogin(f.ctx, "alex")
+	if err := f.db.CreateSite(f.ctx, &store.Site{UserID: owner.ID, Domain: "p.example.com", PHPVersion: "8.4", SSL: "none"}); err != nil {
+		t.Fatal(err)
+	}
+	uid, gid := 1501, 1501
+	gone := &store.User{Login: "gone", Role: store.RoleUser, Status: store.UserDeleting, UnixUID: &uid, UnixGID: &gid, Home: "/var/www/gone"}
+	if err := f.db.CreateUser(f.ctx, gone); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.CreateSite(f.ctx, &store.Site{UserID: gone.ID, Domain: "g.example.com", PHPVersion: "8.4", SSL: "none", Status: store.SiteActive}); err != nil {
+		t.Fatal(err)
+	}
+	f.s.moveSiteLogs(f.ctx)
+	if p := f.pendingMoves(); len(p) != 2 || p["a.example.com"] == nil || p["p.example.com"] == nil {
+		t.Fatalf("listed: %v", p)
+	}
+	f.settle()
+	if sites, _ := f.logMoveJobs(); len(sites) != 2 {
+		t.Fatalf("queued: %v", sites)
 	}
 }

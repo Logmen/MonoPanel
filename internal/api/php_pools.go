@@ -11,6 +11,7 @@ import (
 
 	"monopanel/internal/agent"
 	"monopanel/internal/agent/confcheck"
+	"monopanel/internal/apitypes"
 	"monopanel/internal/osprofile"
 	"monopanel/internal/store"
 )
@@ -24,11 +25,26 @@ import (
 // sites never used that pool, and nothing else of the panel does (the
 // webmail is a site with a pool of its own; there is no phpMyAdmin), so it
 // stays idle (confcheck.IdlePool): a php-fpm master does not start without a
-// pool. On EL the master's log goes to syslog as well. Both are written when
-// a branch is installed and checked again at every start of the API:
-// package upgrades keep a changed www.conf (dpkg's conffile, rpm's
-// %config(noreplace)), but an administrator who takes the maintainer's
-// version at dpkg's prompt brings the stock pool back.
+// pool. On EL the master's log goes to syslog as well.
+//
+// The panel makes both so once per branch (settingPHPDistroIdle): when it
+// installs the branch, or at the first start of this version for a branch an
+// older panel installed. Package upgrades keep them (dpkg's conffile, rpm's
+// %config(noreplace)). Afterwards they are the administrator's: one who
+// brings the stock pool back — an apt-installed phpMyAdmin or a monitoring
+// page needs its socket, or the maintainer's version taken at dpkg's prompt
+// — gets a warning in the doctor, not a revert at every start, which would
+// break what runs there again each time and keep dpkg prompting about the
+// conffile. That leaves the panel's boundaries as they are: nothing the
+// panel writes can send a request to that pool — nginx's fastcgi_pass may
+// name only the panel's own sockets in <run_dir>/php (confcheck's nginx
+// rules), and no Apache's children run as www-data any more, every account's
+// own Apache runs as the account (apache.go) — so PHP runs as the web
+// server's account only for what the administrator sends there. What the
+// panel itself writes at that path stays the idle pool, byte for byte
+// (confcheck.IdlePool). A pool file that is missing is written again: the
+// master needs a pool, and removing the file is how an administrator hands
+// it back to the panel.
 
 // fpmConfMax is the most of php-fpm.conf the panel reads to edit it; the
 // distributions' are some 5 KB.
@@ -133,12 +149,19 @@ func fpmValue(v string) string {
 	return strings.Trim(v, " \t")
 }
 
-// refreshIdlePHPPools makes the distribution's pool of every installed
-// branch idle again at start, and on EL sends its master's log to syslog:
-// for a panel up to 0.8.19, which left both as the package shipped them, and
-// after an upgrade that brought them back. Only the two files of a branch
-// are written, and only when they differ; php-fpm -t checks them, and the
-// branch's php-fpm is reloaded then.
+// settingPHPDistroIdle is "yes" once the panel made the distribution's pool
+// of the branch idle and, on EL, sent its master's log to syslog: after that
+// the files are left as the administrator keeps them.
+func settingPHPDistroIdle(version string) string { return "php.distro_idle." + version }
+
+// refreshIdlePHPPools makes the distribution's pool of every installed branch
+// idle at start, and on EL sends its master's log to syslog, for a branch
+// that has not been made so yet: one an older panel installed, or one whose
+// first attempt failed. A branch made so before keeps what the administrator
+// did with the files since; a change is logged here and named by the doctor
+// (phpDistroChecks), and only a pool file that is missing is written again.
+// Only the two files of a branch are written, and only when they differ;
+// php-fpm -t checks them, and the branch's php-fpm is reloaded then.
 func (s *Server) refreshIdlePHPPools(ctx context.Context) {
 	versions, err := s.db.ListPHPVersions(ctx)
 	if err != nil {
@@ -149,27 +172,112 @@ func (s *Server) refreshIdlePHPPools(ctx context.Context) {
 		if v.Status != store.PHPInstalled || l == nil {
 			continue
 		}
-		if err := s.idlePHPDistro(ctx, l); err != nil {
-			s.log.Warn("php: the distribution's pool", "version", v.Version, "err", err)
+		if done, _ := s.db.GetSetting(ctx, settingPHPDistroIdle(v.Version)); done == "yes" {
+			s.recheckPHPDistro(ctx, l)
+			continue
+		}
+		complete, err := s.idlePHPDistro(ctx, l, true)
+		if err != nil {
+			s.log.Warn("php: the distribution's pool; the next start tries again", "version", v.Version, "err", err)
+			continue
+		}
+		if complete {
+			s.markPHPDistroIdle(ctx, v.Version)
 		}
 	}
 }
 
-// idlePHPDistro brings one branch's pool and php-fpm.conf to what the panel
-// leaves them (refreshIdlePHPPools).
-func (s *Server) idlePHPDistro(ctx context.Context, l *osprofile.PHPLayout) error {
+// markPHPDistroIdle remembers that the branch's distribution files are the
+// panel's way now.
+func (s *Server) markPHPDistroIdle(ctx context.Context, version string) {
+	if err := s.db.SetSetting(context.WithoutCancel(ctx), settingPHPDistroIdle(version), "yes"); err != nil {
+		s.log.Warn("php: the idle pool is not remembered; the next start checks it again", "version", version, "err", err)
+	}
+}
+
+// phpDistro is what a branch's distribution files are now (phpDistroState).
+type phpDistro struct {
+	// pool is "idle", "changed" or "missing"; "" without the pool
+	// directory (the packages removed by hand).
+	pool string
+	// syslog: the master logs to syslog (always so off EL); confErr says
+	// why php-fpm.conf could not be read.
+	syslog  bool
+	confErr error
+}
+
+// phpDistroState reads what a branch's distribution files are now.
+func (s *Server) phpDistroState(ctx context.Context, l *osprofile.PHPLayout) (phpDistro, error) {
+	st, err := s.agent.Stat(ctx, l.PoolDir)
+	if err != nil {
+		return phpDistro{}, err
+	}
+	if len(st.Entries) != 1 || !st.Entries[0].Exists || !st.Entries[0].IsDir {
+		return phpDistro{syslog: true}, nil
+	}
+	idle, err := s.idlePHPPool(l)
+	if err != nil {
+		return phpDistro{}, err
+	}
+	var d phpDistro
+	cur, err := s.agent.ReadFile(ctx, idle.Path, 64<<10)
+	var ae *agent.Error
+	switch {
+	// The agent answers a missing file with nothing, the demo's with 404.
+	case errors.As(err, &ae) && ae.Status == http.StatusNotFound:
+		d.pool = "missing"
+	case err != nil:
+		return phpDistro{}, err
+	case cur.Content == "" && !cur.Truncated:
+		d.pool = "missing"
+	case cur.Truncated || cur.Content != idle.Content:
+		d.pool = "changed"
+	default:
+		d.pool = "idle"
+	}
+	conf, err := s.fpmSyslogConf(ctx, l)
+	d.syslog, d.confErr = err == nil && conf == nil, err
+	return d, nil
+}
+
+// recheckPHPDistro looks at the distribution's files of a branch the panel
+// made idle before: a missing pool is written again, a changed one is the
+// administrator's and only logged.
+func (s *Server) recheckPHPDistro(ctx context.Context, l *osprofile.PHPLayout) {
+	d, err := s.phpDistroState(ctx, l)
+	if err != nil {
+		s.log.Warn("php: the distribution's pool", "version", l.Version, "err", err)
+		return
+	}
+	switch d.pool {
+	case "missing":
+		// The pool alone: php-fpm.conf stays as the administrator keeps it.
+		if _, err := s.idlePHPDistro(ctx, l, false); err != nil {
+			s.log.Warn("php: the distribution's pool is missing and cannot be written", "version", l.Version, "err", err)
+		}
+	case "changed":
+		s.log.Warn("php: the distribution's pool is not the panel's idle pool any more; left as it is (mp doctor)", "version", l.Version, "pool", phpDistroPool(l))
+	}
+	if !d.syslog && d.confErr == nil {
+		s.log.Warn("php: the php-fpm master logs into a file again; left as it is (mp doctor)", "version", l.Version, "conf", l.FPMConf)
+	}
+}
+
+// idlePHPDistro brings one branch's pool — and with conf its php-fpm.conf —
+// to what the panel leaves them, and tells whether both are so now.
+func (s *Server) idlePHPDistro(ctx context.Context, l *osprofile.PHPLayout, conf bool) (bool, error) {
 	// Packages removed by hand take the pool directory along, and
 	// config/apply would make it again for a php-fpm that is not there.
 	st, err := s.agent.Stat(ctx, l.PoolDir)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if len(st.Entries) != 1 || !st.Entries[0].Exists || !st.Entries[0].IsDir {
-		return nil
+		return false, nil
 	}
 	pool, err := s.idlePHPPool(l)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var files []agent.FileSpec
 	// A pool file that is missing (the agent answers with nothing; the
@@ -180,31 +288,78 @@ func (s *Server) idlePHPDistro(ctx context.Context, l *osprofile.PHPLayout) erro
 	case errors.As(err, &ae) && ae.Status == http.StatusNotFound:
 		files = append(files, pool)
 	case err != nil:
-		return err
+		return false, err
 	case cur.Truncated || cur.Content != pool.Content:
 		files = append(files, pool)
 	}
-	if conf, err := s.fpmSyslogConf(ctx, l); err != nil {
+	complete := true
+	if !conf {
+		complete = false
+	} else if c, err := s.fpmSyslogConf(ctx, l); err != nil {
 		s.log.Warn("php: the php-fpm master keeps its log file", "version", l.Version, "err", err)
-	} else if conf != nil {
-		files = append(files, *conf)
+		complete = false
+	} else if c != nil {
+		files = append(files, *c)
 	}
 	if len(files) == 0 {
-		return nil
+		return complete, nil
 	}
 	// The idle pool listens in the panel's socket directory, which php-fpm
 	// needs to start: made as at an installation, should it be missing.
 	if _, err := s.agent.EnsureDirs(ctx, &agent.EnsureDirsRequest{Dirs: []agent.DirSpec{{Path: path.Join(s.cfg.RunDir, "php"), Mode: 0o755, Owner: "root", Group: "root"}}}); err != nil {
-		return err
+		return false, err
 	}
 	res, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{
 		Files: files, Validate: [][]string{l.FPMCheckArgv}, Reload: []string{l.FPMService}, Origin: "php:" + l.Version,
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 	if len(res.Written) > 0 {
-		s.log.Info("php: the distribution's pool is idle again", "version", l.Version, "written", res.Written)
+		s.log.Info("php: the distribution's pool is idle", "version", l.Version, "written", res.Written)
 	}
-	return nil
+	return complete, nil
+}
+
+// phpDistroChecks are the doctor's word on the distribution's pools: one the
+// panel has not made idle yet, and one an administrator changed since.
+func (s *Server) phpDistroChecks(ctx context.Context) []apitypes.Check {
+	versions, err := s.db.ListPHPVersions(ctx)
+	if err != nil {
+		return nil
+	}
+	var out []apitypes.Check
+	for _, v := range versions {
+		l := phpLayout(s, v.Version)
+		if v.Status != store.PHPInstalled || l == nil {
+			continue
+		}
+		name := "php " + v.Version + " pool www"
+		d, err := s.phpDistroState(ctx, l)
+		switch {
+		case err != nil:
+			out = append(out, check(name, "warn", err.Error()))
+			continue
+		case d.pool == "":
+			continue
+		}
+		if done, _ := s.db.GetSetting(ctx, settingPHPDistroIdle(v.Version)); done != "yes" {
+			out = append(out, check(name, "warn", "the panel has not made the distribution's pool "+phpDistroPool(l)+" idle yet; it tries at every start of the API (journalctl -u monopanel-api)"))
+			continue
+		}
+		var why []string
+		if d.pool == "changed" {
+			why = append(why, phpDistroPool(l)+" is not the panel's idle pool any more. The distribution's pool there runs PHP as "+s.profile.Web().ApacheUser+", the web server's account, which can reach root through what the root php-fpm master keeps in that account's directories; nothing of the panel sends requests to it, what you send there runs that way. The panel leaves the file as it is; to have the idle pool back, remove the file and restart monopanel-api")
+		}
+		switch {
+		case d.confErr != nil:
+			why = append(why, "cannot read "+l.FPMConf+": "+d.confErr.Error())
+		case !d.syslog:
+			why = append(why, l.FPMConf+" has the php-fpm master log into a file again, in a directory the apache account may write: set error_log = syslog there")
+		}
+		if len(why) > 0 {
+			out = append(out, check(name, "warn", strings.Join(why, "; ")))
+		}
+	}
+	return out
 }

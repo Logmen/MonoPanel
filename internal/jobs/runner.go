@@ -51,6 +51,8 @@ type Runner struct {
 	wg       sync.WaitGroup
 	mu       sync.RWMutex
 	timeout  time.Duration
+	// ready holds the workers back at Start until it returns (Hold).
+	ready func(ctx context.Context)
 }
 
 // NewRunner creates a runner with n workers.
@@ -113,22 +115,52 @@ func (r *Runner) Enqueue(ctx context.Context, typ string, payload any, opts ...O
 	return j, nil
 }
 
+// Hold makes the workers wait, from Start on, until ready returns (it gets
+// the context Start was given) before they claim a job; Enqueue goes on
+// queueing meanwhile. The API holds them until its agent answers: every job
+// acts through the agent, which may listen a minute or two after the API
+// started, and a job claimed before would fail on "agent unreachable" for
+// that alone. ready decides itself how long it waits. Hold is called before
+// Start.
+func (r *Runner) Hold(ready func(ctx context.Context)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ready = ready
+}
+
 // Start launches workers until ctx is cancelled.
 func (r *Runner) Start(ctx context.Context) {
 	if n, err := r.db.RequeueStaleJobs(ctx); err == nil && n > 0 {
 		r.log.Warn("requeued jobs left running by a previous process", "count", n)
 	}
+	r.mu.RLock()
+	ready := r.ready
+	r.mu.RUnlock()
+	released := make(chan struct{})
+	if ready == nil {
+		close(released)
+	} else {
+		go func() {
+			defer close(released)
+			ready(ctx)
+		}()
+	}
 	for i := 0; i < r.workers; i++ {
 		r.wg.Add(1)
-		go r.worker(ctx, fmt.Sprintf("w%d", i+1))
+		go r.worker(ctx, fmt.Sprintf("w%d", i+1), released)
 	}
 }
 
 // Wait blocks until all workers exit.
 func (r *Runner) Wait() { r.wg.Wait() }
 
-func (r *Runner) worker(ctx context.Context, name string) {
+func (r *Runner) worker(ctx context.Context, name string, start <-chan struct{}) {
 	defer r.wg.Done()
+	select {
+	case <-start:
+	case <-ctx.Done():
+		return
+	}
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {

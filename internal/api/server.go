@@ -81,10 +81,28 @@ type Server struct {
 	// apacheLocks holds a *sync.Mutex per login (lockApache): the jobs of
 	// two sites of one account run side by side.
 	apacheLocks sync.Map
+	// siteLocks holds a *sync.Mutex per site ID (lockSite): applySite runs
+	// in the site's own jobs and, inline, in the move of the sites to their
+	// accounts' Apaches.
+	siteLocks sync.Map
+	// movesMu orders the changes of the site moves (settingSiteMoves): the
+	// start-up refresh queues them, every site.apply that succeeds takes
+	// its site out.
+	movesMu sync.Mutex
 	// apacheLegacy is the directory of the shared Apache's configuration of
-	// 0.8.19 and older (/etc/apache2/monopanel), which the upgrade reads the
-	// administrators' custom directives from; tests point it elsewhere.
+	// 0.8.19 and older (/etc/apache2/monopanel), whose files the upgrade
+	// carries over and removes (the agent reads them); tests point it
+	// elsewhere.
 	apacheLegacy string
+	// agentWaitStep is the first pause between two pings of an agent that
+	// does not answer yet (waitForAgent), doubled up to agentWaitStepMax;
+	// jobsAgentWait is how long the job workers wait for it at start.
+	// Tests shorten them.
+	agentWaitStep time.Duration
+	jobsAgentWait time.Duration
+	// refreshed is set once the start-up refresh ran: from then on the
+	// hourly tick queues again the moves that did not finish.
+	refreshed atomic.Bool
 	// portStart answers net.ipv4.ip_unprivileged_port_start; tests and the
 	// demo, whose Apache binds nothing, answer themselves.
 	portStart func() int
@@ -168,6 +186,14 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	s.poolSocketWait, s.nginxWait, s.apacheWait = 10*time.Second, 15*time.Second, apacheWaitDefault
 	s.apacheDial = (&net.Dialer{Timeout: time.Second}).DialContext
 	s.apacheLegacy = path.Join(profile.Web().ApacheConfDir, "monopanel")
+	s.agentWaitStep, s.jobsAgentWait = agentWaitStepFirst, jobsAgentWaitDefault
+	// Every job acts through the agent: the workers claim none before it
+	// answers, or before jobsAgentWait has passed (waitForAgent).
+	runner.Hold(func(ctx context.Context) {
+		if !s.waitForAgent(ctx, "jobs", s.jobsAgentWait) && ctx.Err() == nil {
+			s.log.Warn("jobs: the workers start without the agent; jobs fail on it until it answers")
+		}
+	})
 	s.portStart = unprivilegedPortStart
 	s.restartDelay = 500 * time.Millisecond
 	s.activation = activation.Listeners

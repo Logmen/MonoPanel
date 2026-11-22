@@ -79,6 +79,9 @@ type Server struct {
 	// restoreRoot is RestoreDir, where an in-place restore of the trees
 	// outside the web root is staged; tests move it.
 	restoreRoot string
+	// apacheLegacySites is the shared Apache's directory of 0.8.19 that
+	// /v1/apache/legacy reads (confcheck.ApacheLegacySites). Tests move it.
+	apacheLegacySites string
 }
 
 // NewServer builds an agent.
@@ -89,7 +92,8 @@ func NewServer(cfg config.Config, profile osprofile.Profile, log *slog.Logger) *
 	abi, err := sandbox.ABI()
 	return &Server{cfg: cfg, profile: profile, log: log, rootUID: os.Geteuid(), unitDir: systemUnitDir,
 		lookupIP: net.DefaultResolver.LookupIPAddr, daemonReload: systemdReload,
-		landlock: abi, landlockErr: err, sandboxExe: "/proc/self/exe", resticCache: resticCacheDir, resticTmp: resticTmpDir, restoreRoot: RestoreDir}
+		landlock: abi, landlockErr: err, sandboxExe: "/proc/self/exe", resticCache: resticCacheDir, resticTmp: resticTmpDir, restoreRoot: RestoreDir,
+		apacheLegacySites: confcheck.ApacheLegacySites}
 }
 
 // Handler returns the RPC router.
@@ -109,6 +113,7 @@ func (s *Server) Handler() http.Handler {
 	r.Post("/v1/acl/site", handle(s.siteACL))
 	r.Post("/v1/paths/remove", handle(s.removePaths))
 	r.Post("/v1/apache/ctl", handle(s.apacheCtl))
+	r.Post("/v1/apache/legacy", handle(s.apacheLegacy))
 	r.Post("/v1/tool", handle(s.tool))
 	r.Post("/v1/stat", handle(s.stat))
 	r.Post("/v1/dir/list", handle(s.listDir))

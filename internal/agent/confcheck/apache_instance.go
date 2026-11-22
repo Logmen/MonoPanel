@@ -40,6 +40,12 @@ import (
 const (
 	// ApacheInstanceRoot holds the accounts' Apache configurations.
 	ApacheInstanceRoot = "/etc/apache2/monopanel/accounts"
+	// ApacheLegacySites held the virtual hosts of the shared Apache of
+	// 0.8.19 and older, with each site's custom directives in
+	// <domain>.d/*.conf: the upgrade carries those over to the site's
+	// account's Apache (the agent reads them, ReadApacheLegacy) and then
+	// removes the directory.
+	ApacheLegacySites = "/etc/apache2/monopanel/sites"
 	// ApacheInstanceRunRoot holds the runtime directories (RuntimeDirectory=
 	// of monopanel-apache@.service, root's).
 	ApacheInstanceRunRoot = "/run/monopanel-apache"

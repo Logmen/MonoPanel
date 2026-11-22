@@ -208,11 +208,13 @@ func assertOneLineChanged(t *testing.T, old, got, from, to string) {
 }
 
 // At its start the API makes the distribution's pool of every installed
-// branch idle again — the panel up to 0.8.19 left it as shipped, an upgrade
-// may bring it back — on EL with the master's log in syslog. It writes those
-// two files and nothing else, checks and reloads that branch's php-fpm,
-// and does nothing once they are so. A branch whose packages are gone, or
-// one that is not installed, is left alone.
+// branch idle — the panel up to 0.8.19 left it as shipped — on EL with the
+// master's log in syslog. It writes those two files and nothing else, checks
+// and reloads that branch's php-fpm, and does so once: an administrator who
+// brings the stock pool back afterwards keeps it, and the doctor says so,
+// until the file is removed — then the idle pool comes back, and
+// php-fpm.conf stays as it is. A branch whose packages are gone, or one that
+// is not installed, is left alone.
 func TestIdlePHPPoolsAtStart(t *testing.T) {
 	for _, c := range []struct {
 		name, release, pool, stock, conf, fpmBinary, unit string
@@ -291,19 +293,76 @@ func TestIdlePHPPoolsAtStart(t *testing.T) {
 				t.Fatalf("an idle branch was applied again: %d calls", n)
 			}
 
-			// An upgrade brings the stock pool back: the next start makes it
-			// idle again, and the log stays in syslog.
+			if v, _ := f.db.GetSetting(f.ctx, settingPHPDistroIdle("8.4")); v != "yes" {
+				t.Fatalf("the idle pool is not remembered: %q", v)
+			}
+			if checks := f.s.phpDistroChecks(f.ctx); len(checks) != 0 {
+				t.Fatalf("doctor on an idle branch: %+v", checks)
+			}
+
+			// The administrator brings the stock pool back — the maintainer's
+			// version at dpkg's prompt, an apt-installed phpMyAdmin that needs
+			// it — and on EL the master's log file: the next start leaves both
+			// so, the doctor names them.
 			f.agent.Reset()
 			f.agent.ReadFile[c.pool] = c.stock
 			if c.conf != "" {
-				f.agent.ReadFile[c.conf] = strings.Replace(remiStockConf, "error_log = /var/opt/remi/php84/log/php-fpm/error.log", "error_log = syslog", 1)
+				f.agent.ReadFile[c.conf] = remiStockConf
 			}
+			f.s.refreshIdlePHPPools(f.ctx)
+			if got := applies(t, f); len(got) != 0 {
+				t.Fatalf("the administrator's files were reverted: %+v", got)
+			}
+			checks := f.s.phpDistroChecks(f.ctx)
+			if len(checks) != 1 || checks[0].Status != "warn" || !strings.Contains(checks[0].Detail, c.pool+" is not the panel's idle pool") || !strings.Contains(checks[0].Detail, "remove the file and restart monopanel-api") {
+				t.Fatalf("doctor: %+v", checks)
+			}
+			if c.conf != "" && !strings.Contains(checks[0].Detail, c.conf+" has the php-fpm master log into a file") {
+				t.Fatalf("doctor on EL: %+v", checks)
+			}
+
+			// Removed, the pool is the panel's again: written at the next
+			// start, the pool alone.
+			delete(f.agent.ReadFile, c.pool)
 			f.s.refreshIdlePHPPools(f.ctx)
 			got = applies(t, f)
 			if len(got) != 1 || len(got[0].Files) != 1 || got[0].Files[0].Path != c.pool {
-				t.Fatalf("after the upgrade: %+v", got)
+				t.Fatalf("after the removal: %+v", got)
+			}
+			if content, _ := f.agent.File(c.pool); content != idle {
+				t.Fatalf("%s after the removal:\n%s", c.pool, content)
 			}
 		})
+	}
+}
+
+// A branch the panel installs is idle from then on, remembered as such; on
+// EL without the syslog line (php-fpm.conf unreadable) it is not, and the
+// next start tries again.
+func TestPHPInstallRemembersTheIdlePool(t *testing.T) {
+	stubSury(t, true)
+	f := newSiteFixture(t)
+	installPHP(t, f, "8.3")
+	if v, _ := f.db.GetSetting(f.ctx, settingPHPDistroIdle("8.3")); v != "yes" {
+		t.Fatalf("Debian: %q", v)
+	}
+
+	withOSRelease(t, elRelease)
+	g := newSiteFixture(t)
+	// php-fpm.conf missing: the master keeps its log file for now.
+	installPHP(t, g, "8.3")
+	if v, _ := g.db.GetSetting(g.ctx, settingPHPDistroIdle("8.3")); v == "yes" {
+		t.Fatal("remembered as idle without the master's log in syslog")
+	}
+	l := osprofile.PHP(g.s.profile, "8.3")
+	g.agent.Stat[l.PoolDir+"/"] = true
+	g.agent.ReadFile[l.FPMConf] = strings.ReplaceAll(remiStockConf, "php84", "php83")
+	g.s.refreshIdlePHPPools(g.ctx)
+	if v, _ := g.db.GetSetting(g.ctx, settingPHPDistroIdle("8.3")); v != "yes" {
+		t.Fatalf("EL after the next start: %q", v)
+	}
+	if conf, _ := g.agent.File(l.FPMConf); !strings.Contains(conf, "\nerror_log = syslog\n") {
+		t.Fatalf("php-fpm.conf:\n%s", conf)
 	}
 }
 

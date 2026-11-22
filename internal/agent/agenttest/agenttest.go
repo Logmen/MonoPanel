@@ -142,6 +142,9 @@ type Agent struct {
 	// is active and enabled.
 	ActiveState   map[string]string
 	UnitFileState map[string]string
+	// ApacheLegacySites is the shared Apache's directory of 0.8.19 that
+	// /v1/apache/legacy reads with the real agent's code (empty: none).
+	ApacheLegacySites string
 
 	srv *httptest.Server
 }
@@ -762,6 +765,28 @@ func (a *Agent) respond(path string, body []byte) any {
 		}
 		a.apacheCtls = append(a.apacheCtls, req)
 		return agent.ApacheCtlResponse{Output: req.Action + " " + req.Name + ": done\n"}
+
+	case "/v1/apache/legacy":
+		// The real agent's reading, of the directory a test points it at:
+		// on a host it is root's /etc/apache2/monopanel/sites.
+		var req agent.ApacheLegacyRequest
+		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		if a.ApacheLegacySites == "" {
+			return agent.ApacheLegacyResponse{}
+		}
+		dir, err := filepath.EvalSymlinks(a.ApacheLegacySites)
+		if err != nil {
+			return agent.ApacheLegacyResponse{}
+		}
+		res, err := agent.ReadApacheLegacy(dir, req.Domain)
+		if err != nil {
+			var ae *agent.Error
+			if errors.As(err, &ae) {
+				return ae
+			}
+			return &agent.Error{Status: http.StatusInternalServerError, Message: err.Error()}
+		}
+		return res
 	}
 	return map[string]any{}
 }

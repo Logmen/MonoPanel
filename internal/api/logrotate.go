@@ -4,6 +4,8 @@ import (
 	"context"
 	"path"
 	"slices"
+	"strings"
+	"time"
 
 	"monopanel/internal/agent"
 	"monopanel/internal/agent/confcheck"
@@ -25,9 +27,6 @@ import (
 const (
 	siteLogrotatePath = "/etc/logrotate.d/monopanel-sites"
 	nginxPIDFile      = "/run/nginx.pid" // pid in templates/nginx/nginx.conf.tmpl
-	// settingSiteLogsMoved is the log tree the sites were last re-applied to
-	// write into (siteLogsRoot): moveSiteLogs runs once for it.
-	settingSiteLogsMoved = "sites.logs_root"
 )
 
 // webmailLogNames are the logs of the webmail published on a port, next to
@@ -124,21 +123,32 @@ func (s *Server) refreshSiteLogrotate(ctx context.Context) {
 	}
 }
 
-// moveSiteLogs switches the sites of an upgraded panel to the log tree, once
-// (and again should log_dir change): up to 0.8.19 nginx, Apache and php-fpm
-// wrote the site logs into the account's data/logs, and they keep doing so
-// until their configuration is rendered anew. It makes the directories and
-// the logs of every account with sites, then queues site.apply for every site
-// and mail.apply for a webmail published on a port; each job makes its own
-// logs again before it applies anything. The old files stay where they are:
-// they are the account's own, and nothing writes or rotates them any more.
-// Should queuing fail, the next start tries again — a site applied twice is
-// no harm.
+// moveSiteLogs switches the sites of an upgraded panel to the log tree: up
+// to 0.8.19 nginx, Apache and php-fpm wrote the site logs into the account's
+// data/logs, and they go on doing so — as root, in a directory the account
+// owns — until a site.apply renders the site anew. At the first start of this
+// version (and again should log_dir change) it lists every site with such a
+// configuration in the moves (siteMoves), and the webmail published on a
+// port; then, at every start and once an hour, it queues a site.apply (a
+// mail.apply) for each one still there whose next try is due, after making
+// the logs of their accounts. A site leaves the list with the first
+// site.apply that succeeds, whoever queued it; one whose job failed waits
+// longer each time (retryDelay), and the doctor says why it has not moved.
+// On a host with SELinux nothing is queued before the tree's label rule is
+// in place (siteLogsLabelled): the next start tries the rule again. The old
+// files stay where they are: they are the account's own, and nothing writes
+// them once the site has moved.
+//
+// Until then the rotation and fail2ban do not cover the site's logs in
+// data/logs, and that is the right way round: the agent refuses logrotate
+// stanzas outside the tree (and su, which rotating in a directory of the
+// account's would need) and fail2ban log paths outside /var/log and the
+// tree, as root rotating or reading files where the account may plant a
+// symlink or a FIFO is what the move ends. The jails watch the site's files
+// in the tree instead, empty until it moves, from when the move made them
+// (fail2banSiteLogs); the cure is the move, which the doctor asks for.
 func (s *Server) moveSiteLogs(ctx context.Context) {
 	root := s.siteLogsRoot()
-	if v, _ := s.db.GetSetting(ctx, settingSiteLogsMoved); v == root {
-		return
-	}
 	sites, err := s.db.ListSites(ctx, 0)
 	if err != nil {
 		s.log.Warn("site logs: cannot list the sites to move their logs", "err", err)
@@ -153,47 +163,166 @@ func (s *Server) moveSiteLogs(ctx context.Context) {
 	for _, u := range users {
 		owners[u.ID] = u
 	}
+	byID := map[int64]*store.Site{}
+	for _, site := range sites {
+		byID[site.ID] = site
+	}
 	mail := s.loadMailConfig(ctx)
 	webmailPort := mail.Installed && mail.Webmail != "" && mail.WebmailPort > 0
-	logs := map[string][]string{}
-	var apply []*store.Site
-	for _, site := range sites {
-		u := owners[site.UserID]
-		if u == nil || u.UnixUID == nil || u.Status == store.UserDeleting || site.Status == store.SiteDeleting {
-			continue
+	labelled := s.siteLogsLabelled(ctx)
+	now := time.Now()
+	var queue []*store.Site
+	listed, waiting, pending := 0, 0, 0
+	queueWebmail := false
+	err = s.changeSiteMoves(ctx, func(m *siteMoves) bool {
+		if m.Logs != root {
+			*m = siteMoves{Logs: root, Sites: map[int64]*siteMove{}}
+			for _, site := range sites {
+				if u := owners[site.UserID]; oldLayoutSite(site, u) {
+					m.Sites[site.ID] = &siteMove{Domain: site.Domain}
+				}
+			}
+			if webmailPort {
+				m.Webmail = &retry{}
+			}
+			listed = len(m.Sites)
 		}
+		for id, mv := range m.Sites {
+			site := byID[id]
+			var u *store.User
+			if site != nil {
+				u = owners[site.UserID]
+			}
+			// Gone, or going: nothing renders it again.
+			if site == nil || site.Status == store.SiteDeleting || u == nil || u.Status == store.UserDeleting {
+				delete(m.Sites, id)
+				continue
+			}
+			pending++
+			switch {
+			case mv.settle(ctx, s.db):
+				// queued or running
+			case !mv.due(now):
+				waiting++
+			case labelled && u.UnixUID != nil:
+				queue = append(queue, site)
+			}
+		}
+		if m.Webmail != nil {
+			switch {
+			case !webmailPort:
+				m.Webmail = nil
+			case !m.Webmail.settle(ctx, s.db) && labelled && m.Webmail.due(now):
+				queueWebmail = true
+			}
+		}
+		return true
+	})
+	if err != nil {
+		s.log.Warn("site logs: the moves are not stored; the next start lists them again", "err", err)
+		return
+	}
+	if listed > 0 {
+		s.log.Info("site logs: the sites switch to the root-owned log tree; the old files stay in the accounts' data/logs", "dir", root, "sites", listed, "webmail", webmailPort)
+	}
+	if !labelled {
+		if pending > 0 {
+			s.log.Warn("site logs: the sites stay on their data/logs until the SELinux label rule of the log tree is in place (see \"selinux: site logs context\" above); the next start tries again", "dir", root, "sites", pending)
+		}
+		return
+	}
+	if waiting > 0 {
+		s.log.Info("site logs: sites whose move failed wait for their next try (mp doctor)", "sites", waiting)
+	}
+	if len(queue) == 0 && !queueWebmail {
+		return
+	}
+	// The accounts' directories and logs come first; each job makes its own
+	// logs again before it applies anything.
+	logs := map[string][]string{}
+	for _, site := range queue {
+		u := owners[site.UserID]
 		logs[u.Login] = append(logs[u.Login], s.siteLogsOf(ctx, site)...)
-		apply = append(apply, site)
 	}
 	logins := make([]string, 0, len(logs))
 	for login := range logs {
 		logins = append(logins, login)
 	}
 	slices.Sort(logins)
+	made := map[string]bool{}
 	for _, login := range logins {
 		if _, err := s.ensureSiteLogs(ctx, login, logs[login]...); err != nil {
 			// The account's site.apply jobs try again, and stop there.
 			s.log.Warn("site logs: the new directory", "login", login, "dir", s.siteLogDir(login), "err", err)
+			continue
+		}
+		made[login] = true
+	}
+	// Before any of the jobs can run: the jails list these logs from now on
+	// (siteMove.Made), and no job's refresh of the jails sees them missing.
+	if err := s.changeSiteMoves(ctx, func(m *siteMoves) bool {
+		changed := false
+		for _, site := range queue {
+			if mv := m.Sites[site.ID]; mv != nil && !mv.Made && made[owners[site.UserID].Login] {
+				mv.Made, changed = true, true
+			}
+		}
+		return changed
+	}); err != nil {
+		s.log.Warn("site logs: the logs made in the tree are not stored", "err", err)
+	}
+	queued := map[int64]int64{}
+	var domains []string
+	for _, site := range queue {
+		j, err := s.jobs.Enqueue(ctx, "site.apply", sitePayload{SiteID: site.ID, LogsMoved: true}, jobs.WithLockKey("site:"+site.Domain), jobs.WithRequestedBy("system"))
+		if err != nil {
+			s.log.Warn("site logs: cannot queue the site to switch its logs; the next start tries again", "site", site.Domain, "err", err)
+			break
+		}
+		queued[site.ID] = j.ID
+		domains = append(domains, site.Domain)
+	}
+	var webmailJob int64
+	if queueWebmail {
+		if j, err := s.jobs.Enqueue(ctx, "mail.apply", struct{}{}, jobs.WithLockKey("mail"), jobs.WithRequestedBy("system")); err != nil {
+			s.log.Warn("site logs: cannot queue the webmail to switch its logs; the next start tries again", "err", err)
+		} else {
+			webmailJob = j.ID
 		}
 	}
-	for _, site := range apply {
-		if _, err := s.jobs.Enqueue(ctx, "site.apply", sitePayload{SiteID: site.ID, LogsMoved: true}, jobs.WithLockKey("site:"+site.Domain), jobs.WithRequestedBy("system")); err != nil {
-			s.log.Warn("site logs: cannot queue the site to switch its logs", "site", site.Domain, "err", err)
-			return
+	// A job that ran already took its site out; one that failed counts at
+	// the next look.
+	if err := s.changeSiteMoves(ctx, func(m *siteMoves) bool {
+		for id, job := range queued {
+			if mv := m.Sites[id]; mv != nil && mv.Job == 0 {
+				mv.Job = job
+			}
 		}
-	}
-	if webmailPort {
-		if _, err := s.jobs.Enqueue(ctx, "mail.apply", struct{}{}, jobs.WithLockKey("mail"), jobs.WithRequestedBy("system")); err != nil {
-			s.log.Warn("site logs: cannot queue the webmail to switch its logs", "err", err)
-			return
+		if m.Webmail != nil && webmailJob != 0 && m.Webmail.Job == 0 {
+			m.Webmail.Job = webmailJob
 		}
+		return len(queued) > 0 || webmailJob != 0
+	}); err != nil {
+		s.log.Warn("site logs: the queued moves are not stored", "err", err)
 	}
-	if err := s.db.SetSetting(ctx, settingSiteLogsMoved, root); err != nil {
-		s.log.Warn("site logs: the move is not remembered and runs again at the next start", "err", err)
-		return
+	if len(domains) > 0 && listed == 0 {
+		s.log.Info("site logs: queued again the sites whose move did not finish", "sites", strings.Join(domains, ", "))
 	}
-	if len(apply) > 0 {
-		s.log.Info("site logs: the sites switch to the root-owned log tree; the old files stay in the accounts' data/logs",
-			"dir", root, "accounts", len(logins), "sites", len(apply), "webmail", webmailPort)
+}
+
+// oldLayoutSite tells whether a site's live configuration, as an older panel
+// left it, may log into the account's data/logs: one applied with its logs
+// (the suspended stub has none) of an account that has its unix user and
+// stays. A pending site counts too: it is a new one whose first apply has
+// not run — one apply more does no harm — or one in error an administrator
+// changed or applied again, whose apply the upgrade interrupted, and that
+// one still runs on what the older panel rendered; left out, nothing would
+// move it should its apply fail, and the move of the sites to their
+// accounts' Apaches would take it for moved and stop the shared Apache that
+// still serves it.
+func oldLayoutSite(site *store.Site, u *store.User) bool {
+	if u == nil || u.UnixUID == nil || u.Status == store.UserDeleting {
+		return false
 	}
+	return site.Status == store.SiteActive || site.Status == store.SiteError || site.Status == store.SitePending
 }

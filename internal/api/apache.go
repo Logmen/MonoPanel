@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -461,7 +462,12 @@ func (s *Server) apacheDoctor(ctx context.Context) []apitypes.Check {
 	if st, err := s.agent.Service(ctx, web.ApacheService, "status"); err == nil && st.Status.LoadState == "loaded" {
 		switch {
 		case st.Status.ActiveState == "active":
-			out = append(out, check("service "+web.ApacheService, "warn", "the shared Apache of 0.8.19 and older still runs, its children as "+web.ApacheUser+" for every account: mp stack install apache moves the sites still on it to their accounts' own Apaches and stops it"))
+			detail := "the shared Apache of 0.8.19 and older still runs, its children as " + web.ApacheUser + " for every account: mp stack install apache moves the sites still on it to their accounts' own Apaches and stops it"
+			if v, _ := s.db.GetSetting(ctx, settingApacheInstances); v != "yes" {
+				// The move of an upgrade has not finished: where it stands.
+				detail += "; the move of the upgrade: " + s.apacheMigrateState(ctx).describe(ctx, s.db)
+			}
+			out = append(out, check("service "+web.ApacheService, "warn", detail))
 		case st.Status.UnitFileState == "enabled":
 			// Off now, it would start at the next boot with whatever
 			// configuration it has: the shared one, its children as www-data
@@ -479,9 +485,40 @@ func (s *Server) apacheDoctor(ctx context.Context) []apitypes.Check {
 
 // ---------------------------------------------------------- upgrade ----
 
+// settingApacheMigrate is the bookkeeping of the apache.migrate job (a
+// retry, as JSON) until the move succeeded.
+const settingApacheMigrate = "stack.apache.migrate"
+
+// apacheMigrateState reads the bookkeeping of the move; nothing readable
+// is a move not tried yet.
+func (s *Server) apacheMigrateState(ctx context.Context) *retry {
+	r := &retry{}
+	if raw, err := s.db.GetSetting(ctx, settingApacheMigrate); err == nil && raw != "" {
+		if err := json.Unmarshal([]byte(raw), r); err != nil {
+			return &retry{}
+		}
+	}
+	return r
+}
+
+func (s *Server) saveApacheMigrateState(ctx context.Context, r *retry) {
+	raw := ""
+	if r != nil {
+		b, _ := json.Marshal(r)
+		raw = string(b)
+	}
+	if err := s.db.SetSetting(context.WithoutCancel(ctx), settingApacheMigrate, raw); err != nil {
+		s.log.Warn("apache: the state of the move is not stored", "err", err)
+	}
+}
+
 // refreshApacheInstances moves the sites of a panel of 0.8.19 or older off
-// the shared Apache, once: the apache.migrate job (moveToApacheInstances).
-// A host without Apache has nothing to move.
+// the shared Apache: the apache.migrate job (moveToApacheInstances), at the
+// start and once an hour after it until the move succeeded. A host without
+// Apache has nothing to move. A job that failed — a site that cannot move
+// keeps the shared Apache running — is not queued at every start: the next
+// try waits longer each time (retryDelay), the journal says so once, and the
+// doctor where the move stands; mp stack install apache tries at once.
 func (s *Server) refreshApacheInstances(ctx context.Context) {
 	if v, _ := s.db.GetSetting(ctx, settingApacheInstances); v == "yes" {
 		return
@@ -492,11 +529,30 @@ func (s *Server) refreshApacheInstances(ctx context.Context) {
 		}
 		return
 	}
-	if _, err := s.jobs.Enqueue(ctx, "apache.migrate", struct{}{}, jobs.WithLockKey("stack"), jobs.WithRequestedBy("system")); err != nil {
-		s.log.Warn("apache: cannot queue the move of the sites to their accounts' Apaches; it runs at the next start", "err", err)
+	r := s.apacheMigrateState(ctx)
+	tries := r.Tries
+	running := r.settle(ctx, s.db)
+	if r.Tries > tries {
+		s.log.Warn("apache: the move of the sites to their accounts' Apaches failed; the shared apache2.service keeps serving the sites that did not move (mp doctor); mp stack install apache tries again at once",
+			"tries", r.Tries, "next", r.Next.UTC().Format(time.RFC3339), "err", oneLine(r.Error, 400))
+	}
+	if running || !r.due(time.Now()) {
+		s.saveApacheMigrateState(ctx, r)
 		return
 	}
-	s.log.Info("apache: the sites in Apache mode move from the shared apache2.service to their accounts' own Apaches")
+	job, err := s.jobs.Enqueue(ctx, "apache.migrate", struct{}{}, jobs.WithLockKey("stack"), jobs.WithRequestedBy("system"))
+	if err != nil {
+		s.saveApacheMigrateState(ctx, r)
+		s.log.Warn("apache: cannot queue the move of the sites to their accounts' Apaches; the next start tries again", "err", err)
+		return
+	}
+	r.Job = job.ID
+	s.saveApacheMigrateState(ctx, r)
+	if r.Tries == 0 {
+		s.log.Info("apache: the sites in Apache mode move from the shared apache2.service to their accounts' own Apaches")
+	} else {
+		s.log.Info("apache: the move of the sites to their accounts' Apaches is queued again", "tries", r.Tries)
+	}
 }
 
 // jobApacheMigrate is the move of an upgraded panel (refreshApacheInstances).
@@ -505,7 +561,7 @@ func (s *Server) jobApacheMigrate(ctx context.Context, jc *jobs.Context) error {
 		jc.Progress(100, "the sites already run on their accounts' Apaches")
 		return nil
 	}
-	if err := s.moveToApacheInstances(ctx, jc); err != nil {
+	if err := s.moveToApacheInstances(ctx, jc, false); err != nil {
 		return err
 	}
 	jc.Progress(100, "sites in Apache mode run on their accounts' Apaches; apache2.service is off")
@@ -515,11 +571,15 @@ func (s *Server) jobApacheMigrate(ctx context.Context, jc *jobs.Context) error {
 // moveToApacheInstances puts every site in Apache mode on its account's own
 // Apache and then retires the shared one: site by site, each Apache gets
 // the site, with the administrator's custom directives of it, and answers
-// before nginx is sent there (a site.apply each), the shared Apache serving
-// the site until that reload. Only when every site moved does
-// apache2.service stop: a site that did not keeps it running, and the job
-// fails naming the site — mp stack install apache tries again.
-func (s *Server) moveToApacheInstances(ctx context.Context, jc *jobs.Context) error {
+// before nginx is sent there (an apply each, under the site's lock, so that
+// a site.apply of the site's own does not run beside it), the shared Apache
+// serving the site until that reload. A site whose configuration this
+// version rendered already — the site.apply of the log move, or any other,
+// put it on its account's Apache (siteUnmoved) — is not applied again,
+// unless every is set: mp stack install apache, which repairs as well,
+// applies them all. Only when every site moved does apache2.service stop: a
+// site that did not keeps it running, and the job fails naming the site.
+func (s *Server) moveToApacheInstances(ctx context.Context, jc *jobs.Context, every bool) error {
 	sites, err := s.db.ListSites(ctx, 0)
 	if err != nil {
 		return err
@@ -548,7 +608,10 @@ func (s *Server) moveToApacheInstances(ctx context.Context, jc *jobs.Context) er
 	// keep are custom directives of the shared Apache that stay where they
 	// are: those of sites in another mode now that could not move.
 	keep := map[string]bool{}
-	moved := map[int64]bool{}
+	// moved counts the sites applied now; done are those nginx sends the
+	// backend secret for, applied now or before.
+	moved := 0
+	done := map[int64]bool{}
 	for _, site := range sites {
 		u := owners[site.UserID]
 		// A site of an account that has no unix user (or is going) cannot
@@ -574,18 +637,24 @@ func (s *Server) moveToApacheInstances(ctx context.Context, jc *jobs.Context) er
 			}
 			continue
 		}
-		jc.Logf("%s: to the Apache of %s", site.Domain, u.Login)
-		if err := s.applySite(ctx, jc, sitePayload{SiteID: site.ID}); err != nil {
+		applied, err := s.moveSiteToItsApache(ctx, jc, site, u, every)
+		if err != nil {
 			failed = append(failed, site.Domain+": "+err.Error())
 			continue
 		}
-		moved[site.ID] = true
+		// Applied now, or by this version before (the log move's apply put
+		// it on its account's Apache): nginx sends the backend secret for
+		// it either way.
+		done[site.ID] = true
+		if applied {
+			moved++
+		}
 	}
 	if len(failed) > 0 {
 		return fmt.Errorf("sites that did not move to their account's Apache, which the shared apache2.service keeps serving: %s; fix them, then run mp stack install apache", strings.Join(failed, "; "))
 	}
-	if len(moved) > 0 {
-		jc.Logf("%d sites run on their accounts' Apaches", len(moved))
+	if moved > 0 {
+		jc.Logf("%d sites run on their accounts' Apaches", moved)
 	}
 	if err := s.retireSharedApache(ctx, jc.Logf, keep); err != nil {
 		return err
@@ -593,54 +662,83 @@ func (s *Server) moveToApacheInstances(ctx context.Context, jc *jobs.Context) er
 	if err := s.db.SetSetting(context.WithoutCancel(ctx), settingApacheInstances, "yes"); err != nil {
 		return err
 	}
+	// Done: nothing left to try again.
+	s.saveApacheMigrateState(ctx, nil)
 	// The rotation reopens the accounts' Apaches now, not the shared one.
 	if err := s.applySiteLogrotate(ctx); err != nil {
 		jc.Logf("warning: site log rotation: %v", err)
 	}
 	// An Apache that ran before the backend secret demands it now: nginx
-	// sends it for each of the account's sites applied above.
-	if err := s.demandApacheBackends(ctx, jc, moved); err != nil {
+	// sends it for each of the account's sites applied above, or by this
+	// version before.
+	if err := s.demandApacheBackends(ctx, jc, done); err != nil {
 		return err
 	}
 	return s.db.SetSetting(context.WithoutCancel(ctx), settingApacheBackends, "yes")
 }
 
-// legacyApacheCustom reads the custom directives an administrator left for
-// a site next to its virtual host of the shared Apache (sites/<domain>.d/*.conf
-// of 0.8.19), to go to the site's directory of its account's Apache. A file
-// that is there already stays as it is: it was carried over before, or
-// written there anew. The agent checks them as directives of that account's
-// Apache; one it refuses (an Include, a log in another directory, an
-// APACHE_* variable, which nothing defines there) keeps the site where it is
-// until it is fixed.
+// moveSiteToItsApache applies a site in Apache mode for the move, under the
+// site's lock, and tells whether it did: a site whose configuration is this
+// version's already — nginx sends it to its account's Apache — is left as it
+// is unless every says otherwise. Whether it is was decided under the lock:
+// a site.apply of the site's own may have moved it while the move waited,
+// and a site removed meanwhile is gone — its removal holds the lock while it
+// takes the configuration away, and the row goes after that.
+func (s *Server) moveSiteToItsApache(ctx context.Context, jc *jobs.Context, site *store.Site, u *store.User, every bool) (bool, error) {
+	defer s.lockSite(site.ID)()
+	if _, err := s.db.GetSite(ctx, site.ID); errors.Is(err, store.ErrNotFound) {
+		jc.Logf("%s: removed meanwhile", site.Domain)
+		return false, nil
+	}
+	if !every && !s.siteUnmoved(ctx, site.ID) {
+		jc.Logf("%s: on the Apache of %s already", site.Domain, u.Login)
+		return false, nil
+	}
+	jc.Logf("%s: to the Apache of %s", site.Domain, u.Login)
+	return true, s.applySiteLocked(ctx, jc, sitePayload{SiteID: site.ID})
+}
+
+// legacyApacheCustom reads, through the agent, the custom directives an
+// administrator left for a site next to its virtual host of the shared
+// Apache (sites/<domain>.d/*.conf of 0.8.19), to go to the site's directory
+// of its account's Apache. They are root's files, which this process may not
+// be able to read (a root umask of 077), and the agent reads only regular
+// files there, no symlink: one it cannot carry keeps the site where it is
+// until it is fixed, as one the agent refuses as a directive of that
+// account's Apache does (an Include, a log in another directory, an APACHE_*
+// variable, which nothing defines there). A file that is there already
+// stays as it is: it was carried over before, or written there anew.
 func (s *Server) legacyApacheCustom(ctx context.Context, inst *apacheInstance, site *store.Site) ([]agent.FileSpec, error) {
 	old := path.Join(s.apacheLegacy, "sites", site.Domain+".d")
-	entries, err := os.ReadDir(old)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
+	res, err := s.agent.ApacheLegacy(ctx, site.Domain)
 	if err != nil {
 		return nil, fmt.Errorf("custom Apache directives in %s: %w", old, err)
 	}
 	var files []agent.FileSpec
-	for _, e := range entries {
-		name := e.Name()
-		if !e.Type().IsRegular() || !strings.HasSuffix(name, ".conf") || name == ".conf" {
-			continue
-		}
-		to := path.Join(inst.customDir(site.Domain), name)
+	for _, f := range res.Files {
+		to := path.Join(inst.customDir(site.Domain), f.Name)
 		if st, err := s.agent.Stat(ctx, to); err != nil {
 			return nil, err
 		} else if len(st.Entries) == 1 && st.Entries[0].Exists {
 			continue
 		}
-		b, err := os.ReadFile(path.Join(old, name))
-		if err != nil {
-			return nil, fmt.Errorf("custom Apache directives: %w", err)
-		}
-		files = append(files, agent.FileSpec{Path: to, Content: string(b), Mode: 0o644})
+		files = append(files, agent.FileSpec{Path: to, Content: f.Content, Mode: legacyCustomMode(f.Mode)})
 	}
 	return files, nil
+}
+
+// legacyCustomMode is the mode a carried file of custom directives gets: no
+// more readable than it was. An administrator's file only root could read
+// (a root umask of 077; it may hold a password for a proxied backend) would
+// otherwise become everybody's to read on the host, the accounts' too, in a
+// directory the agent makes 0755. The account's Apache reads it as root,
+// before its children take the account's uid.
+func legacyCustomMode(mode uint32) uint32 {
+	if mode == 0 {
+		// Not known (an agent that does not tell): root's alone.
+		return 0o600
+	}
+	return mode&0o044 | 0o600
 }
 
 // carryApacheCustom carries the custom directives of a site no Apache
@@ -703,12 +801,14 @@ func (s *Server) retireSharedApache(ctx context.Context, logf func(string, ...an
 	if len(keep) == 0 {
 		paths = append(paths, legacySites)
 	} else {
-		entries, err := os.ReadDir(legacySites)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
+		// The names come from the agent: the directory is root's, and this
+		// process may not be able to read it.
+		res, err := s.agent.ApacheLegacy(ctx, "")
+		if err != nil {
 			return fmt.Errorf("the shared configuration of 0.8.19: %w", err)
 		}
-		for _, e := range entries {
-			if p := path.Join(legacySites, e.Name()); !keep[p] {
+		for _, name := range res.Names {
+			if p := path.Join(legacySites, name); !keep[p] {
 				paths = append(paths, p)
 			}
 		}

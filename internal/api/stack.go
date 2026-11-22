@@ -617,7 +617,9 @@ func (s *Server) installApache(ctx context.Context, jc *jobs.Context) error {
 		return err
 	}
 	jc.Progress(40, "sites in Apache mode")
-	if err := s.moveToApacheInstances(ctx, jc); err != nil {
+	// Every site in Apache mode, those an upgrade moved already too: this is
+	// the repair as well.
+	if err := s.moveToApacheInstances(ctx, jc, true); err != nil {
 		return err
 	}
 	jc.Logf("each account with sites in Apache mode gets its own Apache (monopanel-apache@<login>), its children running as the account, on 127.100.x.y:%d", confcheck.ApacheInstancePort)

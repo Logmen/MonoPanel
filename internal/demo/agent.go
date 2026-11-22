@@ -165,6 +165,7 @@ func (a *Agent) Handler() http.Handler {
 	}))
 	r.Post("/v1/paths/remove", handle(a.removePaths))
 	r.Post("/v1/apache/ctl", handle(a.apacheCtl))
+	r.Post("/v1/apache/legacy", handle(a.apacheLegacy))
 	r.Post("/v1/tool", handle(a.tool))
 	r.Post("/v1/stat", handle(a.stat))
 	r.Post("/v1/dir/list", handle(a.listDir))
@@ -656,6 +657,33 @@ func (a *Agent) apacheCtl(_ context.Context, req *agent.ApacheCtlRequest) (*agen
 		return nil, err
 	}
 	return &agent.ApacheCtlResponse{Output: fmt.Sprintf("%s %s: done\n", req.Action, req.Name)}, nil
+}
+
+// apacheLegacy answers from the pretend disk what the shared Apache of
+// 0.8.19 left there: the demo's world never ran one, so normally nothing.
+func (a *Agent) apacheLegacy(_ context.Context, req *agent.ApacheLegacyRequest) (*agent.ApacheLegacyResponse, error) {
+	dir := confcheck.ApacheLegacySites
+	if req.Domain != "" {
+		dir = path.Join(dir, req.Domain+".d")
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	resp := &agent.ApacheLegacyResponse{}
+	for name, f := range a.st.Files {
+		if path.Dir(name) != dir {
+			continue
+		}
+		base := path.Base(name)
+		switch {
+		case req.Domain == "":
+			resp.Names = append(resp.Names, base)
+		case !f.Dir && strings.HasSuffix(base, ".conf") && !strings.HasPrefix(base, "."):
+			resp.Files = append(resp.Files, agent.ApacheLegacyFile{Name: base, Content: f.Content, Mode: f.Mode & 0o777})
+		}
+	}
+	sort.Strings(resp.Names)
+	sort.Slice(resp.Files, func(i, j int) bool { return resp.Files[i].Name < resp.Files[j].Name })
+	return resp, nil
 }
 
 func (a *Agent) stat(_ context.Context, req *agent.StatRequest) (*agent.StatResponse, error) {

@@ -51,8 +51,11 @@ func checkPHP(c *checker, p string, content []byte) error {
 // helper), but idle: as nobody, on a socket in the root-owned
 // RunDir/php that root alone may connect to, starting no process until
 // something does. Package upgrades keep the file (dpkg's conffile, rpm's
-// %config(noreplace)); one an administrator took back from the maintainer
-// is replaced again at the API's next start.
+// %config(noreplace)). The panel writes it once per branch; an
+// administrator's own pool there afterwards is theirs (the doctor names
+// it), as nothing the panel writes can reach it: fastcgi_pass names the
+// panel's sockets only, and no Apache's children run as www-data. Whatever
+// the panel writes at that path is the idle pool and nothing else.
 
 var (
 	debianPoolRe = regexp.MustCompile(`^/etc/php/([0-9]+\.[0-9]+)/fpm/pool\.d/www\.conf$`)

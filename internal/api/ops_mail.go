@@ -505,6 +505,8 @@ func (s *Server) applyWebmailPort(ctx context.Context, logf func(string, ...any)
 		if len(res.Removed) > 0 {
 			logf("webmail port disabled")
 		}
+		// No server block of an older panel logs into data/logs any more.
+		s.webmailMoved(ctx)
 		return nil
 	}
 	if c.WebmailPort == 0 || c.Webmail == "" || certPath == "" {
@@ -553,6 +555,11 @@ func (s *Server) applyWebmailPort(ctx context.Context, logf func(string, ...any)
 	})
 	if err != nil {
 		return err
+	}
+	// Its logs are in the tree now, an older panel's went into data/logs:
+	// the jails read them from here on.
+	if s.webmailMoved(ctx) {
+		s.refreshFail2ban(ctx)
 	}
 	if len(res.Written) > 0 {
 		logf("webmail at https://%s:%d/", c.Hostname, c.WebmailPort)

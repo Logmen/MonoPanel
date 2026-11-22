@@ -385,15 +385,22 @@ func (f *siteFixture) waitJobOfType(typ string) *store.Job {
 
 // sharedLayout makes the fixture a panel of 0.8.19 with the shared Apache:
 // the marker unset, the include enabled, an administrator's custom
-// directives next to a site's shared virtual host.
-func (f *siteFixture) sharedLayout(custom map[string]string) {
+// directives next to a site's shared virtual host. The files lie in a
+// directory of the test that only the fake agent reads, with the real
+// agent's code (it is /etc/apache2/monopanel/sites, root's, on a host): the
+// API reads none of them itself. It returns that directory.
+func (f *siteFixture) sharedLayout(custom map[string]string) string {
 	f.t.Helper()
 	if err := f.db.SetSetting(f.ctx, settingApacheInstances, ""); err != nil {
 		f.t.Fatal(err)
 	}
-	f.s.apacheLegacy = f.t.TempDir()
+	disk := filepath.Join(f.t.TempDir(), "sites")
+	if err := os.MkdirAll(disk, 0o755); err != nil {
+		f.t.Fatal(err)
+	}
+	f.agent.ApacheLegacySites = disk
 	for domain, content := range custom {
-		d := filepath.Join(f.s.apacheLegacy, "sites", domain+".d")
+		d := filepath.Join(disk, domain+".d")
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			f.t.Fatal(err)
 		}
@@ -404,6 +411,7 @@ func (f *siteFixture) sharedLayout(custom map[string]string) {
 		}
 	}
 	f.agent.Stat["/etc/apache2/conf-enabled/monopanel.conf"] = false
+	return disk
 }
 
 // An upgraded panel moves its sites in Apache mode off the shared Apache
@@ -706,10 +714,10 @@ func TestUpgradeKeepsTheCustomDirectivesOfOtherSites(t *testing.T) {
 	f.createSite(map[string]any{"domain": "c.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
 	f.createSite(map[string]any{"domain": "d.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
 	f.agent.Reset()
-	f.sharedLayout(map[string]string{"c.example.com": "Header set X-Fpm c\n", "d.example.com": "Header set X-Fpm d\n"})
+	disk := f.sharedLayout(map[string]string{"c.example.com": "Header set X-Fpm c\n", "d.example.com": "Header set X-Fpm d\n"})
 	unreadable := os.Geteuid() != 0
 	if unreadable {
-		if err := os.Chmod(filepath.Join(f.s.apacheLegacy, "sites", "d.example.com.d", "custom.conf"), 0); err != nil {
+		if err := os.Chmod(filepath.Join(disk, "d.example.com.d", "custom.conf"), 0); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -638,12 +638,15 @@ func (s *Server) layoutFor(site *store.Site, user *store.User) *siteLayout {
 	return l
 }
 
+// siteFail marks the site failed with err — while its status is still the
+// one the job read (site.Status): a suspension or a removal asked for while
+// the job ran is not overwritten (store.SaveAppliedSite).
 func (s *Server) siteFail(ctx context.Context, site *store.Site, err error) error {
 	// A shutdown is not the site's fault: the job runs again after the restart.
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return err
 	}
-	_ = s.db.SetSiteStatus(context.WithoutCancel(ctx), site.ID, store.SiteError, err.Error())
+	_ = s.db.SetSiteStatusFrom(context.WithoutCancel(ctx), site.ID, site.Status, store.SiteError, err.Error())
 	return err
 }
 
@@ -772,16 +775,47 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 	return s.applySite(ctx, jc, p)
 }
 
-// applySite is site.apply's work, which the move of the sites in Apache mode
-// to their accounts' Apaches does inline, site by site (apache.go).
+// applySite is site.apply's work, under the site's lock (lockSite): the move
+// of the sites in Apache mode to their accounts' Apaches does it inline, site
+// by site (apache.go), beside the sites' own jobs.
 func (s *Server) applySite(ctx context.Context, jc *jobs.Context, p sitePayload) error {
+	defer s.lockSite(p.SiteID)()
+	// The log move's own apply of a site that another apply moved while it
+	// waited — the move of the sites to their accounts' Apaches, which on a
+	// busy host gets to many of them first, or an administrator's — has
+	// nothing left to do: that apply rendered this version's configuration,
+	// and a second one would only reload the site's servers again.
+	if p.LogsMoved && !s.siteUnmoved(ctx, p.SiteID) {
+		jc.Progress(100, "moved already: the servers write the logs into "+s.siteLogsRoot())
+		return nil
+	}
+	return s.applySiteLocked(ctx, jc, p)
+}
+
+// applySiteLocked is applySite under the site's lock: the site is read
+// under it, so that one apply after another renders what the one before
+// left, not what both read at once.
+func (s *Server) applySiteLocked(ctx context.Context, jc *jobs.Context, p sitePayload) error {
 	site, err := s.db.GetSite(ctx, p.SiteID)
 	if err != nil {
 		return err
 	}
+	// The status as read: the apply saves its own only while it is still
+	// this one (store.SaveAppliedSite).
+	from := site.Status
 	user, err := s.db.GetUserByID(ctx, site.UserID)
 	if err != nil {
 		return err
+	}
+	// A site being removed, or one of an account being removed, is not
+	// rendered again: the removal takes its configuration away under the
+	// site's lock (removeSiteConfig), and an apply after that — the move of
+	// the sites to their accounts' Apaches applies them inside a job of its
+	// own, beside the removal's — would leave a server block, a pool and a
+	// virtual host behind for a site the panel no longer knows.
+	if site.Status == store.SiteDeleting || user.Status == store.UserDeleting {
+		jc.Logf("%s is being removed: nothing to apply", site.Domain)
+		return nil
 	}
 	if user.UnixUID == nil {
 		return s.siteFail(ctx, site, errors.New("owner has no unix account yet"))
@@ -985,9 +1019,6 @@ func (s *Server) applySite(ctx context.Context, jc *jobs.Context, p sitePayload)
 	if len(logs.Created) > 0 || p.LogsMoved {
 		jc.Logf("logs: %s", s.siteLogDir(login))
 	}
-	if p.LogsMoved {
-		jc.Logf("the servers write the logs there from now on, not into %s: root opens them, and that directory is the account's; the old files stay there as the account's own, nothing writes or rotates them any more", path.Join(l.data, "logs"))
-	}
 	// A default server of an address the host lost fails the check below.
 	if gone := s.pruneDefaultServers(ctx); len(gone) > 0 {
 		jc.Logf("removed default servers of gone addresses: %s", strings.Join(gone, ", "))
@@ -1015,6 +1046,26 @@ func (s *Server) applySite(ctx context.Context, jc *jobs.Context, p sitePayload)
 		if err := s.settleApacheInstance(ctx, jc.Logf, user, site, false); err != nil {
 			jc.Logf("warning: %v", err)
 		}
+	} else if v, _ := s.db.GetSetting(ctx, settingApacheInstances); v != "yes" {
+		// nginx sends the site to its account's Apache now: its virtual host
+		// of the shared Apache of 0.8.19 goes too. That Apache keeps running
+		// until every site has moved (apache.migrate), and the rotation has
+		// it reopen its logs every day — as root, in the account's data/logs,
+		// which the move ends. Nothing sends the site there any more, so it is
+		// not reloaded for this; its next start does without the site.
+		rr, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: []string{l.apacheConf}})
+		if err != nil {
+			return s.siteFail(ctx, site, fmt.Errorf("the shared Apache's virtual host %s: %w", l.apacheConf, err))
+		}
+		if len(rr.Removed) > 0 {
+			jc.Logf("removed %s: the shared Apache of 0.8.19 does not serve the site any more", l.apacheConf)
+		}
+	}
+	// The configuration in place is this version's: logs in the tree and, in
+	// Apache mode, the account's Apache. A site an older panel set up has
+	// moved (siteMoves), and fail2ban's refresh below lists its logs now.
+	if s.siteMoved(ctx, site.ID, s.siteLogsRoot()) {
+		jc.Logf("the servers write the logs into %s from now on, not into %s: root opens them, and that directory is the account's; the old files stay there as the account's own, nothing writes or rotates them any more", s.siteLogDir(login), path.Join(l.data, "logs"))
 	}
 	if !suspended && !proxy && s.poolSocketWait > 0 {
 		// systemd's reload returns once the signal is sent; give php-fpm a moment to open the pool socket.
@@ -1046,7 +1097,10 @@ func (s *Server) applySite(ctx context.Context, jc *jobs.Context, p sitePayload)
 		site.Status = store.SiteActive
 	}
 	site.LastError = ""
-	if err := s.db.UpdateSite(context.WithoutCancel(ctx), site); err != nil {
+	// Only what the apply decided goes back: a change made while it ran (the
+	// mode, the PHP branch, a suspension) stays for the site.apply that change
+	// queued, and is not overwritten with what this one read at its start.
+	if err := s.db.SaveAppliedSite(context.WithoutCancel(ctx), site, from, tls); err != nil {
 		return err
 	}
 	if site.SSL == "auto" && !tls && !suspended {
@@ -1264,8 +1318,13 @@ func (s *Server) jobSiteDelete(ctx context.Context, jc *jobs.Context) error {
 }
 
 // removeSiteConfig deletes the nginx/Apache/php-fpm configuration of a site
-// (validating and reloading) and, with purge, the site directory.
+// (validating and reloading) and, with purge, the site directory. It holds
+// the site's lock (lockSite): an apply under way — the move of the sites to
+// their accounts' Apaches applies them inside a job of its own, beside the
+// removal's — writes its configuration before this removes it, and one after
+// this renders nothing for a site being removed (applySiteLocked).
 func (s *Server) removeSiteConfig(ctx context.Context, jc *jobs.Context, site *store.Site, user *store.User, purge bool) error {
+	defer s.lockSite(site.ID)()
 	if err := s.removeSiteShares(ctx, jc, site.ID); err != nil {
 		return err
 	}

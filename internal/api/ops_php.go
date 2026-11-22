@@ -434,14 +434,23 @@ func (s *Server) jobPHPInstall(ctx context.Context, jc *jobs.Context) error {
 	// tmpfiles line (/etc/tmpfiles.d is not on the agent's allow-list).
 	files := append([]agent.FileSpec{idle}, ini...)
 	jc.Logf("the distribution's pool %s: idle (nobody, a socket of root's alone)", idle.Path)
+	syslog := true
 	if conf, err := s.fpmSyslogConf(ctx, layout); err != nil {
 		jc.Logf("php-fpm.conf: the master keeps its log file (the panel's next start tries again): %v", err)
+		syslog = false
 	} else if conf != nil {
 		files = append(files, *conf)
 		jc.Logf("php-fpm master: log to syslog (%s)", layout.FPMConf)
 	}
 	if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Validate: [][]string{layout.FPMCheckArgv}, Reload: []string{layout.FPMService}, Force: true, Origin: "php:" + p.Version}); err != nil {
 		return s.phpFail(ctx, p.Version, err)
+	}
+	// Made so once: from now on the files are the administrator's to change
+	// (php_pools.go). Without the syslog line the next start tries again.
+	if syslog {
+		s.markPHPDistroIdle(ctx, p.Version)
+	} else if err := s.db.SetSetting(context.WithoutCancel(ctx), settingPHPDistroIdle(p.Version), ""); err != nil {
+		jc.Logf("warning: %v", err)
 	}
 	if _, err := s.agent.Service(ctx, layout.FPMService, "enable"); err != nil {
 		return s.phpFail(ctx, p.Version, err)

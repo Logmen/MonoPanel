@@ -462,6 +462,14 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 	if c := s.fail2banLeftoverCheck(actx); c != nil {
 		add(*c)
 	}
+	// The moves of an upgrade that have not finished, and what an
+	// administrator changed of what the panel set up once.
+	if c := s.siteLogsCheck(actx); c != nil {
+		add(*c)
+	}
+	for _, c := range s.phpDistroChecks(actx) {
+		add(c)
+	}
 	if c := s.phpCLICheck(actx); c != nil {
 		add(*c)
 	}

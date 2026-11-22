@@ -157,6 +157,13 @@ func (c *Client) ApacheCtl(ctx context.Context, action, name string) (*ApacheCtl
 	return &r, c.call(ctx, "/v1/apache/ctl", &ApacheCtlRequest{Action: action, Name: name}, &r)
 }
 
+// ApacheLegacy reads what the shared Apache of 0.8.19 left behind: a site's
+// custom directives (domain given) or the names in its sites directory.
+func (c *Client) ApacheLegacy(ctx context.Context, domain string) (*ApacheLegacyResponse, error) {
+	var r ApacheLegacyResponse
+	return &r, c.call(ctx, "/v1/apache/legacy", &ApacheLegacyRequest{Domain: domain}, &r)
+}
+
 // Tool runs an allow-listed administrative tool.
 func (c *Client) Tool(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
 	var r ToolResponse

@@ -57,3 +57,88 @@ func TestPHPAndSites(t *testing.T) {
 		t.Fatal("php version must be gone")
 	}
 }
+
+// What a site.apply saves is what it decided — an address for a site without
+// one, the certificate it serves, the status — and nothing it merely read: a
+// change made while it ran (the mode, the PHP branch, an address) stays.
+func TestSaveAppliedSite(t *testing.T) {
+	ctx := context.Background()
+	db := openTest(t)
+	u := &User{Login: "alex"}
+	db.CreateUser(ctx, u)
+	s := &Site{UserID: u.ID, Domain: "example.com", PHPVersion: "8.4", Mode: ModeApache}
+	if err := db.CreateSite(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	read, _ := db.GetSite(ctx, s.ID)
+	changed, _ := db.GetSite(ctx, s.ID)
+	changed.Mode, changed.PHPVersion = ModeFPM, "8.3"
+	if err := db.UpdateSite(ctx, changed); err != nil {
+		t.Fatal(err)
+	}
+	c := &Certificate{Name: "example.com", Names: []string{"example.com"}}
+	if err := db.UpsertCertificate(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	cert := c.ID
+	from := read.Status
+	read.IP, read.CertificateID, read.Status, read.LastError = "192.0.2.10", &cert, SiteActive, ""
+	if err := db.SaveAppliedSite(ctx, read, from, false); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := db.GetSite(ctx, s.ID)
+	if got.Mode != ModeFPM || got.PHPVersion != "8.3" || got.Status != SiteActive || got.IP != "192.0.2.10" || got.CertificateID != nil {
+		t.Fatalf("after the apply: mode %s php %s status %s ip %s cert %v", got.Mode, got.PHPVersion, got.Status, got.IP, got.CertificateID)
+	}
+	read.IP, read.Status, read.LastError = "198.51.100.1", SiteError, "boom"
+	if err := db.SaveAppliedSite(ctx, read, SiteActive, true); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.GetSite(ctx, s.ID); got.IP != "192.0.2.10" || got.CertificateID == nil || *got.CertificateID != cert || got.Status != SiteError || got.LastError != "boom" {
+		t.Fatalf("second apply: ip %s cert %v status %s %q", got.IP, got.CertificateID, got.Status, got.LastError)
+	}
+	if err := db.SaveAppliedSite(ctx, &Site{ID: 999}, SiteActive, false); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a site that is gone: %v", err)
+	}
+}
+
+// A status asked for while a job ran — a suspension, a removal — stays: the
+// job's own goes in only over the status it read at its start, its error
+// with it.
+func TestSiteStatusOnlyOverWhatTheJobRead(t *testing.T) {
+	ctx := context.Background()
+	db := openTest(t)
+	u := &User{Login: "alex"}
+	db.CreateUser(ctx, u)
+	s := &Site{UserID: u.ID, Domain: "example.com", PHPVersion: "8.4", Mode: ModeFPM}
+	if err := db.CreateSite(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetSiteStatus(ctx, s.ID, SiteActive, ""); err != nil {
+		t.Fatal(err)
+	}
+	read, _ := db.GetSite(ctx, s.ID)
+	from := read.Status
+	if err := db.SetSiteStatus(ctx, s.ID, SiteSuspended, ""); err != nil {
+		t.Fatal(err)
+	}
+	read.Status, read.LastError = SiteActive, ""
+	if err := db.SaveAppliedSite(ctx, read, from, false); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.GetSite(ctx, s.ID); got.Status != SiteSuspended {
+		t.Fatalf("the apply overwrote the suspension: %s", got.Status)
+	}
+	if err := db.SetSiteStatusFrom(ctx, s.ID, from, SiteError, "boom"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.GetSite(ctx, s.ID); got.Status != SiteSuspended || got.LastError != "" {
+		t.Fatalf("the failure overwrote the suspension: %s %q", got.Status, got.LastError)
+	}
+	if err := db.SetSiteStatusFrom(ctx, s.ID, SiteSuspended, SiteError, "boom"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.GetSite(ctx, s.ID); got.Status != SiteError || got.LastError != "boom" {
+		t.Fatalf("a failure over what the job read: %s %q", got.Status, got.LastError)
+	}
+}

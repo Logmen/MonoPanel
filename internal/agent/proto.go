@@ -299,6 +299,30 @@ type ApacheCtlResponse struct {
 	Output string `json:"output,omitempty"`
 }
 
+// ApacheLegacyRequest reads what the shared Apache of 0.8.19 and older left
+// in confcheck.ApacheLegacySites, for the upgrade to carry over: with a
+// domain that site's custom directives (<domain>.d/*.conf), without one the
+// names of the directory's entries. The files are the administrators',
+// root's: the agent reads them for the API (ReadApacheLegacy).
+type ApacheLegacyRequest struct {
+	Domain string `json:"domain,omitempty"`
+}
+
+// ApacheLegacyResponse holds the directory's entries (no domain asked) or
+// the site's custom directive files, by name; nothing when there is none.
+type ApacheLegacyResponse struct {
+	Names []string           `json:"names,omitempty"`
+	Files []ApacheLegacyFile `json:"files,omitempty"`
+}
+
+// ApacheLegacyFile is one file of a site's custom Apache directives, with
+// its permission bits (0: not known).
+type ApacheLegacyFile struct {
+	Name    string `json:"name"`
+	Content string `json:"content"`
+	Mode    uint32 `json:"mode,omitempty"`
+}
+
 // ToolRequest runs one of the allow-listed administrative tools (mysql,
 // mysqldump, percona-release, restic, fail2ban-client, nft, crontab …) with
 // argv and optional stdin. Output is captured (tail) unless OutputFile is set.

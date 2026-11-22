@@ -120,3 +120,56 @@ func TestRunnerLifecycle(t *testing.T) {
 	cancel()
 	r.Wait()
 }
+
+// Held workers claim nothing until the hold is over — a job queued before
+// the API's agent listens is not claimed only to fail on "agent unreachable"
+// — and then run what waits; a runner stopped while held simply ends.
+func TestHeldWorkersClaimNothing(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "p.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	release := make(chan struct{})
+	r := NewRunner(db, 2, nil)
+	r.Register("ok", func(context.Context, *Context) error { return nil })
+	r.Hold(func(ctx context.Context) {
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+	})
+	all, stop := r.Broker().Subscribe(0, 16)
+	defer stop()
+	r.Start(ctx)
+	j, err := r.Enqueue(ctx, "ok", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if got, _ := db.GetJob(ctx, j.ID); got.Status != store.JobQueued {
+		t.Fatalf("claimed while held: %s", got.Status)
+	}
+	close(release)
+	waitFor(t, all, "done")
+	if got, _ := db.GetJob(ctx, j.ID); got.Status != store.JobDone {
+		t.Fatalf("after the hold: %s", got.Status)
+	}
+	cancel()
+	r.Wait()
+
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	r2 := NewRunner(db, 1, nil)
+	r2.Hold(func(ctx context.Context) { <-ctx.Done() })
+	r2.Start(ctx2)
+	cancel2()
+	done := make(chan struct{})
+	go func() { r2.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a held runner does not stop")
+	}
+}

@@ -72,12 +72,22 @@ func normalizeSource(src string) (string, bool) {
 // fail2banSiteLogs lists the nginx logs of every site, and of the webmail
 // published on a port, in their accounts' directories of the log tree. The
 // files exist: a site's logs are made before its configuration is applied.
+// A site an older panel set up writes into data/logs until it has moved
+// (siteMoves), which fail2ban, as root, is not to read — the agent allows
+// log paths in /var/log and the tree only. Its files in the tree are listed
+// once the move made them, empty until the site moves (siteMove.Made): the
+// move then leaves the jails as they are, and fail2ban is not restarted
+// once a site. Before that they may not be there, and are left out.
 func (s *Server) fail2banSiteLogs(ctx context.Context) (access, errs []string) {
 	sites, err := s.db.ListSites(ctx, 0)
 	if err != nil {
 		return nil, nil
 	}
+	moves := s.siteMovesState(ctx)
 	for _, site := range sites {
+		if mv, unmoved := moves.Sites[site.ID]; unmoved && !mv.Made {
+			continue
+		}
 		owner, err := s.db.GetUserByID(ctx, site.UserID)
 		if err != nil {
 			continue
@@ -85,7 +95,7 @@ func (s *Server) fail2banSiteLogs(ctx context.Context) (access, errs []string) {
 		logs := s.siteLogDir(owner.Login)
 		access = append(access, path.Join(logs, site.Domain+".access.log"))
 		errs = append(errs, path.Join(logs, site.Domain+".error.log"))
-		if c := s.loadMailConfig(ctx); c.Webmail == site.Domain && c.WebmailPort > 0 {
+		if c := s.loadMailConfig(ctx); c.Webmail == site.Domain && c.WebmailPort > 0 && moves.Webmail == nil {
 			access = append(access, path.Join(logs, webmailLogNames[0]))
 			errs = append(errs, path.Join(logs, webmailLogNames[1]))
 		}
