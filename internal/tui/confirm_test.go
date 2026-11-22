@@ -153,7 +153,7 @@ func TestConfirmLikeTheWeb(t *testing.T) {
 		{path: "config set", args: []string{"log.level", "debug"}, flags: map[string]string{"restart": "true"}, note: "monopanel-api restarts"},
 		{path: "config set", args: []string{"log.level", "debug"}},
 		{path: "user set", args: []string{"bob"}, flags: map[string]string{"sftp-only": "true"}, note: "SSH login is closed"},
-		{path: "user set", args: []string{"bob"}, flags: map[string]string{"status": "active"}, note: "works again"},
+		{path: "user set", args: []string{"bob"}, flags: map[string]string{"status": "active"}, note: "use the panel again"},
 		{path: "user totp-reset", args: []string{"bob"}, note: "2FA"},
 		{path: "app stop", args: []string{"bot"}, note: "proxy mode"},
 		{path: "token revoke", args: []string{"7"}, note: "401"},

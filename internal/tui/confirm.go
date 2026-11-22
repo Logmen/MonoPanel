@@ -97,10 +97,10 @@ func userSetNotes(f *form) []string {
 	if v, ok := f.flagValue("status"); ok {
 		switch v {
 		case "suspended":
-			notes = append(notes, T("Аккаунт перестанет пускать в панель и по SFTP/SSH. Сайты, базы и cron продолжат работать — это блокировка входа, а не остановка хозяйства.",
-				"The account can no longer sign in to the panel or over SFTP/SSH. Sites, databases and cron keep running — this blocks sign-in, it does not stop the hosting."))
+			notes = append(notes, T("Аккаунт больше не сможет работать с панелью: вход, его сеансы и API-токены, mp через локальный сокет. SFTP/SSH, сайты, базы и cron продолжат работать — это блокировка панели, а не остановка хозяйства.",
+				"The account can no longer use the panel: signing in, its sessions and API tokens, mp over the local socket. SFTP/SSH, sites, databases and cron keep working — this blocks the panel, it does not stop the hosting."))
 		case "active":
-			notes = append(notes, T("Вход в панель и по SFTP/SSH снова заработает.", "Signing in to the panel and over SFTP/SSH works again."))
+			notes = append(notes, T("Аккаунт снова сможет работать с панелью.", "The account can use the panel again."))
 		}
 	}
 	if v, ok := f.flagValue("shell"); ok && v == "true" {
@@ -207,9 +207,9 @@ func serviceNote(verb, unit string) string {
 	case "restart", "reload-or-restart":
 		switch u {
 		case "monopanel-api":
-			return T("API панели перезапустится: несколько секунд меню не сможет до него достучаться. Задачи, которые выполняются сейчас, прервутся и начнутся заново.", "The panel API restarts: for a few seconds the menu cannot reach it. Jobs running now are interrupted and start over.")
+			return T("API панели перезапустится: несколько секунд меню не сможет до него достучаться. Задачи, которые выполняются сейчас, прервутся и начнутся заново (перенос аккаунта остановится: удалите созданный им аккаунт и запустите перенос снова).", "The panel API restarts: for a few seconds the menu cannot reach it. Jobs running now are interrupted and start over (a migration stops instead: remove the account it made and run it again).")
 		case "monopanel-agent":
-			return T("Агент перезапустится, а вместе с ним и API: несколько секунд меню не сможет до них достучаться. Задачи, которые выполняются сейчас, прервутся и начнутся заново.", "The agent restarts, and the API with it: for a few seconds the menu cannot reach them. Jobs running now are interrupted and start over.")
+			return T("Агент перезапустится, а вместе с ним и API: несколько секунд меню не сможет до них достучаться. Задачи, которые выполняются сейчас, прервутся и начнутся заново (перенос аккаунта остановится: удалите созданный им аккаунт и запустите перенос снова).", "The agent restarts, and the API with it: for a few seconds the menu cannot reach them. Jobs running now are interrupted and start over (a migration stops instead: remove the account it made and run it again).")
 		}
 	}
 	return ""

@@ -281,7 +281,7 @@ func confirmFor(f *form) *confirmSpec {
 			return nil
 		}
 		// The screen warns about a new address; the restart comes first.
-		restart := T("monopanel-api перезапустится: панель несколько секунд не будет отвечать, идущие задачи прервутся и начнутся заново. Сайты, почта и базы не затрагиваются.", "monopanel-api restarts: the panel does not answer for a few seconds and running jobs are interrupted and start over. Sites, mail and databases are not affected.")
+		restart := T("monopanel-api перезапустится: панель несколько секунд не будет отвечать, идущие задачи прервутся и начнутся заново (перенос аккаунта остановится: удалите созданный им аккаунт и запустите перенос снова). Сайты, почта и базы не затрагиваются.", "monopanel-api restarts: the panel does not answer for a few seconds and running jobs are interrupted and start over (a migration stops instead: remove the account it made and run it again). Sites, mail and databases are not affected.")
 		if c.note == "" && (arg0 == "web.listen" || arg0 == "web.hostname") {
 			c.note = T("После перезапуска панель может отвечать по другому адресу.", "After the restart the panel may answer at another address.")
 		}

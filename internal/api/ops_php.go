@@ -197,8 +197,8 @@ func (s *Server) ensurePHPRepo(ctx context.Context, jc *jobs.Context) error {
 			return err
 		}
 		if len(own.Entries) != 1 || !own.Entries[0].Exists {
-			// An administrator who set Sury up himself, as its README says,
-			// has a source of his own signed by a keyring of his own
+			// An administrator who set Sury up by hand, as its README says,
+			// has a source of their own signed by a keyring of their own
 			// (/etc/apt/sources.list.d/php.list,
 			// /usr/share/keyrings/deb.sury.org-php.gpg), and a host may take
 			// Sury from a mirror of it. When apt reads Sury from such a
@@ -1214,7 +1214,7 @@ func (s *Server) suryIndexed(ctx context.Context, codename string) bool {
 // php-common is one of Sury's own builds — "2:102+debsuryorg24.04.1+3", a
 // mirror of Sury; the PPA's read "+deb.sury.org+1". Sury has php-common for
 // every release. Before the panel writes a source of Sury, any of them
-// stands in for it (an administrator may have one of his own).
+// stands in for it (an administrator may have one of their own).
 func (s *Server) suryOrigins(ctx context.Context, codename string) []string {
 	res, err := s.agent.Pkg(ctx, "available", "php-common")
 	if err != nil {
