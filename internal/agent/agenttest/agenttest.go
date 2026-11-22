@@ -105,6 +105,9 @@ type Agent struct {
 	PackageVersions map[string]string
 	// ToolHook, when set, may answer a tool call itself (nil = default).
 	ToolHook func(req agent.ToolRequest) *agent.ToolResponse
+	// Sandbox is what ping says of restic's sandbox (nil: nothing, as an
+	// agent before it did).
+	Sandbox *agent.SandboxInfo
 	// WriteThrough, when set, says which applied files also land on disk —
 	// for code that reads a file back from the filesystem after the agent
 	// wrote it (only ever temp paths in tests).
@@ -326,7 +329,7 @@ func (a *Agent) respond(path string, body []byte) any {
 	defer a.mu.Unlock()
 	switch path {
 	case "/v1/ping":
-		return agent.PingResponse{OK: true, Version: "test", Hostname: "test-host"}
+		return agent.PingResponse{OK: true, Version: "test", Hostname: "test-host", Sandbox: a.Sandbox}
 
 	case "/v1/config/apply":
 		var req agent.ApplyConfigSetRequest

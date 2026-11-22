@@ -41,26 +41,7 @@ func (s *Server) tool(ctx context.Context, req *ToolRequest) (*ToolResponse, err
 			return nil, &Error{Message: req.Name + ": " + err.Error()}
 		}
 	}
-	run := func(args []string, stdout io.Writer) (int, error) {
-		cmd := exec.CommandContext(rctx, bin, args...)
-		cmd.Env = append(os.Environ(), "LANG=C.UTF-8", "LC_ALL=C.UTF-8")
-		cmd.Env = append(cmd.Env, plan.env...)
-		cmd.ExtraFiles = plan.files
-		cmd.WaitDelay = 5 * time.Second
-		if req.Stdin != "" {
-			cmd.Stdin = strings.NewReader(req.Stdin)
-		}
-		cmd.Stderr = out
-		switch {
-		case stdout != nil:
-			cmd.Stdout = stdout
-		case plan.stdout != nil:
-			cmd.Stdout = plan.stdout
-		default:
-			cmd.Stdout = out
-		}
-		return exitCode(cmd.Run())
-	}
+	run := planRunner(rctx, plan, bin, req.Stdin, out)
 	var code int
 	if plan.wrap != nil {
 		code, err = plan.wrap(rctx, run, out)
@@ -79,6 +60,42 @@ func (s *Server) tool(ctx context.Context, req *ToolRequest) (*ToolResponse, err
 		return nil, &Error{Message: req.Name + ": " + err.Error(), Output: out.String()}
 	}
 	return &ToolResponse{ExitCode: code, Output: out.String()}, nil
+}
+
+// planRunner runs the plan's program, bin, with the arguments it is given:
+// with the plan's environment and files, in its sandbox when the plan has
+// one, stdin as its input and its output (unless the plan or the caller take
+// stdout) and errors into out.
+func planRunner(ctx context.Context, plan *toolPlan, bin, stdin string, out io.Writer) toolRun {
+	return func(args []string, stdout io.Writer) (int, error) {
+		path, argv, env, files := bin, args, plan.env, plan.files
+		if plan.confine != nil {
+			c, err := plan.confine(ctx, bin, args, out)
+			if err != nil {
+				return 0, err
+			}
+			defer c.done()
+			path, argv, env, files = c.path, c.args, append(append([]string{}, plan.env...), c.env...), c.files
+		}
+		cmd := exec.CommandContext(ctx, path, argv...)
+		cmd.Env = append(os.Environ(), "LANG=C.UTF-8", "LC_ALL=C.UTF-8")
+		cmd.Env = append(cmd.Env, env...)
+		cmd.ExtraFiles = files
+		cmd.WaitDelay = 5 * time.Second
+		if stdin != "" {
+			cmd.Stdin = strings.NewReader(stdin)
+		}
+		cmd.Stderr = out
+		switch {
+		case stdout != nil:
+			cmd.Stdout = stdout
+		case plan.stdout != nil:
+			cmd.Stdout = plan.stdout
+		default:
+			cmd.Stdout = out
+		}
+		return exitCode(cmd.Run())
+	}
 }
 
 // exitCode turns the result of cmd.Run into the tool's exit status; only a

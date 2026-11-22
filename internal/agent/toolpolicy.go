@@ -113,7 +113,26 @@ type toolPlan struct {
 	// prepare runs after the plan is approved and before the program: it
 	// makes the agent's own directories (restic's cache, RestoreDir).
 	prepare func() error
+	// confine, when set, turns each run of the program into one in a
+	// Landlock sandbox (restic: restic_sandbox.go), with what to undo once
+	// that run is over; out takes what the run's helpers have to say.
+	confine func(ctx context.Context, bin string, args []string, out io.Writer) (*confinedRun, error)
 	closers []io.Closer
+}
+
+// confinedRun is a run of a plan's program through sandbox-exec.
+type confinedRun struct {
+	// path and args are the command: the agent's binary, sandbox-exec with
+	// its rules, "--" and the program with its arguments.
+	path string
+	args []string
+	// env is added to the plan's environment.
+	env []string
+	// files are the command's descriptors 3, 4, … (the rules' trees), in
+	// place of the plan's files.
+	files []*os.File
+	// done runs after the program exited.
+	done func()
 }
 
 // toolRun runs the plan's program with args and returns its exit status;

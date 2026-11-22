@@ -39,6 +39,11 @@ const RestoreDir = config.DefaultAgentStateDir + "/restore"
 // API names one in its own data directory, and the agent ignores that.
 const resticCacheDir = "/var/cache/monopanel-agent/restic"
 
+// resticTmpDir is restic's temporary directory (TMPDIR) in its sandbox,
+// root's alone: the packs on their way to the repository. The sandbox
+// grants restic no /tmp.
+const resticTmpDir = "/var/cache/monopanel-agent/restic-tmp"
+
 var (
 	resticSnapshotRe = regexp.MustCompile(`^([0-9a-f]{8,64}|latest)$`)
 	resticScopeRe    = regexp.MustCompile(`^scope=(server|user:[a-z_][a-z0-9_-]{0,31}|site:[A-Za-z0-9][A-Za-z0-9.-]{0,252}|db:[A-Za-z0-9_]{1,64})$`)
@@ -65,8 +70,9 @@ func (s *Server) planRestic(c *toolCall) (*toolPlan, error) {
 	if err != nil {
 		return nil, err
 	}
-	plan := &toolPlan{args: c.args, env: env, prepare: ensureResticCache}
+	plan := &toolPlan{args: c.args, env: env, prepare: s.ensureResticCache}
 	a := c.args
+	var sources []*os.File
 	switch {
 	case equalArgs(a, []string{"snapshots", "--json", "--tag", "monopanel"}),
 		equalArgs(a, []string{"cat", "config"}),
@@ -80,11 +86,19 @@ func (s *Server) planRestic(c *toolCall) (*toolPlan, error) {
 				return nil, err
 			}
 		}
+		if s.landlock > 0 {
+			if sources, err = s.pinBackupSources(a[6:]); err != nil {
+				return nil, err
+			}
+		}
 	case len(a) >= 4 && a[0] == "restore":
-		return s.planResticRestore(plan)
+		if _, err := s.planResticRestore(plan); err != nil {
+			return nil, err
+		}
 	default:
 		return nil, refuseArgs("restic", a, "not a form the panel uses")
 	}
+	s.sandboxRestic(plan, sources)
 	return plan, nil
 }
 
@@ -100,27 +114,20 @@ func (s *Server) planRestic(c *toolCall) (*toolPlan, error) {
 // directories are walked first without following one (restic keeps a path
 // that is itself a symlink as the symlink). The walk checks, it does not pin:
 // an account that swaps a directory of its own for a symlink between the
-// walk and restic's open can still win that race.
+// walk and restic's open can still win that race — which the sandbox
+// restic runs in closes (restic_sandbox.go): it reads below the paths as
+// pinned here (pinBackupSources) and nowhere else, whatever its paths
+// resolve through by then, and in the web root it follows no symlink.
 func (s *Server) resticBackupPath(p string) error {
 	refuse := func(why string) error { return notAllowed("a backup of "+p, why) }
 	if !cleanAbs(p) {
 		return refuse("a clean absolute path")
 	}
-	var root string
-	dir, base := filepath.Dir(p), filepath.Base(p)
-	switch {
-	case atOrBelow(p, s.cfg.WWWRoot):
-		root = s.cfg.WWWRoot
-	case atOrBelow(p, s.cfg.ConfigDir):
-		root = s.cfg.ConfigDir
-	case p == filepath.Join(s.cfg.DataDir, "certs"), p == filepath.Join(s.cfg.DataDir, "acme"):
-		root = s.cfg.DataDir
-	case filepath.Dir(dir) == s.backupTmpDir() && backupRunRe.MatchString(filepath.Base(dir)) &&
-		(base == "panel.db" || strings.HasSuffix(base, ".sql") && dbNameRe.MatchString(strings.TrimSuffix(base, ".sql"))):
-		root = s.cfg.DataDir
-	default:
+	root := s.resticBackupRoot(p)
+	if root == "" {
 		return refuse("the panel backs up the web root, its configuration, certificates and the run's dumps")
 	}
+	dir := filepath.Dir(p)
 	if !atOrBelow(dir, root) {
 		return nil // the tree itself: nothing of anybody else's on the way
 	}
@@ -130,6 +137,25 @@ func (s *Server) resticBackupPath(p string) error {
 	}
 	unix.Close(fd) //nolint:errcheck // a directory opened for reading
 	return nil
+}
+
+// resticBackupRoot is the tree among those resticBackupPath accepts that p
+// lies in, "" for none: the web root, the configuration directory, or the
+// data directory for its certificates, ACME account and a run's dumps.
+func (s *Server) resticBackupRoot(p string) string {
+	dir, base := filepath.Dir(p), filepath.Base(p)
+	switch {
+	case atOrBelow(p, s.cfg.WWWRoot):
+		return s.cfg.WWWRoot
+	case atOrBelow(p, s.cfg.ConfigDir):
+		return s.cfg.ConfigDir
+	case p == filepath.Join(s.cfg.DataDir, "certs"), p == filepath.Join(s.cfg.DataDir, "acme"):
+		return s.cfg.DataDir
+	case filepath.Dir(dir) == s.backupTmpDir() && backupRunRe.MatchString(filepath.Base(dir)) &&
+		(base == "panel.db" || strings.HasSuffix(base, ".sql") && dbNameRe.MatchString(strings.TrimSuffix(base, ".sql"))):
+		return s.cfg.DataDir
+	}
+	return ""
 }
 
 // resticEnv vets the repository's environment: the repository, its password
@@ -165,7 +191,7 @@ func (s *Server) resticEnv(env []string) ([]string, error) {
 	if err := s.checkResticRepository(repo); err != nil {
 		return nil, err
 	}
-	return append(out, "RESTIC_CACHE_DIR="+resticCacheDir), nil
+	return append(out, "RESTIC_CACHE_DIR="+s.resticCacheDir()), nil
 }
 
 // checkResticRepository accepts the backends the panel offers: a local
@@ -193,28 +219,8 @@ func (s *Server) checkResticRepository(repo string) error {
 			}
 		}
 	case strings.HasPrefix(repo, "sftp:"):
-		var user, host string
-		if strings.HasPrefix(repo, "sftp://") {
-			u, err := url.Parse(repo)
-			if err != nil {
-				return refuse(err.Error())
-			}
-			user, host = u.User.Username(), u.Hostname()
-			if strings.Contains(u.Host, ":") && u.Port() == "" && !strings.HasPrefix(u.Host, "[") {
-				return refuse("a port is a number")
-			}
-		} else {
-			hostPart, _, ok := strings.Cut(strings.TrimPrefix(repo, "sftp:"), ":")
-			if !ok {
-				return refuse("sftp:[user@]host:/path")
-			}
-			host = hostPart
-			if i := strings.LastIndex(hostPart, "@"); i >= 0 {
-				user, host = hostPart[:i], hostPart[i+1:]
-			}
-		}
-		if !sftpHostRe.MatchString(host) || (user != "" && !sftpUserRe.MatchString(user)) {
-			return refuse("the host and user are names (ssh would take one starting with - for an option)")
+		if _, err := parseSFTPRepository(repo); err != nil {
+			return refuse(err.Error())
 		}
 	case strings.HasPrefix(repo, "s3:"), strings.HasPrefix(repo, "b2:"), strings.HasPrefix(repo, "rest:"):
 	default:
@@ -223,9 +229,60 @@ func (s *Server) checkResticRepository(repo string) error {
 	return nil
 }
 
+// sftpRemote is the server of an sftp repository as restic has ssh connect
+// to it: [-p port] [-l user] host.
+type sftpRemote struct {
+	user, host, port string
+}
+
+// parseSFTPRepository reads the server of sftp:[user@]host:/path or
+// sftp://[user@]host[:port]//path the way restic reads it.
+func parseSFTPRepository(repo string) (sftpRemote, error) {
+	var r sftpRemote
+	if strings.HasPrefix(repo, "sftp://") {
+		u, err := url.Parse(repo)
+		if err != nil {
+			return r, err
+		}
+		r.user, r.host, r.port = u.User.Username(), u.Hostname(), u.Port()
+		if strings.Contains(u.Host, ":") && u.Port() == "" && !strings.HasPrefix(u.Host, "[") {
+			return r, errors.New("a port is a number")
+		}
+	} else {
+		hostPart, _, ok := strings.Cut(strings.TrimPrefix(repo, "sftp:"), ":")
+		if !ok {
+			return r, errors.New("sftp:[user@]host:/path")
+		}
+		r.host = hostPart
+		if i := strings.LastIndex(hostPart, "@"); i >= 0 {
+			r.user, r.host = hostPart[:i], hostPart[i+1:]
+		}
+	}
+	if !sftpHostRe.MatchString(r.host) || (r.user != "" && !sftpUserRe.MatchString(r.user)) {
+		return r, errors.New("the host and user are names (ssh would take one starting with - for an option)")
+	}
+	return r, nil
+}
+
+// resticCacheDir is restic's cache directory: resticCacheDir, or a test's.
+func (s *Server) resticCacheDir() string {
+	if s.resticCache != "" {
+		return s.resticCache
+	}
+	return resticCacheDir
+}
+
+// resticTmpDir is restic's temporary directory in its sandbox.
+func (s *Server) resticTmpDir() string {
+	if s.resticTmp != "" {
+		return s.resticTmp
+	}
+	return resticTmpDir
+}
+
 // ensureResticCache makes restic's cache directory, root's and 0700.
-func ensureResticCache() error {
-	fd, err := ensureRootDir(resticCacheDir, 0o700)
+func (s *Server) ensureResticCache() error {
+	fd, err := ensureRootDir(s.resticCacheDir(), 0o700)
 	if err == nil {
 		unix.Close(fd) //nolint:errcheck // a directory opened for reading
 	}
@@ -273,7 +330,7 @@ func (s *Server) planResticRestore(plan *toolPlan) (*toolPlan, error) {
 			return nil, notAllowed("restoring into "+target, "a snapshot is restored into "+filepath.Join(RestoreDir, "<snapshot>")+" or in place")
 		}
 		plan.prepare = func() error {
-			if err := ensureResticCache(); err != nil {
+			if err := s.ensureResticCache(); err != nil {
 				return err
 			}
 			fd, err := ensureRootDir(RestoreDir, 0o700)

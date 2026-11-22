@@ -473,8 +473,15 @@ func (s *Server) jobBackupRun(ctx context.Context, jc *jobs.Context) error {
 	if summary.SnapshotID == "" {
 		return fail(fmt.Errorf("restic backup (exit %d): %s", res.ExitCode, lastLinesJoin(res.Output, 5)))
 	}
+	// A snapshot restic made without some files (exit 3: they vanished, or
+	// it could not read them — the agent's sandbox refuses what a symlink in
+	// a home leads to outside it) holds everything else and restores: the
+	// run is not failed for it, and it is not "done" either. It is
+	// "partial", with what was left out, on the run and on the target.
+	status, note := "done", ""
 	if res.ExitCode != 0 {
-		jc.Logf("warning: restic exit %d (some files could not be read)", res.ExitCode)
+		status, note = "partial", incompleteBackup(res.ExitCode, res.Output)
+		jc.Logf("warning: %s", note)
 	}
 	jc.Logf("snapshot %s: %d files, %s processed, %s added", summary.SnapshotID[:8], summary.Files, humanBytes(summary.Bytes), humanBytes(summary.Added))
 	jc.Progress(80, "retention")
@@ -484,12 +491,76 @@ func (s *Server) jobBackupRun(ctx context.Context, jc *jobs.Context) error {
 	} else if forget.ExitCode != 0 {
 		jc.Logf("warning: forget exit %d: %s", forget.ExitCode, lastLinesJoin(forget.Output, 3))
 	}
-	if err := s.db.FinishBackup(context.WithoutCancel(ctx), run.ID, "done", summary.SnapshotID, summary.Bytes, summary.Files, ""); err != nil {
+	if err := s.db.FinishBackup(context.WithoutCancel(ctx), run.ID, status, summary.SnapshotID, summary.Bytes, summary.Files, note); err != nil {
 		return err
 	}
-	_ = s.db.SetBackupTargetRun(context.WithoutCancel(ctx), t.ID, "done", "")
+	_ = s.db.SetBackupTargetRun(context.WithoutCancel(ctx), t.ID, status, note)
+	if status == "partial" {
+		jc.Progress(100, "backup "+summary.SnapshotID[:8]+" done without some files")
+		return nil
+	}
 	jc.Progress(100, "backup "+summary.SnapshotID[:8]+" done")
 	return nil
+}
+
+// incompleteBackup says what a restic backup that exited with code (3: the
+// snapshot is there, some of its sources are not) left out, from its --json
+// error lines — {"message_type":"error","error":{"message":…},"item":…},
+// one for the scan and one for the archival of the same item — or the plain
+// "error: …" lines of older versions.
+func incompleteBackup(code int, out string) string {
+	var shown []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		var e struct {
+			MessageType string `json:"message_type"`
+			Error       struct {
+				Message string `json:"message"`
+			} `json:"error"`
+			Item string `json:"item"`
+		}
+		what, item := "", ""
+		switch {
+		case strings.HasPrefix(line, "{") && strings.Contains(line, `"message_type":"error"`) && json.Unmarshal([]byte(line), &e) == nil:
+			what, item = e.Error.Message, e.Item
+			switch {
+			case what == "":
+				what = item
+			case item != "" && !strings.Contains(what, item):
+				what = item + ": " + what
+			}
+		case strings.HasPrefix(line, "error: "):
+			what = strings.TrimPrefix(line, "error: ")
+		default:
+			continue
+		}
+		if item == "" {
+			item = what
+		}
+		if what == "" || seen[item] {
+			continue
+		}
+		seen[item] = true
+		if len(shown) < 3 {
+			if len(what) > 200 {
+				what = what[:200] + "…"
+			}
+			shown = append(shown, what)
+		}
+	}
+	if len(seen) == 0 {
+		return fmt.Sprintf("restic exit %d: the snapshot lacks what restic could not read", code)
+	}
+	paths := "1 path"
+	if len(seen) > 1 {
+		paths = fmt.Sprintf("%d paths", len(seen))
+	}
+	more := ""
+	if len(seen) > len(shown) {
+		more = fmt.Sprintf(" and %d more", len(seen)-len(shown))
+	}
+	return fmt.Sprintf("restic exit %d: the snapshot lacks %s restic could not read: %s%s", code, paths, strings.Join(shown, "; "), more)
 }
 
 func (s *Server) jobBackupRestore(ctx context.Context, jc *jobs.Context) error {

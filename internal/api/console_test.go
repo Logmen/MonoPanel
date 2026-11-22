@@ -98,7 +98,7 @@ func TestConsoleRunsMPWithAOneOffToken(t *testing.T) {
 	// The daemons and the installer are not for a browser, nor is the demo
 	// build's server; the release key is root's on the server alone; the
 	// client flags are the console's own.
-	for _, args := range [][]string{{"agent"}, {"helper", "--uid", "1"}, {"--json", "agent"}, {"--no-wait", "setup"}, {"app-exec", "--", "/bin/sh", "-c", "id"}, {"--json", "app-exec", "--env-file", "/x", "--", "/bin/id"}, {"--json", "demo", "serve", "--listen", ":9090"}, {"demo", "prepare"},
+	for _, args := range [][]string{{"agent"}, {"helper", "--uid", "1"}, {"--json", "agent"}, {"--no-wait", "setup"}, {"app-exec", "--", "/bin/sh", "-c", "id"}, {"--json", "app-exec", "--env-file", "/x", "--", "/bin/id"}, {"sandbox-exec", "--rx", "/", "--", "/bin/sh", "-c", "id"}, {"--json", "demo", "serve", "--listen", ":9090"}, {"demo", "prepare"},
 		{"update", "trust", "--off"}, {"update", "--no-wait", "trust"}, {"--json", "update", "trust", "--key", "made-up-key"},
 		{"doctor", "--server", "https://x"}, {"doctor", "--token=abc"},
 		{"site", "list", "--token", "abc"}, {"--token", "abc", "status"}, {"migrate", "run", "--server=https://x"}, {"migrate", "plan", "--config", "/tmp/c.yaml"},

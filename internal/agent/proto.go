@@ -16,6 +16,25 @@ type PingResponse struct {
 	Version  string `json:"version"`
 	PeerUID  int    `json:"peer_uid"`
 	Hostname string `json:"hostname"`
+	// Sandbox is how the agent confines restic; an agent that does not say
+	// leaves it out.
+	Sandbox *SandboxInfo `json:"sandbox,omitempty"`
+}
+
+// SandboxInfo tells whether restic runs in its Landlock sandbox
+// (restic_sandbox.go), for the doctor.
+type SandboxInfo struct {
+	// Landlock is the kernel's Landlock ABI version; 0 when the kernel has
+	// none, and restic runs as root without the sandbox.
+	Landlock int `json:"landlock"`
+	// Error says why there is no Landlock.
+	Error string `json:"error,omitempty"`
+	// NoSymfollow: a backup reads the web root in a view of it in which no
+	// symlink is followed, so that a symlink in a home leads nowhere — not
+	// into the panel's configuration, certificates and dumps either, which
+	// a server backup reads too. NoSymfollowError says why not.
+	NoSymfollow      bool   `json:"nosymfollow,omitempty"`
+	NoSymfollowError string `json:"nosymfollow_error,omitempty"`
 }
 
 // FileSpec is one file to write. Mode is a unix permission (0o644); Owner and

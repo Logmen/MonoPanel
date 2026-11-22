@@ -281,6 +281,18 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 		return out
 	}
 	add(check("agent", "ok", "version "+ping.Version))
+	if sb := ping.Sandbox; sb != nil {
+		switch {
+		case sb.Landlock >= 1 && !sb.NoSymfollow && sb.NoSymfollowError != "":
+			add(check("restic sandbox", "warn", fmt.Sprintf("Landlock ABI %d, but a backup follows the symlinks in the web root (%s): during a server backup, which reads the panel's configuration, certificates and dumps as well, an account that swaps a directory of its own for a symlink can have those, or another account's files, stored as its own; the agent needs to mount (a mount namespace, mount_setattr of Linux 5.14)", sb.Landlock, sb.NoSymfollowError)))
+		case sb.Landlock >= 2:
+			add(check("restic sandbox", "ok", fmt.Sprintf("Landlock ABI %d", sb.Landlock)))
+		case sb.Landlock == 1:
+			add(check("restic sandbox", "ok", "Landlock ABI 1: backups run in it, restores without it (ABI 1 cannot let restic link files between directories)"))
+		default:
+			add(check("restic sandbox", "warn", "no Landlock ("+sb.Error+"): restic backs up and restores as root without its sandbox, and an account that swaps a directory for a symlink while a backup reads its home can have files outside it stored as its own; boot a kernel with landlock in its lsm= list"))
+		}
+	}
 
 	web := s.profile.Web()
 	units := []string{web.NginxService}
