@@ -62,10 +62,13 @@ func (s *Server) readFile(_ context.Context, req *ReadFileRequest) (*ReadFileRes
 	var f *os.File
 	var err error
 	if inLogDir {
-		// The log directory belongs to the API's service user, who could
-		// leave a symlink on the way, or a second name of another file, for
-		// root to read: the directories are opened one by one without
-		// following a symlink, the file so too, and it must have one name.
+		// The log directory is root:<service group> 1771 (ops_sitelogs.go):
+		// the API's service user still makes entries of its own in it — a
+		// symlink, or a second name of another file, for root to read —,
+		// though it can rename or remove none of root's, sites/ above all,
+		// which is root's alone. So the directories are opened one by one
+		// without following a symlink, the file so too, and it must have
+		// one name.
 		f, err = openBelow(logDir, p)
 		if errors.Is(err, errSymlinkInPath) {
 			return nil, &Error{Status: http.StatusForbidden, Message: err.Error()}

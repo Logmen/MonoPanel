@@ -78,3 +78,40 @@ func TestDoctorRowLeadsToTheUpgrade(t *testing.T) {
 		t.Fatalf("y upgrades the row's component: %+v", jobs)
 	}
 }
+
+// While the move of an upgrade onto the accounts' Apaches has not finished,
+// the stack screen's Apache row counts the sites that wait and shows the
+// shared apache2.service that serves them, as mp stack list and the web
+// page do: a warning while it runs, an error when it is down (the sites
+// that wait answer 502, the doctor's failure), and u — the upgrade — for
+// its replaced binary, as the doctor's line has it.
+func TestStackRowDuringTheApacheMove(t *testing.T) {
+	for _, c := range []struct {
+		state    string
+		replaced bool
+		tone     tone
+		upgrade  string
+	}{
+		{"active", true, toneWarn, "apache"},
+		{"active", false, toneWarn, ""},
+		{"failed", false, toneErr, ""},
+	} {
+		routes := apiRoutes()
+		routes["/api/v1/stack"] = []map[string]any{{"name": "apache", "kind": "web", "installed": true, "version": "2.4.65-2",
+			"instances": map[string]any{"running": 1, "total": 1, "waiting": 2},
+			"service":   map[string]any{"unit": "apache2.service", "active_state": c.state, "binary_replaced": c.replaced}}}
+		m, _ := newTestModelOf(t, confirmTree(), "admin", routes)
+		openArea(t, m, "Extensions")
+		rows := m.top().(*listScreen).visible()
+		if len(rows) != 1 {
+			t.Fatalf("%s: %d rows", c.state, len(rows))
+		}
+		r := rows[0]
+		if want := "installed · 1 of 1 running · sites waiting for the move: 2 · apache2.service " + c.state; !strings.HasPrefix(r.cells[3], want) {
+			t.Errorf("%s: %q, want %q", c.state, r.cells[3], want)
+		}
+		if r.tones[3] != c.tone || r.vals["upgrade"] != c.upgrade {
+			t.Errorf("%s: tone %v, upgrade %q", c.state, r.tones[3], r.vals["upgrade"])
+		}
+	}
+}

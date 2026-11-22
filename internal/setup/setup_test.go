@@ -11,8 +11,10 @@ import (
 	"strings"
 	"testing"
 
+	"monopanel/internal/agent"
 	"monopanel/internal/agent/confcheck"
 	"monopanel/internal/config"
+	"monopanel/internal/systemd"
 )
 
 // mp setup makes the panel's certificate as root in the API's own data
@@ -475,6 +477,54 @@ func TestStartPanelOrder(t *testing.T) {
 	r = &recordedUnits{failSocket: true}
 	if err := startPanel(ctx, r, true, warn); err != nil || r.calls[len(r.calls)-1] != "start "+apiService || len(warned) != 1 {
 		t.Fatalf("socket failing: %v %v %v", r.calls, err, warned)
+	}
+}
+
+// enablePanel's systemd: the units' states, and what was enabled.
+type enabledUnits struct {
+	states  map[string]systemd.Status
+	enabled []string
+}
+
+func (e *enabledUnits) Enable(_ context.Context, unit string) error {
+	if agent.APISocketMasked(e.states[unit]) {
+		// as systemd answers EnableUnitFiles for a masked unit
+		return fmt.Errorf("enable %s: unit file /etc/systemd/system/%s is masked", unit, unit)
+	}
+	e.enabled = append(e.enabled, unit)
+	return nil
+}
+
+func (e *enabledUnits) Status(_ context.Context, unit string) (systemd.Status, error) {
+	if st, ok := e.states[unit]; ok {
+		return st, nil
+	}
+	return systemd.Status{Unit: unit, LoadState: "loaded", UnitFileState: "enabled"}, nil
+}
+
+// mp setup enables the panel's units, a disabled socket of the panel's port
+// among them (the API's unit starts it all the same), but leaves one the
+// administrator masked as it is — systemd would refuse it, and the setup
+// fail before the API's unit — so that the API listens itself, on purpose.
+func TestEnablePanelLeavesAMaskedSocket(t *testing.T) {
+	ctx := context.Background()
+	all := []string{agentService, apiSocket, apiService}
+	for _, c := range []struct {
+		name   string
+		socket systemd.Status
+		masked bool
+		want   []string
+	}{
+		{"enabled", systemd.Status{LoadState: "loaded", UnitFileState: "enabled"}, false, all},
+		{"disabled", systemd.Status{LoadState: "loaded", UnitFileState: "disabled"}, false, all},
+		{"masked", systemd.Status{LoadState: "masked", UnitFileState: "masked"}, true, []string{agentService, apiService}},
+		{"masked at runtime", systemd.Status{LoadState: "masked", UnitFileState: "masked-runtime"}, true, []string{agentService, apiService}},
+	} {
+		e := &enabledUnits{states: map[string]systemd.Status{apiSocket: c.socket}}
+		masked, err := enablePanel(ctx, e)
+		if err != nil || masked != c.masked || !slices.Equal(e.enabled, c.want) {
+			t.Errorf("%s: masked %v, enabled %v, %v", c.name, masked, e.enabled, err)
+		}
 	}
 }
 

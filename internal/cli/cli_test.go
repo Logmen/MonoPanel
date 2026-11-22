@@ -763,12 +763,14 @@ func TestAPISocketSyncProbe(t *testing.T) {
 	}
 }
 
-// mp doctor warns when the socket of the panel's port is enabled but the API
-// listens on the port itself: the port is free while the API restarts. Not
-// when the socket holds it, when the socket is off, when the API is too old
-// to say, nor for a port no account may bind, which the socket leaves alone.
-// That is mp's own judgement for an API whose doctor does not judge the
-// socket itself; one that does is taken as it is.
+// mp doctor warns when the API listens on the port itself while the socket
+// of the panel's port could hold it, enabled or not (the API's unit starts
+// it with itself): the port is free while the API restarts. Not when the
+// socket holds it, when there is none or the administrator masked it, when
+// the API is too old to say, nor for a port no account may bind, which the
+// socket leaves alone. That is mp's own judgement, by the API's rule, for
+// an API whose doctor does not judge the socket itself; one that does is
+// taken as it is.
 func TestDoctorWarnsOfTheIdleSocket(t *testing.T) {
 	start := unprivilegedPortStart
 	unprivilegedPortStart = func() int { return 1024 }
@@ -782,7 +784,14 @@ func TestDoctorWarnsOfTheIdleSocket(t *testing.T) {
 		return fakeResp{body: map[string]any{"panel": panel}}
 	}
 	socket := func(state string) fakeResp {
-		return fakeResp{body: map[string]any{"unit": "monopanel-api.socket", "load_state": "loaded", "active_state": "inactive", "sub_state": "dead", "unit_file_state": state}}
+		load := "loaded"
+		switch state {
+		case "not-found":
+			load, state = state, ""
+		case "masked":
+			load = state
+		}
+		return fakeResp{body: map[string]any{"unit": "monopanel-api.socket", "load_state": load, "active_state": "inactive", "sub_state": "dead", "unit_file_state": state}}
 	}
 	dir := t.TempDir()
 	conf := func(listen string) string {
@@ -798,8 +807,10 @@ func TestDoctorWarnsOfTheIdleSocket(t *testing.T) {
 	}{
 		{"listens itself", "itself", "enabled", ":8443", true},
 		{"on the socket", "socket", "enabled", ":8443", false},
-		{"socket disabled", "itself", "disabled", ":8443", false},
+		{"socket disabled", "itself", "disabled", ":8443", true},
+		{"socket static", "itself", "static", ":8443", true},
 		{"socket masked", "itself", "masked", ":8443", false},
+		{"no socket", "itself", "not-found", ":8443", false},
 		{"an older API", "", "enabled", ":8443", false},
 		{"a privileged port", "itself", "enabled", "203.0.113.5:443", false},
 	} {
@@ -813,7 +824,8 @@ func TestDoctorWarnsOfTheIdleSocket(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			warned := strings.Contains(out, "[WARN] api socket") && strings.Contains(out, "monopanel-api.socket is enabled, but monopanel-api listens on the port itself")
+			warned := strings.Contains(out, "[WARN] api socket") && strings.Contains(out, "monopanel-api.socket is "+c.state+", but monopanel-api listens on the port itself") &&
+				strings.Contains(out, "mp setup brings the socket back, and systemctl mask monopanel-api.socket has the API listen on the port itself on purpose")
 			if warned != c.warn {
 				t.Fatalf("warned %v, want %v:\n%s", warned, c.warn, out)
 			}

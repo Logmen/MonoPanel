@@ -270,6 +270,72 @@ func TestSiteLogsEndpointReadsAnUnmovedSiteAsTheAccount(t *testing.T) {
 	}
 }
 
+// A site that has not moved may have its log in both places: after a
+// partial apply in Apache mode Apache writes into the tree while its old
+// file in data/logs, of 0.8.19, stays as it was. The tail is the file's
+// written last — the tree's once it holds something written after the old
+// one, else the old one, read as the account; an fsop of an older binary
+// says no time, and the old one stays the one, as before.
+func TestSiteLogsEndpointReadsTheLiveFileOfAnUnmovedSite(t *testing.T) {
+	f := newSiteFixture(t)
+	site := f.createSite(map[string]any{"domain": "example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	moves, _ := json.Marshal(siteMoves{Logs: f.s.siteLogsRoot(), Sites: map[int64]*siteMove{site.ID: {Domain: site.Domain}}})
+	if err := f.db.SetSetting(f.ctx, settingSiteMoves, string(moves)); err != nil {
+		t.Fatal(err)
+	}
+	const (
+		tree = "/var/log/monopanel/sites/alex/example.com.apache.access.log"
+		old  = "/var/www/alex/data/logs/example.com.apache.access.log"
+	)
+	upgraded := time.Date(2026, 11, 20, 3, 0, 0, 0, time.UTC)
+	oldMod := upgraded.Add(-time.Hour).Format(time.RFC3339)
+	f.agent.RunAsHook = func(req agent.RunAsUserRequest) *agent.RunAsUserResponse {
+		if len(req.Args) != 3 || req.Args[0] != "tail" || req.Args[1] != "data/logs/example.com.apache.access.log" {
+			return nil
+		}
+		out := map[string]any{"size": 18, "content": "GET /old HTTP/1.1\n"}
+		if oldMod != "" {
+			out["mtime"] = oldMod
+		}
+		b, _ := json.Marshal(out)
+		return &agent.RunAsUserResponse{StdoutBase64: base64.StdEncoding.EncodeToString(b)}
+	}
+	f.agent.ReadFile[tree] = "GET /live HTTP/1.1\n"
+	f.agent.ModTime = map[string]time.Time{tree: upgraded.Add(time.Minute)}
+	get := func() apitypes.LogTail {
+		t.Helper()
+		var tail apitypes.LogTail
+		f.call(http.MethodGet, "/sites/example.com/logs/apache-access", nil, http.StatusOK, &tail)
+		return tail
+	}
+	if tail := get(); tail.Path != tree || !slices.Equal(tail.Lines, []string{"GET /live HTTP/1.1"}) {
+		t.Fatalf("the tree's file written after the old one: %+v", tail)
+	}
+	// The old one written last: it is the live one.
+	f.agent.ModTime[tree] = upgraded.Add(-2 * time.Hour)
+	if tail := get(); tail.Path != old || !slices.Equal(tail.Lines, []string{"GET /old HTTP/1.1"}) {
+		t.Fatalf("the old file written after the tree's: %+v", tail)
+	}
+	// Written in the same second: the old one, as before.
+	f.agent.ModTime[tree] = upgraded.Add(-time.Hour + 500*time.Millisecond)
+	if tail := get(); tail.Path != old {
+		t.Fatalf("both written in one second: %+v", tail)
+	}
+	// The tree's file as the move made it, empty, however new.
+	f.agent.ReadFile[tree] = ""
+	f.agent.ModTime[tree] = upgraded.Add(time.Minute)
+	if tail := get(); tail.Path != old {
+		t.Fatalf("the tree's empty file: %+v", tail)
+	}
+	// An fsop that says no time: the old one, and root looks at nothing.
+	f.agent.ReadFile[tree] = "GET /live HTTP/1.1\n"
+	oldMod = ""
+	f.agent.Reset()
+	if tail := get(); tail.Path != old || f.agent.Called("/v1/stat") || f.agent.Called("/v1/file/read") {
+		t.Fatalf("no time from fsop: %+v", tail)
+	}
+}
+
 // pendingMoves are the sites that have not moved their logs yet, by domain.
 func (f *siteFixture) pendingMoves() map[string]*siteMove {
 	f.t.Helper()

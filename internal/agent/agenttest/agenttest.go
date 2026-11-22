@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"monopanel/internal/agent"
 	"monopanel/internal/agent/confcheck"
@@ -97,6 +98,9 @@ type Agent struct {
 	StatWritten bool
 	// ReadFile answers agent.ReadFile for these paths.
 	ReadFile map[string]string
+	// ModTime answers agent.Stat for these paths as regular files, last
+	// written then, of the size of their ReadFile content.
+	ModTime map[string]time.Time
 	// ToolOutput answers agent.Tool by tool name.
 	ToolOutput map[string]string
 	// StreamOutput answers agent.StreamOut by tool name.
@@ -800,6 +804,10 @@ func (a *Agent) respond(path string, body []byte) any {
 		json.Unmarshal(body, &req) //nolint:errcheck // test double
 		entries := make([]agent.StatEntry, 0, len(req.Paths))
 		for _, p := range req.Paths {
+			if t, ok := a.ModTime[p]; ok {
+				entries = append(entries, agent.StatEntry{Path: p, Exists: true, Size: int64(len(a.ReadFile[p])), Mode: "-rw-r-----", ModTime: t.UTC().Format(time.RFC3339)})
+				continue
+			}
 			isDir, exists := a.Stat[p]
 			if !exists {
 				isDir, exists = a.Stat[p+"/"]

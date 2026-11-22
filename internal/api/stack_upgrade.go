@@ -798,7 +798,11 @@ func (s *Server) settlePHP(ctx context.Context, jc *jobs.Context, ts []upgradeTa
 }
 
 // recordPHPPackage keeps the branch's recorded package version with what is
-// installed now (the PHP page shows it).
+// installed now (the PHP page shows it), and nothing else of the row: the
+// php jobs run beside the stack's (their lock is "php"), and a row read here
+// and written back whole would undo what one of them changed meanwhile —
+// the extensions, the default branch, a status — or bring back the row of
+// a branch removed since.
 func (s *Server) recordPHPPackage(ctx context.Context, version, pkg string) {
 	q, err := s.agent.Pkg(ctx, "query", pkg)
 	if err != nil || q.Installed[pkg] == "" {
@@ -808,8 +812,7 @@ func (s *Server) recordPHPPackage(ctx context.Context, version, pkg string) {
 	if err != nil || row.PackageVersion == q.Installed[pkg] {
 		return
 	}
-	row.PackageVersion = q.Installed[pkg]
-	if err := s.db.UpsertPHPVersion(context.WithoutCancel(ctx), row); err != nil {
+	if err := s.db.SetPHPPackageVersion(context.WithoutCancel(ctx), version, q.Installed[pkg]); err != nil {
 		s.log.Warn("the PHP branch's package version", "version", version, "err", err)
 	}
 }

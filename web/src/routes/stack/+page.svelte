@@ -114,8 +114,23 @@
   const upgradable = (c: any, name: string) => !!c?.installed && (!!c.upgrade || (replaced(c) && upgradeComp(c, name) !== ''));
   async function saveMem(e: Event) { e.preventDefault(); error = ''; try { mem = await api('/stack/memcached', { method: 'PUT', json: memForm }); notify(mem.installed ? t('stack.memReconfigured') : t('stack.memSavedPending')); } catch (e) { fail(e); } }
   // Apache runs one server per account with sites in apache mode: the state is how many run.
-  const stateOf = (c: any) => !c?.installed ? t('stack.stateNotInstalled') : c.instances?.total ? t('stack.stateInstances', { running: c.instances.running, total: c.instances.total }) : c.service ? `${c.service.active_state}` : t('stack.stateInstalled');
-  const tagOf = (c: any) => (c?.installed ? ((c.service && c.service.active_state !== 'active') || (c.instances && c.instances.running < c.instances.total) ? 'tag-err' : 'tag-ok') : c?.version ? 'tag-err' : 'tag-muted');
+  // While the move of an upgrade onto them has not finished, the sites that wait and the
+  // shared apache2.service serving them (the row's service) come along, as mp stack list and
+  // the TUI show them: down while sites wait, those answer 502 — the doctor's failure.
+  const stateOf = (c: any) => {
+    if (!c?.installed) return t('stack.stateNotInstalled');
+    if (!c.instances) return c.service ? `${c.service.active_state}` : t('stack.stateInstalled');
+    const parts: string[] = [];
+    if (c.instances.total) parts.push(t('stack.stateInstances', { running: c.instances.running, total: c.instances.total }));
+    if (c.instances.waiting) parts.push(t('stack.stateMoveWaits', { n: c.instances.waiting }));
+    if (c.service) parts.push(`${c.service.unit} ${c.service.active_state}`);
+    return parts.length ? parts.join(' · ') : t('stack.stateInstalled');
+  };
+  const tagOf = (c: any) => {
+    if (!c?.installed) return c?.version ? 'tag-err' : 'tag-muted';
+    if ((c.service && c.service.active_state !== 'active') || (c.instances && c.instances.running < c.instances.total)) return 'tag-err';
+    return c.instances?.waiting || (c.instances && c.service) ? 'tag-warn' : 'tag-ok';
+  };
 </script>
 
 <PageHead title={t('stack.title')} sub={t('stack.sub')} />
@@ -143,7 +158,7 @@
               <td data-label={t('stack.colComponent')} class="font-medium whitespace-nowrap">{titleOf(name)}</td>
               <td data-label={t('stack.colWhat')} class="text-sm text-muted max-w-md">{info[name] ? t(info[name].text) : ''}</td>
               <td data-label={t('stack.colVersion')} class="font-mono text-xs">{c?.installed ? c.version || '—' : '—'}{#if c?.installed && c.upgrade}<div class="mt-1"><span class="tag tag-warn" title={updateTitle(c)}>{t('stack.updateTo', { to: c.upgrade.to })}</span></div>{/if}</td>
-              <td data-label={t('stack.colState')}><span class="tag {tagOf(c)}">{stateOf(c)}</span>{#if c && !c.installed && c.version}<div class="text-xs text-danger mt-1 max-w-xs break-words">{c.version}</div>{/if}{#if replaced(c)}<div class="text-xs text-warn mt-1 max-w-xs">{t('stack.binaryReplaced')}</div>{/if}</td>
+              <td data-label={t('stack.colState')}><span class="tag {tagOf(c)}" title={c?.instances?.waiting && c.service ? t('stack.moveWaitsTitle', { unit: c.service.unit }) : undefined}>{stateOf(c)}</span>{#if c && !c.installed && c.version}<div class="text-xs text-danger mt-1 max-w-xs break-words">{c.version}</div>{/if}{#if replaced(c)}<div class="text-xs text-warn mt-1 max-w-xs">{t('stack.binaryReplaced')}</div>{/if}</td>
               <td data-label=""><div class="row-actions">
                 {#if upgradable(c, name)}<button class="btn btn-sm {db ? 'btn-danger' : 'btn-primary'}" onclick={() => (ask = askUpgrade(upgradeComp(c, name), name))}><Icon name="download" size={13} /> {t('stack.btnUpgrade')}</button>{/if}
                 {#if !c?.installed}

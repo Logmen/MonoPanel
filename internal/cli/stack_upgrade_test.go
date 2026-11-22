@@ -116,3 +116,41 @@ func TestStackUpgradeComponent(t *testing.T) {
 		wantBody(t, f.call(t, method, path), c.want)
 	}
 }
+
+// While the move of an upgrade onto the accounts' Apaches has not finished,
+// mp stack list counts the Apaches that exist, the sites that wait, and the
+// shared apache2.service that serves them: on a replaced binary, mp stack
+// upgrade apache restarts it; down, the sites that wait answer 502 until it
+// runs, as the doctor says.
+func TestStackListDuringTheApacheMove(t *testing.T) {
+	apache := func(state string, replaced bool) fakeResp {
+		return fakeResp{body: []map[string]any{{"name": "apache", "installed": true, "version": "2.4.65-2", "kind": "web",
+			"instances": map[string]any{"running": 1, "total": 1, "waiting": 2},
+			"service":   map[string]any{"unit": "apache2.service", "active_state": state, "binary_replaced": replaced}}}}
+	}
+	newFakeAPI(t, map[string]fakeResp{"GET /stack": apache("active", true), "GET /stack/auto-upgrade": {body: map[string]any{"enabled": true, "hour": 4}}})
+	out, err := mp(t, "", "stack", "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"installed · 1 of 1 running · sites waiting for the move: 2 · apache2.service active · on a replaced binary",
+		"apache runs a binary an upgrade replaced: mp stack upgrade apache restarts it after checking the configuration\n"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stack list lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "answer 502") {
+		t.Errorf("the shared Apache runs:\n%s", out)
+	}
+	newFakeAPI(t, map[string]fakeResp{"GET /stack": apache("failed", false), "GET /stack/auto-upgrade": {body: map[string]any{"enabled": true, "hour": 4}}})
+	out, err = mp(t, "", "stack", "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"sites waiting for the move: 2 · apache2.service failed",
+		"apache: apache2.service is failed, and the sites that wait for the move onto their accounts' Apaches (2) answer 502 until it runs: systemctl start apache2.service\n"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stack list lacks %q:\n%s", want, out)
+		}
+	}
+}

@@ -32,9 +32,11 @@ func stackReplaced(c apitypes.StackComponent) bool {
 
 // printUpdatesHint says how the updates that wait get installed, and the
 // restarts that wait, row by row: what mp stack upgrade restarts after its
-// check, and what only a restart by hand brings onto the new binary.
-// daily is the daily upgrade, asked for only when updates wait (nil: it
-// could not be read, and nothing is said of it).
+// check, and what only a restart by hand brings onto the new binary — and
+// the shared apache2.service down while sites still wait for the move onto
+// their accounts' Apaches, which the doctor calls a failure. daily is the
+// daily upgrade, asked for only when updates wait (nil: it could not be
+// read, and nothing is said of it).
 func printUpdatesHint(comps []apitypes.StackComponent, daily func() *apitypes.StackAutoUpgrade) {
 	stack, db := false, false
 	for _, c := range comps {
@@ -79,6 +81,13 @@ func printUpdatesHint(comps []apitypes.StackComponent, daily func() *apitypes.St
 				"%s runs a binary an upgrade replaced: the new version takes effect after systemctl restart %s\n"), name, termsafe.Line(c.Service.Unit))
 		}
 	}
+	for _, c := range comps {
+		if in := c.Instances; c.Installed && in != nil && in.Waiting > 0 && c.Service != nil && c.Service.ActiveState != "active" {
+			unit := termsafe.Line(c.Service.Unit)
+			fmt.Printf(T("%s: %s — %s, а сайты, которые ждут переезда на Apache своих аккаунтов (%d), до его запуска отвечают 502: systemctl start %s\n",
+				"%s: %s is %s, and the sites that wait for the move onto their accounts' Apaches (%d) answer 502 until it runs: systemctl start %s\n"), termsafe.Line(c.Name), unit, termsafe.Line(c.Service.ActiveState), in.Waiting, unit)
+		}
+	}
 }
 
 func stackUpgradeCmd() *cobra.Command {
@@ -86,8 +95,8 @@ func stackUpgradeCmd() *cobra.Command {
 		Use: "upgrade [component]",
 		Short: T("обновить пакеты панели из их репозиториев: nginx, php, apache, db или all (по умолчанию all: nginx, PHP и Apache; сервер БД — только как db)",
 			"upgrade the panel's packages from their repositories: nginx, php, apache, db or all (the default, all: nginx, PHP and Apache; the database server only as db)"),
-		Long: T("Ставит то, что предлагают репозитории, которые подключила панель (nginx.org, Sury или ppa:ondrej/php, Remi, Percona или MySQL), и только для её уже установленных пакетов. Потом проверяет конфигурацию новой версией (nginx -t, php-fpm -t, apache2 -t, mysqld --validate-config) и перезагружает или перезапускает службы: nginx перезагружается (пакет nginx.org сам подменяет работающий бинарник), php-fpm каждой обновлённой ветки перезапускается, Apache каждого аккаунта — мягко перезапускается или перезапускается, если работает заменённый бинарник. Если проверка не прошла, служба работает как работала, ничего не откатывается, а задача завершается ошибкой. Сервер баз данных обновляется только по mp stack upgrade db: его перезапуск — это простой сайтов.",
-			"Installs what the repositories the panel added offer (nginx.org, Sury or ppa:ondrej/php, Remi, Percona or MySQL), for the panel's packages that are installed only. Then checks the configuration with the new version (nginx -t, php-fpm -t, apache2 -t, mysqld --validate-config) and reloads or restarts the services: nginx reloads (nginx.org's package swaps the running binary itself), the php-fpm of every upgraded branch restarts, each account's Apache gets a graceful restart, or a restart when it runs the replaced binary. When a check fails, the service runs on as it was, nothing is rolled back and the job fails. The database server is upgraded only with mp stack upgrade db: its restart is downtime for the sites."),
+		Long: T("Ставит то, что предлагают репозитории, которые подключила панель (nginx.org, Sury или ppa:ondrej/php, Remi, Percona или MySQL), и только для её уже установленных пакетов. Потом проверяет конфигурацию новой версией (nginx -t, php-fpm -t, apache2 -t, mysqld --validate-config) и перезагружает или перезапускает службы: nginx перезагружается (пакет nginx.org сам подменяет работающий бинарник), php-fpm каждой обновлённой ветки перезапускается, Apache каждого аккаунта — мягко перезапускается или перезапускается, если работает заменённый бинарник. Пока сайты ещё ждут переезда на Apache своих аккаунтов, общий apache2.service, который их обслуживает, проверяется apache2ctl -t ещё до обновления (если проверка не прошла, Apache не обновляется) и после него перезапускается — мягко, если его бинарник не заменён. Если проверка не прошла, служба работает как работала, ничего не откатывается, а задача завершается ошибкой. Сервер баз данных обновляется только по mp stack upgrade db: его перезапуск — это простой сайтов.",
+			"Installs what the repositories the panel added offer (nginx.org, Sury or ppa:ondrej/php, Remi, Percona or MySQL), for the panel's packages that are installed only. Then checks the configuration with the new version (nginx -t, php-fpm -t, apache2 -t, mysqld --validate-config) and reloads or restarts the services: nginx reloads (nginx.org's package swaps the running binary itself), the php-fpm of every upgraded branch restarts, each account's Apache gets a graceful restart, or a restart when it runs the replaced binary. While sites still wait for the move onto their accounts' Apaches, the shared apache2.service that serves them is checked with apache2ctl -t before the upgrade (if that fails, Apache is not upgraded) and restarted after it, gracefully when its binary is unchanged. When a check fails, the service runs on as it was, nothing is rolled back and the job fails. The database server is upgraded only with mp stack upgrade db: its restart is downtime for the sites."),
 		Args:      cobra.MaximumNArgs(1),
 		ValidArgs: []string{"nginx", "php", "apache", "db", "all"},
 		RunE: func(cmd *cobra.Command, args []string) error {

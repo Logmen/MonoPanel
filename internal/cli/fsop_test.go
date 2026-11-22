@@ -41,9 +41,9 @@ func TestFsopRunAllowsOnlyPHPAndStripsComponents(t *testing.T) {
 	}
 }
 
-// fsop tail gives the size of a regular file and its last bytes, says that
-// a file is missing, and refuses what is no regular file — a FIFO among
-// them, without waiting for a writer.
+// fsop tail gives the size of a regular file, when it was last written and
+// its last bytes, says that a file is missing, and refuses what is no
+// regular file — a FIFO among them, without waiting for a writer.
 func TestFsopTail(t *testing.T) {
 	dir := t.TempDir()
 	read := func(p string, n int64) (fsopTailOut, error) {
@@ -62,7 +62,11 @@ func TestFsopTail(t *testing.T) {
 	if err := os.WriteFile(log, []byte("one\ntwo\nthree\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := read(log, 6); err != nil || got.Size != 14 || got.Content != "three\n" || got.Missing {
+	written := time.Date(2026, 11, 21, 4, 0, 12, 0, time.UTC)
+	if err := os.Chtimes(log, written, written); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := read(log, 6); err != nil || got.Size != 14 || got.Content != "three\n" || got.Missing || got.ModTime != "2026-11-21T04:00:12Z" {
 		t.Errorf("the tail: %+v %v", got, err)
 	}
 	if got, err := read(log, 100); err != nil || got.Content != "one\ntwo\nthree\n" {

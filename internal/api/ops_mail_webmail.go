@@ -259,11 +259,13 @@ func (s *Server) jobWebmailInstall(ctx context.Context, jc *jobs.Context) error 
 	if err := s.saveMailConfig(ctx, c); err != nil {
 		return err
 	}
-	job, err := s.jobs.Enqueue(ctx, "site.apply", sitePayload{SiteID: site.ID}, jobs.WithLockKey(fmt.Sprintf("site:%d", site.ID)), jobs.WithRequestedBy(jc.RequestedBy))
+	// Under the site's own lock key, site:<domain>, as every job of the site
+	// takes it: another apply or the delete of the site waits for this one.
+	applyJob, err := s.enqueueSiteApply(ctx, site, jc.RequestedBy)
 	if err != nil {
 		return err
 	}
-	jc.Logf("the site is applied by job #%d; once it finishes, the webmail opens at https://%s/", job.ID, site.Domain)
+	jc.Logf("the site is applied by job #%d; once it finishes, the webmail opens at https://%s/", applyJob, site.Domain)
 	if c.WebmailPort != 0 {
 		// Серверный блок на порту ссылается на сокет пула, который создаст
 		// задача сайта, — поэтому он пишется после неё.

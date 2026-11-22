@@ -14,6 +14,7 @@ import (
 
 	"monopanel/internal/agent"
 	"monopanel/internal/apitypes"
+	"monopanel/internal/systemd"
 )
 
 // Where the HTTPS listener came from, once Serve has it (Server.listenVia).
@@ -24,7 +25,7 @@ const (
 )
 
 // listenViaName is listenVia as the system status names it: the doctor
-// warns when the socket is enabled but the API listens on its own
+// warns when the socket could hold the port but the API listens on its own
 // (apiSocketCheck).
 func (s *Server) listenViaName() string {
 	switch s.listenVia.Load() {
@@ -37,14 +38,23 @@ func (s *Server) listenViaName() string {
 }
 
 // apiSocketCheck is the doctor's word on the socket that keeps the panel's
-// port bound while the API restarts. A warning when the socket is enabled
-// yet the API listens on the port itself — the socket failed or was stopped
-// (the API unit stops it before a binary of 0.8.19 or older, as after a
-// self-update that rolled back), or it listens elsewhere than web.listen —
-// so that the port is free for any local account during a restart. All is
-// well on the socket, without one (disabled, masked: the administrator's
-// choice), and for a port below ip_unprivileged_port_start, which the socket
-// leaves to the API on purpose: no account can take it. It is the API's
+// port bound while the API restarts. A warning whenever the API listens on
+// the port itself while the socket could hold it — the socket failed or was
+// stopped (the API unit stops it before a binary of 0.8.19 or older, as
+// after a self-update that rolled back), or it listens elsewhere than
+// web.listen — so that the port is free for any local account during a
+// restart. That holds for a disabled socket too: monopanel-api.service wants
+// it, and so starts it with itself, enabled or not. All is well on the
+// socket, without one (not-found), with one the administrator masked (the
+// way to have the API listen itself on purpose: systemd then starts it for
+// nobody), and for a port below ip_unprivileged_port_start, which the socket
+// leaves to the API on purpose: no account can take it. On the socket's
+// port, the socket must still be listening: stopped since — a stop leaves
+// the API running on its copy of the port (the Services page's stop does
+// just that), and so does a restart of it by hand, which systemd does not
+// start again while the API runs — it holds nothing once the API stops (the
+// port stays free) or crashes (free until the restart, RestartSec), which is
+// a warning too, but for a socket that is masked or gone. It is the API's
 // line, judged on its own host — listener, web.listen, sysctl, the socket's
 // state — so the summary, --json, the dashboard and the TUI carry it, and mp
 // --server judges the right host; nil before Serve listened (tests).
@@ -57,6 +67,20 @@ func (s *Server) apiSocketCheck(ctx context.Context) *apitypes.Check {
 		return nil
 	case viaSocket:
 		c = check(name, "ok", unit+" holds the port while monopanel-api restarts")
+		// A state the agent cannot tell leaves the line as it is: the API
+		// did get the port from the socket.
+		if res, err := s.agent.Service(ctx, unit, "status"); err == nil && res.Status.ActiveState != "active" {
+			const next = "monopanel-api serves on the port %s passed it, and listens on it itself from its next start: "
+			switch st := res.Status; {
+			case st.LoadState == "not-found":
+				c = check(name, "ok", fmt.Sprintf(next+"there is no %s any more", unit, unit))
+			case agent.APISocketMasked(st):
+				c = check(name, "ok", fmt.Sprintf(next+"%s is masked, so on purpose (systemctl unmask %s, then mp setup, brings the socket back)", unit, unit, unit))
+			default:
+				c = check(name, "warn", fmt.Sprintf("%s passed monopanel-api the port but is %s now (stopped, or restarted by hand while the API ran, which systemd does not start again): once the API stops or crashes nothing holds the port, and any local account can take it. mp setup brings the socket back, as does systemctl restart monopanel-api; systemctl mask %s has the API listen on the port itself on purpose",
+					unit, st.ActiveState, unit))
+			}
+		}
 		return &c
 	}
 	port := 0
@@ -69,18 +93,41 @@ func (s *Server) apiSocketCheck(ctx context.Context) *apitypes.Check {
 		c = check(name, "ok", fmt.Sprintf("monopanel-api listens on port %d itself, below net.ipv4.ip_unprivileged_port_start (%d): no account can take it while the API restarts", port, start))
 		return &c
 	}
-	st, err := s.agent.Service(ctx, unit, "status")
-	switch {
-	case err != nil:
+	res, err := s.agent.Service(ctx, unit, "status")
+	if err != nil {
 		c = check(name, "warn", "monopanel-api listens on the port itself, and the state of "+unit+" is unknown: "+err.Error())
-	case st.Status.UnitFileState == "enabled" || st.Status.UnitFileState == "enabled-runtime":
-		c = check(name, "warn", fmt.Sprintf("%s is enabled, but monopanel-api listens on the port itself: while it restarts, any local account can take the port. See journalctl -u monopanel-api -u %s for why, then run mp setup", unit, unit))
-	case st.Status.LoadState == "not-found":
+		return &c
+	}
+	switch st := res.Status; {
+	case st.LoadState == "not-found":
 		c = check(name, "ok", "monopanel-api listens on the port itself: there is no "+unit)
+	case agent.APISocketMasked(st):
+		c = check(name, "ok", fmt.Sprintf("monopanel-api listens on the port itself: %s is masked, so it does on purpose (systemctl unmask %s, then mp setup, brings the socket back)", unit, unit))
 	default:
-		c = check(name, "ok", "monopanel-api listens on the port itself: "+unit+" is "+st.Status.UnitFileState)
+		c = check(name, "warn", apiSocketWarning(unit, st))
 	}
 	return &c
+}
+
+// apiSocketWarning is the doctor's warning on a socket that could hold the
+// port while the API listens on it itself, whatever the state of its unit
+// file (enabled, disabled, static, linked …), or its load state when systemd
+// could not load it (bad-setting, error): where to see why, the repair, and
+// the way to the API's own listener on purpose.
+func apiSocketWarning(unit string, st systemd.Status) string {
+	state := st.UnitFileState
+	if st.LoadState != "" && st.LoadState != "loaded" {
+		state = st.LoadState
+	}
+	if state == "" {
+		state = "in no unit file state"
+	}
+	why := "the socket failed, was stopped or listens elsewhere than web.listen"
+	if st.UnitFileState != "enabled" && st.UnitFileState != "enabled-runtime" {
+		why += " (monopanel-api.service wants it, so it starts with the API, enabled or not)"
+	}
+	return fmt.Sprintf("%s is %s, but monopanel-api listens on the port itself: %s, and while the API restarts any local account can take the port. See journalctl -u monopanel-api -u %s for why; mp setup brings the socket back, and systemctl mask %s has the API listen on the port itself on purpose",
+		unit, state, why, unit, unit)
 }
 
 // httpsListener is where the panel serves HTTPS. A socket systemd passed

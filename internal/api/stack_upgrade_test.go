@@ -171,6 +171,32 @@ func TestStackUpgradeUpgradesAndReloads(t *testing.T) {
 	}
 }
 
+// The upgrade records the PHP branch's new package version and writes
+// nothing else of its row: the php jobs run beside the stack's, and a row
+// written back whole would undo what one of them changed meanwhile (the
+// extensions, the default branch, a status). The trigger stands for such a
+// change: it refuses any write of those columns, which a write of the whole
+// row is too, however equal its values.
+func TestStackUpgradeRecordsThePHPPackageAlone(t *testing.T) {
+	f := newSiteFixture(t)
+	if err := f.db.UpsertPHPVersion(f.ctx, &store.PHPVersion{Version: "8.4", Source: "sury", Status: store.PHPInstalled, PackageVersion: "8.4.27-1", Extensions: []string{"opcache"}, IsDefault: true}); err != nil {
+		t.Fatal(err)
+	}
+	f.agent.PackageVersions = map[string]string{"php8.4-fpm": "8.4.27-1"}
+	f.agent.SetUpgrades(map[string]osprofile.Candidate{"php8.4-fpm": {Version: "8.4.28-1", Origin: "packages.sury.org"}})
+	if _, err := f.db.SQL().ExecContext(f.ctx, `CREATE TRIGGER php_row_whole BEFORE UPDATE OF source, status, fpm_service, fpm_binary, cli_binary, pool_dir, extensions, is_default, last_error ON php_versions
+		BEGIN SELECT RAISE(ABORT, 'the whole PHP row written back'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if job := f.stackJob(t, http.MethodPost, "/stack/upgrade", map[string]any{"component": "php"}); job.Status != store.JobDone {
+		t.Fatalf("upgrade: %s %s", job.Status, job.Error)
+	}
+	row, err := f.db.GetPHPVersion(f.ctx, "8.4")
+	if err != nil || row.PackageVersion != "8.4.28-1" || !slices.Equal(row.Extensions, []string{"opcache"}) || !row.IsDefault || row.Status != store.PHPInstalled {
+		t.Fatalf("PHP 8.4 after the upgrade: %+v %v", row, err)
+	}
+}
+
 // A service still on the binary an upgrade replaced is restarted, not
 // reloaded: the reload would keep the old code running. That holds for one
 // the distribution's upgrades left there too, with nothing to install.
@@ -614,7 +640,9 @@ func TestDoctorCatchWorkersOutput(t *testing.T) {
 	f.agent.ReadFile[dir+"/www.conf"] = "[www]\n;catch_workers_output = yes\n"
 	f.agent.ReadFile[dir+"/notes.txt"] = "catch_workers_output = yes\n"
 	got := f.doctorCheck("php-fpm pools")
-	for _, want := range []string{"warn: catch_workers_output = yes in 1 pool file(s): " + dir + "/shop.example.com.conf.", "CVE-2026-129291", "8.4.28", "0.8.20", "mp site apply"} {
+	// Since the move of the logs alone applies the sites again, and not all
+	// at the first start, the line points to the sites still waiting.
+	for _, want := range []string{"warn: catch_workers_output = yes in 1 pool file(s): " + dir + "/shop.example.com.conf.", "CVE-2026-129291", "8.4.28", "when the site is applied again", "site logs line", "mp site apply <domain>"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("pools: %q lacks %q", got, want)
 		}

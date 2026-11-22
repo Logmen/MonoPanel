@@ -28,13 +28,6 @@ type Listeners struct {
 	sock     string
 }
 
-// Close lets go of what Listen took, for a caller that does not serve it
-// after all. Closing the unix listener removes its socket file.
-func (l *Listeners) Close() {
-	_ = l.tcp.Close()
-	_ = l.unix.Close()
-}
-
 // Listen takes what the API serves on before anything else of a start
 // happens: the sockets systemd passed, the certificate, the local unix
 // socket and, last, the HTTPS listener, which may stop monopanel-api.socket
@@ -194,11 +187,17 @@ const (
 	agentWaitStepMax   = 15 * time.Second
 	agentWaitNote      = 5 * time.Minute
 	// jobsAgentWaitDefault is how long the job workers wait for the agent at
-	// start: twice what the agent itself may take before it listens (the
-	// nosymfollow probe, 30 s at most, and retiring unsafe mount units of
-	// shared folders, a minute at most, a daemon-reload each). A job claimed
-	// after that fails on the agent as it would at any later time.
-	jobsAgentWaitDefault = 3 * time.Minute
+	// start: twice what the agent itself may take before it listens, about
+	// three minutes — its probes of the backups' sandbox (nosymfollow, and a
+	// private /etc where Landlock is), 30 s each at most; taking over the
+	// mount units of shared folders an older panel left, a minute at most
+	// (each mount checked with its own 10 s budget, then the units removed);
+	// clearing up after the runs of the package manager an earlier agent
+	// started, a minute at most. The rest of its start is quick work on its
+	// own directories, and the restic self-test runs beside the socket, not
+	// before it. A job claimed after that fails on the agent as it would at
+	// any later time.
+	jobsAgentWaitDefault = 6 * time.Minute
 )
 
 // waitForAgent pings the agent until it answers, ctx ends or limit has

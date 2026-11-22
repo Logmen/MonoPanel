@@ -50,6 +50,8 @@ export const stack = frag({
     'stack.stateNotInstalled': 'not installed',
     'stack.stateInstalled': 'installed',
     'stack.stateInstances': '{running} of {total} running',
+    'stack.stateMoveWaits': 'sites waiting for the move: {n}',
+    'stack.moveWaitsTitle': 'The move of the upgrade onto the accounts\' own Apaches has not finished: the shared {unit} still serves these sites. Down, they answer 502 (mp doctor).',
     'stack.colComponent': 'Component',
     'stack.colWhat': 'What it does',
     'stack.colVersion': 'Version',
@@ -75,9 +77,9 @@ export const stack = frag({
     'stack.askUpgradeAllTitle': 'Upgrade nginx, PHP and Apache?',
     'stack.upgradeNoteNginx': 'nginx is upgraded from nginx.org; nginx -t checks the configuration with the new version and nginx reloads it (the package swaps the running binary itself). If the check fails, nginx runs on as it was.',
     'stack.upgradeNotePhp': "The packages of the installed PHP branches are upgraded; the php-fpm of every upgraded branch restarts after php-fpm -t, which cuts off the requests running at that moment. If the check fails, php-fpm runs on as it was.",
-    'stack.upgradeNoteApache': "Apache's packages are upgraded; each account's Apache gets a graceful restart after apache2 -t, and one that runs the replaced binary a full restart, its sites answering 502 meanwhile.",
+    'stack.upgradeNoteApache': "Apache's packages are upgraded; each account's Apache gets a graceful restart after apache2 -t, and one that runs the replaced binary a full restart, its sites answering 502 meanwhile. While sites still wait for the move onto their accounts' Apaches, the shared apache2.service that serves them is checked with apache2ctl -t first (if that fails, Apache is not upgraded) and restarted after the upgrade, gracefully when its binary is unchanged.",
     'stack.upgradeNoteDb': 'The database server is upgraded from the vendor repository, its configuration checked with the new version (mysqld --validate-config), and it restarts: the sites lose their databases meanwhile.',
-    'stack.upgradeNoteAll': "The packages of nginx, PHP and Apache with newer versions in their repositories are upgraded. Each service's configuration is checked with the new version, then nginx reloads, and php-fpm and the accounts' Apaches restart. If a check fails, the service runs on as it was. The database server is not touched.",
+    'stack.upgradeNoteAll': "The packages of nginx, PHP and Apache with newer versions in their repositories are upgraded. Each service's configuration is checked with the new version, then nginx reloads, and php-fpm and the accounts' Apaches restart. If a check fails, the service runs on as it was. While sites still wait for the move onto their accounts' Apaches, the shared apache2.service that serves them is checked with apache2ctl -t first (if that fails, Apache is not upgraded) and restarted as well, gracefully when its binary is unchanged. The database server is not touched.",
     'stack.binaryReplaced': 'runs the binary an upgrade replaced: the new version takes effect after a restart'
   },
   ru: {
@@ -129,6 +131,8 @@ export const stack = frag({
     'stack.stateNotInstalled': 'не установлен',
     'stack.stateInstalled': 'установлен',
     'stack.stateInstances': 'запущено {running} из {total}',
+    'stack.stateMoveWaits': 'сайтов в ожидании переезда: {n}',
+    'stack.moveWaitsTitle': 'Переезд обновления на собственные Apache аккаунтов не закончен: эти сайты ещё обслуживает общий {unit}. Если он не работает, они отвечают 502 (mp doctor).',
     'stack.colComponent': 'Компонент',
     'stack.colWhat': 'Что делает',
     'stack.colVersion': 'Версия',
@@ -154,9 +158,9 @@ export const stack = frag({
     'stack.askUpgradeAllTitle': 'Обновить nginx, PHP и Apache?',
     'stack.upgradeNoteNginx': 'nginx обновится с nginx.org; nginx -t проверит конфигурацию новой версией, и nginx перечитает её (работающий бинарник пакет подменяет сам). Если проверка не пройдёт, nginx продолжит работать как работал.',
     'stack.upgradeNotePhp': 'Пакеты установленных веток PHP обновятся; php-fpm каждой обновлённой ветки после php-fpm -t перезапустится, и запросы, которые выполняются в этот момент, оборвутся. Если проверка не пройдёт, php-fpm продолжит работать как работал.',
-    'stack.upgradeNoteApache': 'Пакеты Apache обновятся; Apache каждого аккаунта после apache2 -t мягко перезапустится, а тот, что работает на заменённом бинарнике, перезапустится полностью — его сайты на это время ответят 502.',
+    'stack.upgradeNoteApache': 'Пакеты Apache обновятся; Apache каждого аккаунта после apache2 -t мягко перезапустится, а тот, что работает на заменённом бинарнике, перезапустится полностью — его сайты на это время ответят 502. Пока сайты ещё ждут переезда на Apache своих аккаунтов, общий apache2.service, который их обслуживает, сначала проверится apache2ctl -t (если проверка не пройдёт, Apache не обновится), а после обновления перезапустится — мягко, если его бинарник не заменён.',
     'stack.upgradeNoteDb': 'Сервер баз данных обновится из репозитория вендора, его конфигурация проверится новой версией (mysqld --validate-config), и он перезапустится: на это время сайты останутся без баз.',
-    'stack.upgradeNoteAll': 'Обновятся пакеты nginx, PHP и Apache, для которых в их репозиториях есть новые версии. Конфигурация каждой службы проверится новой версией, затем nginx перечитает её, а php-fpm и Apache аккаунтов перезапустятся. Если проверка не пройдёт, служба продолжит работать как работала. Сервер баз данных не затрагивается.',
+    'stack.upgradeNoteAll': 'Обновятся пакеты nginx, PHP и Apache, для которых в их репозиториях есть новые версии. Конфигурация каждой службы проверится новой версией, затем nginx перечитает её, а php-fpm и Apache аккаунтов перезапустятся. Если проверка не пройдёт, служба продолжит работать как работала. Пока сайты ещё ждут переезда на Apache своих аккаунтов, общий apache2.service, который их обслуживает, сначала проверится apache2ctl -t (если проверка не пройдёт, Apache не обновится) и тоже перезапустится — мягко, если его бинарник не заменён. Сервер баз данных не затрагивается.',
     'stack.binaryReplaced': 'работает на бинарнике, который заменило обновление: новая версия заработает после перезапуска'
   }
 });

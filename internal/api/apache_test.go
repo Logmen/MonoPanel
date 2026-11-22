@@ -835,6 +835,48 @@ func (f *siteFixture) unmovedApacheSite(domain string) *store.Site {
 	return site
 }
 
+// The stack's Apache row says what the doctor says while the move of an
+// upgrade has not finished: an account none of whose sites moved has no
+// Apache to count (no "1 of 2 running"), the sites that wait are counted,
+// and the row carries the shared apache2.service that serves them — its
+// state, down when it is, and a replaced binary, which the row's upgrade
+// restarts (mp stack upgrade apache, as the doctor's line says). Once the
+// move finished, the shared Apache is no part of the row.
+func TestStackRowDuringTheApacheMove(t *testing.T) {
+	f := newApacheFixture(t)
+	f.createSite(map[string]any{"domain": "a.example.com", "user": "alex", "php_version": "8.4", "ssl": "none", "mode": "apache"})
+	f.unmovedApacheSite("c.example.com")
+	row := func() apitypes.StackComponent {
+		t.Helper()
+		var comps []apitypes.StackComponent
+		f.call(http.MethodGet, "/stack", nil, http.StatusOK, &comps)
+		return component(t, comps, "apache")
+	}
+	c := row()
+	if in := c.Instances; in == nil || in.Total != 1 || in.Running != 1 || in.Waiting != 1 || in.Replaced != 0 {
+		t.Fatalf("the Apaches during the move: %+v", c.Instances)
+	}
+	if c.Service == nil || c.Service.Unit != "apache2.service" || c.Service.ActiveState != "active" || c.UpgradeComponent() != "apache" {
+		t.Fatalf("the shared Apache during the move: %+v", c.Service)
+	}
+	f.agent.SetBinaryReplaced("apache2.service")
+	if c := row(); c.Service == nil || !c.Service.BinaryReplaced {
+		t.Fatalf("the shared Apache on a replaced binary: %+v", c.Service)
+	}
+	f.agent.ActiveState = map[string]string{"apache2.service": "failed"}
+	if c := row(); c.Service == nil || c.Service.ActiveState != "failed" || c.Instances.Waiting != 1 {
+		t.Fatalf("the shared Apache down while a site waits: %+v %+v", c.Service, c.Instances)
+	}
+	// The move done: the accounts' Apaches alone.
+	if err := f.db.SetSetting(f.ctx, settingApacheInstances, "yes"); err != nil {
+		t.Fatal(err)
+	}
+	f.agent.ActiveState = map[string]string{"apache2.service": "active"}
+	if c := row(); c.Service != nil || c.Instances == nil || c.Instances.Waiting != 0 || c.Instances.Total != 2 {
+		t.Fatalf("after the move: %+v %+v", c.Service, c.Instances)
+	}
+}
+
 // While the move of an upgrade has not finished, the doctor judges the
 // Apaches by where the sites are: an account none of whose sites moved yet
 // has no Apache to check — no failed service, no failed apache2 -t —, one

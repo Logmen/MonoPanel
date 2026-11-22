@@ -473,10 +473,13 @@ func TestListenFailsBeforeAnythingStarts(t *testing.T) {
 }
 
 // The doctor's line on the socket of the panel's port, judged on the API's
-// own host: a warning when the socket is enabled but the API listens on the
-// port itself, counted in the summary; all well on the socket, without one,
-// and on a port no account may bind (the socket is not even asked about);
-// nothing before Serve listened.
+// own host: a warning whenever the API listens on the port itself while the
+// socket could hold it — enabled or not, since the API's unit wants it and
+// starts it with itself —, counted in the summary, and when the API runs on
+// the port the socket passed but the socket stopped since; all well on the
+// socket, without one, with one the administrator masked, and on a port no
+// account may bind (the socket is not even asked about); nothing before
+// Serve listened.
 func TestDoctorJudgesTheAPISocket(t *testing.T) {
 	f := newSiteFixture(t)
 	if c := f.s.apiSocketCheck(f.ctx); c != nil {
@@ -496,6 +499,34 @@ func TestDoctorJudgesTheAPISocket(t *testing.T) {
 	if got, _ := line(); got != "ok: monopanel-api.socket holds the port while monopanel-api restarts" {
 		t.Errorf("on the socket: %q", got)
 	}
+	// On the port the socket passed, which no longer listens: stopped since
+	// (the Services page's stop), or restarted by hand while the API ran,
+	// which systemd does not start again. The API's copy is all that holds
+	// the port, until the API stops or crashes — unless the administrator
+	// masked the socket, or it is gone, and the API listens itself from its
+	// next start on purpose.
+	for _, c := range []struct{ active, file, load, want string }{
+		{"inactive", "enabled", "loaded", "warn: monopanel-api.socket passed monopanel-api the port but is inactive now (stopped, or restarted by hand while the API ran, which systemd does not start again): once the API stops or crashes nothing holds the port, and any local account can take it. mp setup brings the socket back, as does systemctl restart monopanel-api; systemctl mask monopanel-api.socket has the API listen on the port itself on purpose"},
+		{"failed", "disabled", "loaded", "warn: monopanel-api.socket passed monopanel-api the port but is failed now"},
+		{"inactive", "masked", "masked", "ok: monopanel-api serves on the port monopanel-api.socket passed it, and listens on it itself from its next start: monopanel-api.socket is masked, so on purpose (systemctl unmask monopanel-api.socket, then mp setup, brings the socket back)"},
+		{"inactive", "", "not-found", "ok: monopanel-api serves on the port monopanel-api.socket passed it, and listens on it itself from its next start: there is no monopanel-api.socket any more"},
+		{"active", "masked", "masked", "ok: monopanel-api.socket holds the port while monopanel-api restarts"},
+	} {
+		f.agent.ActiveState = map[string]string{"monopanel-api.socket": c.active}
+		f.agent.UnitFileState = map[string]string{"monopanel-api.socket": c.file}
+		f.agent.LoadState = map[string]string{"monopanel-api.socket": c.load}
+		if got, _ := line(); !strings.HasPrefix(got, c.want) {
+			t.Errorf("on the socket, the socket %s (%s, %s):\n%q\nwant\n%q", c.active, c.file, c.load, got, c.want)
+		}
+	}
+	f.agent.ActiveState = map[string]string{"monopanel-api.socket": "inactive"}
+	f.agent.UnitFileState, f.agent.LoadState = nil, nil
+	f.agent.Fail["/v1/service"] = "Failed to connect to bus"
+	if c := f.s.apiSocketCheck(f.ctx); c == nil || c.Status != "ok" || c.Detail != "monopanel-api.socket holds the port while monopanel-api restarts" {
+		t.Errorf("on the socket, the agent cannot tell: %+v", c)
+	}
+	delete(f.agent.Fail, "/v1/service")
+	f.agent.ActiveState = nil
 	f.s.listenVia.Store(viaSelf)
 	f.s.listenAddr.Store(&net.TCPAddr{IP: net.IPv4zero, Port: 8443})
 	// The fake's units are enabled unless told otherwise.
@@ -508,10 +539,36 @@ func TestDoctorJudgesTheAPISocket(t *testing.T) {
 		t.Errorf("the warning is not counted: %q, on the socket %q", summary, onSocket)
 	}
 	f.s.listenVia.Store(viaSelf)
-	f.agent.UnitFileState = map[string]string{"monopanel-api.socket": "disabled"}
-	if got, _ := line(); got != "ok: monopanel-api listens on the port itself: monopanel-api.socket is disabled" {
-		t.Errorf("no socket: %q", got)
+	// Every state systemd gives a unit file (systemctl is-enabled), and the
+	// load states of a socket it could not load: only a masked socket or
+	// none at all leaves the port to the API on purpose.
+	const advice = ", and while the API restarts any local account can take the port. See journalctl -u monopanel-api -u monopanel-api.socket for why; mp setup brings the socket back, and systemctl mask monopanel-api.socket has the API listen on the port itself on purpose"
+	const wanted = " (monopanel-api.service wants it, so it starts with the API, enabled or not)"
+	for _, c := range []struct{ file, load, want string }{
+		{"enabled", "loaded", "warn: monopanel-api.socket is enabled, but monopanel-api listens on the port itself: the socket failed, was stopped or listens elsewhere than web.listen" + advice},
+		{"enabled-runtime", "loaded", "warn: monopanel-api.socket is enabled-runtime, but monopanel-api listens on the port itself: the socket failed, was stopped or listens elsewhere than web.listen" + advice},
+		{"disabled", "loaded", "warn: monopanel-api.socket is disabled, but monopanel-api listens on the port itself: the socket failed, was stopped or listens elsewhere than web.listen" + wanted + advice},
+		{"static", "loaded", "warn: monopanel-api.socket is static, but monopanel-api listens on the port itself: the socket failed, was stopped or listens elsewhere than web.listen" + wanted + advice},
+		{"indirect", "loaded", "warn: monopanel-api.socket is indirect, but"},
+		{"linked", "loaded", "warn: monopanel-api.socket is linked, but"},
+		{"linked-runtime", "loaded", "warn: monopanel-api.socket is linked-runtime, but"},
+		{"alias", "loaded", "warn: monopanel-api.socket is alias, but"},
+		{"generated", "loaded", "warn: monopanel-api.socket is generated, but"},
+		{"transient", "loaded", "warn: monopanel-api.socket is transient, but"},
+		{"bad", "bad-setting", "warn: monopanel-api.socket is bad-setting, but monopanel-api listens on the port itself: the socket failed, was stopped or listens elsewhere than web.listen" + wanted + advice},
+		{"", "error", "warn: monopanel-api.socket is error, but"},
+		{"", "loaded", "warn: monopanel-api.socket is in no unit file state, but"},
+		{"masked", "masked", "ok: monopanel-api listens on the port itself: monopanel-api.socket is masked, so it does on purpose (systemctl unmask monopanel-api.socket, then mp setup, brings the socket back)"},
+		{"masked-runtime", "masked", "ok: monopanel-api listens on the port itself: monopanel-api.socket is masked, so it does on purpose"},
+		{"", "not-found", "ok: monopanel-api listens on the port itself: there is no monopanel-api.socket"},
+	} {
+		f.agent.UnitFileState = map[string]string{"monopanel-api.socket": c.file}
+		f.agent.LoadState = map[string]string{"monopanel-api.socket": c.load}
+		if got, _ := line(); !strings.HasPrefix(got, c.want) || strings.HasPrefix(c.want, "warn") != strings.HasSuffix(got, advice) {
+			t.Errorf("%s (%s):\n%q\nwant\n%q", c.file, c.load, got, c.want)
+		}
 	}
+	f.agent.LoadState = nil
 	f.agent.UnitFileState = nil
 	f.s.listenAddr.Store(&net.TCPAddr{IP: net.IPv4zero, Port: 443})
 	f.agent.Reset()

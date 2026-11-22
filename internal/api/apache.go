@@ -178,20 +178,39 @@ func (s *Server) apacheUnits(ctx context.Context) []string {
 	return out
 }
 
-// apacheInstancesStatus counts the accounts' Apaches, the running ones and
-// those of them on a replaced binary (the stack's "apache").
-func (s *Server) apacheInstancesStatus(ctx context.Context) *apitypes.StackInstances {
-	out := &apitypes.StackInstances{}
+// apacheInstancesStatus fills in the stack's "apache" row: the accounts'
+// Apaches, the running ones and those of them on a replaced binary. While
+// the move of an upgrade has not finished it says what the doctor says
+// (apacheDoctor): an account all of whose sites still wait has no Apache
+// yet, which is not counted, the sites that wait are (Waiting), and the row
+// carries the shared apache2.service that serves them as its Service — down
+// while sites wait, they answer 502; on a replaced binary, mp stack upgrade
+// apache restarts it after apache2ctl -t (sharedApacheRuns). Once the move
+// finished, the shared Apache is none of the panel's and no part of it.
+func (s *Server) apacheInstancesStatus(ctx context.Context, c *apitypes.StackComponent) {
+	wait := s.apacheMoveWaits(ctx)
+	in := &apitypes.StackInstances{Waiting: len(wait.sites)}
 	for _, unit := range s.apacheUnits(ctx) {
-		out.Total++
+		if login, _ := confcheck.ApacheInstanceLoginOf(unit); wait.accounts[login] {
+			continue
+		}
+		in.Total++
 		if st, err := s.agent.Service(ctx, unit, "status"); err == nil && st.Status.ActiveState == "active" {
-			out.Running++
+			in.Running++
 			if st.Status.BinaryReplaced {
-				out.Replaced++
+				in.Replaced++
 			}
 		}
 	}
-	return out
+	c.Instances = in
+	if v, _ := s.db.GetSetting(ctx, settingApacheInstances); v == "yes" || s.profile.Family() != osprofile.FamilyDebian {
+		return
+	}
+	st, err := s.agent.Service(ctx, s.profile.Web().ApacheService, "status")
+	if err == nil && st.Status.LoadState == "loaded" && (st.Status.ActiveState == "active" || len(wait.sites) > 0) {
+		shared := st.Status
+		c.Service = &shared
+	}
 }
 
 // apacheMainFiles are httpd.conf of an account's Apache and the note next

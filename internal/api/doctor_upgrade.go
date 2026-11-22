@@ -129,8 +129,11 @@ func (s *Server) upgradeChecks(ctx context.Context) []apitypes.Check {
 // catch_workers_output: with it a pool's workers write into the php-fpm
 // master, which runs as root, and CVE-2026-129291 turns that into root for a
 // site's code (PHP 8.2.36, 8.3.37, 8.4.28 and 8.5.13 fix it). The pool
-// template up to 0.8.19 had it on; 0.8.20 applies every site again at its
-// first start, which rewrites the sites' pools without it.
+// template up to 0.8.19 had it on; a site's pool loses it when the site is
+// applied again. The upgrade's move of the logs does that for every site an
+// older panel set up — not all at the first start: one whose apply fails
+// waits for its next try, and the doctor's "site logs" line names those
+// still waiting — and mp site apply <domain> does it for one at once.
 func (s *Server) catchWorkersCheck(ctx context.Context) *apitypes.Check {
 	versions, err := s.db.ListPHPVersions(ctx)
 	if err != nil {
@@ -186,7 +189,7 @@ func (s *Server) catchWorkersCheck(ctx context.Context) *apitypes.Check {
 	if len(unread) > 0 {
 		more += "; cannot read " + strings.Join(unread, ", ")
 	}
-	c := check("php-fpm pools", "warn", fmt.Sprintf("catch_workers_output = yes in %d pool file(s): %s%s. A worker of such a pool can get root through the php-fpm master (CVE-2026-129291; fixed in PHP 8.2.36, 8.3.37, 8.4.28 and 8.5.13: mp stack upgrade php). The pools of the panel's sites lose it when 0.8.20 applies every site again at its first start; one that still has it: mp site apply <domain>; a pool of your own: remove the line",
+	c := check("php-fpm pools", "warn", fmt.Sprintf("catch_workers_output = yes in %d pool file(s): %s%s. A worker of such a pool can get root through the php-fpm master (CVE-2026-129291; fixed in PHP 8.2.36, 8.3.37, 8.4.28 and 8.5.13: mp stack upgrade php). A site's pool loses it when the site is applied again: the upgrade's move of the logs does that for every site an older panel set up, and the doctor's site logs line names those still waiting; for one that still has it: mp site apply <domain>; a pool of your own: remove the line",
 		len(hits), strings.Join(shown, ", "), more))
 	return &c
 }

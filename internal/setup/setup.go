@@ -445,10 +445,13 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 	if ip := agent.ForeignListenIP(cfg.Web.Listen); ip != nil {
 		step(T("предупреждение: %s — не адрес этого сервера; сокет порта панели всё равно займёт его, и панель будет слушать там, где её никто не достанет", "warning: %s is not an address of this server; the socket of the panel's port takes it all the same, and the panel would listen where nobody reaches it"), ip)
 	}
-	for _, u := range []string{agentService, apiSocket, apiService} {
-		if err := sd.Enable(ctx, u); err != nil {
-			return nil, err
-		}
+	masked, err := enablePanel(ctx, sd)
+	if err != nil {
+		return nil, err
+	}
+	if masked {
+		step(T("%s замаскирован: monopanel-api слушает порт сам, как решил администратор (systemctl unmask %s, затем mp setup, вернёт сокет)",
+			"%s is masked: monopanel-api listens on the port itself, as the administrator chose (systemctl unmask %s, then mp setup, brings the socket back)"), apiSocket, apiSocket)
 	}
 	// Enabling creates symlinks and flags NeedDaemonReload; clear it.
 	if err := sd.DaemonReload(ctx); err != nil {
@@ -463,8 +466,9 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 	modprobeStep(step)
 	if opts.Start {
 		step("%s", T("запуск сервисов", "starting the services"))
-		fresh := slices.Contains(units.Wrote, apiSocket) || units.Moved
-		if !fresh {
+		// A masked socket starts for nobody: the API listens itself.
+		fresh := !masked && (slices.Contains(units.Wrote, apiSocket) || units.Moved)
+		if !fresh && !masked {
 			st, err := sd.Status(ctx, apiSocket)
 			fresh = err != nil || agent.APISocketStale(st, modTime(agent.APISocketDropIn(cfg)))
 		}
@@ -575,6 +579,34 @@ func writeUnits(dir, packaged, binary string, force bool) ([]string, error) {
 		wrote = append(wrote, u.name)
 	}
 	return wrote, nil
+}
+
+// unitEnabler is what enabling the panel's units needs of systemd.
+type unitEnabler interface {
+	Enable(ctx context.Context, unit string) error
+	Status(ctx context.Context, unit string) (systemd.Status, error)
+}
+
+// enablePanel enables the panel's units for boot, all but a socket of the
+// panel's port the administrator masked (agent.APISocketMasked), and tells
+// whether it is: systemd refuses to enable a masked unit, and the mask is
+// the way to have the API listen on the port itself on purpose, which the
+// doctor calls well and mp setup leaves as it is. A disabled socket is
+// enabled again: the API's unit starts it all the same, and one that is not
+// listening then leaves the port free while the API restarts.
+func enablePanel(ctx context.Context, sd unitEnabler) (socketMasked bool, err error) {
+	for _, u := range []string{agentService, apiSocket, apiService} {
+		if u == apiSocket {
+			if st, err := sd.Status(ctx, u); err == nil && agent.APISocketMasked(st) {
+				socketMasked = true
+				continue
+			}
+		}
+		if err := sd.Enable(ctx, u); err != nil {
+			return socketMasked, err
+		}
+	}
+	return socketMasked, nil
 }
 
 // serviceManager is what starting the panel needs of systemd.

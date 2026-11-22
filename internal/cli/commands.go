@@ -674,11 +674,21 @@ func stackCmd() *cobra.Command {
 			state, ver := T("не установлен", "not installed"), "-"
 			if comp.Installed {
 				state, ver = T("установлен", "installed"), comp.Version
-				if comp.Service != nil {
+				in := comp.Instances
+				if comp.Service != nil && in == nil {
 					state += " · " + comp.Service.ActiveState
 				}
-				if in := comp.Instances; in != nil && in.Total > 0 {
+				if in != nil && in.Total > 0 {
 					state += " · " + fmt.Sprintf(T("запущено %d из %d", "%d of %d running"), in.Running, in.Total)
+				}
+				// The move of an upgrade onto the accounts' Apaches has not
+				// finished: the shared apache2.service, the row's Service,
+				// still serves the sites that wait.
+				if in != nil && in.Waiting > 0 {
+					state += " · " + fmt.Sprintf(T("сайтов в ожидании переезда: %d", "sites waiting for the move: %d"), in.Waiting)
+				}
+				if in != nil && comp.Service != nil {
+					state += " · " + comp.Service.Unit + " " + comp.Service.ActiveState
 				}
 				if stackReplaced(comp) {
 					state += " · " + T("на заменённом бинарнике", "on a replaced binary")

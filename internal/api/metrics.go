@@ -237,12 +237,15 @@ func (s *Server) registerMetrics() {
 		}
 		suffix := map[string]string{"access": ".access.log", "error": ".error.log", "php": ".php.error.log", "slow": ".php.slow.log", "apache-access": ".apache.access.log", "apache-error": ".apache.error.log"}[in.Type]
 		limit := int64(in.Lines) * 400
+		p := path.Join(s.siteLogDir(user.Login), site.Domain+suffix)
 		if s.siteLogsPending(ctx, site.ID) {
 			// The site has not moved yet: its servers still write into the
 			// account's data/logs, while the tree has an empty file. Root
 			// reads nothing there for it (the agent refuses the homes); the
 			// account does, as for a download. A log missing there may be
-			// in the tree already (a partial apply in Apache mode).
+			// in the tree already, and one there may be stale while the
+			// tree's is the live one (a partial apply in Apache mode moves
+			// Apache's logs and not nginx's): the one written last wins.
 			old := path.Join(s.layoutFor(site, user).data, "logs", site.Domain+suffix)
 			out, err := s.fsop(ctx, user, nil, "tail", path.Join("data", "logs", site.Domain+suffix), strconv.FormatInt(limit, 10))
 			if err != nil {
@@ -250,6 +253,7 @@ func (s *Server) registerMetrics() {
 			}
 			var tail struct {
 				Size    int64  `json:"size"`
+				ModTime string `json:"mtime"`
 				Content string `json:"content"`
 				Missing bool   `json:"missing"`
 			}
@@ -257,10 +261,18 @@ func (s *Server) registerMetrics() {
 				return nil, huma.Error502BadGateway("the log of " + old + ": " + err.Error())
 			}
 			if !tail.Missing {
-				return &logsOutput{Body: apitypes.LogTail{Path: old, Size: tail.Size, Lines: lastLines(tail.Content, in.Lines)}}, nil
+				oldTail := &logsOutput{Body: apitypes.LogTail{Path: old, Size: tail.Size, Lines: lastLines(tail.Content, in.Lines)}}
+				if !s.treeLogNewer(ctx, p, tail.ModTime) {
+					return oldTail, nil
+				}
+				res, err := s.agent.ReadFile(ctx, p, limit)
+				if err != nil {
+					s.log.Warn("the log tree's file of a site that has not moved, written after the old one, cannot be read: the old one's tail stands", "site", site.Domain, "path", p, "err", err)
+					return oldTail, nil
+				}
+				return &logsOutput{Body: apitypes.LogTail{Path: p, Size: res.Size, Lines: lastLines(res.Content, in.Lines)}}, nil
 			}
 		}
-		p := path.Join(s.siteLogDir(user.Login), site.Domain+suffix)
 		res, err := s.agent.ReadFile(ctx, p, limit)
 		if err != nil {
 			return nil, huma.Error502BadGateway(err.Error())
@@ -287,6 +299,30 @@ func (s *Server) registerMetrics() {
 	}, func(ctx context.Context, _ *struct{}) (*doctorOutput, error) {
 		return &doctorOutput{Body: s.doctor(ctx)}, nil
 	})
+}
+
+// treeLogNewer tells whether the tree's file p of a site that has not moved
+// was written after its old file in the account's data/logs, which was last
+// written at oldMod (RFC 3339, as fsop tail gives it): to the second, as
+// the agent's stat and fsop tell them, and only once the tree's file holds
+// something — the move makes it empty, ahead of the apply that has the
+// servers write there. Not known either way — an fsop of an older binary
+// gives no time, the stat fails —, the old file stays the one, as before.
+func (s *Server) treeLogNewer(ctx context.Context, p, oldMod string) bool {
+	was, err := time.Parse(time.RFC3339, oldMod)
+	if err != nil {
+		return false
+	}
+	st, err := s.agent.Stat(ctx, p)
+	if err != nil || len(st.Entries) != 1 {
+		return false
+	}
+	e := st.Entries[0]
+	if !e.Exists || e.IsDir || e.Size == 0 {
+		return false
+	}
+	mod, err := time.Parse(time.RFC3339, e.ModTime)
+	return err == nil && mod.Truncate(time.Second).After(was.Truncate(time.Second))
 }
 
 func check(name, status, detail string) apitypes.Check {
@@ -615,7 +651,9 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 // one after another, the same component as well: an apache.backend that
 // went through says nothing of the apache.migrate before it, nor the
 // nightly upgrade of nginx, PHP and Apache of a failed mp stack install
-// memcached. A job without a lock key stays a failure.
+// memcached. A failure on a site or an account that is gone since is
+// history too (removesObject): nothing is left to fix. A job without a lock
+// key stays a failure.
 func openFailures(failed, done []*store.Job, now time.Time) int {
 	fixed := map[string]int64{}
 	for _, j := range done {
@@ -630,7 +668,7 @@ func openFailures(failed, done []*store.Job, now time.Time) int {
 	}
 	n := 0
 	for _, j := range failed {
-		if now.Sub(j.CreatedAt.Std()) < 24*time.Hour && (j.LockKey == "" || fixed[jobWork(j)] < j.ID) {
+		if now.Sub(j.CreatedAt.Std()) < 24*time.Hour && (j.LockKey == "" || (fixed[jobWork(j)] < j.ID && fixed[lockWork(j.LockKey)] < j.ID)) {
 			n++
 		}
 	}
@@ -643,14 +681,40 @@ func openFailures(failed, done []*store.Job, now time.Time) int {
 // move (apache.migrate) and the backend secrets (apache.backend) as well,
 // which it runs in full, for every site in Apache mode, and goes through
 // only when both did. Without them the jobs line would warn of the move for
-// a day after the repair the doctor itself pointed to.
+// a day after the repair the doctor itself pointed to. A job that removed
+// the object of its lock key has done every work on it (lockWork). Each
+// only one way: a site.apply that went through says nothing of a failed
+// site.delete, nor the move of a failed mp stack install apache.
 func jobFixes(j *store.Job) []string {
 	own := jobWork(j)
-	if own != jobWork(&store.Job{Type: "stack.install", LockKey: j.LockKey, Payload: json.RawMessage(`{"component":"apache"}`)}) {
-		return []string{own}
+	switch {
+	case removesObject(j):
+		return []string{own, lockWork(j.LockKey)}
+	case own == jobWork(&store.Job{Type: "stack.install", LockKey: j.LockKey, Payload: json.RawMessage(`{"component":"apache"}`)}):
+		return []string{own, jobWork(&store.Job{Type: "apache.migrate", LockKey: j.LockKey}), jobWork(&store.Job{Type: "apache.backend", LockKey: j.LockKey})}
 	}
-	return []string{own, jobWork(&store.Job{Type: "apache.migrate", LockKey: j.LockKey}), jobWork(&store.Job{Type: "apache.backend", LockKey: j.LockKey})}
+	return []string{own}
 }
+
+// removesObject tells that a job removes the object of its lock key: a
+// site.delete its site (site:<domain>), a user.delete its account
+// (user:<login>). Once it went through, what failed on that site or account
+// before — an apply, a fix, a CMS install, a provision — has nothing left
+// to fix, and a site or an account made again under the name starts afresh.
+func removesObject(j *store.Job) bool {
+	switch j.Type {
+	case "site.delete":
+		return strings.HasPrefix(j.LockKey, "site:")
+	case "user.delete":
+		return strings.HasPrefix(j.LockKey, "user:")
+	}
+	return false
+}
+
+// lockWork names every work on the object of a lock key, which a job that
+// removed it has done (removesObject); no job type is empty, so it is none
+// of jobWork's names.
+func lockWork(key string) string { return "\x00" + key }
 
 // jobWork names the work a job did, for openFailures.
 func jobWork(j *store.Job) string {

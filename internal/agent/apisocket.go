@@ -474,6 +474,15 @@ func APISocketStale(st systemd.Status, dropIn time.Time) bool {
 	return st.ActiveState != "active" || !dropIn.IsZero() && dropIn.After(st.ActiveSince)
 }
 
+// APISocketMasked tells that the administrator masked the socket: systemd
+// starts it for nobody then, the Wants= of the API's unit included, and the
+// API listens on the port itself — the one way to have it so on purpose. A
+// disabled socket is no such choice: the API's unit still starts it. The
+// doctor calls a masked socket well, and mp setup leaves it masked.
+func APISocketMasked(st systemd.Status) bool {
+	return st.LoadState == "masked" || st.UnitFileState == "masked" || st.UnitFileState == "masked-runtime"
+}
+
 // apiSocket is APISocketSync for the agent: its unit directory, trust rules,
 // resolver, reload and labels.
 func (s *Server) apiSocket() APISocketSync {

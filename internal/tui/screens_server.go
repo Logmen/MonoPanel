@@ -146,18 +146,37 @@ func openStack(m *model, a *area) screen {
 			tn := toneMuted
 			if c.Installed {
 				state, ver, tn = T("установлен", "installed"), c.Version, toneOK
-				if c.Service != nil {
+				in := c.Instances
+				if c.Service != nil && in == nil {
 					state += " · " + c.Service.ActiveState
 					if c.Service.ActiveState != "active" {
 						tn = toneWarn
 					}
 				}
 				// Apache: one per account with sites in apache mode.
-				if in := c.Instances; in != nil && in.Total > 0 {
+				if in != nil && in.Total > 0 {
 					state += " · " + fmt.Sprintf(T("запущено %d из %d", "%d of %d running"), in.Running, in.Total)
 					if in.Running < in.Total {
 						tn = toneWarn
 					}
+				}
+				// While the move of an upgrade onto the accounts' Apaches has
+				// not finished, the shared apache2.service (the row's
+				// Service) still serves the sites that wait: down, they
+				// answer 502, which the doctor calls a failure.
+				if in != nil && in.Waiting > 0 {
+					state += " · " + fmt.Sprintf(T("сайтов в ожидании переезда: %d", "sites waiting for the move: %d"), in.Waiting)
+				}
+				if in != nil && c.Service != nil {
+					state += " · " + c.Service.Unit + " " + c.Service.ActiveState
+					switch {
+					case c.Service.ActiveState != "active" && in.Waiting > 0:
+						tn = toneErr
+					case tn == toneOK:
+						tn = toneWarn
+					}
+				} else if in != nil && in.Waiting > 0 && tn == toneOK {
+					tn = toneWarn
 				}
 			}
 			upgrade := ""

@@ -458,6 +458,37 @@ func TestWebmailRefusesAForeignDatabase(t *testing.T) {
 	}
 }
 
+// The webmail applies its site under the site's lock key, site:<domain>, as
+// every other job of a site does (ops_sites.go, logrotate.go, cms.go, the
+// shared folders, an import): it never runs beside another apply or the
+// delete of the same site.
+func TestWebmailAppliesTheSiteUnderItsLock(t *testing.T) {
+	f, _, home := newWebmailFixture(t)
+	installedWebmail(t, f, home)
+	site, err := f.db.GetSiteByDomain(f.ctx, "webmail.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := f.db.ListJobs(f.ctx, 500, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	applies := 0
+	for _, j := range list {
+		var p sitePayload
+		if j.Type != "site.apply" || json.Unmarshal(j.Payload, &p) != nil || p.SiteID != site.ID {
+			continue
+		}
+		applies++
+		if j.LockKey != "site:webmail.example.com" {
+			t.Errorf("job %d applies the webmail's site under %q", j.ID, j.LockKey)
+		}
+	}
+	if applies == 0 {
+		t.Fatal("the webmail job queued no apply of its site")
+	}
+}
+
 // An existing site keeps its owner: the webmail is installed into that
 // account's tree and database, whoever the request named.
 func TestWebmailKeepsTheSiteOwner(t *testing.T) {

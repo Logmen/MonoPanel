@@ -83,7 +83,9 @@ func (r *Runner) Broker() *Broker { return r.broker }
 // Option customises an enqueued job.
 type Option func(*store.Job)
 
-// WithLockKey serialises jobs sharing a key (e.g. "site:12").
+// WithLockKey serialises jobs sharing a key: "site:<domain>" for the jobs
+// of a site, "user:<login>" for those of an account, "stack" for the
+// stack's (the doctor's jobs line counts failures by it as well).
 func WithLockKey(k string) Option { return func(j *store.Job) { j.LockKey = k } }
 
 // Exclusive makes the jobs of the types never run at the same time, in

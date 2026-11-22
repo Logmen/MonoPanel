@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"monopanel/internal/agent"
 	"monopanel/internal/apitypes"
 	"monopanel/internal/client"
 	"monopanel/internal/config"
@@ -412,16 +413,19 @@ const apiSocketCheck = "api socket"
 
 // apiSocketWarning is the doctor's word on the socket that keeps the panel's
 // port bound while the API restarts, for an API whose doctor does not judge
-// it itself (its own "api socket" line, which is judged on the API's host):
-// enabled, yet the API listens on the port itself — the socket failed or was
-// stopped (the API unit stops it before a binary of 0.8.19 or older, as
-// after a self-update that rolled back), or it listens elsewhere than
-// web.listen — so that the port is free for any local account during a
-// restart. Nothing when all is well, when the API does not say where it
-// listens (older than 0.8.20), and for a port below
-// ip_unprivileged_port_start, which the socket leaves to the API on
-// purpose: no account can take it. config.yaml names the port where mp can
-// read it (root on the server), else the default one stands.
+// it itself (its own "api socket" line, which is judged on the API's host),
+// by the API's rule: the API listens on the port itself while the socket
+// could hold it — the socket failed or was stopped (the API unit stops it
+// before a binary of 0.8.19 or older, as after a self-update that rolled
+// back), or it listens elsewhere than web.listen —, enabled or not (the
+// API's unit wants it and starts it with itself), so that the port is free
+// for any local account during a restart. Nothing when all is well, when
+// there is no socket or the administrator masked it (the API listens itself
+// on purpose then), when the API does not say where it listens (older than
+// 0.8.20), and for a port below ip_unprivileged_port_start, which the
+// socket leaves to the API on purpose: no account can take it. config.yaml
+// names the port where mp can read it (root on the server), else the
+// default one stands.
 func apiSocketWarning(ctx context.Context, cl *client.Client) string {
 	st, err := cl.Status(ctx)
 	if err != nil || st.Panel.ListenVia != apitypes.ListenViaItself {
@@ -438,11 +442,15 @@ func apiSocketWarning(ctx context.Context, cl *client.Client) string {
 	}
 	unit := cfg.APISocketUnit()
 	sock, err := cl.Service(ctx, unit)
-	if err != nil || (sock.UnitFileState != "enabled" && sock.UnitFileState != "enabled-runtime") {
+	if err != nil || sock.LoadState == "not-found" || agent.APISocketMasked(*sock) {
 		return ""
 	}
-	return fmt.Sprintf(T("%s включён, но monopanel-api слушает порт сам: пока он перезапускается, порт может занять любой локальный аккаунт. Причина — в journalctl -u monopanel-api -u %s; затем mp setup",
-		"%s is enabled, but monopanel-api listens on the port itself: while it restarts, any local account can take the port. See journalctl -u monopanel-api -u %s for why, then run mp setup"), unit, unit)
+	state := sock.UnitFileState
+	if sock.LoadState != "" && sock.LoadState != "loaded" {
+		state = sock.LoadState
+	}
+	return fmt.Sprintf(T("%s в состоянии %s, но monopanel-api слушает порт сам: сокет упал, был остановлен или слушает не там, где web.listen (monopanel-api.service запускает его вместе с собой — Wants=, — включён он или нет), и пока API перезапускается, порт может занять любой локальный аккаунт. Причина — в journalctl -u monopanel-api -u %s; mp setup возвращает сокет, а systemctl mask %s оставляет порт самому API намеренно",
+		"%s is %s, but monopanel-api listens on the port itself: the socket failed, was stopped or listens elsewhere than web.listen (monopanel-api.service wants it, so it starts with the API, enabled or not), and while the API restarts any local account can take the port. See journalctl -u monopanel-api -u %s for why; mp setup brings the socket back, and systemctl mask %s has the API listen on the port itself on purpose"), unit, state, unit, unit)
 }
 
 func logsCmd() *cobra.Command {

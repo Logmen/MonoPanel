@@ -65,12 +65,13 @@ func (s *Server) registerStack() {
 		}
 		// Apache is the accounts' own Apaches, one per account with sites in
 		// Apache mode: how many run, not the distribution's apache2.service,
-		// which the panel keeps off.
+		// which the panel keeps off — but while the move of an upgrade has
+		// not finished, when it serves the sites that wait.
 		ac := apitypes.StackComponent{Name: "apache", Kind: "web"}
 		if q, err := s.agent.Pkg(actx, "query", apachePkg); err == nil {
 			if v, ok := q.Installed[apachePkg]; ok {
 				ac.Installed, ac.Version = true, v
-				ac.Instances = s.apacheInstancesStatus(actx)
+				s.apacheInstancesStatus(actx, &ac)
 			}
 		}
 		out.Body = append(out.Body, ac)

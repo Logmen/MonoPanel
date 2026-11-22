@@ -122,3 +122,47 @@ func TestDoctorJobsLineWantsTheSameWork(t *testing.T) {
 		t.Errorf("a failed mp stack install apache after the move: %d open", got)
 	}
 }
+
+// A failure on a site or an account that is gone is history: a site.delete
+// that went through clears every failure of its site's lock key before it
+// (an apply, a fix, a CMS install), a user.delete every one of its
+// account's (a provision, a migration) — not those of another site or
+// account, not one that failed after, and not the other way round: an apply
+// that went through fixes no failed delete.
+func TestDoctorJobsLineForgetsWhatIsGone(t *testing.T) {
+	now := time.Now()
+	job := func(id int64, typ, lock string) *store.Job {
+		return &store.Job{ID: id, Type: typ, LockKey: lock, Payload: json.RawMessage(`{}`), CreatedAt: store.Time(now.Add(-time.Hour))}
+	}
+	failed := []*store.Job{
+		job(1, "site.apply", "site:a.example.com"),
+		job(2, "site.fix", "site:a.example.com"),
+		job(3, "site.cms", "site:a.example.com"),
+		job(4, "site.apply", "site:b.example.com"),
+		job(5, "user.provision", "user:alex"),
+		job(6, "migrate.run", "user:alex"),
+		job(7, "user.provision", "user:kate"),
+		job(8, "site.delete", "site:c.example.com"),
+	}
+	for _, c := range []struct {
+		name string
+		done []*store.Job
+		want int
+	}{
+		{"nothing gone", nil, 8},
+		{"the site deleted", []*store.Job{job(10, "site.delete", "site:a.example.com")}, 5},
+		{"the account deleted", []*store.Job{job(11, "user.delete", "user:alex")}, 6},
+		{"both", []*store.Job{job(10, "site.delete", "site:a.example.com"), job(11, "user.delete", "user:alex")}, 3},
+		{"deleted before the failures", []*store.Job{job(0, "site.delete", "site:a.example.com")}, 8},
+		{"an apply after a failed delete", []*store.Job{job(12, "site.apply", "site:c.example.com")}, 8},
+		{"the delete again", []*store.Job{job(13, "site.delete", "site:c.example.com")}, 7},
+	} {
+		if got := openFailures(failed, c.done, now); got != c.want {
+			t.Errorf("%s: %d open, want %d", c.name, got, c.want)
+		}
+	}
+	// A site made again under the name and failing afterwards is a failure.
+	if got := openFailures([]*store.Job{job(20, "site.apply", "site:a.example.com")}, []*store.Job{job(10, "site.delete", "site:a.example.com")}, now); got != 1 {
+		t.Errorf("a failure after the delete: %d open", got)
+	}
+}

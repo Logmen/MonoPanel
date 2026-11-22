@@ -252,10 +252,13 @@ func fsopCmd() *cobra.Command {
 // fsopTailMax caps fsop tail: the tail of a log, not the log.
 const fsopTailMax = 16 << 20
 
-// fsopTailOut is what fsop tail prints: the file's size and its last bytes
-// (Missing when there is no such file); the API reads it (metrics.go).
+// fsopTailOut is what fsop tail prints: the file's size, when it was last
+// written (RFC 3339, UTC, as fsop list and the agent's stat give it) and its
+// last bytes (Missing when there is no such file); the API reads it
+// (metrics.go), the time to tell whether the tree's file is the live one.
 type fsopTailOut struct {
 	Size    int64  `json:"size"`
+	ModTime string `json:"mtime,omitempty"`
 	Content string `json:"content"`
 	Missing bool   `json:"missing,omitempty"`
 }
@@ -285,7 +288,7 @@ func fsopTail(p string, n int64, w io.Writer) error {
 	if err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
-	return json.NewEncoder(w).Encode(fsopTailOut{Size: st.Size(), Content: string(b[:k])})
+	return json.NewEncoder(w).Encode(fsopTailOut{Size: st.Size(), ModTime: st.ModTime().UTC().Format(time.RFC3339), Content: string(b[:k])})
 }
 
 func safeJoin(dest, name string) (string, error) {
