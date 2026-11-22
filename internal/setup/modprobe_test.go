@@ -196,7 +196,7 @@ func TestPruneModprobeCopy(t *testing.T) {
 // told for the panel's own by it.
 func TestModprobeHistoryKeepsEveryRelease(t *testing.T) {
 	for text, want := range map[string]string{
-		// 0.8.20's, today's.
+		// 0.9.0's, today's.
 		osprofile.ModprobeConf: "e5e245a1c6f042d5d9c0a2ff42bfe400a496480f0852eab0561e1d50f9ba4fab",
 	} {
 		if got := fmt.Sprintf("%x", sha256.Sum256([]byte(text))); got != want {

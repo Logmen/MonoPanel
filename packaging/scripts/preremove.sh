@@ -23,13 +23,16 @@ accounts=/etc/apache2/monopanel/accounts
 shares=/var/www/.shares
 tmpfiles=/etc/tmpfiles.d
 
-# older=1: the version that replaces this one is older than 0.8.20. dpkg runs
+# older=1: the version that replaces this one is older than 0.9.0. dpkg runs
 # this before it unpacks that version and names it, "upgrade <version>"
-# (0.8.20~ counts 0.8.20's own prereleases as 0.8.20). rpm runs it once the
-# other version's files and its %post are in place and names nothing, so the
-# binary tells: every version from 0.8.20 on answers the probe, an older one
-# knows no such command. removal=1: nothing replaces it — though an older
-# version may be installed next, after a removal (dnf remove, then dnf
+# (0.9.0~ counts 0.9.0's own prereleases as 0.9.0; its development builds
+# carry the tag before it, 0.8.19~<n>-g<commit>, and count as older, as
+# updater.Predates counts them). rpm runs it once the other version's files
+# and its %post are in place and names nothing, so the binary tells: every
+# version from 0.9.0 on answers the probe, an older one knows no such
+# command — except a development build of 0.9.0 made since the probe came,
+# which passes for 0.9.0 here. removal=1: nothing replaces it — though an
+# older version may be installed next, after a removal (dnf remove, then dnf
 # install), which runs no script of this one.
 older=0
 removal=0
@@ -44,7 +47,7 @@ remove | purge | 0)
 	removal=1
 	;;
 upgrade)
-	if [ -n "${2:-}" ] && dpkg --compare-versions "$2" lt 0.8.20~ >/dev/null 2>&1; then
+	if [ -n "${2:-}" ] && dpkg --compare-versions "$2" lt 0.9.0~ >/dev/null 2>&1; then
 		older=1
 	fi
 	;;
@@ -54,18 +57,18 @@ upgrade)
 esac
 [ "$older" = 1 ] || [ "$removal" = 1 ] || exit 0
 
-# Going back below 0.8.20, or the package going: what comes after does not
-# know what 0.8.20 changed on this host, and what the panel set up keeps
+# Going back below 0.9.0, or the package going: what comes after does not
+# know what 0.9.0 changed on this host, and what the panel set up keeps
 # running without it. The downgrade or the removal goes ahead — refusing it
 # here would only wedge the package manager — and what it keeps from
 # breaking is kept here; what it breaks, and how to mend it, is said.
 #
 # php/ in the run directory, where the php-fpm masters make the pools'
-# sockets as root, has to be there at boot. 0.8.20 makes it from the line in
+# sockets as root, has to be there at boot. 0.9.0 makes it from the line in
 # mp setup's copy (/etc/tmpfiles.d/monopanel.conf), which an older version's
 # mp setup writes without it, and the older version itself makes php/ only
 # when it installs PHP or applies a site: without monopanel-php.conf — which
-# a host whose PHP came with 0.8.20 never had — every php-fpm master fails
+# a host whose PHP came with 0.9.0 never had — every php-fpm master fails
 # at the next boot, and every PHP site answers 502. After a removal for good
 # the sites' pools stay, and need it all the same. One line for one path in
 # two files is no warning to systemd-tmpfiles. The run directory is the one
@@ -150,7 +153,7 @@ if [ "$removal" = 1 ]; then
 			echo "    php-fpm pools listen."
 		elif [ "$phpgap" = 1 ]; then
 			echo "  - the sites' php-fpm pools listen in $rundir/php, which the mp setup of a version older"
-			echo "    than 0.8.20 leaves out of $tmpfiles/monopanel.conf: should one be installed next, put"
+			echo "    than 0.9.0 leaves out of $tmpfiles/monopanel.conf: should one be installed next, put"
 			echo "    \"$phpline\" into $php."
 		fi
 		echo "Should an older version be installed next, see \"Going back to an older version\":"
@@ -160,8 +163,8 @@ if [ "$removal" = 1 ]; then
 fi
 
 {
-	echo "MonoPanel: the version being installed${2:+ ($2)} is older than 0.8.20 and does not know what"
-	echo "0.8.20 changed on this host:"
+	echo "MonoPanel: the version being installed${2:+ ($2)} is older than 0.9.0 and does not know what"
+	echo "0.9.0 changed on this host:"
 	echo "  - the site logs are in <log_dir>/sites (/var/log/monopanel/sites), while its logrotate and"
 	echo "    fail2ban configuration watch the accounts' data/logs: nothing rotates or watches them;"
 	echo "  - php-fpm makes the pools' sockets in $rundir/php, which its mp setup leaves out of"

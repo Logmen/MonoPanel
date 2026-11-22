@@ -346,7 +346,7 @@ func TestPruneUnitCopies(t *testing.T) {
 	t.Run("what stays", func(t *testing.T) {
 		dir, packaged := t.TempDir(), packageUnits(t)
 		// The package of 0.8.19 had no socket nor template, and its API unit
-		// knew no socket: a copy of 0.8.20's is newer than that.
+		// knew no socket: a copy of 0.9.0's is newer than that.
 		if err := os.Remove(filepath.Join(packaged, apacheUnitName)); err != nil {
 			t.Fatal(err)
 		}
@@ -410,9 +410,9 @@ func TestUnitHistoryKeepsEveryRelease(t *testing.T) {
 		agentUnit060:  "b02f29ffd2207e85276ec0938c4ad91ebf9363c0f05c5b02cfdd49a5c4a57932",
 		agentUnit0813: "fa18d69b25dc64fbad5f2a0375872a93fff33685d60415a12c45668f7ec19f1b",
 		apiUnit060:    "4b0ed539f9bc58d840a714a41fae8e9d4836efbdfcdc9d4ff9955a82f246c9fb",
-		// Apache's template of 0.8.20's development builds before the
+		// Apache's template of 0.9.0's development builds before the
 		// graceful stop.
-		apacheUnit0820dev: "97c3eb3afd46cf9d19510bb23855109a5b39c55acb30ef07e6c54679d5d34c6a",
+		apacheUnit090dev: "97c3eb3afd46cf9d19510bb23855109a5b39c55acb30ef07e6c54679d5d34c6a",
 		// Today's.
 		agentUnit:     "aeb2f5ff2d581607817621619827db69378dd86b687601ebf61c1585f96370ee",
 		apiUnit:       "5c8adbb9b753b48608dad24d0b3b9ed56e43eaef0147c9502be75e63728902a7",

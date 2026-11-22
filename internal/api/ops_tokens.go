@@ -71,7 +71,7 @@ func normalizeScopes(scopes []string) []string {
 }
 
 // revokeForgedMigrationTokens removes migration-scoped tokens of accounts that
-// are not administrators. Before 0.8.20 POST /tokens accepted any scope, so
+// are not administrators. Before 0.9.0 POST /tokens accepted any scope, so
 // such a token may exist on an upgraded panel; it is useless now (the handlers
 // require the administrator role) but should not linger.
 func (s *Server) revokeForgedMigrationTokens(ctx context.Context) {

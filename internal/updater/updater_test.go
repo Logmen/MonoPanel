@@ -52,7 +52,7 @@ func TestDowngrade(t *testing.T) {
 		current, candidate string
 		want               bool
 	}{
-		{"0.8.19", "0.8.20", false},
+		{"0.8.19", "0.9.0", false},
 		{"0.8.19", "0.8.19", false},       // a reinstall
 		{"0.8.19-dirty", "0.8.19", false}, // the release a working tree was built on
 		{"0.8.19", "0.8.18", true},
@@ -61,16 +61,16 @@ func TestDowngrade(t *testing.T) {
 		{"0.8.19-5-gabc1234-dirty", "0.8.19", true},
 		{"0.8.19-5-gabc1234", "0.8.19-5-gabc1234", false},
 		{"0.8.19-5-gabc1234", "0.8.19-7-gdef5678", false},
-		{"0.8.19-5-gabc1234", "0.8.20", false},
+		{"0.8.19-5-gabc1234", "0.9.0", false},
 		{"0.8.19-5-gabc1234", "0.8.18", true},
 		{"0.9.0-beta.2", "0.9.0-beta.1", true}, // prereleases in order
 		{"0.9.0-beta.1", "0.9.0-beta.2", false},
 		{"0.9.0", "0.9.0-beta.2", true}, // the release is past its betas
 		{"0.9.0-beta.2", "0.9.0", false},
 		{"0.9.0-beta.1-2-gabc1234", "0.9.0-beta.1", true},
-		{"0.8.20", "0.8.20+rebuild", false}, // build metadata changes nothing
-		{"0.0.0-dev", "0.8.19", false},      // the Makefile's version without git
-		{"dev", "0.1.0", false},             // a hand-built binary blocks nothing
+		{"0.9.0", "0.9.0+rebuild", false}, // build metadata changes nothing
+		{"0.0.0-dev", "0.8.19", false},    // the Makefile's version without git
+		{"dev", "0.1.0", false},           // a hand-built binary blocks nothing
 		{"", "0.1.0", false},
 		{"0.8.19", "0.8.19.1", true}, // not a version: refused over a known one
 		{"0.8.19", "latest", true},
@@ -96,18 +96,19 @@ func TestPredates(t *testing.T) {
 		{"0.8.19-dirty", true},
 		{"0.8.19-5-gabc1234", true}, // built on 0.8.19, whatever its commits hold
 		{"0.8.19-rc.1", true},
-		{"0.8.20", false},
-		{"0.8.20-rc.1", false}, // the release's own prerelease
-		{"0.8.20-3-gabc1234", false},
-		{"0.8.20+rebuild", false},
-		{"0.8.21", false},
+		{"0.8.99", true}, // the whole 0.8 line
+		{"0.9.0", false},
+		{"0.9.0-rc.1", false}, // the release's own prerelease
+		{"0.9.0-3-gabc1234", false},
+		{"0.9.0+rebuild", false},
+		{"0.9.1", false},
 		{"1.0.0", false},
 		{"dev", false}, // nobody knows
 		{"", false},
 		{"latest", false},
 	} {
-		if got := Predates(c.version, "0.8.20"); got != c.want {
-			t.Errorf("Predates(%q, 0.8.20) = %v, want %v", c.version, got, c.want)
+		if got := Predates(c.version, "0.9.0"); got != c.want {
+			t.Errorf("Predates(%q, 0.9.0) = %v, want %v", c.version, got, c.want)
 		}
 	}
 	if Predates("0.8.19", "not a version") {

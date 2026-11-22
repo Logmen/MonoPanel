@@ -295,7 +295,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 // prepareDirs gives the directories the agent shares with the API the owners
 // and modes that keep root's entries in them root's, and makes its own. mp
-// setup and the package do the same; an installation from before 0.8.20 is
+// setup and the package do the same; an installation from before 0.9.0 is
 // fixed up here, at the agent's start, before the API (which starts after
 // the agent) can use the old modes:
 //

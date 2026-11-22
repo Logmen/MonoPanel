@@ -139,7 +139,7 @@ func (s *Server) stageRelease(req *InstallPanelRequest) (staged, sum string, sig
 // logs in the log tree, which the logrotate and fail2ban configuration of
 // the earlier ones do not watch. Going back below it takes the steps the
 // documentation lists, which the package's preremove prints too.
-const layoutRelease = "0.8.20"
+const layoutRelease = "0.9.0"
 
 // downgradeDoc is where the documentation describes going back.
 const downgradeDoc = `"Going back to an older version" in the documentation (https://monopanel.app/en/docs/update/)`

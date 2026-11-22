@@ -12,7 +12,7 @@ import (
 // two compare as they are.
 func TestReinstallAndPackageFileArgv(t *testing.T) {
 	apt, dnf := aptManager{}, dnfManager{}
-	const deb, rpm = "/var/lib/monopanel-agent/updates/monopanel_0.8.21_amd64.deb", "/var/lib/monopanel-agent/updates/monopanel-0.8.21.x86_64.rpm"
+	const deb, rpm = "/var/lib/monopanel-agent/updates/monopanel_0.9.1_amd64.deb", "/var/lib/monopanel-agent/updates/monopanel-0.9.1.x86_64.rpm"
 	if got := strings.Join(apt.ReinstallArgv([]string{deb}), " "); got != strings.Replace(strings.Join(apt.InstallArgv([]string{deb}), " "), " install ", " --reinstall install ", 1) {
 		t.Errorf("apt reinstall: %s", got)
 	}
@@ -28,7 +28,7 @@ func TestReinstallAndPackageFileArgv(t *testing.T) {
 		t.Errorf("dnf package file: %q, the installed one is queried with %q", got, q)
 	}
 	// dpkg-query names the version as dpkg-deb does: ParseQuery reads it.
-	if v := apt.ParseQuery("monopanel 0.8.21 installed\n")["monopanel"]; v != "0.8.21" {
+	if v := apt.ParseQuery("monopanel 0.9.1 installed\n")["monopanel"]; v != "0.9.1" {
 		t.Errorf("apt installed version: %q", v)
 	}
 	var none noPackages

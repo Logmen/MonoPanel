@@ -19,8 +19,8 @@ func TestUpdateRunInstallsWithThePackageManager(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const pkg = "/var/lib/monopanel-agent/updates/monopanel_0.8.21_amd64.deb"
-	inst := updateInstaller(config.Default(), ubuntu, pkg, strings.Repeat("a", 64), "0.8.21", "0.8.20")
+	const pkg = "/var/lib/monopanel-agent/updates/monopanel_0.9.1_amd64.deb"
+	inst := updateInstaller(config.Default(), ubuntu, pkg, strings.Repeat("a", 64), "0.9.1", "0.9.0")
 	if inst.Packages != ubuntu.Packages() {
 		t.Fatalf("the installer's package manager: %#v", inst.Packages)
 	}
@@ -30,7 +30,7 @@ func TestUpdateRunInstallsWithThePackageManager(t *testing.T) {
 	if argv := strings.Join(inst.Packages.ReinstallArgv([]string{inst.Package}), " "); !strings.Contains(argv, "--reinstall install "+pkg) {
 		t.Fatalf("the reinstall: %s", argv)
 	}
-	if inst.To != "0.8.21" || inst.From != "0.8.20" || inst.BackupDir != config.Default().AgentUpdatesDir() || !slices.Equal(inst.Units, []string{"monopanel-agent.service", "monopanel-api.service"}) {
+	if inst.To != "0.9.1" || inst.From != "0.9.0" || inst.BackupDir != config.Default().AgentUpdatesDir() || !slices.Equal(inst.Units, []string{"monopanel-agent.service", "monopanel-api.service"}) {
 		t.Fatalf("installer: %+v", inst)
 	}
 }
@@ -40,14 +40,14 @@ func TestUpdateRunInstallsWithThePackageManager(t *testing.T) {
 // and the panel does not on its own.
 func TestUpdateSaysWhatARetryDoes(t *testing.T) {
 	status := func(reinstall bool) map[string]any {
-		return map[string]any{"current": "0.8.20", "latest": "0.8.21", "available": true,
+		return map[string]any{"current": "0.9.0", "latest": "0.9.1", "available": true,
 			"settings":     map[string]any{"repo": "acme/panel", "channel": "stable", "check_hours": 24, "auto_apply": true},
-			"last_attempt": map[string]any{"status": "rolled-back", "from": "0.8.20", "to": "0.8.21", "error": "panel did not come up after the update", "reinstall": reinstall}}
+			"last_attempt": map[string]any{"status": "rolled-back", "from": "0.9.0", "to": "0.9.1", "error": "panel did not come up after the update", "reinstall": reinstall}}
 	}
 	newFakeAPI(t, map[string]fakeResp{"GET /system/update": {body: status(true)}})
 	out, err := mp(t, "", "update")
-	if err != nil || !strings.Contains(out, "Last install: 0.8.20 → 0.8.21, rolled-back: panel did not come up after the update\n") ||
-		!strings.Contains(out, "the package database lists 0.8.21 already while the previous binary runs: mp update apply installs it once more, the panel does not retry it on its own\n") {
+	if err != nil || !strings.Contains(out, "Last install: 0.9.0 → 0.9.1, rolled-back: panel did not come up after the update\n") ||
+		!strings.Contains(out, "the package database lists 0.9.1 already while the previous binary runs: mp update apply installs it once more, the panel does not retry it on its own\n") {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	newFakeAPI(t, map[string]fakeResp{"GET /system/update": {body: status(false)}})

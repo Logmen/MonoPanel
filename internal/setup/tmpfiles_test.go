@@ -38,7 +38,7 @@ func TestTmpfilesAreThePackages(t *testing.T) {
 }
 
 // An install without the package keeps php/'s line of its own where the API
-// of 0.8.19 kept it: going back below 0.8.20 there runs no preremove, and the
+// of 0.8.19 kept it: going back below 0.9.0 there runs no preremove, and the
 // older version's mp setup writes monopanel.conf without the line. With the
 // package nothing is written (its preremove writes the file when it goes
 // back); a file there already, whatever it holds, and a symlink stay.

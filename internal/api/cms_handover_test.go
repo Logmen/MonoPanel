@@ -89,7 +89,7 @@ func TestCMSFailedUnpackHandsTheFilesOver(t *testing.T) {
 }
 
 // An install with force over files the account cannot remove (root's, left
-// by an unpack that broke off before 0.8.20) hands the docroot over and
+// by an unpack that broke off before 0.9.0) hands the docroot over and
 // empties it again, instead of failing until somebody deletes them as root.
 func TestCMSForceOverRootsLeftovers(t *testing.T) {
 	f := cmsFixture(t, map[string][]byte{"https://wordpress.org/latest.tar.gz": tarGz(t, map[string]string{"wordpress/index.php": "<?php", "wordpress/wp-config-sample.php": "<?php"})})

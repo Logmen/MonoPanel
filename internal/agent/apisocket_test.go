@@ -167,20 +167,20 @@ func TestAPIServiceDropInProbesTheBinary(t *testing.T) {
 		t.Fatalf("socket.conf:\n%s\nwant:\n%s", got, want)
 	}
 	for binary, used := range map[string]string{
-		"/usr/local/bin/monopanel":            "/usr/local/bin/monopanel",
-		"/opt/monopanel-0.8.20+dev/monopanel": "/opt/monopanel-0.8.20+dev/monopanel",
-		"/usr/local/bin/../sbin//monopanel":   "/usr/local/sbin/monopanel",
-		"":                                    "/usr/bin/monopanel",
-		"monopanel":                           "/usr/bin/monopanel",
-		"/opt/my panel/monopanel":             "/usr/bin/monopanel",
-		"/opt/$HOME/monopanel":                "/usr/bin/monopanel",
-		"/opt/%n/monopanel":                   "/usr/bin/monopanel",
-		"/opt/a\"b/monopanel":                 "/usr/bin/monopanel",
-		"/opt/a'b/monopanel":                  "/usr/bin/monopanel",
-		"/opt/a\\b/monopanel":                 "/usr/bin/monopanel",
-		"/opt/a;b/monopanel":                  "/usr/bin/monopanel",
-		"/opt/`id`/monopanel":                 "/usr/bin/monopanel",
-		"/opt/x\nExecStartPre=/bin/sh":        "/usr/bin/monopanel",
+		"/usr/local/bin/monopanel":           "/usr/local/bin/monopanel",
+		"/opt/monopanel-0.9.0+dev/monopanel": "/opt/monopanel-0.9.0+dev/monopanel",
+		"/usr/local/bin/../sbin//monopanel":  "/usr/local/sbin/monopanel",
+		"":                                   "/usr/bin/monopanel",
+		"monopanel":                          "/usr/bin/monopanel",
+		"/opt/my panel/monopanel":            "/usr/bin/monopanel",
+		"/opt/$HOME/monopanel":               "/usr/bin/monopanel",
+		"/opt/%n/monopanel":                  "/usr/bin/monopanel",
+		"/opt/a\"b/monopanel":                "/usr/bin/monopanel",
+		"/opt/a'b/monopanel":                 "/usr/bin/monopanel",
+		"/opt/a\\b/monopanel":                "/usr/bin/monopanel",
+		"/opt/a;b/monopanel":                 "/usr/bin/monopanel",
+		"/opt/`id`/monopanel":                "/usr/bin/monopanel",
+		"/opt/x\nExecStartPre=/bin/sh":       "/usr/bin/monopanel",
 	} {
 		got := string(apiServiceDropInContent("monopanel-api.socket", binary))
 		if !strings.Contains(got, "\nExecStartPre=-+/bin/sh -c '\""+used+"\" api-socket-sync --probe ") || strings.Count(got, "ExecStartPre=") != 1 {
@@ -249,9 +249,9 @@ func TestAPIServiceDropInProbeRuns(t *testing.T) {
 	}
 }
 
-// An API unit's drop-in written before the probe (0.8.20 before H9) is
-// rewritten by the next sync, once; the socket's address does not move for
-// it.
+// An API unit's drop-in written before the probe, as 0.9.0's development
+// builds wrote it, is rewritten by the next sync, once; the socket's address
+// does not move for it.
 func TestSyncAPISocketAddsTheProbe(t *testing.T) {
 	ctx := context.Background()
 	y, dir, reloads := apiSocketSyncIn(t)

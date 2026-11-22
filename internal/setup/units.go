@@ -16,7 +16,7 @@ import (
 // its binary as packageBinary, which they run. mp setup writes its own into
 // systemUnitDir only on an install without the package: a unit there
 // overrides the package's for good, and every change a later release makes
-// to the package's unit would pass the host by — 0.8.20 needed a drop-in for
+// to the package's unit would pass the host by — 0.9.0 needed a drop-in for
 // the API's unit (agent.apiServiceDropInContent) because mp setup up to
 // 0.8.19 had copied it there on every host.
 const (
@@ -119,11 +119,11 @@ CapabilityBoundingSet=
 [Install]
 WantedBy=multi-user.target
 `
-	// apacheUnit0820dev is monopanel-apache@.service of 0.8.20's development
+	// apacheUnit090dev is monopanel-apache@.service of 0.9.0's development
 	// builds before the graceful stop, which mp setup wrote into /etc on
 	// the hosts it set up (the testbed, development servers): no release
 	// shipped it, but such a copy would keep its plain SIGTERM stop for good.
-	apacheUnit0820dev = `[Unit]
+	apacheUnit090dev = `[Unit]
 Description=Apache for the sites of %i in Apache mode (MonoPanel)
 After=network.target remote-fs.target nss-lookup.target
 # MonoPanel writes the configuration of an account that has sites in Apache
@@ -171,12 +171,12 @@ func unitHistory() map[string][][]string {
 		agentService: {
 			{agentUnit060},
 			// mp setup's of 0.8.13 to 0.8.19, and today's: the package's
-			// since 0.8.13, mp setup's since 0.8.20.
+			// since 0.8.13, mp setup's since 0.9.0.
 			{agentUnit0813, agentUnit},
 		},
 		apiService:     {{apiUnit060}, {apiUnit}},
 		apiSocket:      {{apiSocketUnit}},
-		apacheUnitName: {{apacheUnit0820dev}, {apacheUnit}},
+		apacheUnitName: {{apacheUnit090dev}, {apacheUnit}},
 	}
 }
 
@@ -233,7 +233,7 @@ type pruneResult struct {
 // copy's text and the package's are both texts of unitHistory, written for
 // the package's binary, and the copy's generation is not the later one. mp
 // setup up to 0.8.19 left such copies on every host it set up — the
-// package's own units never applied there — and a downgrade below 0.8.20
+// package's own units never applied there — and a downgrade below 0.9.0
 // leaves Apache's template (preremove.sh). With a copy gone the package's
 // unit applies, and so does whatever its next release changes in it.
 // Everything else stays: the administrator's own unit, a copy for another

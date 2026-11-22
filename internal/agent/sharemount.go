@@ -24,7 +24,7 @@ import (
 // root: <home>/<name> in the root-owned home of an SFTP-only guest,
 // <www_root>/.shares/<guest>/<name> for a guest with a shell. The agent binds
 // it itself, from descriptors, in the host's mount namespace (sharebind.go);
-// up to 0.8.20 a systemd mount unit did, by path. A path is resolved again
+// before 0.9.0 a systemd mount unit did, by path. A path is resolved again
 // whenever it is used and a symlink followed in every component: whoever may
 // rename an entry on the way to the mount point — the guest in a home of its
 // own — would have the folder, which its owner and the guest write to, bound

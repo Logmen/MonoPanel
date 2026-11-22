@@ -79,7 +79,7 @@ var (
 // pruneUnitCopiesCmd is monopanel prune-unit-copies, for the package's
 // postinstall: mp setup up to 0.8.19 copied the panel's units into
 // /etc/systemd/system on every host it set up, and a removal or a downgrade
-// below 0.8.20 keeps Apache's template there (preremove.sh); mp setup of an
+// below 0.9.0 keeps Apache's template there (preremove.sh); mp setup of an
 // install without the package writes the modprobe rule into /etc/modprobe.d.
 // Such a copy overrides the package's file for good once the package is
 // there; the upgrade removes the ones that are provably the panel's own and

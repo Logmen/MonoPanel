@@ -393,7 +393,7 @@ func doctorCmd() *cobra.Command {
 			// theirs reaches the terminal.
 			fmt.Printf("[%s] %-32s %s\n", mark, termsafe.Line(c.Name), termsafe.Line(c.Detail))
 		}
-		// The API judges the socket itself since 0.8.20; mp judges it only
+		// The API judges the socket itself since 0.9.0; mp judges it only
 		// for an API that does not.
 		if !socketLine {
 			if w := apiSocketWarning(cmd.Context(), cl); w != "" {
@@ -422,7 +422,7 @@ const apiSocketCheck = "api socket"
 // for any local account during a restart. Nothing when all is well, when
 // there is no socket or the administrator masked it (the API listens itself
 // on purpose then), when the API does not say where it listens (older than
-// 0.8.20), and for a port below ip_unprivileged_port_start, which the
+// 0.9.0), and for a port below ip_unprivileged_port_start, which the
 // socket leaves to the API on purpose: no account can take it. config.yaml
 // names the port where mp can read it (root on the server), else the
 // default one stands.

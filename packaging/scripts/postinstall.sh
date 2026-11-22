@@ -7,7 +7,7 @@ systemd-sysusers /usr/lib/sysusers.d/monopanel.conf >/dev/null 2>&1 || true
 # the API had the agent write monopanel-php.conf for that, which it no longer
 # can. The line goes into the copy, for the run directory it names, so that
 # php/ is root's from boot, before the API runs. monopanel-php.conf stays:
-# going back below 0.8.20, whose mp setup writes the copy without the line,
+# going back below 0.9.0, whose mp setup writes the copy without the line,
 # php/ is made at boot by that file alone — the preremove writes it then
 # where it is missing — and one line for one path in two files is no warning
 # to systemd-tmpfiles (only lines that differ are).
@@ -23,7 +23,7 @@ fi
 # The API could rewrite that file up to 0.8.19, and systemd-tmpfiles applies
 # it as root at every boot: anything but the panel's line is worth a look.
 if [ -f "$tmpfiles/monopanel-php.conf" ] && grep -Ev '^(#|$)' "$tmpfiles/monopanel-php.conf" | grep -qv "^d ${rundir:-/run/monopanel}/php 0755 root root -\$"; then
-	echo "warning: $tmpfiles/monopanel-php.conf holds more than the line the panel wrote there: check what it makes as root at boot, and leave the panel's line alone in it (d ${rundir:-/run/monopanel}/php 0755 root root -), which a version older than 0.8.20 needs" >&2
+	echo "warning: $tmpfiles/monopanel-php.conf holds more than the line the panel wrote there: check what it makes as root at boot, and leave the panel's line alone in it (d ${rundir:-/run/monopanel}/php 0755 root root -), which a version older than 0.9.0 needs" >&2
 fi
 systemd-tmpfiles --create /usr/lib/tmpfiles.d/monopanel.conf >/dev/null 2>&1 || true
 install -d -m 0750 -o root -g monopanel /etc/monopanel /etc/monopanel/templates
@@ -61,7 +61,7 @@ reinstall=0
 [ -e "$removed" ] && reinstall=1
 
 # mp setup up to 0.8.19 copied the panel's units into /etc/systemd/system on
-# every host it set up, a removal or a downgrade below 0.8.20 keeps Apache's
+# every host it set up, a removal or a downgrade below 0.9.0 keeps Apache's
 # template there (preremove.sh), and mp setup of an install without the
 # package writes the modprobe rule into /etc/modprobe.d: such a copy
 # overrides the package's file for good, and what a release changes in it
@@ -75,7 +75,7 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 # install after a removal: the removal turned the units off, not the
 # administrator. An upgrade leaves enabled and disabled units as the
 # administrator left them — with one exception, the socket of the panel's
-# port the first time round: it came with 0.8.20, and the drop-in it gets
+# port the first time round: it came with 0.9.0, and the drop-in it gets
 # below is not there yet. It follows the API then, enabled only with it.
 dropin=/etc/systemd/system/monopanel-api.socket.d/listen.conf
 if [ "$upgrade" = "0" ] || [ "$reinstall" = "1" ]; then

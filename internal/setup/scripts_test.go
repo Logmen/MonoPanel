@@ -345,7 +345,7 @@ func TestPostinstallKeepsAStoppedPanelStopped(t *testing.T) {
 			want: []string{"systemctl enable " + agent + " " + sock + " " + api}, says: installed},
 		// dpkg names the version a removal left behind (its conffiles) as it
 		// names the one an upgrade replaces; the removal disabled the units.
-		{what: "dpkg, over what a removal left", args: []string{"configure", "0.8.20"}, removed: true, dropin: true,
+		{what: "dpkg, over what a removal left", args: []string{"configure", "0.9.0"}, removed: true, dropin: true,
 			want: []string{"systemctl enable " + agent + " " + sock + " " + api, "systemctl try-restart " + sock + " " + agent},
 			not:  []string{"systemctl restart " + agent + " " + sock + " " + api}, says: installed},
 		{what: "rpm, after an erase", args: []string{"1"}, removed: true, dropin: true,
@@ -361,7 +361,7 @@ func TestPostinstallKeepsAStoppedPanelStopped(t *testing.T) {
 			not:  []string{"systemctl enable " + sock, "systemctl restart " + agent + " " + sock + " " + api}},
 		{what: "stopped, its socket on a moved address", args: []string{"2"}, env: []string{"ACTIVE=" + sock, "ENABLED=" + api + " " + sock, "MOVE=1"}, dropin: true,
 			want: []string{"systemctl try-restart " + sock + " " + agent}},
-		{what: "running on its socket", args: []string{"configure", "0.8.20"}, env: []string{"ACTIVE=" + sock + " " + api + " " + agent, "ENABLED=" + api + " " + sock}, dropin: true,
+		{what: "running on its socket", args: []string{"configure", "0.9.0"}, env: []string{"ACTIVE=" + sock + " " + api + " " + agent, "ENABLED=" + api + " " + sock}, dropin: true,
 			want: []string{"systemctl try-restart " + agent + " " + api},
 			not:  []string{"systemctl enable " + sock, "systemctl try-restart " + sock + " " + agent}},
 		{what: "a prune that fails", args: []string{"2"}, env: []string{"PRUNE=1", "ACTIVE=" + sock + " " + api, "ENABLED=" + api}, dropin: true,
@@ -408,12 +408,12 @@ func TestPostinstallKeepsAStoppedPanelStopped(t *testing.T) {
 	}
 }
 
-// A downgrade below 0.8.20 is no failure of the package's transaction: the
-// preremove of 0.8.20 and later keeps the accounts' Apaches (their unit
+// A downgrade below 0.9.0 is no failure of the package's transaction: the
+// preremove of 0.9.0 and later keeps the accounts' Apaches (their unit
 // template) and the php-fpm socket directory at boot (monopanel-php.conf),
 // and says what the older version breaks and how to mend it. dpkg names the
 // version, rpm's is asked whether it takes the probe. An upgrade and a
-// downgrade within 0.8.20 and later do none of it.
+// downgrade within 0.9.0 and later do none of it.
 func TestPreremoveOnADowngrade(t *testing.T) {
 	const tmpl = "monopanel-apache@.service"
 	setupHost := func(r *scriptRun, apache bool) {
@@ -432,7 +432,7 @@ func TestPreremoveOnADowngrade(t *testing.T) {
 		r := newScriptRun(t)
 		setupHost(r, true)
 		r.run(r.preremove(), []string{"OLDER=0.8.19"}, "upgrade", "0.8.19")
-		if !r.called("dpkg --compare-versions 0.8.19 lt 0.8.20~") || !r.called("systemctl daemon-reload") || r.stdout != "" {
+		if !r.called("dpkg --compare-versions 0.8.19 lt 0.9.0~") || !r.called("systemctl daemon-reload") || r.stdout != "" {
 			t.Fatalf("%v, stdout %q", r.calls, r.stdout)
 		}
 		if b, err := os.ReadFile(filepath.Join(r.units, tmpl)); err != nil || string(b) != apacheUnit {
@@ -442,7 +442,7 @@ func TestPreremoveOnADowngrade(t *testing.T) {
 		if b, err := os.ReadFile(php); err != nil || string(b) != "d /run/monopanel/php 0755 root root -\n" {
 			t.Fatalf("the php-fpm socket directory is not made at boot: %v %q", err, b)
 		}
-		for _, s := range []string{"(0.8.19) is older than 0.8.20", "/var/log/monopanel/sites", "monopanel-apache@<login>", "their unit template is in " + filepath.Join(r.units, tmpl) + ", so they keep running",
+		for _, s := range []string{"(0.8.19) is older than 0.9.0", "/var/log/monopanel/sites", "monopanel-apache@<login>", "their unit template is in " + filepath.Join(r.units, tmpl) + ", so they keep running",
 			"  - php-fpm makes the pools' sockets in /run/monopanel/php, which its mp setup leaves out of\n    " + filepath.Join(r.tmpfiles, "monopanel.conf") + ": " + php + " makes it at boot, keep that file;\n",
 			"at their next start: alex/bot\n", "mp stack install apache", "mp site apply <domain>", "mp mail apply", "mp app set <name> --user <login>",
 			"systemctl disable --now monopanel-apache@<login>", "/var/www/.shares", `"Going back to an older version": https://monopanel.app/en/docs/update/`} {
@@ -463,7 +463,7 @@ func TestPreremoveOnADowngrade(t *testing.T) {
 		r := newScriptRun(t)
 		setupHost(r, false)
 		r.run(r.preremove(), []string{"PROBE=1"}, "1")
-		if !r.called("monopanel api-socket-sync --probe") || !strings.Contains(r.stderr, "the version being installed is older than 0.8.20") {
+		if !r.called("monopanel api-socket-sync --probe") || !strings.Contains(r.stderr, "the version being installed is older than 0.9.0") {
 			t.Fatalf("%v\n%s", r.calls, r.stderr)
 		}
 		// No Apache here (EL): no template kept, no word of it.
@@ -525,9 +525,9 @@ func TestPreremoveOnADowngrade(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{"dpkg to 0.8.21", nil, []string{"upgrade", "0.8.21"}, []string{"dpkg --compare-versions 0.8.21 lt 0.8.20~"}},
-		{"rpm to 0.8.21", nil, []string{"1"}, []string{"monopanel api-socket-sync --probe"}},
-		{"a failed upgrade", []string{"OLDER=0.8.19"}, []string{"failed-upgrade", "0.8.20", "0.8.19"}, nil},
+		{"dpkg to 0.9.1", nil, []string{"upgrade", "0.9.1"}, []string{"dpkg --compare-versions 0.9.1 lt 0.9.0~"}},
+		{"rpm to 0.9.1", nil, []string{"1"}, []string{"monopanel api-socket-sync --probe"}},
+		{"a failed upgrade", []string{"OLDER=0.8.19"}, []string{"failed-upgrade", "0.9.0", "0.8.19"}, nil},
 	} {
 		t.Run(c.what, func(t *testing.T) {
 			r := newScriptRun(t)
@@ -542,6 +542,37 @@ func TestPreremoveOnADowngrade(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The preremove's threshold as the real dpkg orders it (where there is one,
+// as on CI's Ubuntu; the tests above have a stub answer for it), against the
+// versions the panel's packages carry — nfpm turns git describe's
+// 0.8.19-75-gf5801c6 into 0.8.19~75-gf5801c6: the previous release and this
+// release's development builds are older; the release's own prereleases,
+// the release and the builds after it are not.
+func TestPreremoveThresholdAsDpkgOrdersIt(t *testing.T) {
+	dpkg, err := exec.LookPath("dpkg")
+	if err != nil {
+		t.Skip("no dpkg")
+	}
+	_, rest, ok := strings.Cut(packageScript(t, "preremove.sh"), `dpkg --compare-versions "$2" lt `)
+	threshold, _, _ := strings.Cut(rest, " ")
+	if !ok || threshold == "" {
+		t.Fatal("preremove.sh: no dpkg --compare-versions")
+	}
+	for v, older := range map[string]bool{
+		"0.8.19": true, "0.8.19~75-gf5801c6": true, "0.8.19~dirty": true,
+		"0.9.0~rc.1": false, "0.9.0": false, "0.9.0~dirty": false, "0.9.0~5-gabc1234": false, "0.9.0+rebuild": false, "0.9.1": false,
+	} {
+		err := exec.Command(dpkg, "--compare-versions", v, "lt", threshold).Run()
+		var exit *exec.ExitError
+		if err != nil && (!errors.As(err, &exit) || exit.ExitCode() != 1) {
+			t.Fatalf("dpkg --compare-versions %s lt %s: %v", v, threshold, err)
+		}
+		if got := err == nil; got != older {
+			t.Errorf("dpkg --compare-versions %s lt %s: older %v, want %v", v, threshold, got, older)
+		}
 	}
 }
 
@@ -600,7 +631,7 @@ func TestPreremoveOnARemoval(t *testing.T) {
 					t.Errorf("the notice lacks %q:\n%s", s, r.stderr)
 				}
 			}
-			if strings.Contains(r.stderr, "kate/web") || strings.Contains(r.stderr, "older than 0.8.20") || strings.Contains(r.stderr, "mp site apply") {
+			if strings.Contains(r.stderr, "kate/web") || strings.Contains(r.stderr, "older than 0.9.0") || strings.Contains(r.stderr, "mp site apply") {
 				t.Errorf("the removal speaks of a downgrade, or names an app without an env file:\n%s", r.stderr)
 			}
 		})
@@ -642,18 +673,19 @@ func TestPreremoveOnARemoval(t *testing.T) {
 		if b, _ := os.ReadFile(filepath.Join(r.tmpfiles, "monopanel-php.conf")); string(b) != "# the administrator's\n" {
 			t.Fatalf("the file there was rewritten: %q", b)
 		}
-		if !strings.Contains(r.stderr, "MonoPanel: the package goes;") || !strings.Contains(r.stderr, `"d /srv/run/php 0755 root root -" into `+filepath.Join(r.tmpfiles, "monopanel-php.conf")) {
+		if !strings.Contains(r.stderr, "MonoPanel: the package goes;") || !strings.Contains(r.stderr, `"d /srv/run/php 0755 root root -" into `+filepath.Join(r.tmpfiles, "monopanel-php.conf")) ||
+			!strings.Contains(r.stderr, "listen in /srv/run/php, which the mp setup of a version older\n    than 0.9.0 leaves out of "+filepath.Join(r.tmpfiles, "monopanel.conf")+": ") {
 			t.Fatalf("the notice does not say where the line goes:\n%s", r.stderr)
 		}
 	})
 }
 
-// Going back below 0.8.20 and running that version's mp setup, which writes
+// Going back below 0.9.0 and running that version's mp setup, which writes
 // /etc/tmpfiles.d/monopanel.conf without the php-fpm socket directory, leaves
 // a line that makes it at boot: monopanel-php.conf, which 0.8.19's API wrote
 // and the upgrade keeps — the same line in two files is no warning to
 // systemd-tmpfiles — or which the preremove writes where PHP came with
-// 0.8.20. The upgrade after that puts the line back into the copy and keeps
+// 0.9.0. The upgrade after that puts the line back into the copy and keeps
 // the file again. A file that holds more than the panel's line is worth a
 // warning, and stays.
 func TestGoingBackKeepsThePHPSocketDirectory(t *testing.T) {
@@ -687,8 +719,8 @@ func TestGoingBackKeepsThePHPSocketDirectory(t *testing.T) {
 		env, args           []string
 	}{
 		{"dpkg, PHP of 0.8.19", "/run/monopanel", "monopanel", true, []string{"OLDER=0.8.19"}, []string{"upgrade", "0.8.19"}},
-		{"dpkg, PHP of 0.8.20", "/run/monopanel", "monopanel", false, []string{"OLDER=0.8.19"}, []string{"upgrade", "0.8.19"}},
-		{"rpm, PHP of 0.8.20, another run directory", "/srv/run", "panel", false, []string{"PROBE=1"}, []string{"1"}},
+		{"dpkg, PHP of 0.9.0", "/run/monopanel", "monopanel", false, []string{"OLDER=0.8.19"}, []string{"upgrade", "0.8.19"}},
+		{"rpm, PHP of 0.9.0, another run directory", "/srv/run", "panel", false, []string{"PROBE=1"}, []string{"1"}},
 		{"dnf remove, then the older install", "/run/monopanel", "monopanel", false, []string{"PROBE=1"}, []string{"0"}},
 	} {
 		t.Run(c.what, func(t *testing.T) {
@@ -734,7 +766,7 @@ func TestGoingBackKeepsThePHPSocketDirectory(t *testing.T) {
 		if b, _ := os.ReadFile(filepath.Join(r.tmpfiles, "monopanel-php.conf")); string(b) != more {
 			t.Fatalf("the file was changed: %q", b)
 		}
-		if !strings.Contains(r.stderr, "monopanel-php.conf holds more than the line the panel wrote there: check what it makes as root at boot, and leave the panel's line alone in it (d /run/monopanel/php 0755 root root -), which a version older than 0.8.20 needs") {
+		if !strings.Contains(r.stderr, "monopanel-php.conf holds more than the line the panel wrote there: check what it makes as root at boot, and leave the panel's line alone in it (d /run/monopanel/php 0755 root root -), which a version older than 0.9.0 needs") {
 			t.Fatalf("no warning: %q", r.stderr)
 		}
 	})
@@ -755,11 +787,11 @@ func TestAReinstallAfterARemovalEnablesThePanel(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.run(r.preremove(), nil, "remove")
-	r.run(r.postinstall(), nil, "configure", "0.8.20")
+	r.run(r.postinstall(), nil, "configure", "0.9.0")
 	if !r.called(enable) || r.stdout != "MonoPanel installed. Run: mp setup\n" {
 		t.Fatalf("the install over a removal: %q\n%s", r.stdout, strings.Join(r.calls, "\n"))
 	}
-	r.run(r.postinstall(), nil, "configure", "0.8.20")
+	r.run(r.postinstall(), nil, "configure", "0.9.0")
 	if r.called(enable) || r.stdout != "MonoPanel updated.\n" {
 		t.Fatalf("the upgrade after it: %q\n%s", r.stdout, strings.Join(r.calls, "\n"))
 	}

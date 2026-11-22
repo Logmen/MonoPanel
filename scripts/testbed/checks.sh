@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # checks.sh <vm name>
 #
-# The hardening of 0.8.20 as it shows on a testbed VM, checked as root.
+# The hardening of 0.9.0 as it shows on a testbed VM, checked as root.
 # testbed.sh checks copies this file and doctor-expected.sh to /root/tb-checks/
 # and runs it: the matrix after the e2e tests, testbed.sh upgrade after the
 # package upgrade (with TB_CARRIED=1).
@@ -1712,13 +1712,13 @@ pkgfiles_section() {
 		fail "$f: $(grep -v '^#' "$f" 2>&1 | tr '\n' '|' | cut -c1-200)"
 	fi
 	if [ -f "$p" ] && [ ! -L "$p" ]; then
-		if [ "$(cat "$p")" = "$line" ]; then pass "$p kept, exactly '$line': what a version before 0.8.20 needs at boot"; else fail "$p: $(tr '\n' '|' <"$p" | cut -c1-200)"; fi
+		if [ "$(cat "$p")" = "$line" ]; then pass "$p kept, exactly '$line': what a version before 0.9.0 needs at boot"; else fail "$p: $(tr '\n' '|' <"$p" | cut -c1-200)"; fi
 	elif [ -e "$p" ] || [ -L "$p" ]; then
 		fail "$p is no plain file: $(ls -ld "$p" 2>&1 | cut -c1-160)"
 	elif [ "$context" = upgrade ]; then
-		fail "$p is gone: the previous release's API wrote it with PHP, and the package keeps it for the way back below 0.8.20"
+		fail "$p is gone: the previous release's API wrote it with PHP, and the package keeps it for the way back below 0.9.0"
 	elif [ "$pkg" = 0 ]; then
-		fail "no $p: mp setup writes it on a host without the package, for the way back below 0.8.20, which no preremove writes there"
+		fail "no $p: mp setup writes it on a host without the package, for the way back below 0.9.0, which no preremove writes there"
 	else
 		pass "no $p on a fresh deploy: nothing of this build writes one ($f holds the line)"
 	fi
@@ -1928,7 +1928,7 @@ doctor_verdicts() {
 			;;
 		esac
 	done < <(pj '"\n".join(c["status"] + "\t" + c["name"] + "\t" + " ".join(c.get("detail", "").split()) for c in d["checks"])' <<<"$json")
-	[ "$found" = 1 ] || printf 'FAIL\tdoctor: no restic sandbox line (an agent older than 0.8.20?)\n'
+	[ "$found" = 1 ] || printf 'FAIL\tdoctor: no restic sandbox line (an agent older than 0.9.0?)\n'
 	n=$(grep -c '^\[.\{4\}\] api socket' <<<"$text")
 	if [ "$sock" -gt 0 ]; then
 		if [ "$sock" = 1 ] && [ "$n" = 1 ]; then

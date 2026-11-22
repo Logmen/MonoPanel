@@ -348,7 +348,7 @@ func (s *Server) jobSiteCMS(ctx context.Context, jc *jobs.Context) error {
 				break
 			}
 			if attempt == 0 {
-				// An unpack that broke off before 0.8.20 left root's files
+				// An unpack that broke off before 0.9.0 left root's files
 				// behind, which the account cannot remove: everything in
 				// its docroot is its own anyway.
 				s.handOverTree(ctx, jc, l.docroot, owner.Login, owner.Login)

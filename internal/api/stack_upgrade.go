@@ -27,7 +27,7 @@ import (
 // database server from Percona or MySQL — to what the repositories the panel
 // added offer, and then what runs them: validated first, reloaded or
 // restarted after. A daily run does it for nginx, PHP and Apache. Up to
-// 0.8.20 a server kept what it got at install time — unattended-upgrades
+// 0.8.19 a server kept what it got at install time — unattended-upgrades
 // takes only the distribution's origins, EL has no dnf-automatic — and a
 // fixed nginx (1.30.7) or PHP (8.4.28) waited in the repository while the old
 // one served. Adding the vendors' origins to unattended-upgrades instead would

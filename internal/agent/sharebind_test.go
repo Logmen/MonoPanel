@@ -444,7 +444,7 @@ func TestListShareRecords(t *testing.T) {
 }
 
 // As the agent starts it takes over the mount units of the shared folders
-// that the panels up to 0.8.20 wrote — systemd would mount them by path at
+// that the panels before 0.9.0 wrote — systemd would mount them by path at
 // the next boot: each one in the panel's form is recorded, disabled and
 // removed, wherever its mount point lies (a home the guest owns, an SFTP-only
 // guest's, .shares); a unit not in the panel's form stays. What one of them

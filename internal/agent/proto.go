@@ -573,7 +573,7 @@ type ShareBindResponse struct {
 }
 
 // ShareUnbindRequest unmounts the shared folder at the mount point Where and
-// has the agent forget it; a mount unit a panel up to 0.8.20 wrote for it
+// has the agent forget it; a mount unit a panel before 0.9.0 wrote for it
 // goes first.
 type ShareUnbindRequest struct {
 	Where string `json:"where"`

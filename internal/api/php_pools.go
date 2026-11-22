@@ -293,7 +293,7 @@ func (s *Server) recheckPHPDistro(ctx context.Context, l *osprofile.PHPLayout) {
 }
 
 // rewordIdlePool writes today's text of the idle pool over an earlier
-// build's (phpDistro.earlier), once: the comment of 0.8.20's development
+// build's (phpDistro.earlier), once: the comment of 0.9.0's development
 // builds tells an administrator their changes are reverted at every start,
 // which the panel no longer does. The pool stays what it was, so php-fpm -t
 // checks the file and nothing is reloaded.

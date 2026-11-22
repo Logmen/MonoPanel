@@ -53,7 +53,7 @@ func ensureModprobe(packageFile, localFile string) (bool, error) {
 // TestModprobeHistoryKeepsEveryRelease pins them.
 func modprobeHistory() []string {
 	return []string{
-		// 0.8.20, the first release with the rule.
+		// 0.9.0, the first release with the rule.
 		osprofile.ModprobeConf,
 	}
 }

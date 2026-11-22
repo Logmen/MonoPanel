@@ -280,27 +280,27 @@ func TestInstallPanelRefusesTheTagUnderADescribeBuild(t *testing.T) {
 }
 
 // The refusal of a downgrade invites nobody to install the older package
-// casually: it says what going back loses — below 0.8.20 also what that
+// casually: it says what going back loses — below 0.9.0 also what that
 // release changed on the host — and where the way back is described, the
 // page the package's preremove names when it is taken all the same.
 func TestDowngradeRefusalPointsToTheWayBack(t *testing.T) {
 	s, _ := releaseServer(t)
-	buildinfo.Version = "0.8.20"
+	buildinfo.Version = "0.9.0"
 	req := InstallPanelRequest{Version: "0.8.19", Package: filepath.Join(s.cfg.DownloadsDir(), updater.AssetName("deb", runtime.GOARCH, "0.8.19"))}
 	_, _, _, err := s.stageRelease(&req)
 	var e *Error
-	if !errors.As(err, &e) || e.Status != http.StatusForbidden || e.Message != downgradeRefusal("0.8.19", "0.8.20") {
-		t.Fatalf("0.8.19 over 0.8.20: %v", err)
+	if !errors.As(err, &e) || e.Status != http.StatusForbidden || e.Message != downgradeRefusal("0.8.19", "0.9.0") {
+		t.Fatalf("0.8.19 over 0.9.0: %v", err)
 	}
 	for _, c := range []struct {
 		to, from string
 		layout   bool
 	}{
-		{"0.8.19", "0.8.20", true},
+		{"0.8.19", "0.9.0", true},
 		{"0.8.19", "0.8.19-5-gabc1234", true},
-		{"0.8.12", "0.8.23", true},
-		{"0.8.21", "0.8.22", false},
-		{"0.8.20-rc.1", "0.8.20", false},
+		{"0.8.12", "0.9.3", true},
+		{"0.9.1", "0.9.2", false},
+		{"0.9.0-rc.1", "0.9.0", false},
 	} {
 		msg := downgradeRefusal(c.to, c.from)
 		for _, want := range []string{"installing " + c.to + " over " + c.from + " is a downgrade", "brings back what later ones fixed", downgradeDoc} {
@@ -311,8 +311,8 @@ func TestDowngradeRefusalPointsToTheWayBack(t *testing.T) {
 		if strings.Contains(msg, "by hand as root") {
 			t.Errorf("%s over %s: %q", c.to, c.from, msg)
 		}
-		if got := strings.Contains(msg, "older than 0.8.20") && strings.Contains(msg, "Apache mode") && strings.Contains(msg, "env file") && strings.Contains(msg, "site logs"); got != c.layout {
-			t.Errorf("%s over %s: what 0.8.20 changed told %v: %q", c.to, c.from, got, msg)
+		if got := strings.Contains(msg, "older than 0.9.0") && strings.Contains(msg, "Apache mode") && strings.Contains(msg, "env file") && strings.Contains(msg, "site logs"); got != c.layout {
+			t.Errorf("%s over %s: what 0.9.0 changed told %v: %q", c.to, c.from, got, msg)
 		}
 	}
 	pre, err := os.ReadFile(filepath.Join("..", "..", "packaging", "scripts", "preremove.sh"))
@@ -322,5 +322,35 @@ func TestDowngradeRefusalPointsToTheWayBack(t *testing.T) {
 	title, url, ok := strings.Cut(strings.TrimSuffix(downgradeDoc, ")"), " in the documentation (")
 	if !ok || !strings.Contains(string(pre), strings.Trim(title, `"`)) || !strings.Contains(string(pre), url) {
 		t.Errorf("preremove.sh points elsewhere than %s", downgradeDoc)
+	}
+}
+
+// dpkg's threshold in the preremove, the notices the preremove prints, the
+// postinstall's warning and mp setup's word for monopanel-php.conf draw the
+// agent's line by hand: each names layoutRelease, so that none of them
+// parts from it when it is renamed.
+func TestPackageDrawsTheLineAtLayoutRelease(t *testing.T) {
+	texts := map[string]string{}
+	for _, c := range []struct{ file, want string }{
+		{"packaging/scripts/preremove.sh", `dpkg --compare-versions "$2" lt ` + layoutRelease + `~ `},
+		{"packaging/scripts/preremove.sh", ` is older than ` + layoutRelease + ` and does not know what"`},
+		{"packaging/scripts/preremove.sh", `echo "` + layoutRelease + ` changed on this host:"`},
+		{"packaging/scripts/preremove.sh", `echo "    than ` + layoutRelease + ` leaves out of `},
+		{"packaging/scripts/postinstall.sh", `, which a version older than ` + layoutRelease + ` needs" >&2`},
+		{"internal/setup/setup.go", `для версии ниже ` + layoutRelease + `"`},
+		{"internal/setup/setup.go", `for a version older than ` + layoutRelease + ` too"`},
+	} {
+		text, ok := texts[c.file]
+		if !ok {
+			b, err := os.ReadFile(filepath.Join("..", "..", filepath.FromSlash(c.file)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			text = string(b)
+			texts[c.file] = text
+		}
+		if !strings.Contains(text, c.want) {
+			t.Errorf("%s lacks %q: its line is not layoutRelease (%s)", c.file, c.want, layoutRelease)
+		}
 	}
 }

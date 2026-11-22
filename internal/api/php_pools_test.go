@@ -391,7 +391,7 @@ func TestIdlePHPPoolMissingOrUnreadable(t *testing.T) {
 	}
 }
 
-// The idle pool is the panel's whatever its comments say. One that 0.8.20's
+// The idle pool is the panel's whatever its comments say. One that 0.9.0's
 // development builds wrote — their comment said the panel writes the file
 // again at every start — counts as idle, the doctor says nothing, and the
 // next start writes today's words over it once, checked by php-fpm -t, with

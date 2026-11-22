@@ -18,7 +18,7 @@ import (
 )
 
 // The agent binds a shared folder itself: the folder it opened, onto the
-// mount point it opened, in the host's mount namespace. Up to 0.8.20 a
+// mount point it opened, in the host's mount namespace. Before 0.9.0 a
 // systemd mount unit did, What= <the folder> Where= <the mount point>, and
 // systemd — at every boot, and whenever the agent started the unit — had
 // mount(8) resolve What= by its path as root. The folder lies in a tree its
@@ -50,7 +50,7 @@ import (
 //     folders again through the agent at its start (refreshShareMounts) —
 //     and unbinds those no share of its database names any more
 //     (listShareRecords).
-//     The units of the panels up to 0.8.20 are taken over as the agent
+//     The units of the panels before 0.9.0 are taken over as the agent
 //     starts (retireUnsafeShareUnits): recorded, disabled and removed, and what
 //     they mounted checked against the folder.
 
@@ -376,7 +376,7 @@ var mountIDOf = func(fd int) (uint64, error) {
 // The directory right below the home on the way lies on the home's mount,
 // data excepted. That is where the mount point of a shared folder in a home
 // is — its owner an SFTP-only guest of another account's, or a guest with a
-// shell of a panel older than 0.8.20 — and it leads into that account's
+// shell of a panel older than 0.9.0 — and it leads into that account's
 // tree, which the records may not tell of as the walk crosses it (one not
 // written yet as the guard was read, one gone since: shareBind). data, the
 // way to every folder the panel shares, is never such a mount point; a
@@ -672,7 +672,7 @@ func (s *Server) shareBind(ctx context.Context, req *ShareBindRequest) (*ShareBi
 }
 
 // shareUnbind unmounts a shared folder and forgets it (/v1/shares/unbind). A
-// unit a panel up to 0.8.20 wrote for the mount point goes first, whatever
+// unit a panel before 0.9.0 wrote for the mount point goes first, whatever
 // comes next: systemd would mount the folder again by its path at boot. A
 // folder in use stays mounted, and recorded: the way to it stays guarded
 // while it is.
@@ -806,7 +806,7 @@ func (s *Server) shareStatus(_ context.Context, req *ShareStatusRequest) (*Share
 }
 
 // retireUnsafeShareUnits takes over, as the agent starts, the mount units of
-// shared folders that the panels up to 0.8.20 wrote: systemd mounts them by
+// shared folders that the panels before 0.9.0 wrote: systemd mounts them by
 // path at every boot. Each one in the panel's form (legacyShareUnit) is
 // recorded, disabled and removed (systemd forgets it); a folder it mounted
 // stays mounted, and the API binds every folder that is not at its start

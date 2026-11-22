@@ -146,8 +146,8 @@
   async function putUpdate(body: Record<string, unknown>, done: string) { error = ''; try { setUpdate(await api('/system/update', { method: 'PUT', json: body })); notify(done); } catch (e) { fail(e); } }
   const askForgetToken = (): Ask => ({ title: t('settings.updateTokenForgetTitle'), note: t('settings.updateTokenForgetNote'), danger: true, action: t('settings.updateTokenForgetAction'), run: () => putUpdate({ clear_token: true }, t('settings.updateTokenForgotten')) });
   async function checkUpdate() { updating = t('settings.updateChecking'); try { setUpdate(await api('/system/update/check', { method: 'POST', json: {} })); notify(upd.available ? t('settings.updateAvailableToast', { version: upd.latest }) : t('settings.updateLatest')); } catch (e) { fail(e); } finally { updating = ''; } }
-  // Пустая версия — последняя в канале; заданная ставится как есть, в том числе
-  // более старая (откат) или текущая (переустановка).
+  // Пустая версия — последняя в канале; заданная ставится как есть: более новая
+  // или текущая (переустановка); более старую агент отклоняет.
   const askUpdate = (version: string): Ask => ({
     title: version ? t('settings.updateVersionTitle', { version }) : t('settings.updateTitle', { version: upd.latest }),
     note: t('settings.updateNote'),
@@ -448,7 +448,7 @@
         <div class="flex flex-col gap-2 sm:pt-5"><label class="flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={updForm.auto_apply} /> {t('settings.updateAutoApply')}</label><button class="btn btn-primary self-start">{t('common.save')}</button></div>
       </form>
       <form class="flex flex-wrap gap-2 items-end mt-4 pt-4 border-t border-line" onsubmit={submitVersion}>
-        <div class="flex-1 min-w-48"><label class="label" for="uv">{t('settings.updateVersionLabel')}</label><input id="uv" class="input font-mono" bind:value={updVersion} placeholder="0.8.19" maxlength="64" /></div>
+        <div class="flex-1 min-w-48"><label class="label" for="uv">{t('settings.updateVersionLabel')}</label><input id="uv" class="input font-mono" bind:value={updVersion} placeholder={upd?.current ?? ''} maxlength="64" /></div>
         <button class="btn" disabled={!!updating || !upd?.settings?.repo || !updVersion.trim()}><Icon name="download" size={13} /> {t('settings.updateInstall')}</button>
         <p class="basis-full text-xs text-muted m-0">{t('settings.updateVersionHint')} {t('settings.updateKeyHint')} <code class="font-mono">mp update trust</code></p>
       </form>

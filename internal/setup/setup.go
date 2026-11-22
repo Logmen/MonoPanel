@@ -287,7 +287,7 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 	if wrote, err := keepPHPTmpfiles(phpTmpfilesFile, packageTmpfilesFile, cfg); err != nil {
 		step(T("предупреждение: %s: %v", "warning: %s: %v"), phpTmpfilesFile, err)
 	} else if wrote {
-		step(T("tmpfiles: %s — каталог сокетов php-fpm при загрузке и для версии старше 0.8.20", "tmpfiles: %s: the php-fpm socket directory at boot, for a version older than 0.8.20 too"), phpTmpfilesFile)
+		step(T("tmpfiles: %s — каталог сокетов php-fpm при загрузке и для версии ниже 0.9.0", "tmpfiles: %s: the php-fpm socket directory at boot, for a version older than 0.9.0 too"), phpTmpfilesFile)
 	}
 
 	if _, err := os.Stat(cfg.Path()); errors.Is(err, os.ErrNotExist) {
@@ -692,7 +692,7 @@ const (
 
 // keepPHPTmpfiles writes phpFile with php/'s line (phpTmpfilesLine) where it
 // is missing on an install without the package (no packageFile). Going back
-// below 0.8.20 there runs no preremove, which writes the file for the
+// below 0.9.0 there runs no preremove, which writes the file for the
 // package (packaging/scripts/preremove.sh), and the older version's mp
 // setup writes monopanel.conf without the line: nothing would make php/ at
 // boot, and every php-fpm master would fail to start after a reboot. One

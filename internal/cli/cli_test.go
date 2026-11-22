@@ -777,7 +777,7 @@ func TestDoctorWarnsOfTheIdleSocket(t *testing.T) {
 	t.Cleanup(func() { unprivilegedPortStart = start })
 	doctor := fakeResp{body: map[string]any{"summary": "2 checks, 0 failed, 0 warnings", "checks": []map[string]any{{"name": "agent", "status": "ok", "detail": "version test"}}}}
 	status := func(via string) fakeResp {
-		panel := map[string]any{"version": "0.8.20", "agent_ok": true}
+		panel := map[string]any{"version": "0.9.0", "agent_ok": true}
 		if via != "" {
 			panel["listen_via"] = via
 		}

@@ -104,7 +104,7 @@ func TestInstallerInstallsWithThePackageManager(t *testing.T) {
 	if !slices.Contains(aptEnv, "NEEDRESTART_MODE=l") || !slices.Contains(aptEnv, "DEBIAN_FRONTEND=noninteractive") {
 		t.Fatalf("apt's environment: %v", aptEnv)
 	}
-	const pkg = "/var/lib/monopanel-agent/updates/monopanel_0.8.21_amd64.deb"
+	const pkg = "/var/lib/monopanel-agent/updates/monopanel_0.9.1_amd64.deb"
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	for _, c := range []struct {
 		what, file, installed string
@@ -112,15 +112,15 @@ func TestInstallerInstallsWithThePackageManager(t *testing.T) {
 		reinstall             bool
 		wantEnv               []string
 	}{
-		{"after a rollback", "monopanel 0.8.21", "monopanel 0.8.21", aptEnv, true, aptEnv},
-		{"over the version before", "monopanel 0.8.21", "monopanel 0.8.20", aptEnv, false, aptEnv},
-		{"over the binary alone", "monopanel 0.8.21", "", aptEnv, false, aptEnv},
-		{"a file that cannot be read", "", "monopanel 0.8.21", aptEnv, false, aptEnv},
-		{"a manager without an environment", "monopanel 0.8.21-1", "monopanel 0.8.21-1", nil, true, defaultEnv},
+		{"after a rollback", "monopanel 0.9.1", "monopanel 0.9.1", aptEnv, true, aptEnv},
+		{"over the version before", "monopanel 0.9.1", "monopanel 0.9.0", aptEnv, false, aptEnv},
+		{"over the binary alone", "monopanel 0.9.1", "", aptEnv, false, aptEnv},
+		{"a file that cannot be read", "", "monopanel 0.9.1", aptEnv, false, aptEnv},
+		{"a manager without an environment", "monopanel 0.9.1-1", "monopanel 0.9.1-1", nil, true, defaultEnv},
 	} {
 		t.Run(c.what, func(t *testing.T) {
 			fake := newFakePackages(t, c.file, c.installed, c.env)
-			i := &Installer{Package: pkg, To: "0.8.21", Packages: fake, Timeout: time.Minute, Log: quiet}
+			i := &Installer{Package: pkg, To: "0.9.1", Packages: fake, Timeout: time.Minute, Log: quiet}
 			out, err := i.install(context.Background())
 			if err != nil {
 				t.Fatalf("%v\n%s", err, out)
@@ -171,8 +171,8 @@ func TestInstallerInstallsWithThePackageManager(t *testing.T) {
 // warning printed on the way is no such line.
 func TestNameVersion(t *testing.T) {
 	for _, c := range []struct{ out, name, version string }{
-		{"monopanel 0.8.21\n", "monopanel", "0.8.21"},
-		{"warning: /x.rpm: Header V4 RSA/SHA256 Signature, key ID 1: NOKEY\nmonopanel 0.8.21-1\n", "monopanel", "0.8.21-1"},
+		{"monopanel 0.9.1\n", "monopanel", "0.9.1"},
+		{"warning: /x.rpm: Header V4 RSA/SHA256 Signature, key ID 1: NOKEY\nmonopanel 0.9.1-1\n", "monopanel", "0.9.1-1"},
 		{"dpkg-deb: error: not a debian format archive\n", "", ""},
 		{"", "", ""},
 	} {

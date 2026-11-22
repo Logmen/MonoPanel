@@ -270,7 +270,7 @@ func shareNSAgent() int {
 		fmt.Println("ok symlink above")
 	}
 
-	// 6. a panel up to 0.8.20 left units, and systemd mounted them by path
+	// 6. a panel before 0.9.0 left units, and systemd mounted them by path
 	// at boot: the one whose folder was a symlink by then shows bob's home,
 	// the other its folder. The agent took them over (recorded; the unit
 	// files' removal walks from /, which a user namespace shows as nobody's:

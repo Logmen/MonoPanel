@@ -3,7 +3,7 @@
 // Package e2e drives a running panel over its REST API: it creates a user, a
 // site and a database on a real host, checks that nginx and php-fpm actually
 // serve the site, then removes everything it created. It also checks what the
-// API shows of the hardening of 0.8.20: changing one's own password takes the
+// API shows of the hardening of 0.9.0: changing one's own password takes the
 // current one, the Services endpoint refuses a root shell, custom nginx
 // directives cannot hand php-fpm ini lines, and a guest with a shell has its
 // shared folder below <www_root>/.shares.
@@ -561,7 +561,7 @@ func TestDoctorIsClean(t *testing.T) {
 }
 
 // TestOwnPasswordNeedsCurrent: changing one's own password over a browser
-// session or an API token takes the current password (0.8.20), so that a
+// session or an API token takes the current password (0.9.0), so that a
 // stolen session or token cannot set a new one and with it turn two-factor
 // sign-in off; an administrator still sets another account's password
 // without it. The account is a throwaway administrator, removed at the end
@@ -706,7 +706,7 @@ func TestCustomNginxRefusesPHPValue(t *testing.T) {
 
 // TestShareMountPoints: a shared folder of a guest with a shell is mounted
 // below <www_root>/.shares/<guest>/ — its home is its own, so only a symlink
-// to the folder is there (0.8.20) — and an SFTP-only guest's inside its home,
+// to the folder is there (0.9.0) — and an SFTP-only guest's inside its home,
 // the chroot. Throwaway owner, site and guests.
 func TestShareMountPoints(t *testing.T) {
 	c := newClient(t)

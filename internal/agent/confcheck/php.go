@@ -64,7 +64,7 @@ var (
 )
 
 // idlePoolHeads are the first lines of the idle pool, today's first. The
-// development builds of 0.8.20 wrote the second one, from before the panel
+// development builds of 0.9.0 wrote the second one, from before the panel
 // made the pool idle once a branch and left it alone afterwards
 // (php_pools.go): it says the panel writes the file again whenever it
 // starts, which the release does not do. The comment is all they differ in.
