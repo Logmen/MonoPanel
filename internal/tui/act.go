@@ -303,6 +303,8 @@ func confirmFor(f *form) *confirmSpec {
 		return about(stackInstallNote(arg0, f.vals["name"] == arg0 && f.vals["installed"] == "true"))
 	case "stack remove":
 		return about(stackRemoveNote(arg0))
+	case "stack upgrade":
+		return about(stackUpgradeNote(arg0))
 	case "php ext disable":
 		note := fmt.Sprintf(T("Расширение выключится у всех сайтов ветки %s сразу: мастер php-fpm один на версию, он перезапустится.", "The extension is switched off for every site on %s at once: there is one php-fpm master per version, and it restarts."), arg0)
 		if f.vals["critical"] == "true" {

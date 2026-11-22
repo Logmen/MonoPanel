@@ -620,6 +620,7 @@ func allScreens(m *model) map[string]screen {
 	out["php ext"] = phpExtScreen(m, "8.4")
 	out["php ini"] = phpIniScreen(m)
 	out["memcached"] = memcachedScreen(m)
+	out["auto-upgrade"] = autoUpgradeScreen(m)
 	out["real-ip"] = realIPScreen(m)
 	out["db engine"] = dbEngineScreen(m)
 	out["db config"] = dbConfigScreen(m)

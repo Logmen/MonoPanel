@@ -26,6 +26,8 @@
   let tested = $state<Record<string, { at?: string; err?: string }>>({});
   let realip = $state<any>(null);
   let realipFrom = $state('');
+  let autoUp = $state<any>(null);
+  let autoForm = $state({ enabled: true, hour: 4 });
   let upd = $state<any>(null);
   let updForm = $state({ repo: '', api: '', channel: 'stable', token: '', check_hours: 24, auto_apply: false });
   let updVersion = $state('');
@@ -52,11 +54,12 @@
   const loadTokens = () => part(async () => { tokens = await api('/tokens'); });
   const loadHooks = () => part(async () => { hooks = await api('/webhooks'); });
   const loadRealIP = () => part(async () => { realip = await api('/stack/nginx/real-ip'); realipFrom = (realip.from || []).join(', '); });
+  const loadAutoUpgrade = () => part(async () => setAutoUp(await api('/stack/auto-upgrade')));
   const loadUpdate = () => part(async () => setUpdate(await api('/system/update')));
   const loadSELinux = () => part(async () => { sel = await api('/system/selinux'); });
   const loadPanel = () => part(async () => setPanel(await api('/system/config')));
   const loadTemplates = () => part(async () => { tpl = await api('/system/templates'); });
-  function load() { const all = [loadTotp(), loadTokens()]; if (admin) all.push(loadPanel(), loadUpdate(), loadHooks(), loadRealIP(), loadSELinux(), loadTemplates()); return Promise.all(all); }
+  function load() { const all = [loadTotp(), loadTokens()]; if (admin) all.push(loadPanel(), loadUpdate(), loadHooks(), loadRealIP(), loadAutoUpgrade(), loadSELinux(), loadTemplates()); return Promise.all(all); }
   onMount(load);
 
   /* ── 2FA ─────────────────────────────────────────────────────────────── */
@@ -108,6 +111,16 @@
 
   /* ── nginx real_ip ───────────────────────────────────────────────────── */
   async function saveRealIP() { try { realip = await api('/stack/nginx/real-ip', { method: 'PUT', json: { cloudflare: realip.cloudflare, from: realipFrom.split(/[\s,]+/).filter(Boolean) } }); realipFrom = (realip.from || []).join(', '); notify(t('settings.realIpSaved')); } catch (e) { fail(e); } }
+
+  /* ── daily upgrade of nginx, PHP and Apache ──────────────────────────── */
+  function setAutoUp(st: any) { autoUp = st; autoForm = { enabled: st.enabled, hour: st.hour }; }
+  async function saveAutoUpgrade(e: Event) {
+    e.preventDefault(); error = '';
+    try { setAutoUp(await api('/stack/auto-upgrade', { method: 'PUT', json: { enabled: autoForm.enabled, hour: Number(autoForm.hour) } })); notify(t('settings.autoUpgradeSaved')); } catch (e) { fail(e); }
+  }
+  // Час и следующий запуск — по часам сервера, в его поясе (timezone в ответе),
+  // а не браузера: ISO-строка с его смещением показывается как есть.
+  const serverTime = (s: string) => s.replace('T', ' ').slice(0, 16);
 
   /* ── SELinux ─────────────────────────────────────────────────────────── */
   // Переключение SELinux: permissive только через окно с объяснением цены, обратно — сразу.
@@ -466,6 +479,25 @@
         <div class="flex flex-wrap gap-2"><input id="rf" class="input font-mono min-w-0 flex-1" bind:value={realipFrom} placeholder="10.0.0.5, 192.168.1.0/24" /><button class="btn btn-primary" onclick={saveRealIP}>{t('common.apply')}</button></div>
       {/if}
     </div>
+    {#if autoUp}
+      <div class="card rise" style="--i:7">
+        <div class="font-medium mb-1">{t('settings.autoUpgradeTitle')}</div>
+        <p class="text-xs text-muted mb-3">{t('settings.autoUpgradeHint')}</p>
+        <form class="flex flex-wrap gap-3 items-end" onsubmit={saveAutoUpgrade}>
+          <label class="flex items-center gap-2 text-sm sm:pb-2"><input type="checkbox" bind:checked={autoForm.enabled} /> {t('settings.autoUpgradeOn')}</label>
+          <div><label class="label" for="auh">{t('settings.autoUpgradeHour')}</label><select id="auh" class="input" bind:value={autoForm.hour}>{#each Array.from({ length: 24 }, (_, h) => h) as h}<option value={h}>{String(h).padStart(2, '0')}:00</option>{/each}</select></div>
+          <button class="btn btn-primary">{t('common.save')}</button>
+        </form>
+        <p class="text-xs mt-3 {autoUp.enabled ? 'text-muted' : 'text-warn'}">{autoUp.enabled ? (autoUp.next_run ? t('settings.autoUpgradeNext', { when: serverTime(autoUp.next_run), tz: autoUp.timezone }) : '') : t('settings.autoUpgradeOff')}</p>
+        {#if autoUp.last}
+          {@const l = autoUp.last}
+          <div class="text-sm mt-2 {l.error ? 'text-danger' : 'text-muted'}">
+            <span class="tag {l.error ? 'tag-err' : 'tag-ok'}">{l.error ? t('jobs.filterFailed') : t('jobs.filterDone')}</span> {t('settings.autoUpgradeLast', { when: when(l.at), id: l.job_id })}{l.error ? ': ' + l.error : !(l.upgraded ?? []).length ? ' · ' + t('settings.autoUpgradeNothing') : ''}
+            {#if (l.upgraded ?? []).length}<ul class="text-xs font-mono mt-1">{#each l.upgraded as u}<li class="break-all">{u}</li>{/each}</ul>{/if}
+          </div>
+        {/if}
+      </div>
+    {/if}
     {#if sel?.supported}
       <div class="card rise" style="--i:8">
         <div class="flex justify-between items-start gap-3 flex-wrap">

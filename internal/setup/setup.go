@@ -454,6 +454,8 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 	} else if opened != "" {
 		step(T("firewalld: открыт порт %s", "firewalld: port %s opened"), opened)
 	}
+	// The package ships the rule; an install from the binary alone gets it here.
+	modprobeStep(step)
 	if opts.Start {
 		step("%s", T("запуск сервисов", "starting the services"))
 		fresh := slices.Contains(units.Wrote, apiSocket) || units.Moved

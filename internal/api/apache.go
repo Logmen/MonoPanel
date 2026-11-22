@@ -177,14 +177,17 @@ func (s *Server) apacheUnits(ctx context.Context) []string {
 	return out
 }
 
-// apacheInstancesStatus counts the accounts' Apaches and the running ones
-// (the stack's "apache").
+// apacheInstancesStatus counts the accounts' Apaches, the running ones and
+// those of them on a replaced binary (the stack's "apache").
 func (s *Server) apacheInstancesStatus(ctx context.Context) *apitypes.StackInstances {
 	out := &apitypes.StackInstances{}
 	for _, unit := range s.apacheUnits(ctx) {
 		out.Total++
 		if st, err := s.agent.Service(ctx, unit, "status"); err == nil && st.Status.ActiveState == "active" {
 			out.Running++
+			if st.Status.BinaryReplaced {
+				out.Replaced++
+			}
 		}
 	}
 	return out

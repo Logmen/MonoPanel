@@ -361,6 +361,10 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 		switch {
 		case err != nil:
 			add(check("service "+u, "fail", err.Error()))
+		case st.Status.ActiveState == "active" && st.Status.BinaryReplaced:
+			// An upgrade (the panel's or the distribution's) replaced its
+			// binary: the old code, the vulnerable one, runs until a restart.
+			add(s.replacedBinaryCheck(actx, u, st.Status))
 		case st.Status.ActiveState == "active":
 			add(check("service "+u, "ok", st.Status.SubState))
 		default:
@@ -473,6 +477,15 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 	if c := s.phpCLICheck(actx); c != nil {
 		add(*c)
 	}
+	// The vendor packages' updates, the pools CVE-2026-129291 needs, the
+	// kernel modules (doctor_upgrade.go).
+	for _, c := range s.upgradeChecks(actx) {
+		add(c)
+	}
+	if c := s.catchWorkersCheck(actx); c != nil {
+		add(*c)
+	}
+	add(s.kernelModulesCheck())
 	if h := s.cfg.Web.Hostname; h != "" {
 		addrs, err := s.lookup(actx, h)
 		local := map[string]bool{}

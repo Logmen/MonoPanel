@@ -98,6 +98,7 @@ func (s *Server) registerStack() {
 		}
 		out.Body = append(out.Body, s.fail2banComponent(actx))
 		out.Body = append(out.Body, s.toolComponents(actx)...)
+		s.annotateUpgrades(actx, out.Body)
 		return out, nil
 	})
 

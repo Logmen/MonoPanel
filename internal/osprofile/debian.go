@@ -28,8 +28,15 @@ func (p *debianProfile) Web() WebLayout {
 type aptManager struct{}
 
 func (aptManager) Name() string { return "apt" }
+
+// Env: NEEDRESTART_MODE=l keeps Ubuntu's needrestart, which apt runs after
+// dpkg, to listing the services that run old code. Its default asks which
+// to restart, and with DEBIAN_FRONTEND=noninteractive the default answer is
+// all of them: the database server too, which mp stack upgrade restarts only
+// when asked for by name, and every other one without the configuration
+// check the panel runs before its own restarts.
 func (aptManager) Env() []string {
-	return []string{"DEBIAN_FRONTEND=noninteractive", "LANG=C.UTF-8", "LC_ALL=C.UTF-8"}
+	return []string{"DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=l", "LANG=C.UTF-8", "LC_ALL=C.UTF-8"}
 }
 
 // aptLockWait makes apt wait for the dpkg lock instead of failing at once:

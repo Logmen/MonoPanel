@@ -140,7 +140,7 @@ func openStack(m *model, a *area) screen {
 		if err != nil {
 			return nil, err
 		}
-		res := &result{info: []string{styleMuted.Render(T("PHP ставится в разделе PHP · m — memcached, p — реальный IP за прокси", "PHP is installed in the PHP area · m — memcached, p — the real IP behind proxies"))}}
+		res := &result{info: []string{styleMuted.Render(T("PHP ставится в разделе PHP · m — memcached, p — реальный IP за прокси, a — ежедневное обновление", "PHP is installed in the PHP area · m — memcached, p — the real IP behind proxies, a — the daily upgrade"))}}
 		for _, c := range list {
 			state, ver := T("не установлен", "not installed"), "—"
 			tn := toneMuted
@@ -160,8 +160,28 @@ func openStack(m *model, a *area) screen {
 					}
 				}
 			}
+			upgrade := ""
+			if up := c.Upgrade; up != nil && c.Installed {
+				// What the repository offers: a fix that is not installed yet.
+				state += " · " + fmt.Sprintf(T("есть обновление: %s → %s", "update available: %s → %s"), up.From, up.To)
+				upgrade = up.Component
+				if tn == toneOK {
+					tn = toneWarn
+				}
+			}
+			if c.Installed && runsReplacedBinary(c) {
+				// The old code runs until a restart, which the row's upgrade
+				// does after its check, with nothing to install.
+				state += " · " + T("работает на заменённом бинарнике", "runs a replaced binary")
+				if upgrade == "" {
+					upgrade = upgradeComponentOf(c)
+				}
+				if tn == toneOK {
+					tn = toneWarn
+				}
+			}
 			res.rows = append(res.rows, row{cells: []string{c.Name, c.Kind, ver, state}, tones: []tone{toneNone, toneMuted, toneNone, tn},
-				vals: map[string]string{"name": c.Name, "installed": tf(c.Installed), "removable": tf(c.Removable)}})
+				vals: map[string]string{"name": c.Name, "installed": tf(c.Installed), "removable": tf(c.Removable), "upgrade": upgrade}})
 		}
 		return res, nil
 	}
@@ -172,9 +192,13 @@ func openStack(m *model, a *area) screen {
 		// confirmation says what running the installation again does.
 		{path: "stack install", key: "i", args: n, label: T("Переустановить", "Reinstall"), when: func(v map[string]string) bool { return v["installed"] == "true" && v["name"] != "composer" }},
 		{path: "stack remove", key: "d", args: n, when: func(v map[string]string) bool { return v["installed"] == "true" && v["removable"] == "true" }},
+		// The row's component (php for every branch, db for the server), or
+		// nginx, PHP and Apache together.
+		{path: "stack upgrade", key: "u", args: []string{"upgrade"}, label: T("Обновить", "Upgrade"), when: func(v map[string]string) bool { return v["upgrade"] != "" }},
+		{path: "stack upgrade", key: "U", label: T("Обновить nginx, PHP и Apache", "Upgrade nginx, PHP and Apache")},
 		{path: "stack list", quick: true},
 	}
-	s.links = []link{{key: "m", label: "memcached", open: memcachedScreen}, {key: "p", label: "real-ip", open: realIPScreen}, allLink(a)}
+	s.links = []link{{key: "m", label: "memcached", open: memcachedScreen}, {key: "p", label: "real-ip", open: realIPScreen}, {key: "a", label: "auto-upgrade", open: autoUpgradeScreen}, allLink(a)}
 	return s
 }
 

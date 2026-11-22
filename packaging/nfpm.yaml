@@ -34,6 +34,10 @@ contents:
     dst: /usr/lib/sysusers.d/monopanel.conf
   - src: ./packaging/tmpfiles.d/monopanel.conf
     dst: /usr/lib/tmpfiles.d/monopanel.conf
+  # Kernel modules hosting does not need (sctp, dccp, rds, tipc) never load;
+  # /etc/modprobe.d/monopanel.conf replaces this file to allow one again.
+  - src: ./packaging/modprobe.d/monopanel.conf
+    dst: /usr/lib/modprobe.d/monopanel.conf
   - src: ./packaging/logrotate/monopanel
     dst: /etc/logrotate.d/monopanel
     type: config

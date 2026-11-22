@@ -240,6 +240,11 @@ func start(ctx context.Context, o Options, cfg config.Config, ag *Agent) (*runni
 	srv.SetHostIPv6s(func() []string { return nil })
 	srv.SetLookup(lookup)
 	srv.SetPortProbe(ag.probe)
+	if err := kernelOf(srv, cfg.DataDir); err != nil {
+		cancel()
+		_ = db.Close()
+		return nil, err
+	}
 	runner.Start(cctx)
 	r := &running{db: db, cancel: cancel, done: make(chan struct{})}
 	go func() {

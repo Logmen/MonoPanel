@@ -81,6 +81,19 @@ type PackageManager interface {
 	// candidate version, leaving out packages no repository carries.
 	AvailableArgv(pkgs []string) []string
 	ParseAvailable(output string) map[string]string
+	// UpgradeArgv brings installed packages to the version their
+	// repositories offer and installs nothing that is not installed;
+	// CandidatesArgv asks for those versions from what the host already
+	// knows of the repositories, and ParseCandidates turns its output into
+	// package -> candidate, which may be the installed version itself: the
+	// caller compares (upgrade.go). HeldArgv lists the packages the
+	// administrator holds back (nil where holds keep packages out of the
+	// candidates themselves), ParseHeld reads them.
+	UpgradeArgv(pkgs []string) []string
+	CandidatesArgv(pkgs []string) []string
+	ParseCandidates(output string) map[string]Candidate
+	HeldArgv() []string
+	ParseHeld(output string) map[string]bool
 }
 
 // WebLayout holds web-server users, services, directories and check commands.

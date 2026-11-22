@@ -118,6 +118,10 @@ func (s *Server) Run(ctx context.Context) error {
 		return nil
 	})
 	g.Go(func() error {
+		s.upgradeLoop(gctx)
+		return nil
+	})
+	g.Go(func() error {
 		t := time.NewTicker(time.Hour)
 		defer t.Stop()
 		for {

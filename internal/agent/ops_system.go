@@ -112,6 +112,7 @@ func (s *Server) service(ctx context.Context, req *ServiceRequest) (*ServiceResp
 		if err != nil {
 			return nil, &Error{Message: "status " + unit, Output: err.Error()}
 		}
+		st.BinaryReplaced = binaryReplaced(ctx, conn, unit, st)
 		resp.Status = st
 	}
 	return resp, nil
@@ -123,7 +124,7 @@ func (s *Server) service(ctx context.Context, req *ServiceRequest) (*ServiceResp
 // the one exception, by their exact URLs.
 func (s *Server) pkg(ctx context.Context, req *PkgRequest) (*PkgResponse, error) {
 	switch req.Action {
-	case "update-index", "install", "remove", "query", "available":
+	case "update-index", "install", "remove", "query", "available", "candidates", "upgrade":
 	default:
 		return nil, &Error{Status: http.StatusBadRequest, Message: "unknown action: " + req.Action}
 	}
@@ -132,8 +133,13 @@ func (s *Server) pkg(ctx context.Context, req *PkgRequest) (*PkgResponse, error)
 		return nil, err
 	}
 	defer cleanup()
-	// Only reading the index and the database runs no package's scripts.
-	if req.Action != "update-index" && req.Action != "query" && req.Action != "available" {
+	// Only reading the index and the database runs no package's scripts:
+	// what is installed, what the repositories offer, what an upgrade would
+	// bring (candidates, asked for by every look at the Stack page and the
+	// doctor).
+	switch req.Action {
+	case "update-index", "query", "available", "candidates":
+	default:
 		if err := s.vetPackageScripts(ctx, req.Action); err != nil {
 			return nil, err
 		}
@@ -170,13 +176,40 @@ func (s *Server) pkg(ctx context.Context, req *PkgRequest) (*PkgResponse, error)
 		// still reporting the known ones, so the exit code is not an error.
 		out, _ := runArgv(ctx, pm.Env(), pm.AvailableArgv(pkgs)...)
 		return &PkgResponse{Output: out, Available: pm.ParseAvailable(out)}, nil
+	case "candidates":
+		return s.pkgCandidates(ctx, pm, pkgs), nil
+	case "upgrade":
+		if len(req.Packages) == 0 {
+			return nil, &Error{Status: http.StatusBadRequest, Message: "no packages"}
+		}
 	default:
 		return nil, &Error{Status: http.StatusBadRequest, Message: "unknown action: " + req.Action}
 	}
 	s.pkgMu.Lock()
 	defer s.pkgMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		// The API went away while this waited for its turn: a change nobody
+		// would settle afterwards (reload, restart, record) does not start.
+		return nil, &Error{Message: pm.Name() + " " + req.Action + " not started: the request ended while it waited for the package manager", Output: err.Error()}
+	}
+	if req.Action == "upgrade" {
+		// Under the lock: no removal comes between the check and the upgrade.
+		if argv, err = s.upgradeArgv(ctx, pm, pkgs); err != nil {
+			return nil, err
+		}
+	}
 	s.log.Info("package manager", "action", req.Action, "packages", req.Packages)
-	out, err := runArgv(ctx, pm.Env(), argv...)
+	// The run outlives the request. The request ends whenever the API does
+	// — monopanel-api restarted during the nightly upgrade, a job's time
+	// limit — and a package manager killed halfway leaves dpkg or rpm with
+	// a half-done transaction ("dpkg was interrupted", a package unpacked
+	// but not configured, a service a maintainer script stopped and never
+	// started) that only an administrator repairs. The lock keeps the next
+	// run waiting until this one is through; pkgRunLimit bounds one that
+	// hangs.
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pkgRunLimit)
+	defer cancel()
+	out, err := runPackageManager(rctx, pm.Env(), argv...)
 	if err != nil {
 		return nil, &Error{Message: pm.Name() + " " + req.Action + " failed", Output: out}
 	}

@@ -146,6 +146,8 @@ func (a *Agent) pkg(_ context.Context, req *agent.PkgRequest) (*agent.PkgRespons
 			}
 		}
 		return out, nil
+	case "candidates", "upgrade":
+		return a.pkgUpgrade(req)
 	case "available":
 		out := &agent.PkgResponse{Available: map[string]string{}}
 		for _, p := range req.Packages {

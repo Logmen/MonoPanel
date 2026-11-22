@@ -680,10 +680,14 @@ func stackCmd() *cobra.Command {
 				if in := comp.Instances; in != nil && in.Total > 0 {
 					state += " · " + fmt.Sprintf(T("запущено %d из %d", "%d of %d running"), in.Running, in.Total)
 				}
+				if stackReplaced(comp) {
+					state += " · " + T("на заменённом бинарнике", "on a replaced binary")
+				}
 			}
-			rows = append(rows, []string{comp.Name, ver, state})
+			rows = append(rows, []string{comp.Name, ver, state, stackUpdateCell(comp)})
 		}
-		table([]string{"COMPONENT", "VERSION", "STATE"}, rows)
+		table([]string{"COMPONENT", "VERSION", "STATE", "UPDATE"}, rows)
+		printUpdatesHint(comps)
 		return nil
 	}}
 	install := &cobra.Command{Use: "install <component>", Short: T("установить компонент: nginx, apache, percona, mysql, fail2ban, memcached, jpegoptim, git, composer, sphinx, valkey (PHP: mp php install)", "install a component: nginx, apache, percona, mysql, fail2ban, memcached, jpegoptim, git, composer, sphinx, valkey (PHP: mp php install)"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
@@ -745,6 +749,6 @@ func stackCmd() *cobra.Command {
 	}}
 	memcached.Flags().IntVar(&mem.MemoryMB, "memory-mb", 128, T("размер кеша в МБ", "cache size in MB"))
 	memcached.Flags().IntVar(&mem.MaxConnections, "max-conn", 1024, T("одновременных соединений", "concurrent connections"))
-	c.AddCommand(list, install, remove, memcached, stackRealIPCmd())
+	c.AddCommand(list, install, remove, memcached, stackRealIPCmd(), stackUpgradeCmd(), stackAutoUpgradeCmd())
 	return c
 }

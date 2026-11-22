@@ -43,7 +43,7 @@ type dnfManager struct{}
 
 func (dnfManager) Name() string              { return "dnf" }
 func (dnfManager) Env() []string             { return []string{"LANG=C.UTF-8", "LC_ALL=C.UTF-8"} }
-func (dnfManager) UpdateIndexArgv() []string { return []string{"dnf", "-q", "-y", "makecache"} }
+func (dnfManager) UpdateIndexArgv() []string { return strings.Fields("dnf -q -y --refresh makecache") }
 func (dnfManager) InstallArgv(pkgs []string) []string {
 	return append([]string{"dnf", "-q", "-y", "install"}, pkgs...)
 }

@@ -124,12 +124,17 @@ type StackComponent struct {
 	// (Apache: monopanel-apache@<login>, one for each account with sites in
 	// Apache mode) and how many of them run; Service is empty then.
 	Instances *StackInstances `json:"instances,omitempty"`
+	// Upgrade is the update its repositories offer (mp stack upgrade).
+	Upgrade *StackUpgrade `json:"upgrade,omitempty"`
 }
 
-// StackInstances is how many of a component's per-account servers run.
+// StackInstances is how many of a component's per-account servers run;
+// Replaced, how many of the running ones on a binary an upgrade replaced
+// (they run the old code until mp stack upgrade restarts them).
 type StackInstances struct {
-	Running int `json:"running"`
-	Total   int `json:"total"`
+	Running  int `json:"running"`
+	Total    int `json:"total"`
+	Replaced int `json:"replaced,omitempty"`
 }
 
 // StackInstallRequest installs a component.

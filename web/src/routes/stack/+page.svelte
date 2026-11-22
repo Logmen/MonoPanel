@@ -19,12 +19,15 @@
   let job = $state<number | null>(null);
   let error = $state('');
   let ask = $state<Ask | null>(null);
+  let auto = $state<any>(null);
   const fail = (e: unknown) => { error = e instanceof ApiError ? e.text : String(e); notify(error, 'err'); };
   async function load() {
     try {
       const [s, m] = await Promise.all([api('/stack'), api('/stack/memcached')]);
       stack = s as any[]; mem = m; memForm = { memory_mb: mem.memory_mb, max_connections: mem.max_connections };
     } catch (e: any) { error = e.text || String(e); }
+    // Only for the line about the daily upgrade: the page works without it.
+    try { auto = await api('/stack/auto-upgrade'); } catch { auto = null; }
   }
   onMount(load);
 
@@ -89,6 +92,26 @@
     danger: true, action: t('stack.remove'),
     run: async () => { const r: any = await api(`/stack/${name}`, { method: 'DELETE' }); job = r.job_id; }
   });
+  // What the repositories offer over what is installed: nginx, Apache, the PHP
+  // branches (upgraded together, as php) and the database server — db only by
+  // name, its restart is downtime for the sites.
+  const waitingStack = $derived((stack ?? []).filter((c: any) => c.installed && c.upgrade && c.upgrade.component !== 'db'));
+  const upgradeNote = (comp: string) => t(comp === 'nginx' ? 'stack.upgradeNoteNginx' : comp === 'php' ? 'stack.upgradeNotePhp' : comp === 'apache' ? 'stack.upgradeNoteApache' : comp === 'db' ? 'stack.upgradeNoteDb' : 'stack.upgradeNoteAll');
+  async function upgrade(comp: string) { error = ''; try { const r: any = await api('/stack/upgrade', { method: 'POST', json: { component: comp } }); job = r.job_id; } catch (e) { fail(e); } }
+  const askUpgrade = (comp: string, name = ''): Ask => ({
+    title: comp === 'all' ? t('stack.askUpgradeAllTitle') : t('stack.askUpgradeTitle', { name: comp === 'php' ? 'PHP' : titleOf(name) }),
+    note: upgradeNote(comp),
+    danger: comp === 'db', action: t('stack.upgrade'),
+    run: () => upgrade(comp)
+  });
+  const updateTitle = (c: any) => (c.upgrade.origin ? t('stack.updateFrom', { from: c.upgrade.from, to: c.upgrade.to, origin: c.upgrade.origin }) : `${c.upgrade.from} → ${c.upgrade.to}`);
+  // A service still on the binary an upgrade replaced (the distribution's
+  // apache2, an upgrade whose check failed) runs the old code until a
+  // restart: the row's upgrade does that restart after the check, with
+  // nothing to install, as mp stack upgrade and the TUI's U do.
+  const replaced = (c: any) => !!c?.service?.binary_replaced || (c?.instances?.replaced ?? 0) > 0;
+  const upgradeComp = (c: any, name: string) => c.upgrade?.component ?? (name === 'nginx' || name === 'apache' ? name : name === 'percona' || name === 'mysql' ? 'db' : c.kind === 'php' ? 'php' : '');
+  const upgradable = (c: any, name: string) => !!c?.installed && (!!c.upgrade || (replaced(c) && upgradeComp(c, name) !== ''));
   async function saveMem(e: Event) { e.preventDefault(); error = ''; try { mem = await api('/stack/memcached', { method: 'PUT', json: memForm }); notify(mem.installed ? t('stack.memReconfigured') : t('stack.memSavedPending')); } catch (e) { fail(e); } }
   // Apache runs one server per account with sites in apache mode: the state is how many run.
   const stateOf = (c: any) => !c?.installed ? t('stack.stateNotInstalled') : c.instances?.total ? t('stack.stateInstances', { running: c.instances.running, total: c.instances.total }) : c.service ? `${c.service.active_state}` : t('stack.stateInstalled');
@@ -98,6 +121,15 @@
 <PageHead title={t('stack.title')} sub={t('stack.sub')} />
 {#if error}<p class="text-danger text-sm mb-3">{error}</p>{/if}
 {#if job}<div class="mb-4"><JobLog jobId={job} onfinish={() => load()} /></div>{/if}
+{#if waitingStack.length}
+  <div class="card mb-4 border-warn/40 bg-warn-soft flex flex-wrap justify-between items-center gap-3 rise">
+    <div class="text-sm min-w-0">
+      <div>{t('stack.updatesWait', { names: waitingStack.map((c: any) => c.name).join(', ') })}</div>
+      {#if auto}<div class="text-xs text-muted mt-1">{auto.enabled ? t('stack.autoOn', { hour: String(auto.hour).padStart(2, '0'), tz: auto.timezone }) : t('stack.autoOff')} <a class="link" href="/settings">{t('stack.autoSettings')}</a></div>{/if}
+    </div>
+    <button class="btn btn-sm btn-primary shrink-0" onclick={() => (ask = askUpgrade('all'))}><Icon name="download" size={13} /> {t('stack.upgradeAll')}</button>
+  </div>
+{/if}
 {#if !stack}<div class="card p-0"><Skeleton rows={8} /></div>{:else}
   {#each groups as [group, names], gi}
     <div class="card overflow-x-auto p-0 mb-4 rise" style="--i:{gi}">
@@ -110,9 +142,10 @@
             <tr>
               <td data-label={t('stack.colComponent')} class="font-medium whitespace-nowrap">{titleOf(name)}</td>
               <td data-label={t('stack.colWhat')} class="text-sm text-muted max-w-md">{info[name] ? t(info[name].text) : ''}</td>
-              <td data-label={t('stack.colVersion')} class="font-mono text-xs">{c?.installed ? c.version || '—' : '—'}</td>
-              <td data-label={t('stack.colState')}><span class="tag {tagOf(c)}">{stateOf(c)}</span>{#if c && !c.installed && c.version}<div class="text-xs text-danger mt-1 max-w-xs break-words">{c.version}</div>{/if}</td>
+              <td data-label={t('stack.colVersion')} class="font-mono text-xs">{c?.installed ? c.version || '—' : '—'}{#if c?.installed && c.upgrade}<div class="mt-1"><span class="tag tag-warn" title={updateTitle(c)}>{t('stack.updateTo', { to: c.upgrade.to })}</span></div>{/if}</td>
+              <td data-label={t('stack.colState')}><span class="tag {tagOf(c)}">{stateOf(c)}</span>{#if c && !c.installed && c.version}<div class="text-xs text-danger mt-1 max-w-xs break-words">{c.version}</div>{/if}{#if replaced(c)}<div class="text-xs text-warn mt-1 max-w-xs">{t('stack.binaryReplaced')}</div>{/if}</td>
               <td data-label=""><div class="row-actions">
+                {#if upgradable(c, name)}<button class="btn btn-sm {db ? 'btn-danger' : 'btn-primary'}" onclick={() => (ask = askUpgrade(upgradeComp(c, name), name))}><Icon name="download" size={13} /> {t('stack.btnUpgrade')}</button>{/if}
                 {#if !c?.installed}
                   {#if db && dbInstalled}<span class="text-xs text-muted">{t('stack.otherDbInstalled')}</span>
                   {:else}<button class="btn btn-sm btn-primary" onclick={() => (ask = askInstall(name))}><Icon name="download" size={13} /> {c?.version ? t('stack.btnRetry') : t('stack.btnInstall')}</button>{/if}
@@ -135,9 +168,9 @@
               <tr>
                 <td data-label={t('stack.colComponent')} class="font-medium whitespace-nowrap font-mono">{c.name}</td>
                 <td data-label={t('stack.colWhat')} class="text-sm text-muted max-w-md">{t('stack.infoPhp', { version: c.name.replace(/^php-/, '') })}</td>
-                <td data-label={t('stack.colVersion')} class="font-mono text-xs">{c.version || '—'}</td>
-                <td data-label={t('stack.colState')}><span class="tag {c.installed ? (c.service && c.service.active_state !== 'active' ? 'tag-err' : 'tag-ok') : 'tag-warn'}">{c.installed ? stateOf(c) : t('stack.statePhpNotReady')}</span></td>
-                <td data-label=""><div class="row-actions"><a class="btn btn-sm whitespace-nowrap" href="/php"><Icon name="code" size={13} /> {t('stack.phpPage')}</a></div></td>
+                <td data-label={t('stack.colVersion')} class="font-mono text-xs">{c.version || '—'}{#if c.installed && c.upgrade}<div class="mt-1"><span class="tag tag-warn" title={updateTitle(c)}>{t('stack.updateTo', { to: c.upgrade.to })}</span></div>{/if}</td>
+                <td data-label={t('stack.colState')}><span class="tag {c.installed ? (c.service && c.service.active_state !== 'active' ? 'tag-err' : 'tag-ok') : 'tag-warn'}">{c.installed ? stateOf(c) : t('stack.statePhpNotReady')}</span>{#if c.service?.binary_replaced}<div class="text-xs text-warn mt-1 max-w-xs">{t('stack.binaryReplaced')}</div>{/if}</td>
+                <td data-label=""><div class="row-actions">{#if upgradable(c, c.name)}<button class="btn btn-sm btn-primary" onclick={() => (ask = askUpgrade('php'))}><Icon name="download" size={13} /> {t('stack.btnUpgrade')}</button>{/if}<a class="btn btn-sm whitespace-nowrap" href="/php"><Icon name="code" size={13} /> {t('stack.phpPage')}</a></div></td>
               </tr>
             {/each}
             {#if !phpRows.length}<tr><td colspan="5" class="text-muted text-sm py-4 text-center">{t('stack.noPhp')} <a class="link" href="/php">{t('stack.phpPage')}</a></td></tr>{/if}

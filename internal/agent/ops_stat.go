@@ -196,6 +196,10 @@ var listDirAllowed = []*regexp.Regexp{
 	regexp.MustCompile(`^/etc/php/[0-9]+\.[0-9]+/mods-available$`),
 	regexp.MustCompile(`^/etc/php/[0-9]+\.[0-9]+/(fpm|cli)/conf\.d$`),
 	regexp.MustCompile(`^/etc/opt/remi/php[0-9]+/php\.d$`),
+	// a branch's pools, which the doctor reads for catch_workers_output (the
+	// way of CVE-2026-129291 from a pool's worker to the root master)
+	regexp.MustCompile(`^/etc/php/[0-9]+\.[0-9]+/fpm/pool\.d$`),
+	regexp.MustCompile(`^/etc/opt/remi/php[0-9]+/php-fpm\.d$`),
 	// the default servers, one per local address: those of addresses the
 	// host lost are removed, nginx cannot bind them
 	regexp.MustCompile(`^/etc/nginx/monopanel/http\.d$`),

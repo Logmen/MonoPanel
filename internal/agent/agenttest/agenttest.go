@@ -107,6 +107,25 @@ type Agent struct {
 	// PackageVersions overrides the version "query" and "available" report
 	// (default 1.0-test).
 	PackageVersions map[string]string
+	// Upgrades are the newer versions the repositories offer of installed
+	// packages, for "candidates"; "upgrade" installs them (PackageVersions
+	// follows, the entry goes) and refuses, as the agent does, a package of
+	// none of the panel's sets or one that is not installed. UpgradeFails
+	// makes "upgrade" fail with the given output when it names the package.
+	Upgrades     map[string]osprofile.Candidate
+	UpgradeFails map[string]string
+	// HeldPackages are held back by the administrator (apt-mark hold):
+	// "candidates" reports their updates apart, "upgrade" leaves them.
+	HeldPackages map[string]bool
+	// BinaryReplaced marks the units whose running binary an upgrade
+	// replaced (status says so) until they restart.
+	BinaryReplaced map[string]bool
+	// CheckFails makes a config/apply whose checks include the validator
+	// (argv[0]) fail with the output, as a refused configuration does (422);
+	// NewBinaryRefuses the same once "upgrade" upgraded the refusal's
+	// package: a configuration the old binary took and the new one refuses.
+	CheckFails       map[string]string
+	NewBinaryRefuses map[string]Refusal
 	// ToolHook, when set, may answer a tool call itself (nil = default).
 	ToolHook func(req agent.ToolRequest) *agent.ToolResponse
 	// Sandbox is what ping says of restic's sandbox (nil: nothing, as an
@@ -145,6 +164,9 @@ type Agent struct {
 	// ApacheLegacySites is the shared Apache's directory of 0.8.19 that
 	// /v1/apache/legacy reads with the real agent's code (empty: none).
 	ApacheLegacySites string
+
+	// upgraded are the package lists of the "upgrade" calls (Upgraded).
+	upgraded [][]string
 
 	srv *httptest.Server
 }
@@ -307,6 +329,14 @@ func (a *Agent) handle(w http.ResponseWriter, r *http.Request) {
 			if out, ok := a.InstallFails[p]; ok && req.Action == "install" {
 				msg, failing = out, true
 			}
+			if out, ok := a.UpgradeFails[p]; ok && req.Action == "upgrade" {
+				msg, failing = out, true
+			}
+		}
+	}
+	if r.URL.Path == "/v1/config/apply" && !failing {
+		if out, ok := a.refusedCheck(body); ok {
+			msg, failing, status = out, true, http.StatusUnprocessableEntity
 		}
 	}
 	a.mu.Unlock()
@@ -372,6 +402,7 @@ func (a *Agent) respond(path string, body []byte) any {
 		for _, u := range req.Restart {
 			a.units[u] = "restart"
 			a.startInstance(u)
+			a.restarted(u, "restart")
 		}
 		return agent.ApplyConfigSetResponse{Written: written, Validated: len(req.Validate), Reloaded: req.Reload}
 
@@ -579,11 +610,18 @@ func (a *Agent) respond(path string, body []byte) any {
 		if l, ok := a.LoadState[unit]; ok {
 			load = l
 		}
-		return agent.ServiceResponse{Status: systemd.Status{Unit: unit, LoadState: load, ActiveState: state, SubState: "running", UnitFileState: fileState}}
+		a.restarted(unit, req.Action)
+		return agent.ServiceResponse{Status: systemd.Status{Unit: unit, LoadState: load, ActiveState: state, SubState: "running", UnitFileState: fileState, BinaryReplaced: a.BinaryReplaced[unit] && state == "active"}}
 
 	case "/v1/pkg":
 		var req agent.PkgRequest
 		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		switch req.Action {
+		case "candidates":
+			return a.candidates(req.Packages)
+		case "upgrade":
+			return a.upgrade(req.Packages)
+		}
 		versions := map[string]string{}
 		for _, p := range req.Packages {
 			if !a.MissingPackages[p] {
@@ -851,12 +889,14 @@ func (a *Agent) instanceService(unit, action string) any {
 		a.units[unit] = action
 		a.actions = append(a.actions, unit+" "+action)
 	}
+	a.restarted(unit, action)
 	status := systemd.Status{Unit: unit, LoadState: "loaded", ActiveState: "inactive", SubState: "dead", UnitFileState: "disabled"}
 	if l, ok := a.LoadState[unit]; ok {
 		status.LoadState = l
 	}
 	if st.active {
 		status.ActiveState, status.SubState = "active", "running"
+		status.BinaryReplaced = a.BinaryReplaced[unit]
 	}
 	if st.enabled {
 		status.UnitFileState = "enabled"
@@ -1055,6 +1095,7 @@ func (a *Agent) Reset() {
 	a.mountedAt = map[string]string{}
 	a.busy = map[string]bool{}
 	a.tools = nil
+	a.upgraded = nil
 	a.panel = nil
 	a.siteLogs = map[string]map[string]bool{}
 	a.siteLogsGone = nil

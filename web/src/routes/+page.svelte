@@ -16,7 +16,8 @@
   let fixing = $state('');
   // Doctor's findings carry an action: site.fix (owner, modes, ACLs, SELinux
   // labels of one site or every site) or selinux.enforcing. One click, then
-  // the diagnostics are read again.
+  // the diagnostics are read again. stack.upgrade (an update waiting in a
+  // vendor repository) leads to the Extensions page, which asks first.
   async function fixSites(target: string) {
     fixing = target;
     try {
@@ -158,6 +159,7 @@
             {#if c.detail}<button class="text-muted text-xs pt-0.5 text-left min-w-0 {openCheck.includes(c.name) ? 'whitespace-pre-wrap break-words basis-full' : 'truncate max-w-full'}" title={openCheck.includes(c.name) ? '' : c.detail} onclick={() => toggleCheck(c.name)}>{c.detail}</button>{/if}
             {#if c.action === 'site.fix' && c.target}<button class="btn btn-sm shrink-0" onclick={() => fixSites(c.target)} disabled={!!fixing}>{fixing ? t('dashboard.fixing') : c.target === '*' ? t('dashboard.fixAllSites') : t('dashboard.fixSite', { domain: c.target })}</button>{/if}
             {#if c.action === 'selinux.enforcing'}<button class="btn btn-sm shrink-0" onclick={enforce} disabled={!!fixing}>{t('dashboard.enforce')}</button>{/if}
+            {#if c.action === 'stack.upgrade'}<a class="btn btn-sm shrink-0" href="/stack">{t('dashboard.toStack')}</a>{/if}
           </li>
         {/each}
       </ul>

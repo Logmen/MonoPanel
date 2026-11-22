@@ -57,6 +57,7 @@ func confirmTree() *cobra.Command {
 	})
 	add("stack", "install <component>", cobra.ExactArgs(1), nil)
 	add("stack", "remove <component>", cobra.ExactArgs(1), nil)
+	add("stack", "upgrade [component]", cobra.MaximumNArgs(1), nil)
 	add("php", "remove <version>", cobra.ExactArgs(1), nil)
 	add("php ext", "disable <version> <name>", cobra.ExactArgs(2), nil)
 	add("db engine", "tune", nil, nil)
@@ -131,6 +132,11 @@ func TestConfirmLikeTheWeb(t *testing.T) {
 		{path: "stack install", args: []string{"percona"}, vals: map[string]string{"name": "percona", "installed": "true"}, note: "MySQL restarts"},
 		{path: "stack install", args: []string{"composer"}, note: "updates it"},
 		{path: "stack remove", args: []string{"memcached"}, note: "cache"},
+		{path: "stack upgrade", note: "The database server is not touched"},
+		{path: "stack upgrade", args: []string{"nginx"}, note: "nginx -t checks the configuration"},
+		{path: "stack upgrade", args: []string{"php"}, note: "cuts off the requests"},
+		{path: "stack upgrade", args: []string{"apache"}, note: "answering 502"},
+		{path: "stack upgrade", args: []string{"db"}, note: "the server restarts"},
 		{path: "php remove", args: []string{"8.1"}, note: "PHP 8.1"},
 		{path: "php ext disable", args: []string{"8.4", "opcache"}, vals: map[string]string{"critical": "true"}, note: "typical site"},
 		// Databases, backups, SSL.

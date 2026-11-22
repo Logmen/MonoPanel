@@ -98,6 +98,10 @@ type Status struct {
 	SubState      string    `json:"sub_state"`
 	UnitFileState string    `json:"unit_file_state"`
 	ActiveSince   time.Time `json:"active_since,omitempty"`
+	// BinaryReplaced says that the service's main process runs a program
+	// file an upgrade has replaced since it started: the old code runs on
+	// until a restart. The agent fills it in (Status does not).
+	BinaryReplaced bool `json:"binary_replaced,omitempty"`
 }
 
 // Status returns the state of a unit.

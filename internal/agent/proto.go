@@ -6,6 +6,7 @@ package agent
 import (
 	"strings"
 
+	"monopanel/internal/osprofile"
 	"monopanel/internal/sysinfo"
 	"monopanel/internal/systemd"
 )
@@ -134,7 +135,7 @@ type ServiceResponse struct {
 
 // PkgRequest drives the native package manager.
 type PkgRequest struct {
-	Action   string   `json:"action"` // update-index install remove query available
+	Action   string   `json:"action"` // update-index install remove query available candidates upgrade
 	Packages []string `json:"packages,omitempty"`
 }
 
@@ -145,6 +146,13 @@ type PkgResponse struct {
 	Output    string            `json:"output,omitempty"`
 	Installed map[string]string `json:"installed,omitempty"`
 	Available map[string]string `json:"available,omitempty"`
+	// Upgrades, for "candidates", are the installed ones of the packages a
+	// repository offers another version of, with that version and where it
+	// comes from; Installed has what is installed of them all. Held are those
+	// of them the administrator holds back (apt-mark hold), which an
+	// upgrade leaves as they are.
+	Upgrades map[string]osprofile.Candidate `json:"upgrades,omitempty"`
+	Held     map[string]osprofile.Candidate `json:"held,omitempty"`
 }
 
 // SystemInfoResponse is the host snapshot.

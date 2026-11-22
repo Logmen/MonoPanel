@@ -122,6 +122,9 @@ type Server struct {
 	// restartDelay is how long a restart of monopanel-api that a request
 	// asked for waits after the answer; tests need no wait.
 	restartDelay time.Duration
+	// kernel is where the doctor's kernel modules check looks (zero: this
+	// host's; SetKernelSources).
+	kernel kernelSources
 }
 
 // SetReadinessWaits overrides the post-reload waits: for php-fpm's socket,
@@ -245,6 +248,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 		s.registerTokens()
 		s.registerServices()
 		s.registerStack()
+		s.registerStackUpgrade()
 		s.registerCerts()
 		s.registerPHP()
 		s.registerSites()
@@ -287,6 +291,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	s.jobs.Register("apache.migrate", s.jobApacheMigrate)
 	s.jobs.Register("apache.backend", s.jobApacheBackend)
 	s.jobs.Register("stack.remove", s.jobStackRemove)
+	s.jobs.Register("stack.upgrade", s.jobStackUpgrade)
 	s.jobs.Register("cert.issue", s.jobCertIssue)
 	s.jobs.Register("php.install", s.jobPHPInstall)
 	s.jobs.Register("php.remove", s.jobPHPRemove)
