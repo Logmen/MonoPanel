@@ -374,7 +374,7 @@ func (r *resumingBody) Read(p []byte) (int, error) {
 			return 0, r.broken
 		}
 		r.resumes++
-		r.cur.Close()
+		r.cur.Close() //nolint:errcheck // the stream that broke, replaced by the resumed one
 		next, err := withRetry(r.ctx, func() (*stallBody, bool, error) { return fetchStreamFrom(r.ctx, r.url, r.off, r.validator) })
 		if err != nil {
 			return 0, fmt.Errorf("%w; resuming at byte %d: %v", r.broken, r.off, err)

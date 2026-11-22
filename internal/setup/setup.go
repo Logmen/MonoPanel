@@ -817,7 +817,7 @@ func ensureSelfSigned(cfg config.Config, certPath, keyPath string, names []strin
 	if err != nil {
 		return false, err
 	}
-	defer os.RemoveAll(tmp)
+	defer os.RemoveAll(tmp) //nolint:errcheck // a scratch directory of this run
 	tmpCert, tmpKey := filepath.Join(tmp, "panel.crt"), filepath.Join(tmp, "panel.key")
 	if _, err := api.EnsureSelfSigned(tmpCert, tmpKey, names); err != nil {
 		return false, err

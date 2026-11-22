@@ -147,7 +147,7 @@ func dcClassify(n int, line string) (dcLine, error) {
 	if rest == "{" {
 		return l, nil
 	}
-	name := rest
+	var name string
 	if strings.HasPrefix(rest, "\"") {
 		end := strings.IndexByte(rest[1:], '"')
 		if end < 0 {

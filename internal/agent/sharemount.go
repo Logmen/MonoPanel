@@ -31,7 +31,7 @@ import (
 // over /etc/systemd/system. So
 //
 //   - a mount point lies only below root's directories that nobody else may
-//     write to, reached without a symlink (checkMountPoint): the agent checks
+//     write to, reached without a symlink (openMountPoint): the agent checks
 //     the way whenever it binds a folder there;
 //   - while the agent knows a shared folder there — its record of a folder
 //     it bound, or a mount unit below the web root — no call of the agent
@@ -114,23 +114,14 @@ var mountedOn = func(fd int) bool {
 // guest's ownership in here.
 var mountOwner = func(dir string, st *unix.Stat_t) uint32 { return st.Uid }
 
-// checkMountPoint tells why where must not be mounted over: every directory
+// openMountPoint tells why where must not be mounted over: every directory
 // from the web root down to it, where included, must be root's, writable by
 // nobody else (dirTrust, an access ACL's mask read as what it is) and reached
 // without a symlink. A where something is mounted on already (the share is
 // applied again) shows the mounted folder: then only the way to it counts.
-func (s *Server) checkMountPoint(where string) error {
-	fd, err := s.openMountPoint(where)
-	if err == nil {
-		unix.Close(fd) //nolint:errcheck // a directory opened for its checks
-	}
-	return err
-}
-
-// openMountPoint is checkMountPoint that returns the mount point it checked,
-// opened: the directory a folder is bound on (sharebind.go), whatever is
-// renamed on the way afterwards — or, when something is mounted on it, the
-// root of that mount.
+// It returns the mount point it checked, opened: the directory a folder is
+// bound on (sharebind.go), whatever is renamed on the way afterwards — or,
+// when something is mounted on it, the root of that mount.
 func (s *Server) openMountPoint(where string) (int, error) {
 	root := filepath.Clean(s.cfg.WWWRoot)
 	p := filepath.Clean(where)
@@ -208,7 +199,7 @@ func mountPathDir(t *dirTrust, dir string, fd int, latent bool) error {
 // would bring the entry back, and the agent refuses that on the way).
 var errLatentWrite = fmt.Errorf("%w (an ACL entry held back by the mask)", errUntrusted)
 
-// mountPointErr is the refusal of a mount point checkMountPoint turned down.
+// mountPointErr is the refusal of a mount point openMountPoint turned down.
 func (s *Server) mountPointErr(where string, err error) *Error {
 	return &Error{Status: http.StatusForbidden, Message: fmt.Sprintf("the mount point %s is refused: %v. A shared folder is mounted only below directories of root's that nobody else may write to — %s/<login>/<name> for an account with a shell, the root-owned home of an SFTP-only account; apply the shared folder again (mp site fix <its site>, or a restart of the panel) to move it there",
 		where, err, filepath.Join(s.cfg.WWWRoot, sharesDirName))}
@@ -507,7 +498,7 @@ func (g *shareGuard) refuse(what, mount string) *Error {
 
 // dirChange vets what ensureHomeDir is about to make of the directory dir:
 // on the way to a mount point it stays root's and writable by nobody else, as
-// checkMountPoint wants it. cur is how it is now (nil for a directory about to
+// openMountPoint wants it. cur is how it is now (nil for a directory about to
 // be made, then root's); a change that leaves it as it is passes, so that a
 // home handed to its account before the panel checked mount points (up to
 // 0.8.19) can still be set up while the folders are moved out of it.

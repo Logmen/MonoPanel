@@ -609,7 +609,7 @@ func checkValkeyUnit(name string, entries []unitEntry, h *UnitHost) error {
 // <www_root>/.shares/<login>/<name> for a panel account with a shell, whose
 // own home is no place for a mount point (sharemount.go). Whether the
 // directories on the way are root's is the agent's check of the host
-// (checkMountPoint), not this one of the text.
+// (openMountPoint), not this one of the text.
 func mountPointOf(p string, h *UnitHost) error {
 	root := filepath.Clean(h.WWWRoot)
 	rel, ok := strings.CutPrefix(p, root+"/"+sharesDirName+"/")
@@ -667,7 +667,7 @@ var errNoMountUnits = errors.New("the panel writes no mount units: the agent bin
 // account — never in .shares or the restore area, which are no homes —
 // and where a mount point of a shared folder (mountPointOf), neither one
 // inside the other. Whether they are what the names say is the agent's look
-// at the host (openShareSource, checkMountPoint).
+// at the host (openShareSource, openMountPoint).
 func CheckShareBind(what, where string, h *UnitHost) error {
 	if err := shareBindShape(what, where, h.WWWRoot); err != nil {
 		return err

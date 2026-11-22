@@ -567,8 +567,8 @@ func openTreeEntry(dir int, name, p string) (*treeEntry, error) {
 		if st.Nlink > 1 {
 			var dst unix.Stat_t
 			if err := unix.Fstat(dir, &dst); err != nil || dst.Uid != st.Uid {
-				unix.Close(fd) //nolint:errcheck // an O_PATH descriptor
-				return nil, nil
+				unix.Close(fd)  //nolint:errcheck // an O_PATH descriptor
+				return nil, nil //nolint:nilerr // a second name of a file not dir's owner's, or under a dir that cannot be read: skipped, as the doc says
 			}
 		}
 		return &treeEntry{fd: fd, path: p, mode: st.Mode & 0o7777}, nil

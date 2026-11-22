@@ -77,7 +77,8 @@ func (s *Server) setPanelConfig(ctx context.Context, req *PanelConfigRequest) (*
 	}
 	defer dir.close()
 	name := filepath.Base(path)
-	mode, uid, gid := uint32(0o640), -1, -1
+	mode, uid := uint32(0o640), -1
+	var gid int
 	old, st, existed, err := readFileAt(dir.fd, name)
 	switch {
 	case errors.Is(err, errNotPlainFile):

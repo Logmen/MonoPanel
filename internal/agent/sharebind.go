@@ -32,7 +32,7 @@ import (
 //   - shareBind opens the folder from the web root one directory at a time
 //     without following a symlink, and checks it is a directory of the
 //     owner's in the owner's home (openShareSource); it opens the mount point
-//     the way checkMountPoint walks it, below root's directories alone
+//     the way openMountPoint walks it, below root's directories alone
 //     (openMountPoint); and it mounts a clone of the very directory it
 //     opened on the very directory it opened (open_tree(OPEN_TREE_CLONE),
 //     move_mount). Whatever is renamed afterwards, the guest sees the folder

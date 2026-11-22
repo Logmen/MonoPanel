@@ -48,9 +48,10 @@ type field struct {
 	typ      string
 }
 
-// StdinOrderAnnotation, on a command, lists its -stdin flags in the order it
-// reads them ("current-password-stdin,password-stdin"): the TUI may then pipe
-// several one-line secrets to it, one per line in that order.
+// StdinOrderAnnotation is the annotation of a command that lists its -stdin
+// flags in the order it reads them ("current-password-stdin,password-stdin"):
+// the TUI may then pipe several one-line secrets to it, one per line in that
+// order.
 const StdinOrderAnnotation = "mp:stdin-order"
 
 // pipedList says the field is a list secret for stdin (--cred-stdin,
