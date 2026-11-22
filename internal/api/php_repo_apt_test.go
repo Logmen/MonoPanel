@@ -106,30 +106,46 @@ func TestSwitchPHPRepoKeepsThePPAWhileSuryIsStale(t *testing.T) {
 // A PHP install that keeps the host's own source of Sury reads the index
 // anew first: what apt has may be as old as the administrator's last apt-get
 // update, and Sury drops superseded builds from its pool. A refresh that
-// fails fails no install: apt still has the index.
+// fails fails no install, nor one that ends well without that source (apt
+// keeps its lists): apt still has the index, and the job's log says what apt
+// said.
 func TestPHPRepoRefreshesTheHostsOwnSury(t *testing.T) {
-	withOSRelease(t, "ID=debian\nVERSION_ID=13\nVERSION_CODENAME=trixie\n")
-	stubSury(t, true)
-	f := newSiteFixture(t)
-	seedFiles(t, f, map[string]string{adminSury: adminSuryList("trixie")})
-	aptUpdate(t, f)
-	f.agent.PkgFails = map[string]string{"update-index": "E: Could not get lock /var/lib/apt/lists/lock. It is held by process 4242 (apt-get)\nE: Unable to lock directory /var/lib/apt/lists/"}
-	from := len(f.agent.Calls())
-	job := phpInstallJob(t, f, "8.3")
-	if job.Status != store.JobDone {
-		t.Fatalf("install: %s %s", job.Status, job.Error)
-	}
-	calls := repoCalls(f, from)
-	update := slices.Index(calls, "pkg update-index")
-	install := slices.IndexFunc(calls, func(c string) bool { return strings.HasPrefix(c, "pkg install ") })
-	if update < 0 || install < 0 || update > install {
-		t.Fatalf("no index update before the install:\n%s", strings.Join(calls, "\n"))
-	}
-	if !strings.Contains(job.Log, "Could not get lock /var/lib/apt/lists/lock") {
-		t.Fatalf("the failed refresh is not in the job's log:\n%s", job.Log)
-	}
-	if files, _ := applied(f, from); slices.ContainsFunc(files, func(file agent.FileSpec) bool { return strings.HasPrefix(file.Path, "/etc/apt/") }) {
-		t.Fatalf("the panel wrote apt files beside the administrator's source: %+v", files)
+	for _, c := range []struct {
+		name, warning string
+		fails, output map[string]string
+	}{
+		{"the index update fails", "warning: the index update failed, the install goes on with the index apt had: apt update-index failed: exit status 100 (monopanel-pkg-test.service): E: Could not get lock /var/lib/apt/lists/lock",
+			map[string]string{"update-index": "E: Could not get lock /var/lib/apt/lists/lock. It is held by process 4242 (apt-get)\nE: Unable to lock directory /var/lib/apt/lists/"}, nil},
+		{"apt cannot fetch the host's own source", "warning: apt did not refresh it, the install goes on with the index apt had: W: Failed to fetch https://packages.sury.org/php/dists/trixie/InRelease Could not connect to packages.sury.org:443 (203.0.113.5), connection timed out",
+			nil, map[string]string{"update-index": "Hit:1 http://deb.debian.org/debian trixie InRelease\nErr:2 https://packages.sury.org/php trixie InRelease\n  Could not connect to packages.sury.org:443 (203.0.113.5), connection timed out\nReading package lists...\n" +
+				"W: Failed to fetch https://packages.sury.org/php/dists/trixie/InRelease  Could not connect to packages.sury.org:443 (203.0.113.5), connection timed out\n" +
+				"W: Some index files failed to download. They have been ignored, or old ones used instead.\n"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			withOSRelease(t, "ID=debian\nVERSION_ID=13\nVERSION_CODENAME=trixie\n")
+			stubSury(t, true)
+			f := newSiteFixture(t)
+			seedFiles(t, f, map[string]string{adminSury: adminSuryList("trixie")})
+			aptUpdate(t, f)
+			f.agent.PkgFails, f.agent.PkgOutput = c.fails, c.output
+			from := len(f.agent.Calls())
+			job := phpInstallJob(t, f, "8.3")
+			if job.Status != store.JobDone {
+				t.Fatalf("install: %s %s", job.Status, job.Error)
+			}
+			calls := repoCalls(f, from)
+			update := slices.Index(calls, "pkg update-index")
+			install := slices.IndexFunc(calls, func(c string) bool { return strings.HasPrefix(c, "pkg install ") })
+			if update < 0 || install < 0 || update > install {
+				t.Fatalf("no index update before the install:\n%s", strings.Join(calls, "\n"))
+			}
+			if !strings.Contains(job.Log, c.warning) {
+				t.Fatalf("the refresh's trouble is not in the job's log:\n%s", job.Log)
+			}
+			if files, _ := applied(f, from); slices.ContainsFunc(files, func(file agent.FileSpec) bool { return strings.HasPrefix(file.Path, "/etc/apt/") }) {
+				t.Fatalf("the panel wrote apt files beside the administrator's source: %+v", files)
+			}
+		})
 	}
 }
 
@@ -289,7 +305,7 @@ func TestPHPRepoAnAdministratorsSuryAptHasNotRead(t *testing.T) {
 	f := newSiteFixture(t)
 	seedFiles(t, f, map[string]string{adminSury: adminSuryList("trixie")})
 	job := phpInstallJob(t, f, "8.3")
-	if job.Status != store.JobFailed || !strings.Contains(job.Error, "Conflicting values set for option Signed-By") || !strings.Contains(job.Error, "another source of packages.sury.org names another keyring") || !strings.Contains(job.Error, "apt-get update") {
+	if job.Status != store.JobFailed || !strings.Contains(job.Error, "Conflicting values set for option Signed-By") || !strings.Contains(job.Error, "another source of packages.sury.org names another keyring or none (yours?)") || !strings.Contains(job.Error, "apt-get update") {
 		t.Fatalf("install beside a source apt has not read: %s %q", job.Status, job.Error)
 	}
 	if _, ok := f.agent.File(surySource); ok {

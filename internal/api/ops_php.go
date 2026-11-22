@@ -246,7 +246,7 @@ func (s *Server) ensurePHPRepo(ctx context.Context, jc *jobs.Context) error {
 			if surySignedBy(err) {
 				// An administrator's source of Sury that apt had not read
 				// yet: the look before the write could not find it.
-				err = fmt.Errorf("%w; another source of packages.sury.org names another keyring (yours?): apt-get update has apt read it, and the next PHP install keeps it; or remove it, and the next install puts the panel's in its place", err)
+				err = fmt.Errorf("%w; another source of packages.sury.org names another keyring or none (yours?): apt-get update has apt read it, and the next PHP install keeps it; or remove it, and the next install puts the panel's in its place", err)
 			}
 			// The source just written is the likely cause of a failure (a
 			// key apt refuses, a repository that went away): left behind,
@@ -1005,11 +1005,11 @@ func (s *Server) moveToSury(ctx context.Context, own bool) string {
 		case surySignedBy(uerr):
 			// Another source of Sury, one apt had not read yet: the look
 			// before the write could not find it.
-			why += "; another source of packages.sury.org names another keyring (yours?): apt-get update has apt read it, and the next start of the API keeps it, removing the PPA alone; or remove it, and the next start puts the panel's in its place"
+			why += "; another source of packages.sury.org names another keyring or none (yours?): apt-get update has apt read it, and the next start of the API keeps it, removing the PPA alone; or remove it, and the next start puts the panel's in its place"
 		case ppaSignedBy(uerr):
 			// An administrator's add-apt-repository beside the panel's own
 			// source of the PPA: apt has read no source since.
-			why += "; another source of ppa:ondrej/php names another keyring (yours, from add-apt-repository?), and apt reads no source while both are there: remove it, and the next start of the API moves PHP to packages.sury.org; or remove the panel's " + ondrejSource + " and " + ondrejKeyring + ", and PHP keeps coming from yours"
+			why += "; another source of ppa:ondrej/php names another keyring or none (yours, from add-apt-repository?), and apt reads no source while both are there: remove it, and the next start of the API moves PHP to packages.sury.org; or remove the panel's " + ondrejSource + " and " + ondrejKeyring + ", and PHP keeps coming from yours"
 		}
 		if _, rerr := s.agent.RemovePaths(context.WithoutCancel(ctx), &agent.RemovePathsRequest{Paths: []string{surySource, suryKeyring}}); rerr != nil {
 			// Left beside the PPA's, a source apt cannot read fails or
@@ -1177,7 +1177,8 @@ func signedByConflict(err error) (uri, line string) {
 }
 
 // surySignedBy tells apt's refusal of the panel's source of
-// packages.sury.org/php beside another one that names another keyring.
+// packages.sury.org/php beside another one that names another keyring or
+// none.
 func surySignedBy(err error) bool {
 	uri, line := signedByConflict(err)
 	return repoOf(uri, "packages.sury.org", "/php/") && strings.Contains(line, suryKeyring)

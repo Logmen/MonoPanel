@@ -50,6 +50,7 @@ func (dnfManager) UpdateIndexArgv() []string { return strings.Fields("dnf -q -y 
 
 // IndexLocked: dnf waits for its lock as long as it takes.
 func (dnfManager) IndexLocked(string) bool { return false }
+func (dnfManager) IndexLockFile() string   { return "" }
 func (dnfManager) InstallArgv(pkgs []string) []string {
 	return append([]string{"dnf", "-q", "-y", "install"}, pkgs...)
 }

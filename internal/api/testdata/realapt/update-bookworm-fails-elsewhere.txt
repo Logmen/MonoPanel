@@ -1,0 +1,16 @@
+Get:1 file:/etc/apt/mirrors/debian.list Mirrorlist [30 B]
+Get:2 file:/etc/apt/mirrors/debian-security.list Mirrorlist [39 B]
+Hit:7 http://repo.percona.com/prel/apt bookworm InRelease
+Ign:8 http://deb.debian.org/debian-r3a-missing bookworm InRelease
+Hit:9 http://repo.percona.com/ps-84-lts/apt bookworm InRelease
+Err:10 http://deb.debian.org/debian-r3a-missing bookworm Release
+  404  Not Found [IP: 2a04:4e42::644 80]
+Hit:11 http://repo.percona.com/telemetry/apt bookworm InRelease
+Hit:12 https://nginx.org/packages/debian bookworm InRelease
+Hit:13 https://packages.sury.org/php bookworm InRelease
+Hit:3 https://deb.debian.org/debian bookworm InRelease
+Hit:4 https://deb.debian.org/debian bookworm-updates InRelease
+Hit:5 https://deb.debian.org/debian bookworm-backports InRelease
+Hit:6 https://deb.debian.org/debian-security bookworm-security InRelease
+Reading package lists...
+E: The repository 'http://deb.debian.org/debian-r3a-missing bookworm Release' does not have a Release file.

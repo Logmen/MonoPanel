@@ -661,7 +661,7 @@ func TestSwitchPHPRepoToSury(t *testing.T) {
 		if src, _ := f.agent.File(adminSury); src != adminSuryList("noble") || slices.Contains(f.agent.Removed(), adminSury) {
 			t.Fatalf("the administrator's source: %q (removed: %v)", src, f.agent.Removed())
 		}
-		const advice = "another source of packages.sury.org names another keyring (yours?): apt-get update has apt read it, and the next start of the API keeps it, removing the PPA alone; or remove it, and the next start puts the panel's in its place"
+		const advice = "another source of packages.sury.org names another keyring or none (yours?): apt-get update has apt read it, and the next start of the API keeps it, removing the PPA alone; or remove it, and the next start puts the panel's in its place"
 		if why, _ := f.db.GetSetting(f.ctx, settingPHPRepoSwitch); !strings.Contains(why, "apt update-index failed: exit status 100 (monopanel-pkg-test.service): "+suryConflict) || !strings.Contains(why, advice) {
 			t.Fatalf("reason: %q", why)
 		}
@@ -680,6 +680,53 @@ func TestSwitchPHPRepoToSury(t *testing.T) {
 		}
 		if line := repoLine(f); line != nil {
 			t.Fatalf("doctor after the move: %+v", line)
+		}
+	})
+	t.Run("the host's own source has no Sury after the refresh", func(t *testing.T) {
+		// apt had Sury's builds from the host's mirror; the index update with
+		// the PPA still there ends well and says nothing against the mirror,
+		// but after it apt has Sury's builds from no host — the mirror serves
+		// other builds now. What apt lists after the update decides: the PPA
+		// stays.
+		withOSRelease(t, ubuntuNoble)
+		stubSury(t, true)
+		f := newSiteFixture(t)
+		seedPPA(t, f)
+		const mirror = "/etc/apt/sources.list.d/php-mirror.list"
+		seedFiles(t, f, map[string]string{mirror: "deb [signed-by=/usr/share/keyrings/deb.sury.org-php.gpg] http://mirror.internal/sury/php/ noble main\n"})
+		before := strings.ReplaceAll(policyWithSury, "https://packages.sury.org/php", "http://mirror.internal/sury/php")
+		const after = "php-common:\n  Installed: 2:101~+ubuntu24.04.1+deb.sury.org+1\n  Candidate: 2:101~+ubuntu24.04.1+deb.sury.org+1\n  Version table:\n" +
+			" *** 2:101~+ubuntu24.04.1+deb.sury.org+1 500\n        500 http://mirror.internal/sury/php noble/main amd64 Packages\n        500 https://ppa.launchpadcontent.net/ondrej/php/ubuntu noble/main amd64 Packages\n        100 /var/lib/dpkg/status\n" +
+			"     2:93ubuntu2 500\n        500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages\n"
+		const update = "Hit:1 http://archive.ubuntu.com/ubuntu noble InRelease\nHit:2 http://mirror.internal/sury/php noble InRelease\nHit:3 https://ppa.launchpadcontent.net/ondrej/php/ubuntu noble InRelease\nReading package lists...\n"
+		f.agent.PkgOutput = map[string]string{"update-index": update, "available": before}
+		f.agent.SetBefore(func(path string, body []byte) {
+			var req agent.PkgRequest
+			if path == "/v1/pkg" && json.Unmarshal(body, &req) == nil && req.Action == "update-index" {
+				f.agent.PkgOutput = map[string]string{"update-index": update, "available": after}
+			}
+		})
+		t.Cleanup(func() { f.agent.SetBefore(nil) })
+		from := len(f.agent.Calls())
+		f.s.switchPHPRepoToSury(f.ctx)
+		if got := repoCalls(f, from); !slices.Equal(got, hosts[:3]) {
+			t.Fatalf("calls:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(hosts[:3], "\n"))
+		}
+		if src, _ := f.agent.File(ondrejSource); src != ppaSource {
+			t.Fatalf("the PPA's source: %q", src)
+		}
+		if key, _ := f.agent.File(ondrejKeyring); key != ppaKey {
+			t.Fatalf("the PPA's keyring: %q", key)
+		}
+		if _, ok := f.agent.File(surySource); ok {
+			t.Fatal("the panel wrote its source of Sury beside the mirror")
+		}
+		const why = "apt could not refresh packages.sury.org/php from the host's own source of it (mirror.internal): the index update ended without it"
+		if got, _ := f.db.GetSetting(f.ctx, settingPHPRepoSwitch); got != why {
+			t.Fatalf("reason: %q", got)
+		}
+		if line := repoLine(f); line == nil || line.Status != "warn" || !strings.Contains(line.Detail, why) {
+			t.Fatalf("doctor: %+v", line)
 		}
 	})
 	t.Run("Sury does not publish the release", func(t *testing.T) {
@@ -781,7 +828,7 @@ func TestSwitchPHPRepoToSury(t *testing.T) {
 		}
 		why, _ := f.db.GetSetting(f.ctx, settingPHPRepoSwitch)
 		if !strings.Contains(why, "Conflicting values set for option Signed-By regarding source https://ppa.launchpadcontent.net/ondrej/php/ubuntu/ noble: /etc/apt/keyrings/ondrej-php.asc != -----BEGIN PGP PUBLIC KEY BLOCK-----") ||
-			!strings.Contains(why, "another source of ppa:ondrej/php names another keyring (yours, from add-apt-repository?)") || strings.Contains(why, suryAdvice) {
+			!strings.Contains(why, "another source of ppa:ondrej/php names another keyring or none (yours, from add-apt-repository?)") || strings.Contains(why, suryAdvice) {
 			t.Fatalf("reason: %q", why)
 		}
 		for _, p := range []string{ondrejSource, ondrejKeyring, adminPPA} {

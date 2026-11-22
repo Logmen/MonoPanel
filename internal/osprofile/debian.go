@@ -48,8 +48,17 @@ func (aptManager) Env() []string {
 // on a fresh Ubuntu unattended-upgrades holds them for minutes after boot,
 // and a job that dies on "Could not get lock" looks like a broken
 // installer. The lock of the lists that apt-get update takes is not one of
-// them: the agent waits that one out itself (IndexLocked).
+// them: the agent waits that one out itself (IndexLocked). Nor is the lock
+// of the downloaded packages (/var/cache/apt/archives/lock), which apt-get
+// install takes after dpkg's: an install fails at once while another apt
+// downloads there without dpkg's lock — unattended-upgrade takes dpkg's
+// first, and the install waits for that one.
 const aptLockWait = "DPkg::Lock::Timeout=600"
+
+// aptListsLock is the lock of the lists that apt-get update holds while it
+// runs: a POSIX record lock over the whole file (apt's GetLock, fcntl
+// F_SETLK).
+const aptListsLock = "/var/lib/apt/lists/lock"
 
 // aptLabelChange lets apt-get update accept a repository whose Release file
 // changed its Label. apt refuses that by default until someone confirms it
@@ -70,8 +79,9 @@ func (aptManager) UpdateIndexArgv() []string {
 // of the lists — apt-daily's, whose timer starts it at boot when it missed
 // its time, or an administrator's —, whatever DPkg::Lock::Timeout says.
 func (aptManager) IndexLocked(out string) bool {
-	return strings.Contains(out, "Could not get lock /var/lib/apt/lists/lock")
+	return strings.Contains(out, "Could not get lock "+aptListsLock)
 }
+func (aptManager) IndexLockFile() string { return aptListsLock }
 func (aptManager) InstallArgv(pkgs []string) []string {
 	return append([]string{"apt-get", "-q", "-y", "-o", aptLockWait, "-o", "Dpkg::Options::=--force-confold", "--no-install-recommends", "install"}, pkgs...)
 }

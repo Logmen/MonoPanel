@@ -10,7 +10,10 @@ package api
 // apt 3.2.0), mp-debian12 (bookworm, apt 2.6.1), with Sury's source written
 // exactly as suryRepoFiles writes it (apt.gpg as downloaded, sha256
 // b486fd54…); the *-ru files with LANGUAGE=ru as well, which the agent's
-// environment now empties.
+// environment now empties. update-{resolute,bookworm}-fails-elsewhere and
+// update-resolute-lists-lock are the third review's, on the same VMs with
+// the panel deployed: an update that failed for a repository without a
+// Release file, and one that met the lists' lock another process held.
 
 import (
 	"slices"
@@ -89,7 +92,10 @@ func TestRealAptSignedByConflict(t *testing.T) {
 		{"update-jammy-ppa-conflict-unsigned.txt", false, true},
 		{"update-jammy-transient.txt", false, false},
 		{"update-jammy-lists-lock.txt", false, false},
+		{"update-resolute-lists-lock.txt", false, false},
 		{"update-jammy-label-plain.txt", false, false},
+		{"update-resolute-fails-elsewhere.txt", false, false},
+		{"update-bookworm-fails-elsewhere.txt", false, false},
 		// apt translated by LANGUAGE=ru, which the agent's environment
 		// empties (TestRealAptLanguageIsEmptied): not read.
 		{"update-bookworm-conflict-ru.txt", false, false},
@@ -110,6 +116,18 @@ func TestRealAptSignedByConflict(t *testing.T) {
 	// doing, and no advice of its.
 	if surySignedBy(realAptFailure("E: Conflicting values set for option Signed-By regarding source https://packages.sury.org/php/ noble: /usr/share/keyrings/deb.sury.org-php.gpg != /etc/apt/trusted.gpg.d/php.gpg\nE: The list of sources could not be read.")) {
 		t.Error("an administrator's two sources of Sury taken for the panel's")
+	}
+	// Two sources of the PPA, neither of them the panel's — one an
+	// administrator signed with add-apt-repository's key, and that one's
+	// unsigned source; add-apt-repository's key inline, and a source without
+	// one —: no advice of the panel's either.
+	for _, out := range []string{
+		"E: Conflicting values set for option Signed-By regarding source https://ppa.launchpadcontent.net/ondrej/php/ubuntu/ jammy: /etc/apt/trusted.gpg.d/ondrej-ubuntu-php.gpg != \nE: The list of sources could not be read.",
+		"E: Conflicting values set for option Signed-By regarding source https://ppa.launchpadcontent.net/ondrej/php/ubuntu/ noble: -----BEGIN PGP PUBLIC KEY BLOCK-----\n   xo0ESX35nAEEALKDCUDVXvmW9n+T\n   -----END PGP PUBLIC KEY BLOCK----- != \nE: The list of sources could not be read.",
+	} {
+		if ppaSignedBy(realAptFailure(out)) {
+			t.Errorf("an administrator's two sources of the PPA taken for the panel's: %q", out)
+		}
 	}
 }
 
@@ -162,10 +180,12 @@ func TestSuryOrigins(t *testing.T) {
 	}
 }
 
-// suryRead on real index updates of apt 2.4 and 3.2: one that read Sury, one
-// that failed elsewhere but fetched Sury (the PPA's relabel), transient
-// failures of Sury (exit 0, "W: Failed to fetch"), and one that stopped at
-// once on the lists' lock, which fetched nothing at all.
+// suryRead on real index updates of apt 2.4, 2.6 and 3.2: one that read
+// Sury, ones that failed elsewhere but fetched Sury (the PPA's relabel, a
+// repository without a Release file), transient failures of Sury (exit 0,
+// "W: Failed to fetch"), and ones that stopped at once on the lists' lock,
+// which fetched nothing at all. What the reason then quotes is apt's first
+// error, which names the cause.
 func TestRealAptSuryRead(t *testing.T) {
 	for _, c := range []struct {
 		file   string
@@ -174,10 +194,13 @@ func TestRealAptSuryRead(t *testing.T) {
 	}{
 		{"update-jammy-sury.txt", false, true},
 		{"update-jammy-fails-elsewhere.txt", true, true},
+		{"update-resolute-fails-elsewhere.txt", true, true},
+		{"update-bookworm-fails-elsewhere.txt", true, true},
 		{"update-jammy-label-plain.txt", true, false}, // no Sury on that host
 		{"update-jammy-transient.txt", false, false},
 		{"update-resolute-transient-no-lists.txt", false, false},
 		{"update-jammy-lists-lock.txt", true, false},
+		{"update-resolute-lists-lock.txt", true, false},
 		{"update-jammy-conflict.txt", true, false},
 	} {
 		out := realApt(t, c.file)
@@ -193,5 +216,14 @@ func TestRealAptSuryRead(t *testing.T) {
 	}
 	if suryRead(&agent.PkgResponse{Output: realApt(t, "update-jammy-sury.txt")}, nil) {
 		t.Error("read from no host at all")
+	}
+	for file, want := range map[string]string{
+		"update-resolute-fails-elsewhere.txt": "apt update-index failed: exit status 100 (monopanel-pkg-r2.service): E: The repository 'http://deb.debian.org/debian-r3a-missing resolute Release' does not have a Release file.",
+		"update-bookworm-fails-elsewhere.txt": "apt update-index failed: exit status 100 (monopanel-pkg-r2.service): E: The repository 'http://deb.debian.org/debian-r3a-missing bookworm Release' does not have a Release file.",
+		"update-resolute-lists-lock.txt":      "apt update-index failed: exit status 100 (monopanel-pkg-r2.service): E: Could not get lock /var/lib/apt/lists/lock. It is held by process 1742 (python3)",
+	} {
+		if got := aptUnread(nil, realAptFailure(realApt(t, file)), "packages.sury.org"); got != want {
+			t.Errorf("%s: %q, want %q", file, got, want)
+		}
 	}
 }

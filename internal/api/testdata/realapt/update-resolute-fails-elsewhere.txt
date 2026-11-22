@@ -1,0 +1,14 @@
+Ign:1 http://deb.debian.org/debian-r3a-missing resolute InRelease
+Err:2 http://deb.debian.org/debian-r3a-missing resolute Release
+  404  Not Found [IP: 2a04:4e42::644 80]
+Hit:3 http://archive.ubuntu.com/ubuntu resolute InRelease
+Hit:4 http://archive.ubuntu.com/ubuntu resolute-updates InRelease
+Hit:5 http://archive.ubuntu.com/ubuntu resolute-backports InRelease
+Hit:6 http://security.ubuntu.com/ubuntu resolute-security InRelease
+Hit:7 https://nginx.org/packages/ubuntu resolute InRelease
+Hit:8 http://repo.percona.com/prel/apt resolute InRelease
+Hit:9 http://repo.percona.com/ps-84-lts/apt resolute InRelease
+Hit:10 https://packages.sury.org/php resolute InRelease
+Hit:11 http://repo.percona.com/telemetry/apt resolute InRelease
+Reading package lists...
+E: The repository 'http://deb.debian.org/debian-r3a-missing resolute Release' does not have a Release file.

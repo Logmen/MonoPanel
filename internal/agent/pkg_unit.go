@@ -415,24 +415,54 @@ var indexLockWait = 10 * time.Minute
 // apt-get update gives up at once on the lock of the lists — apt-daily's
 // apt-get update has it, which its timer starts at boot when it missed its
 // time, and the start of the API moving the host's PHP repository then would
-// fail on it, to try again at the next start only. It gives up after
+// fail on it, to try again at the next start only. The update runs again once
+// the lock is free (awaitIndexLock): each run that fails on it is a start of
+// the unit that systemd logs as failed, at priority err. It gives up after
 // indexLockWait, and when the request has ended: nobody waits for the run
 // then. out and err are the run's; the last run's are returned. The caller
 // holds pkgMu.
 func (s *Server) waitIndexLock(ctx, rctx context.Context, pm osprofile.PackageManager, run string, argv []string, out string, err error) (string, error) {
 	until := time.Now().Add(indexLockWait)
+	lock, warned := pm.IndexLockFile(), false
 	for waited := false; err != nil && pm.IndexLocked(out) && time.Now().Before(until); waited = true {
 		if !waited {
-			s.log.Info("the index update waits for another one, which holds the lock of the index", "unit", pkgUnit(run), "limit", indexLockWait)
+			s.log.Info("the index update waits for another one, which holds the lock of the index", "unit", pkgUnit(run), "lock", lock, "limit", indexLockWait)
 		}
-		select {
-		case <-ctx.Done():
+		if !s.awaitIndexLock(ctx, lock, until, &warned) {
 			return out, err
-		case <-time.After(pkgWaitPoll):
 		}
 		out, err = runPackageManager(s, rctx, run, pm.Env(), argv...)
 	}
 	return out, err
+}
+
+// awaitIndexLock waits, a pause (pkgWaitPoll) at a time, until no other
+// process holds the lock of the index at path, which the agent asks the lock
+// itself (indexLockHeld) rather than apt; or until it cannot tell — logged
+// once (warned), the pause alone paces the runs then. It is false when the
+// request ended first, or the wait's limit came while the lock was held.
+func (s *Server) awaitIndexLock(ctx context.Context, path string, until time.Time, warned *bool) bool {
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(pkgWaitPoll):
+		}
+		held, err := indexLockHeld(path)
+		if err != nil {
+			if !*warned {
+				*warned = true
+				s.log.Warn("the index update cannot tell whether the lock of the index is still held: it runs again after every pause", "lock", path, "err", err)
+			}
+			return true
+		}
+		if !held {
+			return true
+		}
+		if !time.Now().Before(until) {
+			return false
+		}
+	}
 }
 
 // reapPkgOutputs removes the output files of the runs that are over, all but
