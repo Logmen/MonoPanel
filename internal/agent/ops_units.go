@@ -25,7 +25,7 @@ import (
 //
 //	monopanel-app-<login>-<name>.service        an account's app (systemd/app.service.tmpl)
 //	monopanel-valkey-<login>-<purpose>.service  an account's Valkey (systemd/valkey.service.tmpl)
-//	<escaped path>.mount                        a shared folder, bound into a guest's home
+//	<escaped path>.mount                        a shared folder, bound into a guest's home or .shares (sharemount.go)
 //	monopanel-sphinx.service                    Sphinx 3 on EL (sphinx/monopanel-sphinx.service.tmpl)
 //	monopanel-firewall.service                  the panel's nftables table at boot
 //	<nginx unit>.d/monopanel.conf               restart-on-failure for nginx
@@ -594,6 +594,38 @@ func checkValkeyUnit(name string, entries []unitEntry, h *UnitHost) error {
 	return errors.Join(errs...)
 }
 
+// mountPointOf checks the Where= of a shared folder's unit: inside the home
+// of a panel account (an SFTP-only guest's root-owned chroot), or
+// <www_root>/.shares/<login>/<name> for a panel account with a shell, whose
+// own home is no place for a mount point (sharemount.go). Whether the
+// directories on the way are root's is the agent's check of the host
+// (checkMountPoint), not this one of the text.
+func mountPointOf(p string, h *UnitHost) error {
+	root := filepath.Clean(h.WWWRoot)
+	rel, ok := strings.CutPrefix(p, root+"/"+sharesDirName+"/")
+	if !ok {
+		if err := homeOf(p, h); err != nil {
+			return err
+		}
+		// One name in the home, as the panel writes it.
+		if strings.Count(strings.TrimPrefix(p, root+"/"), "/") != 1 {
+			return fmt.Errorf("%s is not <home>/<name>: a shared folder is mounted right in the home of an SFTP-only account", p)
+		}
+		return nil
+	}
+	login, name, ok := strings.Cut(rel, "/")
+	if !ok || login == "" || name == "" || strings.Contains(name, "/") {
+		return fmt.Errorf("%s is not %s/%s/<login>/<name>", p, root, sharesDirName)
+	}
+	if h.Account == nil {
+		return errors.New("no panel accounts on this host")
+	}
+	if _, err := h.Account(login); err != nil {
+		return fmt.Errorf("%s: %w", p, err)
+	}
+	return nil
+}
+
 // homeOf checks that p lies inside the home of a panel account: the first
 // name below the web root is the account, and its home holds p.
 func homeOf(p string, h *UnitHost) error {
@@ -633,7 +665,7 @@ func checkMountUnit(name string, entries []unitEntry, h *UnitHost) error {
 	}
 	errs := []error{
 		homeOf(what, h),
-		homeOf(where, h),
+		mountPointOf(where, h),
 		// A bind mount and nothing else: no device, no other file system,
 		// no option such as exec or suid.
 		v.is("Mount.Type", "none"),
@@ -794,9 +826,14 @@ func (s *Server) unitSystemUser(login string) error {
 	return nil
 }
 
+// lookupUnitAccount finds the panel account a unit is for (unitAccount);
+// tests, which cannot make unix accounts, replace it.
+var lookupUnitAccount = (*Server).unitAccount
+
 // unitHost is this host for the unit checks.
 func (s *Server) unitHost() *UnitHost {
-	h := &UnitHost{WWWRoot: s.cfg.WWWRoot, Account: s.unitAccount, SystemUser: s.unitSystemUser}
+	account := func(login string) (*UnitAccount, error) { return lookupUnitAccount(s, login) }
+	h := &UnitHost{WWWRoot: s.cfg.WWWRoot, Account: account, SystemUser: s.unitSystemUser}
 	if s.profile != nil {
 		h.NginxService = s.profile.Web().NginxService
 		h.Sphinx = osprofile.Sphinx(s.profile)
@@ -823,10 +860,28 @@ func (s *Server) unitDirectory() string {
 func (s *Server) unitFollow() int { return len(pathParts(s.unitDirectory())) }
 
 // applyUnit writes one of the panel's units (0644 root:root, atomically, the
-// previous version to the history) after CheckUnit.
+// previous version to the history) after CheckUnit. A shared folder's unit is
+// written only after the way to its mount point passed checkMountPoint, while
+// no call that changes directories below the web root is under way
+// (shareMu): from then on those calls keep that way as it is (shareGuard).
 func (s *Server) applyUnit(ctx context.Context, req *ApplyUnitRequest) (*ApplyUnitResponse, error) {
-	if err := CheckUnit(req.Name, []byte(req.Content), s.unitHost()); err != nil {
+	h := s.unitHost()
+	if err := CheckUnit(req.Name, []byte(req.Content), h); err != nil {
 		return nil, &Error{Status: http.StatusForbidden, Message: "unit " + req.Name + " is not allowed: " + err.Error()}
+	}
+	if kind, _ := unitKindOf(req.Name, h); kind == unitMount {
+		unlock, err := s.lockShareUnits(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer unlock()
+		where, _, ok := isShareMountUnit(req.Name, filepath.Clean(s.cfg.WWWRoot))
+		if !ok {
+			return nil, &Error{Status: http.StatusForbidden, Message: "unit " + req.Name + " is not allowed: its mount point cannot be read from the name"}
+		}
+		if err := s.checkMountPoint(where); err != nil {
+			return nil, s.mountPointErr(where, err)
+		}
 	}
 	p := s.unitPath(req.Name)
 	tx := s.newFileTx()
@@ -847,12 +902,17 @@ func (s *Server) applyUnit(ctx context.Context, req *ApplyUnitRequest) (*ApplyUn
 }
 
 // removeUnit deletes one of the panel's units; the caller stops and
-// disables it first and reloads systemd afterwards.
-func (s *Server) removeUnit(_ context.Context, req *RemoveUnitRequest) (*RemoveUnitResponse, error) {
-	if err := CheckUnitName(req.Name, s.unitHost()); err != nil {
+// disables it first and reloads systemd afterwards. A shared folder's unit
+// systemd forgets before the call returns (removeShareUnit).
+func (s *Server) removeUnit(ctx context.Context, req *RemoveUnitRequest) (*RemoveUnitResponse, error) {
+	h := s.unitHost()
+	if err := CheckUnitName(req.Name, h); err != nil {
 		return nil, &Error{Status: http.StatusForbidden, Message: "unit " + req.Name + " is not allowed: " + err.Error()}
 	}
 	p := s.unitPath(req.Name)
+	if kind, _ := unitKindOf(req.Name, h); kind == unitMount {
+		return s.removeShareUnit(ctx, req.Name, p)
+	}
 	removed, err := s.removeRootPath(p, false, s.unitFollow())
 	if err != nil {
 		return nil, err

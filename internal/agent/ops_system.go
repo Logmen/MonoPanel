@@ -2,7 +2,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"os/user"
+	"path/filepath"
 
 	"monopanel/internal/sysinfo"
 	"monopanel/internal/systemd"
@@ -35,6 +38,22 @@ func (s *Server) ensureUnixUser(ctx context.Context, req *EnsureUnixUserRequest)
 	if err := s.checkEnsureUser(req); err != nil {
 		return nil, err
 	}
+	// useradd -m makes a missing home the new account's: never one on the way
+	// to a shared folder's mount point (sharemount.go). An existing account's
+	// home is left as it is.
+	if req.CreateHome && req.Home != "" && !req.System {
+		var unknown user.UnknownUserError
+		if _, err := lookupAccount(req.Login); errors.As(err, &unknown) {
+			g, release, err := s.holdShareGuard()
+			if err != nil {
+				return nil, err
+			}
+			defer release()
+			if m, ok := g.holding(req.Home); ok {
+				return nil, g.refuse("making "+filepath.Clean(req.Home)+" the home of the new account "+req.Login, m)
+			}
+		}
+	}
 	return EnsureUnixUser(ctx, s.profile, req)
 }
 
@@ -47,6 +66,9 @@ func (s *Server) service(ctx context.Context, req *ServiceRequest) (*ServiceResp
 		return nil, &Error{Status: http.StatusBadRequest, Message: req.Action + " needs a unit"}
 	}
 	if err := serviceAllowed(unit, req.Action); err != nil {
+		return nil, err
+	}
+	if err := s.vetMountStart(unit, req.Action); err != nil {
 		return nil, err
 	}
 	conn, err := systemd.Connect(ctx)

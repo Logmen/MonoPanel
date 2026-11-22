@@ -71,6 +71,8 @@ func (s *Server) Run(ctx context.Context) error {
 				s.refreshSELinuxModule(ctx)
 				s.refreshSELinuxSSH(ctx)
 				s.refreshSFTPHomes(ctx)
+				// After the SFTP homes are root's again: folders move in.
+				s.refreshShareMounts(ctx)
 				s.refreshCLIGroup(ctx)
 				s.moveAppEnvOutOfUnits(ctx)
 				s.refreshComposerWrapper(ctx)

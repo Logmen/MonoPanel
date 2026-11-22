@@ -219,6 +219,18 @@ func (s *Server) chown(ctx context.Context, req *ChownRequest) (*ChownResponse, 
 	root := s.cfg.WWWRoot
 	if inMail {
 		root = mailStore
+	} else {
+		// A home holding a shared folder's mount point, or a directory on the
+		// way to one, stays root's; a tree with one below would also be
+		// walked into the mounted folder (sharemount.go).
+		g, release, err := s.holdShareGuard()
+		if err != nil {
+			return nil, err
+		}
+		defer release()
+		if m, ok := g.holding(p); ok {
+			return nil, g.refuse("handing "+p+" to "+req.Owner, m)
+		}
 	}
 	parent, err := openDirBelow(root, filepath.Dir(p), false, 0)
 	if err != nil {

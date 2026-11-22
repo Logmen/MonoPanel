@@ -59,6 +59,14 @@ func (s *Server) ensureFile(_ context.Context, req *EnsureFileRequest) (*EnsureF
 	if err != nil {
 		return nil, &Error{Status: http.StatusForbidden, Message: err.Error()}
 	}
+	g, release, err := s.holdShareGuard()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if m, ok := g.holding(p); ok {
+		return nil, g.refuse("a file at "+p, m)
+	}
 	if st, err := os.Lstat(p); err == nil {
 		if !st.Mode().IsRegular() {
 			return nil, &Error{Status: http.StatusForbidden, Message: "not a regular file: " + p}
@@ -237,6 +245,14 @@ func (s *Server) ensureSymlink(_ context.Context, req *EnsureSymlinkRequest) (*s
 	}
 	root := filepath.Clean(s.cfg.WWWRoot)
 	p := filepath.Join(dir, filepath.Base(req.Path))
+	g, release, err := s.holdShareGuard()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if m, ok := g.holding(p); ok {
+		return nil, g.refuse("a symlink at "+p, m)
+	}
 	uid, err := lookupUID(req.Owner)
 	if err != nil {
 		return nil, err
@@ -325,9 +341,35 @@ func (s *Server) setACL(ctx context.Context, req *SetACLRequest) (*struct{}, err
 			add("-m", "d:"+e)
 		}
 	}
+	// On the way to a shared folder's mount point nothing gets write: not
+	// through a new entry, and not through one there already that the mask
+	// holds back — setfacl recalculates the mask on every change
+	// (sharemount.go).
+	g, release, err := s.holdShareGuard()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	m, onWay := g.holding(p)
+	if onWay {
+		if req.Recursive {
+			return nil, g.refuse("setting ACLs over the tree "+p, m)
+		}
+		for _, e := range req.Entries {
+			if aclEntryWrites(e) {
+				return nil, g.refuse("granting write ("+e+") on "+p, m)
+			}
+		}
+	}
 	top, err := s.openHomeEntry(p)
 	if err != nil {
 		return nil, err
+	}
+	if onWay && top.dir {
+		if err := g.aclStaysClosed(top, p, m); err != nil {
+			top.close()
+			return nil, err
+		}
 	}
 	if !req.Recursive {
 		defer top.close()
@@ -378,6 +420,16 @@ func (s *Server) siteACL(ctx context.Context, req *SiteACLRequest) (*SiteACLResp
 	}
 	if !aclGroupRe.MatchString(req.Group) {
 		return nil, &Error{Status: http.StatusBadRequest, Message: "invalid group: " + req.Group}
+	}
+	// setfacl recalculates the masks of the tree's directories: an entry that
+	// writes would write again on the way to a mount point (sharemount.go).
+	guard, release, err := s.holdShareGuard()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if m, ok := guard.holding(root); ok {
+		return nil, guard.refuse("setting the web server's ACLs over "+root, m)
 	}
 	top, err := s.openHomeEntry(root)
 	if err != nil {
@@ -688,6 +740,9 @@ func (s *Server) removePaths(ctx context.Context, req *RemovePathsRequest) (*Rem
 	if err := checkUnits("restart", req.Reload); err != nil {
 		return nil, err
 	}
+	if err := s.vetMountReloads(req.Reload); err != nil {
+		return nil, err
+	}
 	for _, argv := range req.Validate {
 		if len(argv) == 0 || !filepath.IsAbs(argv[0]) {
 			return nil, &Error{Status: http.StatusBadRequest, Message: "validator must be an absolute argv"}
@@ -698,6 +753,7 @@ func (s *Server) removePaths(ctx context.Context, req *RemovePathsRequest) (*Rem
 	}
 	resp := &RemovePathsResponse{Removed: []string{}}
 	root := filepath.Clean(s.cfg.WWWRoot)
+	var guard *shareGuard
 	for _, raw := range req.Paths {
 		p := filepath.Clean(raw)
 		if !filepath.IsAbs(p) {
@@ -712,8 +768,29 @@ func (s *Server) removePaths(ctx context.Context, req *RemovePathsRequest) (*Rem
 		var err error
 		switch {
 		case strings.HasPrefix(p, root+"/"):
-			if _, err := s.safeHomePath(p); err != nil {
+			// A symlink in the path stops the call, the last name included,
+			// as it always did below the web root — but for the one right
+			// under a home an account with a shell finds its shared folder
+			// by: that one goes itself (removeHomePath).
+			check := p
+			if rel := strings.TrimPrefix(p, root+"/"); strings.Count(rel, "/") == 1 && !strings.HasPrefix(rel, sharesDirName+"/") {
+				check = filepath.Dir(p)
+			}
+			if _, err := s.safeHomePath(check); err != nil {
 				return nil, &Error{Status: http.StatusForbidden, Message: err.Error()}
+			}
+			// A shared folder's mount point and the way to it stay while
+			// its unit exists: the unit goes first (sharemount.go).
+			if guard == nil {
+				g, release, gerr := s.holdShareGuard()
+				if gerr != nil {
+					return nil, gerr
+				}
+				defer release()
+				guard = g
+			}
+			if m, ok := guard.holding(p); ok {
+				return nil, guard.refuse("removing "+p, m)
 			}
 			removed, err = s.removeHomePath(root, p, req.Recursive)
 		case s.pathAllowed(p) || s.pathAllowed(p+"/"):
@@ -751,9 +828,12 @@ func (s *Server) removePaths(ctx context.Context, req *RemovePathsRequest) (*Rem
 // removeHomePath removes p below the web root relative to its directory,
 // reached without following a symlink: the account owns every directory on
 // the way and could swap one for a link to /etc between a check of the path
-// and a removal by name. The home and the data directory themselves never
-// go; an empty directory right under the home (the mount point of a shared
-// folder after unmounting) may, and only with rmdir semantics.
+// and a removal by name. The homes, the data directory and the shares
+// directory themselves never go; right under a home an empty directory (the
+// mount point of a shared folder after unmounting) may, and only with rmdir
+// semantics, or a symlink (the one an account with a shell finds its shared
+// folder by); in the shares directory the same, never a whole tree — a
+// mount point there may still hold a mounted site folder.
 func (s *Server) removeHomePath(root, p string, recursive bool) (bool, error) {
 	rel := strings.TrimPrefix(p, root+"/")
 	w, err := walkDir(root, filepath.Dir(rel), walkOpts{uid: -1, gid: -1})
@@ -765,14 +845,22 @@ func (s *Server) removeHomePath(root, p string, recursive bool) (bool, error) {
 	}
 	defer w.close()
 	name := filepath.Base(p)
-	if depth := strings.Count(rel, "/"); depth < 2 {
+	if depth := strings.Count(rel, "/"); depth < 2 || strings.HasPrefix(rel, sharesDirName+"/") {
 		var st unix.Stat_t
 		if err := unix.Fstatat(w.fd, name, &st, unix.AT_SYMLINK_NOFOLLOW); errors.Is(err, unix.ENOENT) {
 			return false, nil
 		} else if err != nil {
 			return false, &Error{Message: "remove " + p, Output: err.Error()}
 		}
-		if depth < 1 || recursive || st.Mode&unix.S_IFMT != unix.S_IFDIR {
+		switch {
+		case depth < 1 || recursive:
+			return false, &Error{Status: http.StatusForbidden, Message: "refusing to remove " + p}
+		case st.Mode&unix.S_IFMT == unix.S_IFLNK:
+			if err := unix.Unlinkat(w.fd, name, 0); err != nil {
+				return false, &Error{Message: "remove " + p, Output: err.Error()}
+			}
+			return true, nil
+		case st.Mode&unix.S_IFMT != unix.S_IFDIR:
 			return false, &Error{Status: http.StatusForbidden, Message: "refusing to remove " + p}
 		}
 		if err := unix.Unlinkat(w.fd, name, unix.AT_REMOVEDIR); err != nil {

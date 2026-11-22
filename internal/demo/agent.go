@@ -465,6 +465,11 @@ func (a *Agent) removeUnit(_ context.Context, req *agent.RemoveUnitRequest) (*ag
 	defer a.mu.Unlock()
 	_, ok := a.st.Files[p]
 	delete(a.st.Files, p)
+	// A stopped mount unit without its file is gone for systemd: the panel
+	// asks its status to find a shared folder left at the other place.
+	if u, known := a.st.Units[req.Name]; known && strings.HasSuffix(req.Name, ".mount") && !u.Active {
+		delete(a.st.Units, req.Name)
+	}
 	return &agent.RemoveUnitResponse{Path: p, Removed: ok}, nil
 }
 

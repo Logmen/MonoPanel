@@ -172,6 +172,9 @@ func (s *Server) applyConfigSet(ctx context.Context, req *ApplyConfigSetRequest)
 	if err := checkUnits("restart", req.Reload, req.Restart); err != nil {
 		return nil, err
 	}
+	if err := s.vetMountReloads(req.Reload, req.Restart); err != nil {
+		return nil, err
+	}
 	contents := make([][]byte, len(req.Files))
 	for i := range req.Files {
 		f := &req.Files[i]

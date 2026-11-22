@@ -185,6 +185,22 @@ func (s *Server) planTarExtract(c *toolCall) (*toolPlan, error) {
 		return nil, notAllowed("extracting into "+dest, err.Error())
 	}
 	plan.closers = append(plan.closers, fdFile(dfd, dest))
+	if root == s.cfg.WWWRoot {
+		// The directories an archive brings get its modes, and a symlink of
+		// its making may stand where a directory is missing: never on the way
+		// to a shared folder's mount point, for as long as the extraction
+		// runs (sharemount.go). The destination itself keeps its own.
+		g, release, err := s.holdShareGuard()
+		if err != nil {
+			plan.close()
+			return nil, err
+		}
+		plan.closers = append(plan.closers, closerFunc(release))
+		if m, ok := g.below(dest); ok {
+			plan.close()
+			return nil, g.refuse("extracting an archive into "+dest, m)
+		}
+	}
 	opts := untarOpts{gzip: gz, strip: strip, members: members}
 	plan.native = func(ctx context.Context, stdin io.Reader, out io.Writer) int {
 		in := stdin

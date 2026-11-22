@@ -378,6 +378,14 @@ func (s *Server) provisionUser(ctx context.Context, p userProvisionPayload, logf
 		return fmt.Errorf("sshd configuration: %w", err)
 	}
 	progress(60, "home layout")
+	// The shared folders of an account that gets a shell leave its home
+	// before the home becomes the account's (moveUserShares); the agent
+	// would refuse to hand over a home holding a mount point anyway.
+	if p.Shell {
+		if err := s.moveUserShares(ctx, p.UserID, true, logf); err != nil {
+			return fmt.Errorf("shared folders: %w", err)
+		}
+	}
 	data := filepath.Join(home, "data")
 	dirs := []agent.DirSpec{
 		{Path: s.cfg.WWWRoot, Mode: 0o711, Owner: "root", Group: "root"},
@@ -394,6 +402,14 @@ func (s *Server) provisionUser(ctx context.Context, p userProvisionPayload, logf
 		return err
 	}
 	logf("directories created: %d; mode: %s", len(res.Created), map[bool]string{true: "SSH shell", false: "SFTP-only (chroot " + home + ")"}[p.Shell])
+	// ...and those of an SFTP-only account come into the home once it is
+	// root's again: a folder that does not move stays unmounted, and the
+	// account is switched all the same.
+	if !p.Shell {
+		if err := s.moveUserShares(ctx, p.UserID, false, logf); err != nil {
+			logf("warning: shared folders: %v", err)
+		}
+	}
 	progress(90, "saving")
 	if err := s.db.SetUserUnix(ctx, p.UserID, u.UID, u.GID, u.Home); err != nil {
 		return err

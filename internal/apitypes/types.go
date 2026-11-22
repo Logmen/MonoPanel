@@ -573,11 +573,12 @@ type ShareUpdate struct {
 
 // ShareStatus is a share with whether its mount is active.
 type ShareStatus struct {
-	Share   *store.Share `json:"share"`
-	Mounted bool         `json:"mounted"`
-	Where   string       `json:"where,omitempty" doc:"Path of the folder as the guest sees it"`
-	Target  string       `json:"target,omitempty" doc:"The site folder behind it"`
-	JobID   int64        `json:"job_id,omitempty" doc:"Site re-apply job when no_php changed the nginx config"`
+	Share      *store.Share `json:"share"`
+	Mounted    bool         `json:"mounted"`
+	Where      string       `json:"where,omitempty" doc:"Path of the folder as the guest sees it, in its home"`
+	MountPoint string       `json:"mount_point,omitempty" doc:"Where the folder is mounted: the same path for an SFTP-only guest (its home is root's), <www_root>/.shares/<guest>/<name> for a guest with a shell, whose home holds a symlink to it"`
+	Target     string       `json:"target,omitempty" doc:"The site folder behind it"`
+	JobID      int64        `json:"job_id,omitempty" doc:"Site re-apply job when no_php changed the nginx config"`
 }
 
 // AppRequest creates an app service: a systemd unit that runs a long-lived

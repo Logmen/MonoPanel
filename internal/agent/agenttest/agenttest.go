@@ -44,9 +44,23 @@ type Agent struct {
 	removed []string
 	units   map[string]string // unit -> last action
 	dirs    []string
-	tools   []agent.ToolRequest
-	runas   []agent.RunAsUserRequest
-	panel   []agent.PanelConfigRequest
+	// dirSpecs is how dirs/ensure was last told to make a directory (an
+	// empty owner keeps the one before), symlinks what symlink/ensure made:
+	// the fake judges the way to a shared folder's mount point by them, as
+	// the real agent judges the directories themselves.
+	dirSpecs map[string]agent.DirSpec
+	symlinks map[string]string
+	// mounted and enabled are the state of the mount units; mountedAt is
+	// where a started one is mounted (its file may be gone meanwhile), busy
+	// the folders in use: stop fails, and so does the removal of their mount
+	// point, as umount and rmdir do.
+	mounted   map[string]bool
+	enabled   map[string]bool
+	mountedAt map[string]string
+	busy      map[string]bool
+	tools     []agent.ToolRequest
+	runas     []agent.RunAsUserRequest
+	panel     []agent.PanelConfigRequest
 	// siteLogs are the site logs the panel had the agent prepare, by login;
 	// siteLogsGone the logins whose log directory it removed.
 	siteLogs     map[string]map[string]bool
@@ -162,6 +176,12 @@ func Start(t *testing.T) *Agent {
 		Socket:       filepath.Join(dir, "agent.sock"),
 		files:        map[string]agent.FileSpec{},
 		units:        map[string]string{},
+		dirSpecs:     map[string]agent.DirSpec{},
+		symlinks:     map[string]string{},
+		mounted:      map[string]bool{},
+		enabled:      map[string]bool{},
+		mountedAt:    map[string]string{},
+		busy:         map[string]bool{},
 		siteLogs:     map[string]map[string]bool{},
 		Fail:         map[string]string{},
 		Stat:         map[string]bool{},
@@ -315,6 +335,11 @@ func (a *Agent) respond(path string, body []byte) any {
 		if err := agent.CheckUnit(req.Name, []byte(req.Content), a.UnitHost); err != nil {
 			return &agent.Error{Status: http.StatusForbidden, Message: "unit " + req.Name + " is not allowed: " + err.Error()}
 		}
+		if strings.HasSuffix(req.Name, ".mount") {
+			if err := a.mountPointRefusal(unitWhere(req.Content)); err != nil {
+				return err
+			}
+		}
 		p := filepath.Join(unitDir, req.Name)
 		old, had := a.files[p]
 		a.files[p] = agent.FileSpec{Path: p, Content: req.Content, Mode: 0o644, Owner: "root", Group: "root"}
@@ -371,10 +396,29 @@ func (a *Agent) respond(path string, body []byte) any {
 			if refused(d.Path) {
 				return refusal(d.Path)
 			}
+			// Like the agent: no symlink on the way below the web root, and
+			// the way to a shared folder's mount point stays root's.
+			if l := a.symlinkOnWay(d.Path); l != "" {
+				return &agent.Error{Status: http.StatusForbidden, Message: "a symlink or a file in the path: refusing " + l}
+			}
+			prev, had := a.dirSpecs[d.Path]
+			next := d
+			if next.Owner == "" && had {
+				next.Owner = prev.Owner
+			}
+			if a.belowWebRoot(d.Path) && !rootsAlone(next) && !(had && prev.Owner == next.Owner && prev.Mode == next.Mode) {
+				if m, ok := a.mountAtOrBelow(d.Path); ok {
+					return shareRefusal("making "+d.Path+" "+next.Owner+"'s", m)
+				}
+			}
 		}
 		created := make([]string, 0, len(req.Dirs))
 		for _, d := range req.Dirs {
 			a.dirs = append(a.dirs, d.Path)
+			if prev, had := a.dirSpecs[d.Path]; had && d.Owner == "" {
+				d.Owner = prev.Owner
+			}
+			a.dirSpecs[d.Path] = d
 			created = append(created, d.Path)
 		}
 		return agent.EnsureDirsResponse{Created: created}
@@ -389,8 +433,21 @@ func (a *Agent) respond(path string, body []byte) any {
 			if refused(p) {
 				return refusal(p)
 			}
+			if a.belowWebRoot(p) {
+				if m, ok := a.mountAtOrBelow(p); ok {
+					return shareRefusal("removing "+p, m)
+				}
+				// rmdir of a directory something is mounted on
+				if a.mountedOn(filepath.Clean(p)) {
+					return &agent.Error{Status: http.StatusInternalServerError, Message: "remove " + p, Output: "device or resource busy"}
+				}
+			}
 		}
 		a.removed = append(a.removed, req.Paths...)
+		for _, p := range req.Paths {
+			delete(a.dirSpecs, p)
+			delete(a.symlinks, p)
+		}
 		// A real agent reports only what existed, and the panel acts on that
 		// (a removed pool means the old php-fpm has to be reloaded). The fake
 		// knows what it wrote, so it answers the same way.
@@ -429,6 +486,9 @@ func (a *Agent) respond(path string, body []byte) any {
 		// only report their state.
 		if err := agent.CheckService(unit, req.Action); err != nil {
 			return err
+		}
+		if strings.HasSuffix(unit, ".mount") {
+			return a.mountService(unit, req.Action)
 		}
 		if unit != "" && req.Action != "" && req.Action != "status" {
 			a.units[unit] = req.Action
@@ -532,7 +592,21 @@ func (a *Agent) respond(path string, body []byte) any {
 			if !exists {
 				isDir, exists = a.Stat[p+"/"]
 			}
-			entries = append(entries, agent.StatEntry{Path: p, Exists: exists, IsDir: isDir, Mode: "0644"})
+			e := agent.StatEntry{Path: p, Exists: exists, IsDir: isDir, Mode: "0644"}
+			// What the fake made below the web root itself: a directory is
+			// root's when dirs/ensure made it so, and one with a folder
+			// mounted on it shows the folder, an account's.
+			if !exists && a.belowWebRoot(p) {
+				if d, ok := a.dirSpecs[filepath.Clean(p)]; ok {
+					e.Exists, e.IsDir, e.Mode = true, true, "drwxr-xr-x"
+					if !rootsAlone(agent.DirSpec{Owner: d.Owner}) || a.mountedOn(filepath.Clean(p)) {
+						e.UID, e.GID = 1500, 1500
+					}
+				} else if _, ok := a.symlinks[filepath.Clean(p)]; ok {
+					e.Exists, e.Mode, e.UID, e.GID = true, "Lrwxrwxrwx", 1500, 1500
+				}
+			}
+			entries = append(entries, e)
 		}
 		return agent.StatResponse{Entries: entries}
 
@@ -546,7 +620,31 @@ func (a *Agent) respond(path string, body []byte) any {
 		return agent.ReadFileResponse{Content: c, Size: int64(len(c))}
 
 	case "/v1/chown":
+		var req agent.ChownRequest
+		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		if a.belowWebRoot(req.Path) {
+			if m, ok := a.mountAtOrBelow(filepath.Clean(req.Path)); ok {
+				return shareRefusal("handing "+req.Path+" to "+req.Owner, m)
+			}
+		}
 		return agent.ChownResponse{Changed: 1}
+
+	case "/v1/symlink/ensure":
+		var req agent.EnsureSymlinkRequest
+		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		p := filepath.Clean(req.Path)
+		if a.belowWebRoot(p) {
+			if m, ok := a.mountAtOrBelow(p); ok {
+				return shareRefusal("a symlink at "+p, m)
+			}
+		}
+		if _, dir := a.dirSpecs[p]; dir {
+			return &agent.Error{Status: http.StatusForbidden, Message: "exists and is not a symlink: " + p}
+		}
+		if _, had := a.symlinks[p]; !had || !req.OnlyIfMissing {
+			a.symlinks[p] = req.Target
+		}
+		return map[string]any{}
 
 	case "/v1/user/password":
 		// A hash set with chpasswd -e is what UnixShadow reads back later.
@@ -710,10 +808,204 @@ func (a *Agent) Reset() {
 	a.removed = nil
 	a.units = map[string]string{}
 	a.dirs = nil
+	a.dirSpecs = map[string]agent.DirSpec{}
+	a.symlinks = map[string]string{}
+	a.mounted = map[string]bool{}
+	a.enabled = map[string]bool{}
+	a.mountedAt = map[string]string{}
+	a.busy = map[string]bool{}
 	a.tools = nil
 	a.panel = nil
 	a.siteLogs = map[string]map[string]bool{}
 	a.siteLogsGone = nil
+}
+
+// DirSpec returns how dirs/ensure was last told to make a directory (an
+// empty owner keeps the one told before), and whether it was.
+func (a *Agent) DirSpec(path string) (agent.DirSpec, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	d, ok := a.dirSpecs[path]
+	return d, ok
+}
+
+// Symlink returns the target of a symlink symlink/ensure made (and paths/remove
+// did not take away since), and whether there is one.
+func (a *Agent) Symlink(path string) (string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	t, ok := a.symlinks[path]
+	return t, ok
+}
+
+// Mounted reports whether a mount unit is started.
+func (a *Agent) Mounted(unit string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.mounted[unit]
+}
+
+// SetUnit puts a unit file where the agent keeps the panel's units, enabled
+// and, for a mount unit, mounted when asked: the state an older panel left.
+func (a *Agent) SetUnit(name, content string, mounted bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	p := filepath.Join(unitDir, name)
+	a.files[p] = agent.FileSpec{Path: p, Content: content, Mode: 0o644, Owner: "root", Group: "root"}
+	a.enabled[name] = true
+	a.mounted[name] = mounted
+	if mounted {
+		a.mountedAt[name] = unitWhere(content)
+	}
+}
+
+// SetBusy marks the folder a mount unit mounts as in use (a session with its
+// working directory inside): stopping the unit fails, and so does removing
+// its mount point, until SetBusy(unit, false).
+func (a *Agent) SetBusy(unit string, busy bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.busy[unit] = busy
+}
+
+// Unmount takes a mount away without its unit, as a reboot does with a
+// mount whose unit is gone.
+func (a *Agent) Unmount(unit string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.mounted[unit] = false
+	delete(a.mountedAt, unit)
+}
+
+// mountedOn tells whether a started mount unit is mounted at p. The caller
+// holds mu.
+func (a *Agent) mountedOn(p string) bool {
+	for unit, where := range a.mountedAt {
+		if a.mounted[unit] && where == p {
+			return true
+		}
+	}
+	return false
+}
+
+// SetDir records a directory as dirs/ensure would have made it: the state an
+// older panel left.
+func (a *Agent) SetDir(d agent.DirSpec) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.dirSpecs[d.Path] = d
+}
+
+// mountService is /v1/service for a mount unit: started only when its unit
+// file is there and the way to its mount point is root's alone, as the
+// agent checks it; status says not-found for a unit that is neither written
+// nor mounted, as systemd does. The caller holds mu.
+func (a *Agent) mountService(unit, action string) any {
+	f, has := a.files[filepath.Join(unitDir, unit)]
+	switch action {
+	case "start", "restart", "reload", "reload-or-restart", "enable":
+		if !has {
+			return &agent.Error{Status: http.StatusBadGateway, Message: action + " " + unit + " failed", Output: "Unit " + unit + " not found."}
+		}
+		if err := a.mountPointRefusal(unitWhere(f.Content)); err != nil {
+			return err
+		}
+		if action == "enable" {
+			a.enabled[unit] = true
+		} else {
+			a.mounted[unit] = true
+			a.mountedAt[unit] = unitWhere(f.Content)
+		}
+	case "stop":
+		if a.mounted[unit] && a.busy[unit] {
+			return &agent.Error{Status: http.StatusBadGateway, Message: "stop " + unit + " failed", Output: "umount: target is busy"}
+		}
+		a.mounted[unit] = false
+		delete(a.mountedAt, unit)
+	case "disable":
+		a.enabled[unit] = false
+	}
+	if action != "" && action != "status" {
+		a.units[unit] = action
+	}
+	st := systemd.Status{Unit: unit, LoadState: "not-found", ActiveState: "inactive", SubState: "dead"}
+	if has {
+		st.LoadState, st.UnitFileState = "loaded", "disabled"
+		if a.enabled[unit] {
+			st.UnitFileState = "enabled"
+		}
+	}
+	if a.mounted[unit] {
+		st.ActiveState, st.SubState = "active", "mounted"
+	}
+	return agent.ServiceResponse{Status: st}
+}
+
+// mountPointRefusal is the agent's answer to a mount point whose way the
+// panel made someone else's than root's, writable by others or a symlink;
+// nil when it did not. The caller holds mu.
+func (a *Agent) mountPointRefusal(where string) *agent.Error {
+	root := filepath.Clean(a.UnitHost.WWWRoot)
+	for p := filepath.Clean(where); strings.HasPrefix(p, root+"/"); p = filepath.Dir(p) {
+		if _, link := a.symlinks[p]; link {
+			return &agent.Error{Status: http.StatusForbidden, Message: "the mount point " + where + " is refused: " + p + " is a symlink"}
+		}
+		if d, ok := a.dirSpecs[p]; ok && !rootsAlone(d) {
+			return &agent.Error{Status: http.StatusForbidden, Message: "the mount point " + where + " is refused: " + p + " is not root's alone"}
+		}
+	}
+	return nil
+}
+
+// mountAtOrBelow returns the mount point of a mount unit the fake keeps at or
+// below p. The caller holds mu.
+func (a *Agent) mountAtOrBelow(p string) (string, bool) {
+	p = filepath.Clean(p)
+	for path, f := range a.files {
+		if filepath.Dir(path) != unitDir || !strings.HasSuffix(path, ".mount") {
+			continue
+		}
+		if w := unitWhere(f.Content); w != "" && (w == p || strings.HasPrefix(w, p+"/")) {
+			return w, true
+		}
+	}
+	return "", false
+}
+
+// symlinkOnWay names a symlink the fake made at p or on the way to it. The
+// caller holds mu.
+func (a *Agent) symlinkOnWay(p string) string {
+	for q := filepath.Clean(p); q != "/" && q != "."; q = filepath.Dir(q) {
+		if _, ok := a.symlinks[q]; ok {
+			return q
+		}
+	}
+	return ""
+}
+
+func (a *Agent) belowWebRoot(p string) bool {
+	return strings.HasPrefix(filepath.Clean(p), filepath.Clean(a.UnitHost.WWWRoot)+"/")
+}
+
+// rootsAlone tells a directory spec that leaves it root's and writable by
+// nobody else (an empty owner is taken for root's).
+func rootsAlone(d agent.DirSpec) bool {
+	return (d.Owner == "" || d.Owner == "root") && (d.Mode&0o1000 != 0 || d.Mode&0o022 == 0)
+}
+
+// shareRefusal is the agent's 409 for a change on the way to a mount point.
+func shareRefusal(what, mount string) *agent.Error {
+	return &agent.Error{Status: http.StatusConflict, Message: what + " is not allowed: the shared folder mounted at " + mount + " lies there; remove or move the shared folders first"}
+}
+
+// unitWhere is the Where= of a mount unit's text.
+func unitWhere(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		if w, ok := strings.CutPrefix(strings.TrimSpace(line), "Where="); ok {
+			return strings.TrimSpace(w)
+		}
+	}
+	return ""
 }
 
 func readAll(r *http.Request) ([]byte, error) {

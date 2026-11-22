@@ -37,12 +37,30 @@ func (s *Server) removeUnixUser(ctx context.Context, req *RemoveUnixUserRequest)
 	case err != nil:
 		return nil, err
 	default:
-		uid, _ := strconv.Atoi(u.Uid)
 		if req.Home == "" {
 			home = filepath.Clean(u.HomeDir)
 		} else if req.RemoveHome && home != filepath.Clean(u.HomeDir) {
 			return nil, notAllowed("removing "+req.Home+" for "+req.Login, "it is not the account's home ("+u.HomeDir+")")
 		}
+	}
+	if req.RemoveHome && home != "" && home != "." {
+		// os.RemoveAll would go into a shared folder mounted in the home and
+		// take the site's files along: the folders go first, unit and mount
+		// alike (sharemount.go).
+		g, release, err := s.holdShareGuard()
+		if err != nil {
+			return nil, err
+		}
+		defer release()
+		if m, ok := g.holding(home); ok {
+			return nil, g.refuse("removing "+home, m)
+		}
+		if m, ok := mountedBelow(home); ok {
+			return nil, &Error{Status: http.StatusConflict, Message: "removing " + home + " is not allowed: " + m + " is mounted there; remove the shared folders of " + req.Login + " first (or unmount it)"}
+		}
+	}
+	if u != nil {
+		uid, _ := strconv.Atoi(u.Uid)
 		resp.Killed = killProcessesOf(uid)
 		// userdel without -r: the home is removed below, because userdel
 		// refuses directories not owned by the user (SFTP chroot homes are

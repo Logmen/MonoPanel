@@ -36,6 +36,13 @@ type Server struct {
 	rootUID int
 	// unitDir is where /v1/units/* write (/etc/systemd/system).
 	unitDir string
+	// shareMu orders the writes of the shared folders' mount units (write
+	// lock, taken with TryLock: lockShareUnits) against the calls that change
+	// directories below the web root under a shareGuard (read lock): a unit
+	// appears only after the way to its mount point was checked, never while
+	// such a call that read the units before it is still at work
+	// (sharemount.go).
+	shareMu sync.RWMutex
 }
 
 // NewServer builds an agent.
@@ -135,6 +142,13 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		WebGroup: s.cfg.WebGroup, CLIGroup: s.cfg.CLIGroup,
 	})
 	s.prepareDirs()
+	if os.Geteuid() == 0 {
+		// before the API, which starts after the agent, can start anything
+		// that pulls such a unit in (sharemount.go)
+		rctx, cancel := context.WithTimeout(ctx, time.Minute)
+		s.retireUnsafeShareUnits(rctx)
+		cancel()
+	}
 	sock := s.cfg.AgentSocket()
 	if err := os.MkdirAll(filepath.Dir(sock), 0o750); err != nil {
 		return err

@@ -194,6 +194,7 @@ func (s *Server) planTool(c *toolCall) (*toolPlan, error) {
 		return nil, err
 	}
 	if len(c.env) > 0 && plan.env == nil {
+		plan.close()
 		return nil, notAllowed("environment for "+c.name, "the panel passes none")
 	}
 	return plan, nil

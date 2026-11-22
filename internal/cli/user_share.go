@@ -61,7 +61,15 @@ func userShareCmd() *cobra.Command {
 		if g.json {
 			return printJSON(st)
 		}
-		fmt.Printf(T("папка %s → %s смонтирована в %s, ACL выданы\n", "folder %s → %s mounted at %s, ACLs granted\n"), st.Target, st.Share.Login, st.Where)
+		mountPoint := st.MountPoint
+		if mountPoint == "" {
+			mountPoint = st.Where
+		}
+		fmt.Printf(T("папка %s → %s смонтирована в %s, ACL выданы\n", "folder %s → %s mounted at %s, ACLs granted\n"), st.Target, st.Share.Login, mountPoint)
+		if mountPoint != st.Where && st.Where != "" {
+			// an account with a shell: its home is its own, no place for a mount point
+			fmt.Printf(T("в доме гостя она видна как %s (символьная ссылка)\n", "in the guest's home it is %s (a symlink)\n"), st.Where)
+		}
 		if st.Share.Entry {
 			fmt.Println(T("вход по SFTP теперь начинается в этой папке", "SFTP sign-in now starts inside this folder"))
 		}

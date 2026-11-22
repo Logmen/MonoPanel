@@ -137,6 +137,14 @@ func dirIDs(d DirSpec) (mode os.FileMode, uid, gid int, err error) {
 // through the opened directory: a client who swaps a component for a symlink
 // at any moment can only make the call fail, never redirect it.
 func ensureHomeDir(root string, d DirSpec) (created bool, err error) {
+	return ensureHomeDirGuarded(root, d, nil)
+}
+
+// ensureHomeDirGuarded is ensureHomeDir that leaves the way to the shared
+// folders' mount points root's (shareGuard.dirChange): a level it makes or the
+// directory it changes there is never given to anybody else or opened to
+// others' writes.
+func ensureHomeDirGuarded(root string, d DirSpec, g *shareGuard) (created bool, err error) {
 	mode, uid, gid, err := dirIDs(d)
 	if err != nil {
 		return false, err
@@ -158,6 +166,10 @@ func ensureHomeDir(root string, d DirSpec) (created bool, err error) {
 		made := false
 		next, err := unix.Openat(fd, name, flags, 0)
 		if errors.Is(err, unix.ENOENT) {
+			// a level made here gets the owner and the mode as well
+			if err := g.dirChange(cur, nil, false, uid, gid, uint32(mode)); err != nil {
+				return created, err
+			}
 			if err := unix.Mkdirat(fd, name, uint32(mode)); err != nil && !errors.Is(err, unix.EEXIST) {
 				return created, &os.PathError{Op: "mkdir", Path: cur, Err: err}
 			}
@@ -182,6 +194,22 @@ func ensureHomeDir(root string, d DirSpec) (created bool, err error) {
 			if err := unix.Fchown(fd, uid, gid); err != nil {
 				return created, &os.PathError{Op: "chown", Path: cur, Err: err}
 			}
+		}
+	}
+	if g != nil {
+		// A shared folder's mount point with the folder mounted on it opens
+		// as the folder: the mode and owner meant for the root-owned
+		// directory below would land on the site's folder (the API asks for
+		// the mount point again whenever it applies the share).
+		if g.isMount(filepath.Clean(d.Path)) && mountedOn(fd) {
+			return created, nil
+		}
+		var st unix.Stat_t
+		if err := unix.Fstat(fd, &st); err != nil {
+			return created, &os.PathError{Op: "stat", Path: d.Path, Err: err}
+		}
+		if err := g.dirChange(filepath.Clean(d.Path), &st, hasAccessACL(fd), uid, gid, uint32(mode)); err != nil {
+			return created, err
 		}
 	}
 	if err := unix.Fchmod(fd, uint32(mode)); err != nil {
@@ -262,6 +290,20 @@ func (s *Server) checkDirSpec(d DirSpec) error {
 func (s *Server) ensureDirs(ctx context.Context, req *EnsureDirsRequest) (*EnsureDirsResponse, error) {
 	resp := &EnsureDirsResponse{Created: []string{}}
 	root := filepath.Clean(s.cfg.WWWRoot)
+	// Below the web root the way to a shared folder's mount point stays
+	// root's (sharemount.go): a home holding one is never handed to its
+	// account.
+	var guard *shareGuard
+	for _, d := range req.Dirs {
+		if guard == nil && strings.HasPrefix(filepath.Clean(d.Path), root+"/") {
+			g, release, err := s.holdShareGuard()
+			if err != nil {
+				return nil, err
+			}
+			defer release()
+			guard = g
+		}
+	}
 	for _, d := range req.Dirs {
 		p := filepath.Clean(d.Path)
 		if !filepath.IsAbs(p) || !s.dirAllowed(p) {
@@ -274,9 +316,13 @@ func (s *Server) ensureDirs(ctx context.Context, req *EnsureDirsRequest) (*Ensur
 			// Clients own the directories below the web root: one of them
 			// swapped for a symlink would turn this root mkdir, chmod and
 			// chown into one of /etc/systemd/system or /root.
-			created, err = ensureHomeDir(root, d)
+			created, err = ensureHomeDirGuarded(root, d, guard)
 			if errors.Is(err, errSymlinkInPath) {
 				return nil, &Error{Status: http.StatusForbidden, Message: err.Error()}
+			}
+			var ae *Error
+			if errors.As(err, &ae) {
+				return nil, ae
 			}
 		} else {
 			if err := s.checkDirSpec(d); err != nil {

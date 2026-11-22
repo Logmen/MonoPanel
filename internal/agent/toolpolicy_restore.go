@@ -39,6 +39,11 @@ type restoreMerge struct {
 	// aside is a restore aside: the tree stays where restic put it, and only
 	// what is unsafe anywhere is taken out of it (sanitize).
 	aside bool
+	// guard holds the shared folders' mount points while the merge runs: the
+	// way to one keeps its own owner and mode, nothing but a directory
+	// stands there, and a mount point itself is left alone — the folder it
+	// shows comes back with its site (sharemount.go).
+	guard *shareGuard
 }
 
 // isProtected tells config.yaml and the secret key.
@@ -239,6 +244,13 @@ var restoreConfCheck = confcheck.Check
 // never written; the web root and the panel's configuration directory stay
 // the directories they are, with their own owner and mode.
 func (m *restoreMerge) merge(stagingFd int, staging string, includes []string) {
+	g, release, err := m.s.holdShareGuard()
+	if err != nil {
+		m.fail(m.s.cfg.WWWRoot, err)
+		return
+	}
+	defer release()
+	m.guard = g
 	sorted := append([]string{}, includes...)
 	sort.Strings(sorted)
 	var done []string
@@ -327,9 +339,12 @@ func (m *restoreMerge) root(sp int, name, dir string, st *unix.Stat_t) {
 }
 
 // keepsOwnMeta tells the directories whose owner and mode a snapshot does
-// not set: the web root, and the configuration directory with config.yaml
-// and the secret key in it.
+// not set: the web root, the configuration directory with config.yaml and
+// the secret key in it, and the way to a shared folder's mount point.
 func (m *restoreMerge) keepsOwnMeta(p string) bool {
+	if _, onWay := m.guard.holding(p); onWay {
+		return true
+	}
 	return p == filepath.Clean(m.s.cfg.WWWRoot) || m.coversProtected(p)
 }
 
@@ -342,9 +357,17 @@ func (m *restoreMerge) entry(sp, dp int, name, dst string) {
 		m.skip("files that are root's (config.yaml, the secret key)")
 		return
 	}
+	if m.guard.isMount(dst) {
+		m.skip("mount points of shared folders (the folder comes back with its site)")
+		return
+	}
 	var sst, dstSt unix.Stat_t
 	if err := unix.Fstatat(sp, name, &sst, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		m.fail(dst, err)
+		return
+	}
+	if _, onWay := m.guard.holding(dst); onWay && sst.Mode&unix.S_IFMT != unix.S_IFDIR {
+		m.skip("what is no directory on the way to a shared folder's mount point")
 		return
 	}
 	derr := unix.Fstatat(dp, name, &dstSt, unix.AT_SYMLINK_NOFOLLOW)
