@@ -3,6 +3,7 @@ package systemd
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	sd "github.com/coreos/go-systemd/v22/dbus"
@@ -30,9 +31,40 @@ type Oneshot struct {
 	// Limit is how long the command may run (TimeoutStartSec): then systemd
 	// stops it, whether the caller is still there or not.
 	Limit time.Duration
+	// StopLimit is how long each step of the unit's end may take
+	// (TimeoutStopSec): the command's exit after SIGTERM before SIGKILL,
+	// each command of StopPost. Zero leaves it to systemd's default
+	// (DefaultTimeoutStopSec, which an administrator may have lowered).
+	StopLimit time.Duration
+	// StopPost are the commands systemd runs once the command is over,
+	// however it ended — exited, killed, stopped at the limit or by the
+	// caller (ExecStopPost) —, one after the other, with the unit's settings
+	// and in its namespaces (its PrivateTmp among them), each within
+	// StopLimit rather than Limit; their output goes to Output too. The start
+	// job's result comes once they are over, and so does that of a stop. A
+	// failure of one with IgnoreFailure leaves the unit's result and the main
+	// process's exit as the command left them (MainExit) — but not one still
+	// going at StopLimit: systemd kills it and fails the unit
+	// (Result=timeout) whatever IgnoreFailure says, so each must end well
+	// within StopLimit by itself.
+	StopPost []Command
 	// Settings are further properties of the unit by their D-Bus names, with
 	// values of the D-Bus types systemd takes for them.
 	Settings []Setting
+}
+
+// Command is a command of a unit's beside the main one: the program,
+// absolute, and its arguments, Argv[0] included, as systemd runs them (no
+// shell; systemd expands $NAME in them, nothing else).
+type Command struct {
+	Path string
+	Argv []string
+	// IgnoreFailure keeps a failure of the command — an exit status other
+	// than 0, a signal, a program that does not start — out of the unit's
+	// result: the "-" before a command line of a unit file. A command still
+	// going at the unit's TimeoutStopSec fails the unit all the same
+	// (Oneshot.StopPost).
+	IgnoreFailure bool
 }
 
 // Setting is a property of a transient unit (ProtectHome, PrivateTmp …).
@@ -41,8 +73,9 @@ type Setting struct {
 	Value any
 }
 
-// execCommand is an entry of ExecStart, a(sasb): the program, its argv, and
-// whether a failure is ignored, which it is not.
+// execCommand is an entry of ExecStart or ExecStopPost, a(sasb): the
+// program, its argv, and whether a failure is ignored — never for the main
+// command, whose failure is the run's.
 type execCommand struct {
 	Path   string
 	Argv   []string
@@ -62,6 +95,16 @@ func (o Oneshot) properties() []sd.Property {
 		{Name: "StandardErrorFileDescriptor", Value: dbus.MakeVariant(dbus.UnixFD(o.Output))},
 		{Name: "TimeoutStartUSec", Value: dbus.MakeVariant(uint64(o.Limit.Microseconds()))},
 	}
+	if o.StopLimit > 0 {
+		props = append(props, sd.Property{Name: "TimeoutStopUSec", Value: dbus.MakeVariant(uint64(o.StopLimit.Microseconds()))})
+	}
+	if len(o.StopPost) > 0 {
+		cmds := make([]execCommand, 0, len(o.StopPost))
+		for _, c := range o.StopPost {
+			cmds = append(cmds, execCommand{Path: c.Path, Argv: c.Argv, Ignore: c.IgnoreFailure})
+		}
+		props = append(props, sd.Property{Name: "ExecStopPost", Value: dbus.MakeVariant(cmds)})
+	}
 	if len(o.Env) > 0 {
 		props = append(props, sd.Property{Name: "Environment", Value: dbus.MakeVariant(o.Env)})
 	}
@@ -71,14 +114,30 @@ func (o Oneshot) properties() []sd.Property {
 	return props
 }
 
-// StartOneshot starts o and returns once systemd has taken it: the channel
-// receives the result of its start job when the command has exited ("done"
-// when it exited with 0). No reference of the caller's holds the unit, so the
-// caller going away changes nothing for it; a unit of that name that exists
-// already makes the start fail.
-func (c *Conn) StartOneshot(ctx context.Context, o Oneshot) (<-chan string, error) {
+// check tells a unit systemd would refuse, or run otherwise than meant: a
+// command without a program or arguments, one after it whose program is not
+// given by its absolute path.
+func (o Oneshot) check() error {
 	if o.Path == "" || len(o.Argv) == 0 {
-		return nil, fmt.Errorf("run %s: no command", o.Unit)
+		return fmt.Errorf("run %s: no command", o.Unit)
+	}
+	for _, c := range o.StopPost {
+		if !strings.HasPrefix(c.Path, "/") || len(c.Argv) == 0 {
+			return fmt.Errorf("run %s: a command after it needs an absolute program and its arguments: %q %q", o.Unit, c.Path, c.Argv)
+		}
+	}
+	return nil
+}
+
+// StartOneshot starts o and returns once systemd has taken it: the channel
+// receives the result of its start job once the command has exited and the
+// commands after it (StopPost) are over ("done" when it exited with 0). No
+// reference of the caller's holds the unit, so the caller going away
+// changes nothing for it; a unit of that name that exists already makes the
+// start fail.
+func (c *Conn) StartOneshot(ctx context.Context, o Oneshot) (<-chan string, error) {
+	if err := o.check(); err != nil {
+		return nil, err
 	}
 	ch := make(chan string, 1)
 	if _, err := c.c.StartTransientUnitContext(ctx, o.Unit, "fail", o.properties(), ch); err != nil {

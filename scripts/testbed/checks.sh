@@ -69,11 +69,18 @@
 #                 line (counted once), no failure, no warning
 #                 doctor-expected.sh does not list
 #   package runs  the deploy's installs ran in monopanel-pkg-<run>.service
-#                 units (with none in the journal, after an upgrade, an index
-#                 refresh does — after the doctor, which must judge the index
-#                 as it was), none left; the daily upgrade on at 04:00 with a
-#                 next run; one version of each PHP branch everywhere
-#   selinux       EL: no AVC denial since boot
+#                 units; an index refresh straight at the agent (after the
+#                 doctor, which must judge the index as it was) runs in one
+#                 too — in the journal, where there was none (after an
+#                 upgrade) — and the cleanup after it takes the run's /tmp
+#                 for its own; none left; the daily upgrade on at 04:00 with
+#                 a next run; one version of each PHP branch everywhere
+#   selinux       EL: no AVC denial since boot in the audit log (ausearch
+#                 --input-logs); after an upgrade the one upgrade-seed.sh
+#                 makes itself under the previous release is EXPECTED, and
+#                 only that one: PID 1 refused to read the symlink it swapped
+#                 in for a share's folder, as it restarted the share's mount
+#                 unit
 #
 # What the checks make goes again at the end, also after a failure: the
 # accounts tbcka, tbckb, tbcksh and tbcksf with their sites and shares (and
@@ -1800,35 +1807,46 @@ no_pkg_units() { [ -z "$(systemctl list-units --all --no-legend 'monopanel-pkg-*
 # available, candidates — the Stack page, the doctor, mp stack list) runs as
 # the agent's child, so no read goes through such a unit. A deploy installed
 # nginx, PHP and the database through the panel: its runs are in the
-# journal. After an upgrade this build has run none yet; then an index
-# refresh straight at the agent shows one, which installs nothing — after
-# the doctor, which judges the updates as the index last saw them, and once:
-# a later run of the checks finds it in the journal. Either way no unit and
-# no output file of a run may be left. The daily upgrade of nginx, PHP and
-# Apache is on at 04:00 with a next run; one version of each PHP branch
-# everywhere (H19c)
+# journal. An index refresh straight at the agent, which installs nothing —
+# after the doctor, which judges the updates as the index last saw them —,
+# runs in one too: where the journal held none (after an upgrade this build
+# has run none yet) its unit must be there. The cleanup of the run's /tmp
+# after it (clean-private-tmp, H23) speaks only when it leaves something:
+# "… not <unit>'s own (PrivateTmp=)" at the end of the run's output is a
+# namespace this system's systemd gives its units that the cleanup does not
+# know, and leaves to systemd. Either way no unit and no output file of a
+# run may be left. The daily upgrade of nginx, PHP and Apache is on at 04:00
+# with a next run; one version of each PHP branch everywhere (H19c)
 pkgrun_section() {
 	section "the package manager in a unit of its own, the daily upgrade (H18, H19c)"
-	local run unit c n st out pv sl v ver sv qv
+	local run unit c n st out said pv sl v ver sv qv
 	n=$(journalctl -u 'monopanel-pkg-*' --no-pager -o cat 2>/dev/null | grep -c '^Starting .*MonoPanel package manager')
 	if [ "$n" -gt 0 ]; then
 		pass "journalctl -u 'monopanel-pkg-*': $n runs of the package manager, each in a unit of its own$([ "$context" = deploy ] && echo ": the deploy's installs")"
 	else
 		# after an upgrade (or a reboot that took a volatile journal along)
-		info "no run of the package manager in a unit of its own in the journal ($context): an index refresh shows one"
-		run=$(rand)
-		unit=monopanel-pkg-$run.service
-		c=$(agent_call /v1/pkg "$(jsn '{"action": "update-index", "run": a[0]}' "$run")" 900)
-		if [ "$c" = 200 ]; then
-			info "update-index: $(pj 'd.get("output", "")' <"$tmp/agent" | grep -v '^ *$' | tail -1 | cut -c1-160)"
-		else
-			info "update-index: $c $(agent_said)"
-		fi
+		info "no run of the package manager in a unit of its own in the journal ($context): the index refresh shows one"
+	fi
+	run=$(rand)
+	unit=monopanel-pkg-$run.service
+	c=$(agent_call /v1/pkg "$(jsn '{"action": "update-index", "run": a[0]}' "$run")" 900)
+	said=$(pj 'd.get("output", "")' <"$tmp/agent")
+	if [ "$c" = 200 ]; then
+		info "update-index: $(grep -v '^ *$' <<<"$said" | tail -1 | cut -c1-160)"
+	else
+		info "update-index: $c $(agent_said)"
+	fi
+	if [ "$n" = 0 ]; then
 		if wait_until 20 journal_has "$unit" 'MonoPanel package manager'; then
 			pass "the index refresh ran as $unit: $(journalctl -u "$unit" --no-pager -o cat 2>/dev/null | grep -m1 -F 'MonoPanel package manager' | cut -c1-160)"
 		else
 			fail "no journal of $unit: the index refresh did not run in a unit of its own (the agent: $c $(agent_said))"
 		fi
+	fi
+	if grep -qF "'s own (PrivateTmp=)" <<<"$said"; then
+		fail "the cleanup after $unit did not take the run's /tmp for its own: $(grep -m1 -F "'s own (PrivateTmp=)" <<<"$said" | cut -c1-200)"
+	elif [ "$c" = 200 ]; then
+		pass "the cleanup after $unit took the run's /tmp and /var/tmp for its own (no \"not ...'s own (PrivateTmp=)\" in its output)"
 	fi
 	if wait_until 20 no_pkg_units && [ -z "$(find "$agent_state/pkg" -name '*.out' 2>/dev/null)" ]; then
 		pass "no unit of a run left (systemctl list-units --all 'monopanel-pkg-*'), nor an output file in $agent_state/pkg"
@@ -1972,9 +1990,38 @@ doctor_section() {
 }
 
 # --------------------------------------------------------------- selinux ----
+# avc_expected <AVC record>: why the denial is one the run means to happen,
+# and true; false when it is not. Only after an upgrade, and only the
+# seed's own: under the previous release, upgrade-seed.sh has tbupown swap
+# the folder of its share for a symlink and restarts the share's mount unit,
+# and PID 1 (init_t) is refused to read that symlink as it starts the unit —
+# the mount follows it all the same: the exposure the upgrade has to close,
+# which carried_section looks at. The denial must name that very symlink
+# (the folder's name, and the inode and label the seed recorded in
+# /root/tbup.env), have been enforced (permissive=0), and be stamped within
+# that restart (attack_from and attack_to, milliseconds since the epoch; a
+# second's slack for the kernel's coarse clock): the same denial at any
+# other time — this build taking the share over, say — is not expected.
+avc_expected() {
+	local line=$1 dir ino label from to at
+	if [ "$context" != upgrade ] || [ ! -r /root/tbup.env ]; then return 1; fi
+	dir=$(sed -n 's/^attack_dir=//p' /root/tbup.env | tail -1)
+	ino=$(sed -n 's/^attack_ino=//p' /root/tbup.env | tail -1)
+	label=$(sed -n 's/^attack_label=//p' /root/tbup.env | tail -1)
+	from=$(sed -n 's/^attack_from=//p' /root/tbup.env | tail -1)
+	to=$(sed -n 's/^attack_to=//p' /root/tbup.env | tail -1)
+	if [ -z "$dir" ] || [ -z "$ino" ] || [ -z "$label" ] || [ "$label" = "?" ]; then return 1; fi
+	[[ $from =~ ^[0-9]+$ && $to =~ ^[0-9]+$ ]] || return 1
+	[[ "$line " == *"avc:  denied  { read } for "*" comm=\"systemd\" name=\"$dir\" "*" ino=$ino scontext=system_u:system_r:init_t:s0 tcontext=$label tclass=lnk_file permissive=0 "* ]] || return 1
+	[[ $line =~ audit\(([0-9]+)\.([0-9]{3}):[0-9]+\) ]] || return 1
+	at=$((BASH_REMATCH[1] * 1000 + 10#${BASH_REMATCH[2]}))
+	[ "$at" -ge $((from - 1000)) ] && [ "$at" -le $((to + 1000)) ] || return 1
+	echo "PID 1 refused to read the symlink upgrade-seed.sh swapped in for the folder $dir/ of a share as the seed restarted the share's mount unit, under the previous release (inode $ino, $label)"
+}
 selinux_section() {
 	section "SELinux"
-	local mode n
+	local mode rc out line why seen=0
+	local -a denied=() granted=()
 	if ! command -v getenforce >/dev/null 2>&1; then
 		skip "no SELinux on this host"
 		return
@@ -1989,13 +2036,38 @@ selinux_section() {
 		fail "SELinux $mode, but ausearch (audit) is missing: AVC denials cannot be counted"
 		return
 	fi
-	n=$(ausearch -m avc -ts boot 2>/dev/null | grep -c 'type=AVC')
-	if [ "$n" = 0 ]; then
-		pass "SELinux $mode: no AVC denial since boot (ausearch -m avc -ts boot)"
-	else
-		fail "SELinux $mode: $n AVC denials since boot"
-		ausearch -m avc -ts boot 2>/dev/null | grep 'type=AVC' | tail -5 | cut -c1-300 | sed 's/^/INFO      /'
+	# --input-logs: the audit log itself. Without it ausearch reads its
+	# records from stdin whenever that is a pipe — under ssh -n, as
+	# testbed.sh runs this script, sshd's — and finds nothing there. It exits
+	# 1 for no match as well as for an error; only "<no matches>" tells.
+	out=$(ausearch --input-logs -m avc -ts boot 2>"$tmp/ausearch")
+	rc=$?
+	if [ "$rc" != 0 ] && ! grep -q '<no matches>' "$tmp/ausearch"; then
+		fail "SELinux $mode: ausearch --input-logs -m avc -ts boot failed (exit $rc): $(last "$tmp/ausearch" 2)"
+		return
 	fi
+	while IFS= read -r line; do
+		if why=$(avc_expected "$line"); then
+			expected "AVC denial: $why: $(cut -c1-300 <<<"$line")"
+			seen=$((seen + 1))
+		elif [[ $line == *"avc:  granted "* ]]; then
+			# what an auditallow rule logs: allowed, no denial
+			granted+=("$line")
+		else
+			denied+=("$line")
+		fi
+	done < <(grep 'type=AVC' <<<"$out")
+	if [ "${#granted[@]}" -gt 0 ]; then
+		info "${#granted[@]} AVC record(s) of what the policy allows and logs (auditallow), no denial:"
+		printf '%s\n' "${granted[@]}" | head -3 | cut -c1-300 | sed 's/^/INFO      /'
+	fi
+	if [ "${#denied[@]}" = 0 ]; then
+		pass "SELinux $mode: no $([ "$seen" = 0 ] || echo "other ")AVC denial since boot (ausearch --input-logs -m avc -ts boot)"
+		return
+	fi
+	fail "SELinux $mode: ${#denied[@]} AVC denial(s) since boot$([ "$seen" = 0 ] || echo " besides the expected ones")"
+	printf '%s\n' "${denied[@]}" | head -10 | cut -c1-300 | sed 's/^/INFO      /'
+	[ "${#denied[@]}" -le 10 ] || info "$((${#denied[@]} - 10)) more: ausearch --input-logs -m avc -ts boot"
 }
 
 echo "checks.sh $vm: $PRETTY_NAME, kernel $kernel, $(mp version </dev/null 2>/dev/null | head -1), context $context"

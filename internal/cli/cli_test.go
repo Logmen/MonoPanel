@@ -25,6 +25,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"monopanel/internal/agent"
 	"monopanel/internal/config"
 )
 
@@ -732,6 +733,60 @@ func TestPruneUnitCopiesCommand(t *testing.T) {
 	ruleKept, ruleFail = false, errors.New("remove /etc/modprobe.d/monopanel.conf: read-only file system")
 	if out, err := mp(t, "", "prune-unit-copies"); err == nil || !strings.Contains(err.Error(), "read-only file system") || !strings.Contains(out, "monopanel-api.service") {
 		t.Fatalf("a rule that cannot go: %v %q", err, out)
+	}
+}
+
+// monopanel clean-private-tmp <unit>, the ExecStopPost of the agent's unit
+// and of the package manager's runs: as root only, for exactly one unit,
+// silent when it emptied what it was to, and its error the command's (the
+// unit ignores it). No config.yaml is needed: a run's cleanup works on a
+// host whatever state the panel's configuration is in.
+func TestCleanPrivateTmpCommand(t *testing.T) {
+	euid, clean := geteuid, cleanPrivateTmp
+	t.Cleanup(func() { geteuid, cleanPrivateTmp = euid, clean })
+	var units []string
+	var fail error
+	cleanPrivateTmp = func(unit string) error {
+		units = append(units, unit)
+		return fail
+	}
+	missing := filepath.Join(t.TempDir(), "missing.yaml")
+	geteuid = func() int { return 1000 }
+	if _, err := mp(t, "", "--config", missing, "clean-private-tmp", "monopanel-pkg-0123456789abcdef.service"); exitCode(err) != 4 || len(units) != 0 {
+		t.Fatalf("not root: %v, cleaned %v", err, units)
+	}
+	geteuid = func() int { return 0 }
+	for _, args := range [][]string{{}, {"a.service", "b.service"}} {
+		if _, err := mp(t, "", append([]string{"clean-private-tmp"}, args...)...); err == nil || len(units) != 0 {
+			t.Errorf("%q: %v, cleaned %v", args, err, units)
+		}
+	}
+	out, err := mp(t, "", "--config", missing, "clean-private-tmp", "monopanel-pkg-0123456789abcdef.service")
+	if err != nil || out != "" || !reflect.DeepEqual(units, []string{"monopanel-pkg-0123456789abcdef.service"}) {
+		t.Fatalf("%v %q, cleaned %v", err, out, units)
+	}
+	fail = errors.New("/tmp is not monopanel-agent.service's own (PrivateTmp=): left as it is")
+	if _, err := mp(t, "", "clean-private-tmp", "monopanel-agent.service"); exitCode(err) != 1 || !strings.Contains(err.Error(), "left as it is") {
+		t.Fatalf("what stays: %v", err)
+	}
+	// Past its time it gives up — a command still going at the unit's
+	// TimeoutStopSec would fail the unit, its "-" notwithstanding —, and what
+	// is left stays for systemd.
+	if agent.PrivateTmpCleanWait != cleanPrivateTmpWait {
+		t.Fatalf("the command gives up after %s, not after %s", cleanPrivateTmpWait, agent.PrivateTmpCleanWait)
+	}
+	wait, release := cleanPrivateTmpWait, make(chan struct{})
+	t.Cleanup(func() { cleanPrivateTmpWait = wait })
+	cleanPrivateTmpWait = 20 * time.Millisecond
+	cleanPrivateTmp = func(string) error {
+		<-release
+		return nil
+	}
+	began := time.Now()
+	_, err = mp(t, "", "clean-private-tmp", "monopanel-pkg-0123456789abcdef.service")
+	close(release)
+	if exitCode(err) != 1 || !strings.Contains(err.Error(), "not done within 20ms") || time.Since(began) > 10*time.Second {
+		t.Fatalf("a cleanup past its time: %v after %s", err, time.Since(began))
 	}
 }
 

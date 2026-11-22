@@ -68,6 +68,10 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=%s agent
+# Its /tmp is emptied before systemd removes it: on EL, systemd may not
+# remove what package scripts leave there (rpm_script_tmp_t), and up to
+# 0.8.19 they ran as the agent's children. Only this unit's own is touched.
+ExecStopPost=-%s clean-private-tmp monopanel-agent.service
 Restart=on-failure
 RestartSec=2
 # The agent runs as root on purpose: it installs packages, makes unix users,

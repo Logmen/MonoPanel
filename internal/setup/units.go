@@ -94,6 +94,39 @@ SystemCallArchitectures=native
 [Install]
 WantedBy=multi-user.target
 `
+	// agentUnit0813pkg is the package's monopanel-agent.service of 0.8.13
+	// to 0.8.19, and mp setup's of 0.8.20's development builds: the fences
+	// with their comments, and no cleanup of its /tmp yet.
+	agentUnit0813pkg = `[Unit]
+Description=MonoPanel privileged agent
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%s agent
+Restart=on-failure
+RestartSec=2
+# The agent runs as root on purpose: it installs packages, makes unix users,
+# writes /etc and reloads services. What it never needs is fenced off here.
+# Homes under /home and /root stay read-only (clients live in /var/www),
+# kernel modules, tunables, cgroups, the clock and the host name are out of
+# reach, and /tmp is its own. ProtectSystem= and a capability set are not
+# possible: apt/dnf write everywhere and package scripts need every capability.
+ProtectHome=read-only
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+PrivateTmp=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
+`
 	// apiUnit060 is monopanel-api.service of 0.6.0 to 0.8.19, mp setup's
 	// and the package's: no socket of the panel's port yet.
 	apiUnit060 = `[Unit]
@@ -170,9 +203,12 @@ func unitHistory() map[string][][]string {
 	return map[string][][]string{
 		agentService: {
 			{agentUnit060},
-			// mp setup's of 0.8.13 to 0.8.19, and today's: the package's
-			// since 0.8.13, mp setup's since 0.9.0.
-			{agentUnit0813, agentUnit},
+			// mp setup's and the package's of 0.8.13 to 0.8.19 (and of
+			// 0.9.0's development builds before H23).
+			{agentUnit0813, agentUnit0813pkg},
+			// today's, mp setup's and the package's alike: its /tmp
+			// emptied before systemd removes it.
+			{agentUnit},
 		},
 		apiService:     {{apiUnit060}, {apiUnit}},
 		apiSocket:      {{apiSocketUnit}},

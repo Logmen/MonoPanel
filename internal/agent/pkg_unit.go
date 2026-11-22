@@ -57,8 +57,17 @@ const pkgOutputMax = 256 * 1024
 // restarted meanwhile.
 const pkgStopMargin = time.Minute
 
-// pkgStopWait bounds the stop of a run over its limit: SIGTERM to all of it,
-// SIGKILL after systemd's TimeoutStopSec (90 seconds).
+// pkgStopTimeout is a run's TimeoutStopSec: systemd's default, given as it
+// is so that an administrator's lower DefaultTimeoutStopSec does not apply —
+// how long the package manager has after SIGTERM before SIGKILL, and how
+// long the cleanup of its /tmp after it (pkgCleanup) may take, which gives up
+// well before (PrivateTmpCleanWait): a cleanup past it would fail a run that
+// did what it was to.
+const pkgStopTimeout = 90 * time.Second
+
+// pkgStopWait bounds the wait for the end of a run that is stopped — over its
+// limit, or by someone else: SIGTERM to all of it, SIGKILL after
+// pkgStopTimeout, then the cleanup of its /tmp (PrivateTmpCleanWait).
 const pkgStopWait = 3 * time.Minute
 
 // runIDRe is a run's name. The API's client picks it (Client.Pkg), and so it
@@ -90,10 +99,12 @@ func pkgChanges(action string) bool {
 // monopanel-agent.service) for the runs that are no longer its children:
 // apt-get, dnf and the packages' scripts keep what they had in the agent —
 // the homes read-only; no kernel modules, tunables, logs, cgroups, clock or
-// host name; a /tmp and /var/tmp of their own, which systemd removes once the
-// run is over. None of them makes systemd set NoNewPrivileges for a root
-// service, so dnf goes into rpm_t as it does from dnf-automatic's units. An
-// OOM kill of one of the processes does not have systemd stop the rest of the
+// host name; a /tmp and /var/tmp of their own, out of reach of what the
+// sites' accounts put in the host's, which the run empties (pkgCleanup) and
+// systemd removes once it is over. None of them makes systemd set
+// NoNewPrivileges for a root service, so dnf goes into rpm_t as it does from
+// dnf-automatic's units, and the cleanup into unconfined_service_t. An OOM
+// kill of one of the processes does not have systemd stop the rest of the
 // transaction either (OOMPolicy=continue; the default stops the whole unit).
 var pkgFences = []systemd.Setting{
 	{Name: "ProtectHome", Value: "read-only"},
@@ -112,15 +123,40 @@ var pkgFences = []systemd.Setting{
 
 // pkgOneshot is the unit of a run: argv, the program at path, with env and
 // its output into the descriptor output, for at most limit (and systemd's
-// margin).
+// margin), its /tmp emptied once it is over.
 func pkgOneshot(unit, path string, argv, env []string, limit time.Duration, output int) systemd.Oneshot {
 	desc := "MonoPanel package manager: " + strings.Join(argv, " ")
 	if len(desc) > 200 {
 		desc = desc[:197] + "..."
 	}
 	return systemd.Oneshot{Unit: unit, Description: desc, Path: path, Argv: argv, Env: env, Output: output,
-		Limit: limit + pkgStopMargin, Settings: pkgFences}
+		Limit: limit + pkgStopMargin, StopLimit: pkgStopTimeout, StopPost: pkgCleanup(unit), Settings: pkgFences}
 }
+
+// pkgCleanup empties the run's own /tmp and /var/tmp once it is over,
+// however it ended, before systemd removes them: the agent's binary, `clean-
+// private-tmp <unit>` (privatetmp.go). On EL, systemd may not remove what
+// package scripts leave there — percona-server-server's %post leaves a
+// directory after every install and upgrade —, and each run would add an
+// SELinux denial and a directory kept until the next boot. Its failure is
+// ignored (IgnoreFailure), and it gives up after PrivateTmpCleanWait, well
+// within the run's TimeoutStopSec (pkgStopTimeout), past which systemd would
+// fail the run whatever IgnoreFailure says: the run's result and exit
+// status stay dnf's or apt-get's, and what it says goes into the run's
+// output. A binary at a path the unit could not name as it is
+// (panelBinaryRe: no "$" systemd would expand) gets no cleanup: systemd
+// removes what it can, as before.
+func pkgCleanup(unit string) []systemd.Command {
+	bin := pkgSelf()
+	if !panelBinaryRe.MatchString(bin) {
+		return nil
+	}
+	return []systemd.Command{{Path: bin, Argv: []string{bin, "clean-private-tmp", unit}, IgnoreFailure: true}}
+}
+
+// pkgSelf is the agent's binary, which empties a run's /tmp; tests replace
+// it.
+var pkgSelf = thisBinary
 
 // pkgUnits is what the agent asks of systemd for the runs; tests replace it
 // (connectPkgUnits).
@@ -270,6 +306,21 @@ func (s *Server) runPackageUnit(ctx context.Context, run string, env, argv []str
 		}
 		cancel()
 	}
+	outside := result == "canceled" && !stopped
+	if outside {
+		// Stopped by someone else (systemctl stop, a shutdown): systemd
+		// cancels the start job at once, while the unit is still going — the
+		// package manager's end, the cleanup of its /tmp after it. A stop of
+		// the agent's own joins that one and returns once the unit is over,
+		// so that what is read below is how it ended, its output all of it,
+		// and the failed unit there to reset.
+		s.log.Warn("the package manager's run was stopped outside the panel: waiting for its end", "unit", unit)
+		sctx, cancel := context.WithTimeout(context.Background(), pkgStopWait)
+		if err := units.stop(sctx, unit); err != nil {
+			s.log.Warn("the end of the package manager's run", "unit", unit, "err", err)
+		}
+		cancel()
+	}
 	if result != "done" {
 		ectx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		e, err := units.exit(ectx, unit)
@@ -283,8 +334,11 @@ func (s *Server) runPackageUnit(ctx context.Context, run string, env, argv []str
 			// result of systemd's own: oom-kill …): no success to report
 			res.code = -1
 		}
-		if stopped {
+		switch {
+		case stopped:
 			res.why = fmt.Sprintf("stopped at its time limit of %s (%s)", limit.Round(time.Second), res.why)
+		case outside:
+			res.why = fmt.Sprintf("stopped outside the panel (%s)", res.why)
 		}
 	}
 	res.output = readTail(out, pkgOutputMax)

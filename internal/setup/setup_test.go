@@ -86,7 +86,7 @@ func TestDBFilesMustBePlain(t *testing.T) {
 // from the binary alone and one from the package behave the same.
 func TestUnitsAreThePackages(t *testing.T) {
 	for file, want := range map[string]string{
-		"monopanel-agent.service":   fmt.Sprintf(agentUnit, "/usr/bin/monopanel"),
+		"monopanel-agent.service":   unitText(agentUnit, "/usr/bin/monopanel"),
 		"monopanel-api.service":     fmt.Sprintf(apiUnit, "/usr/bin/monopanel"),
 		"monopanel-api.socket":      apiSocketUnit,
 		"monopanel-apache@.service": apacheUnit,
@@ -165,7 +165,7 @@ func TestInstallUnitsWritesTheSocket(t *testing.T) {
 	if res.SocketErr != nil || !slices.Equal(res.Wrote, []string{agentService, apiSocket, apacheUnitName}) || !res.Moved || reloads != 2 {
 		t.Fatalf("first: %+v, %d reloads", res, reloads)
 	}
-	if b, _ := os.ReadFile(filepath.Join(dir, agentService)); string(b) != fmt.Sprintf(agentUnit, "/usr/bin/monopanel") {
+	if b, _ := os.ReadFile(filepath.Join(dir, agentService)); string(b) != unitText(agentUnit, "/usr/bin/monopanel") {
 		t.Fatalf("the agent's unit:\n%s", b)
 	}
 	if b, _ := os.ReadFile(filepath.Join(dir, apiSocket)); string(b) != apiSocketUnit {
@@ -371,6 +371,24 @@ func TestPruneUnitCopies(t *testing.T) {
 			}
 		}
 	})
+	t.Run("the agent's unit across its generations", func(t *testing.T) {
+		// The package's agent unit of 0.8.13 to 0.8.19 (also mp setup's of
+		// 0.8.20's development builds) is the panel's own and older than
+		// today's, which empties the agent's /tmp before systemd removes it:
+		// a copy of it goes, as the upgrade's postinstall must remove it for
+		// the package's unit to stop the old agent.
+		dir, packaged := t.TempDir(), packageUnits(t)
+		writeFiles(t, dir, map[string]string{agentService: unitText(agentUnit0813pkg, bin)})
+		if res, err := pruneUnitCopies(dir, packaged, bin); err != nil || !slices.Equal(res.Removed, []string{filepath.Join(dir, agentService)}) || len(res.Shadowing) != 0 {
+			t.Fatalf("the earlier package's text: %+v %v", res, err)
+		}
+		// Today's text over the package of 0.8.19 is newer than it: it stays.
+		writeFiles(t, packaged, map[string]string{agentService: unitText(agentUnit0813pkg, bin)})
+		writeFiles(t, dir, map[string]string{agentService: unitText(agentUnit, bin)})
+		if res, err := pruneUnitCopies(dir, packaged, bin); err != nil || len(res.Removed) != 0 || !slices.Equal(res.Shadowing, []string{filepath.Join(dir, agentService)}) {
+			t.Fatalf("today's text over the package of 0.8.19: %+v %v", res, err)
+		}
+	})
 	t.Run("an alias", func(t *testing.T) {
 		dir, packaged := t.TempDir(), packageUnits(t)
 		writeFiles(t, dir, map[string]string{
@@ -410,11 +428,13 @@ func TestUnitHistoryKeepsEveryRelease(t *testing.T) {
 		agentUnit060:  "b02f29ffd2207e85276ec0938c4ad91ebf9363c0f05c5b02cfdd49a5c4a57932",
 		agentUnit0813: "fa18d69b25dc64fbad5f2a0375872a93fff33685d60415a12c45668f7ec19f1b",
 		apiUnit060:    "4b0ed539f9bc58d840a714a41fae8e9d4836efbdfcdc9d4ff9955a82f246c9fb",
+		// The package's agent of v0.8.13–v0.8.19.
+		agentUnit0813pkg: "aeb2f5ff2d581607817621619827db69378dd86b687601ebf61c1585f96370ee",
 		// Apache's template of 0.9.0's development builds before the
 		// graceful stop.
 		apacheUnit090dev: "97c3eb3afd46cf9d19510bb23855109a5b39c55acb30ef07e6c54679d5d34c6a",
 		// Today's.
-		agentUnit:     "aeb2f5ff2d581607817621619827db69378dd86b687601ebf61c1585f96370ee",
+		agentUnit:     "788de936ccdcc05b32e410ca360796f942d3c2b1cd0ed3d7399c477a4635e37e",
 		apiUnit:       "5c8adbb9b753b48608dad24d0b3b9ed56e43eaef0147c9502be75e63728902a7",
 		apiSocketUnit: "23112e254d6b8d747d276d2ed14cdb1e9c359203f27af9f1a1df793e1e4b5002",
 		apacheUnit:    "ccb74e2eb45271adfa66b1db8adc7e0f25238f0d49cbbc0478f952e0999f2c00",

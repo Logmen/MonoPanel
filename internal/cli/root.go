@@ -149,7 +149,7 @@ update trust (the release signing key, kept out of the panel's reach on purpose)
 	for _, extra := range extraCommands {
 		root.AddCommand(extra())
 	}
-	root.AddCommand(versionCmd(), apiCmd(), agentCmd(), helperCmd(), fsopCmd(), setupCmd(), statusCmd(), userCmd(), jobCmd(), auditCmd(), tokenCmd(), serviceCmd(), stackCmd(), configCmd(), sslCmd(), webCmd(), phpCmd(), siteCmd(), cmsCmd(), dbCmd(), cronCmd(), firewallCmd(), doctorCmd(), selinuxCmd(), logsCmd(), metricsCmd(), backupCmd(), webhookCmd(), filesCmd(), dnsProviderCmd(), appCmd(), valkeyCmd(), updateCmd(), updateRunCmd(), apiSocketSyncCmd(), pruneUnitCopiesCmd(), mailCmd(), migrateCmd(), totpCmd(), whoamiCmd(), appExecCmd(), sandboxExecCmd())
+	root.AddCommand(versionCmd(), apiCmd(), agentCmd(), helperCmd(), fsopCmd(), setupCmd(), statusCmd(), userCmd(), jobCmd(), auditCmd(), tokenCmd(), serviceCmd(), stackCmd(), configCmd(), sslCmd(), webCmd(), phpCmd(), siteCmd(), cmsCmd(), dbCmd(), cronCmd(), firewallCmd(), doctorCmd(), selinuxCmd(), logsCmd(), metricsCmd(), backupCmd(), webhookCmd(), filesCmd(), dnsProviderCmd(), appCmd(), valkeyCmd(), updateCmd(), updateRunCmd(), apiSocketSyncCmd(), pruneUnitCopiesCmd(), cleanPrivateTmpCmd(), mailCmd(), migrateCmd(), totpCmd(), whoamiCmd(), appExecCmd(), sandboxExecCmd())
 	return root
 }
 

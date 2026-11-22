@@ -154,6 +154,42 @@ func agentCmd() *cobra.Command {
 	}}
 }
 
+// cleanPrivateTmp empties a unit's own /tmp and /var/tmp; tests replace it.
+var cleanPrivateTmp = agent.CleanPrivateTmp
+
+// cleanPrivateTmpWait is how long clean-private-tmp may take
+// (agent.PrivateTmpCleanWait); tests shorten it.
+var cleanPrivateTmpWait = agent.PrivateTmpCleanWait
+
+// cleanPrivateTmpCmd is the ExecStopPost of the units whose processes run
+// package scripts — the agent's, and each run of the package manager the
+// agent starts (monopanel-pkg-<run>.service): it empties the unit's own /tmp
+// and /var/tmp (PrivateTmp=), and nothing else, before systemd removes them,
+// which on EL with SELinux it may not do with what those scripts leave there
+// (agent.CleanPrivateTmp). It prints nothing unless something stays; the
+// unit ignores its failure. It gives up after cleanPrivateTmpWait, leaving
+// the rest to systemd: one still going at the unit's TimeoutStopSec would
+// fail the unit, its "-" notwithstanding. Every later binary keeps it: a run
+// a release started that ends after the upgrade to the next one has the new
+// binary as its ExecStopPost, and so has the agent's unit.
+func cleanPrivateTmpCmd() *cobra.Command {
+	return &cobra.Command{Use: "clean-private-tmp <unit>", Short: T("служебная: очистить собственные /tmp и /var/tmp юнита, пока их не удалил systemd (ExecStopPost)", "internal: empty a unit's own /tmp and /var/tmp before systemd removes them (ExecStopPost)"), Hidden: true, Args: cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			if geteuid() != 0 {
+				return &exitError{code: 4, msg: T("clean-private-tmp выполняется только от root", "clean-private-tmp must run as root")}
+			}
+			clean, unit, done := cleanPrivateTmp, args[0], make(chan error, 1)
+			go func() { done <- clean(unit) }()
+			select {
+			case err := <-done:
+				return err
+			case <-time.After(cleanPrivateTmpWait):
+				// the process ends here, the removal under way with it
+				return &exitError{code: 1, msg: fmt.Sprintf(T("clean-private-tmp: не уложилась в %s, остаток /tmp и /var/tmp юнита %s удалит systemd", "clean-private-tmp: not done within %s, systemd removes what is left of %s's /tmp and /var/tmp"), cleanPrivateTmpWait, args[0])}
+			}
+		}}
+}
+
 func helperCmd() *cobra.Command {
 	var uid, gid int
 	var groups string

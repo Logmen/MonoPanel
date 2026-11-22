@@ -21,11 +21,13 @@
 #             path in tbupsf's chroot — the exposure the upgrade closes
 #
 # and leaves /root/tbup.env (the release, the marker, the snapshot, the
-# share units, the swapped share, where PHP comes from) for checks.sh, which
+# share units, the swapped share, its symlink as the audit log names it and
+# when its unit was restarted, where PHP comes from) for checks.sh, which
 # TB_CARRIED=1 makes look at all of it after the upgrade. Only commands and
-# flags that 0.8.19 already has. Passwords are random and go to mp on stdin;
-# the one mp backup target add makes up and prints goes to /dev/null, as
-# nothing needs it — the panel restores through itself.
+# flags that 0.8.19 already has.
+# Passwords are random and go to mp on stdin; the one mp backup target add
+# makes up and prints goes to /dev/null, as nothing needs it — the panel
+# restores through itself.
 set -euo pipefail
 export MP_LANG=en DEBIAN_FRONTEND=noninteractive
 umask 077
@@ -128,7 +130,20 @@ unit=$(systemd-escape --path --suffix=mount "$www/$sf/$attack")
 log "$own swaps attack/ for a symlink to $victim"
 # shellcheck disable=SC2016 # the arguments of sh -c's own program
 (cd / && setpriv --reuid="$(id -u "$own")" --regid="$(id -g "$own")" --init-groups -- sh -c 'mv "$1" "$1.real" && ln -s "$2" "$1"' sh "$doc/attack" "$victim")
+# The symlink as an AVC denial names it, its inode and its own label (stat
+# does not follow it; on EL the docroot's httpd_sys_content_t, with the user
+# of root's session, unconfined_u), and when the restart below runs, in
+# milliseconds since the epoch as the audit log stamps its records. On EL,
+# PID 1 (init_t) is refused to read the symlink as it starts the unit —
+# the mount follows it all the same, as the check below shows —: a denial
+# of this seed's own, under this release, which checks.sh expects after the
+# upgrade, that one alone. Without SELinux stat prints "?" for the label and
+# fails: "?" once.
+attack_ino=$(stat -c %i "$doc/attack")
+attack_label=$(stat -c %C "$doc/attack" 2>/dev/null) || attack_label="?"
+attack_from=$(date +%s%3N 2>/dev/null) || attack_from=""
 step "systemctl restart $unit" systemctl restart "$unit"
+attack_to=$(date +%s%3N 2>/dev/null) || attack_to=""
 seen=$(cd / && setpriv --reuid="$(id -u "$sf")" --regid="$(id -g "$sf")" --init-groups -- cat "$www/$sf/$attack/tbup-victim.txt" 2>/dev/null || true)
 if [ "$seen" != "tbup-victim-$mark" ]; then
 	echo "$unit of $from did not mount $victim through $own's symlink ($(findmnt -rn -o SOURCE --mountpoint "$www/$sf/$attack" 2>&1 | tail -1)): the upgrade would have nothing to take off" >&2
@@ -162,6 +177,10 @@ snap=$snap
 units="$units"
 attack=$attack
 attack_dir=attack
+attack_ino=$attack_ino
+attack_label=$attack_label
+attack_from=$attack_from
+attack_to=$attack_to
 php_ppa=$php_ppa
 php_fpm="$php_fpm"
 EOF
