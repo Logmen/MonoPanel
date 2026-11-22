@@ -122,6 +122,20 @@ func TestConfigure(t *testing.T) {
 	pass(t, "/etc/nginx/monopanel/sites/example.com.conf", "access_log /var/log/monopanel/sites/alex/x.log;\n")
 }
 
+// The site logs are opened as root right in an account's directory of
+// sites/, which the agent makes and keeps root's alone; anything else in
+// sites/ its start removes.
+func TestSiteLogDepth(t *testing.T) {
+	for _, p := range []string{"/var/log/monopanel/sites/alex/example.com.access.log", "/var/log/monopanel/sites/nosuch/x.log"} {
+		pass(t, "/etc/nginx/monopanel/sites/example.com.conf", "access_log "+p+";\n")
+		pass(t, "/etc/php/8.4/fpm/pool.d/example.com.conf", "[example.com]\nuser = alex\ngroup = alex\nlisten = /run/monopanel/php/example.com.sock\nslowlog = "+p+"\n")
+	}
+	for _, p := range []string{"/var/log/monopanel/sites", "/var/log/monopanel/sites/alex", "/var/log/monopanel/sites/x.log", "/var/log/monopanel/sites/alex/sub/x.log"} {
+		refuse(t, "/etc/nginx/monopanel/sites/example.com.conf", "access_log "+p+";\n", p)
+		refuse(t, "/etc/php/8.4/fpm/pool.d/example.com.conf", "[example.com]\nuser = alex\ngroup = alex\nlisten = /run/monopanel/php/example.com.sock\nslowlog = "+p+"\n", "slowlog")
+	}
+}
+
 // Text configurations hold neither NUL nor carriage returns: some daemons
 // break lines at a CR where the check would not.
 func TestControlCharacters(t *testing.T) {

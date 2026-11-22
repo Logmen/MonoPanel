@@ -286,8 +286,6 @@ func TestPHPContentPasses(t *testing.T) {
 		p.Name, p.User, p.Group, p.Socket = "shop.example.com", "shop", "shop", "/run/monopanel/php/shop.example.com.sock"
 		p.Home, p.DataDir, p.TmpDir, p.BinDir, p.LogDir = "/var/www/shop", "/var/www/shop/data", "/var/www/shop/data/tmp", "/var/www/shop/data/bin", "/var/log/monopanel/sites/shop"
 	})))
-	// ops_php.go installPHP: the socket directory at boot.
-	add("tmpfiles", "/etc/tmpfiles.d/monopanel-php.conf", "d /run/monopanel/php 0755 root root -\n")
 	// ops_php_ext.go phpToggleEL rewrites Remi's own ini files, the
 	// extension= line commented out or back in.
 	add("remi opcache", "/etc/opt/remi/php84/php.d/10-opcache.ini", "; Enable Zend OPcache extension module\nzend_extension=opcache\n\n; Determines if Zend OPCache is enabled\nopcache.enable=1\n;opcache.enable_cli=0\nopcache.memory_consumption=128\nopcache.interned_strings_buffer=8\nopcache.max_accelerated_files=4000\n;opcache.preload=\n;opcache.file_cache=\nopcache.blacklist_filename=/etc/opt/remi/php84/php.d/opcache*.blacklist\nopcache.huge_code_pages=0\nopcache.lockfile_path=/tmp")

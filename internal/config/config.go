@@ -97,12 +97,16 @@ type Log struct {
 // of the API process. A prefix ending in "/" matches a directory tree; any
 // other entry must match the path exactly.
 //
-// Two trees are not here on purpose. /etc/systemd/system: a unit or a drop-in
-// runs whatever it says as root, so the panel's units go through the agent's
-// typed /v1/units/* calls, which accept only the units the panel writes. And
-// the panel's data directory (/var/lib/monopanel): it belongs to the API's
-// service user, who makes what it needs there itself — a root write below a
-// directory the API owns could be redirected by it.
+// Three trees are not here on purpose. /etc/systemd/system: a unit or a
+// drop-in runs whatever it says as root, so the panel's units go through the
+// agent's typed /v1/units/* calls, which accept only the units the panel
+// writes. The panel's data directory (/var/lib/monopanel): it belongs to the
+// API's service user, who makes what it needs there itself — a root write
+// below a directory the API owns could be redirected by it. And
+// /etc/tmpfiles.d: systemd-tmpfiles makes, chowns and empties what its files
+// name, as root, and a file there overrides the package's of the same name;
+// the one directory the panel needs at boot, the php-fpm socket directory,
+// comes with the package's and mp setup's own tmpfiles file.
 var DefaultAllowedWritePrefixes = []string{
 	"/etc/monopanel/",
 	"/etc/nginx/nginx.conf",
@@ -145,7 +149,6 @@ var DefaultAllowedWritePrefixes = []string{
 	"/etc/fail2ban/jail.d/",
 	"/etc/fail2ban/filter.d/",
 	"/etc/ssh/sshd_config.d/",
-	"/etc/tmpfiles.d/",
 	"/etc/sysusers.d/",
 	"/etc/sysctl.d/90-monopanel.conf", // nginx may bind an IPv6 address the host does not have yet
 	"/var/lib/monopanel-valkey/",      // snapshots of the per-account Valkey instances, removed with them

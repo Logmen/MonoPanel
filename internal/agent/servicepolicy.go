@@ -40,6 +40,14 @@ var statusOnlyUnits = map[string]string{
 	"systemd-suspend-then-hibernate.service": "it suspends, then hibernates the machine",
 	"systemd-sysext.service":                 "it lays system extension images over /usr",
 	"systemd-confext.service":                "it lays configuration extension images over /etc",
+	// systemd-tmpfiles over every tmpfiles.d file at once creates, chowns
+	// and empties paths as root, also below directories others may write
+	// to (the panel's run directory); the panel runs none of these.
+	"systemd-tmpfiles-setup.service":           "it runs systemd-tmpfiles over every tmpfiles.d file as root",
+	"systemd-tmpfiles-setup-dev.service":       "it runs systemd-tmpfiles over every tmpfiles.d file as root",
+	"systemd-tmpfiles-setup-dev-early.service": "it runs systemd-tmpfiles over every tmpfiles.d file as root",
+	"systemd-tmpfiles-clean.service":           "it runs systemd-tmpfiles --clean over every tmpfiles.d file as root",
+	"systemd-tmpfiles-clean.timer":             "it starts systemd-tmpfiles-clean.service",
 }
 
 // actionableKinds are the unit types the agent acts on; the others (targets,

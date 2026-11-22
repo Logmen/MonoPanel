@@ -219,6 +219,12 @@ func (s *Server) applyConfigSet(ctx context.Context, req *ApplyConfigSetRequest)
 			return nil, &Error{Status: http.StatusForbidden, Message: err.Error()}
 		}
 	}
+	// php-fpm, nginx and Apache act as root, by name, on paths in the
+	// php-fpm socket directory and the site log tree: not while those are
+	// someone else's (roottrees.go). Vetted before anything is written.
+	if err := s.vetRootDaemonTrees(ctx, append(append([]string{}, req.Reload...), req.Restart...), req.Validate); err != nil {
+		return nil, err
+	}
 	tx := s.newFileTx()
 	defer tx.close()
 	resp := &ApplyConfigSetResponse{Written: []string{}, Unchanged: []string{}, Reloaded: []string{}}

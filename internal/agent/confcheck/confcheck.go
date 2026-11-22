@@ -102,6 +102,18 @@ func layout() Layout {
 // siteLogRoot is the root-owned tree of the site logs, LogDir/sites.
 func (l Layout) siteLogRoot() string { return path.Join(l.LogDir, "sites") }
 
+// siteLog tells a log of that tree a root master may open: one right in a
+// directory of sites/, an account's, which the agent makes and keeps root's
+// alone (its start takes over every directory in sites/ and clears it, and
+// removes whatever else is there). Deeper down a directory lies that root
+// never made: whoever made it, the API's user up to 0.8.19, chooses where a
+// log's name there leads, and the start moves it out only when it can (a
+// full disk keeps it in place).
+func (l Layout) siteLog(p string) bool {
+	dir := path.Dir(p)
+	return under(p, l.siteLogRoot()) && path.Dir(dir) == l.siteLogRoot() && path.Base(p) != "."
+}
+
 // phpRunDir is where the panel's php-fpm pools listen.
 func (l Layout) phpRunDir() string { return path.Join(l.RunDir, "php") }
 

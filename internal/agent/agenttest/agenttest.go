@@ -152,12 +152,13 @@ const unitDir = "/etc/systemd/system"
 
 // refused names what the real agent never writes, removes or makes for the
 // API through config/apply, paths/remove or dirs/ensure: systemd's trees (the
-// units go through /v1/units/*), the API's own data directory (it writes
-// there itself) and the agent's own directory. The fake refuses them too, so
-// that a call site still using them fails its test.
+// units go through /v1/units/*), systemd-tmpfiles' configuration (the
+// php-fpm socket directory comes with the package), the API's own data
+// directory (it writes there itself) and the agent's own directory. The fake
+// refuses them too, so that a call site still using them fails its test.
 func refused(p string) bool {
 	p = filepath.Clean(p)
-	for _, t := range []string{"/etc/systemd", "/run/systemd", "/usr/lib/systemd", "/lib/systemd", config.Default().DataDir, config.DefaultAgentStateDir} {
+	for _, t := range []string{"/etc/systemd", "/run/systemd", "/usr/lib/systemd", "/lib/systemd", "/etc/tmpfiles.d", config.Default().DataDir, config.DefaultAgentStateDir} {
 		if p == t || strings.HasPrefix(p, t+"/") {
 			return true
 		}

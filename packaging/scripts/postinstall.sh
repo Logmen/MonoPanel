@@ -2,9 +2,29 @@
 set -e
 systemd-sysusers /usr/lib/sysusers.d/monopanel.conf >/dev/null 2>&1 || true
 # mp setup up to 0.8.19 wrote the run directory into /etc/tmpfiles.d without
-# the sticky bit, and that copy wins over the package's at boot.
-if [ -f /etc/tmpfiles.d/monopanel.conf ]; then
-	sed -i 's#^d /run/monopanel 0771 root monopanel -$#d /run/monopanel 1771 root monopanel -#' /etc/tmpfiles.d/monopanel.conf || true
+# the sticky bit, and that copy wins over the package's at boot. Nor did it
+# make php/ in it, where the php-fpm masters make the pools' sockets as root:
+# the API had the agent write monopanel-php.conf for that, which it no longer
+# can. The line goes into the copy, for the run directory it names, so that
+# php/ is root's from boot, before the API runs; the API's file, holding just
+# that line, goes (two lines for one path are a warning at every boot).
+tmpfiles=/etc/tmpfiles.d/monopanel.conf
+if [ -f "$tmpfiles" ]; then
+	sed -i 's#^d /run/monopanel 0771 root monopanel -$#d /run/monopanel 1771 root monopanel -#' "$tmpfiles" || true
+	rundir=$(sed -n 's#^d \(/[^ ]*\) [0-7]* root [^ ]* -$#\1#p' "$tmpfiles" | grep -v '/php$' | head -n 1)
+	if [ -n "$rundir" ] && ! grep -q "^d $rundir/php " "$tmpfiles"; then
+		[ -z "$(tail -c 1 "$tmpfiles")" ] || echo >>"$tmpfiles" || true
+		echo "d $rundir/php 0755 root root -" >>"$tmpfiles" || true
+	fi
+	if [ -n "$rundir" ] && grep -q "^d $rundir/php 0755 root root -$" "$tmpfiles" &&
+		[ "$(cat /etc/tmpfiles.d/monopanel-php.conf 2>/dev/null)" = "d $rundir/php 0755 root root -" ]; then
+		rm -f /etc/tmpfiles.d/monopanel-php.conf || true
+	fi
+fi
+# The API could rewrite that file up to 0.8.19, and systemd-tmpfiles applies
+# it as root at every boot: anything but the panel's line is worth a look.
+if [ -f /etc/tmpfiles.d/monopanel-php.conf ] && grep -Ev '^(#|$)' /etc/tmpfiles.d/monopanel-php.conf | grep -qv "^d ${rundir:-/run/monopanel}/php 0755 root root -\$"; then
+	echo "warning: /etc/tmpfiles.d/monopanel-php.conf holds more than the line the panel wrote there, and the panel no longer uses it: check what it makes as root at boot, then remove it" >&2
 fi
 systemd-tmpfiles --create /usr/lib/tmpfiles.d/monopanel.conf >/dev/null 2>&1 || true
 install -d -m 0750 -o root -g monopanel /etc/monopanel /etc/monopanel/templates

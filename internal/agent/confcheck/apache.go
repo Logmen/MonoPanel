@@ -347,10 +347,10 @@ func (c *checker) apacheLog(root, name, v string) error {
 		}
 		return notAllowed(what, "the root parent opens the log; a relative path lands in the configuration directory")
 	}
-	if p, ok := absPath(e); ok && underAny(p, "/var/log/apache2", "/var/log/httpd", c.l.siteLogRoot()) {
+	if p, ok := absPath(e); ok && (underAny(p, "/var/log/apache2", "/var/log/httpd") || c.l.siteLog(p)) {
 		return nil
 	}
-	return notAllowed(what, "the root parent opens the log and appends to it; logs go to /var/log/apache2, /var/log/httpd, %s or syslog", c.l.siteLogRoot())
+	return notAllowed(what, "the root parent opens the log and appends to it; logs go to /var/log/apache2, /var/log/httpd, an account's directory of %s or syslog", c.l.siteLogRoot())
 }
 
 // apacheInclude allows *.conf files in Apache's own directories, each of

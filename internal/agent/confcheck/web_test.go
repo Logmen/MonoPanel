@@ -48,6 +48,10 @@ func TestNginxRefusals(t *testing.T) {
 		{"access_log newline", nginxCust, "access_log \"/var/log/nginx/x\\n* * * * * root id\";\n", nil},
 		{"deep access_log", nginxSite, "server { location / { if ($a) { access_log /root/.ssh/authorized_keys main; } } }\n", []string{"/root/.ssh/authorized_keys"}},
 		{"stream access_log", nginxHTTP, "stream { server { listen 1; access_log /etc/ld.so.preload x; } }\n", []string{"/etc/ld.so.preload"}},
+		// Below an account's directory of the site log tree lies a directory
+		// root never made: its maker picks where a log's name there leads.
+		{"access_log below an account's logs", nginxSite, "access_log /var/log/monopanel/sites/alex/sub/example.com.access.log;\n", []string{"/var/log/monopanel/sites/alex/sub/example.com.access.log", "an account's directory"}},
+		{"error_log below an account's logs", nginxCust, "error_log /var/log/monopanel/sites/alex/a/b/x.log;\n", []string{"/var/log/monopanel/sites/alex/a/b/x.log"}},
 		{"ssl_key_log", nginxHTTP, "ssl_key_log /tmp/keys;\n", []string{"/tmp/keys"}},
 		{"pid elsewhere", nginxMain, "pid /var/lib/monopanel/nginx.pid;\n", []string{"/var/lib/monopanel/nginx.pid"}},
 		{"pid in a run subdir", nginxMain, "pid /run/monopanel/nginx.pid;\n", []string{"/run/monopanel/nginx.pid"}},
@@ -199,6 +203,7 @@ func TestApacheRefusals(t *testing.T) {
 		{"piped custom log", apacheSite, "CustomLog \"||/tmp/logger\" combined\n", []string{"piped"}},
 		{"log into cron", apacheSite, "TransferLog /etc/cron.d/x\n", []string{"/etc/cron.d/x"}},
 		{"log into a home", apacheSite, "CustomLog /var/www/alex/data/logs/a.log combined\n", []string{"/var/www/alex/data/logs/a.log"}},
+		{"log below an account's logs", apacheSite, "CustomLog /var/log/monopanel/sites/alex/sub/a.log combined\n", []string{"/var/log/monopanel/sites/alex/sub/a.log"}},
 		{"log relative", apacheSite, "ErrorLog conf-enabled/evil.conf\n", []string{"conf-enabled/evil.conf"}},
 		{"log dotdot", apacheSite, "ErrorLog /var/log/apache2/../../../etc/x\n", []string{"/var/log/apache2/../../../etc/x"}},
 		{"global log", apacheMain, "GlobalLog \"|/tmp/x\" combined\n", []string{"piped"}},
@@ -322,6 +327,8 @@ func TestPHPRefusals(t *testing.T) {
 		{"pool status socket", phpPool, goodPool + "pm.status_listen = /var/lib/monopanel/s.sock\n", []string{"pm.status_listen"}},
 		{"slowlog", phpPool, goodPool + "slowlog = /etc/cron.d/x\n", []string{"/etc/cron.d/x"}},
 		{"access log home", phpPool, goodPool + "access.log = /var/www/alex/data/logs/fpm.log\n", []string{"access.log"}},
+		{"slowlog below an account's logs", phpPool, goodPool + "slowlog = /var/log/monopanel/sites/alex/sub/example.com.php.slow.log\n", []string{"slowlog", "account's directory"}},
+		{"access log below an account's logs", phpPool, goodPool + "access.log = /var/log/monopanel/sites/alex/sub/x.log\n", []string{"access.log"}},
 		{"slowlog joined", phpPool, goodPool + "slowlog = \"/var/log/monopanel/sites/alex/x\" \"/../../../../etc/x\"\n", []string{"slowlog"}},
 		{"chroot", phpPool, goodPool + "chroot = /var/lib/monopanel\n", []string{"chroot"}},
 		{"socket for everybody", phpPool, goodPool + "listen.mode = 0666\n", []string{"listen.mode"}},

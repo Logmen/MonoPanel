@@ -36,6 +36,15 @@ func TestServicePolicy(t *testing.T) {
 		{"systemd-hybrid-sleep.service", "start", false},
 		{"systemd-suspend-then-hibernate.service", "start", false},
 		{"systemd-suspend.service", "status", true},
+		// systemd-tmpfiles over every file follows what others made below
+		// the panel's run directory
+		{"systemd-tmpfiles-setup.service", "restart", false},
+		{"systemd-tmpfiles-setup.service", "start", false},
+		{"systemd-tmpfiles-setup-dev.service", "start", false},
+		{"systemd-tmpfiles-setup-dev-early.service", "restart", false},
+		{"systemd-tmpfiles-clean.service", "start", false},
+		{"systemd-tmpfiles-clean.timer", "restart", false},
+		{"systemd-tmpfiles-setup.service", "status", true},
 		// an account's Apache: the panel's own template, its instance a login
 		{"monopanel-apache@alex.service", "start", true},
 		{"monopanel-apache@alex.service", "reload-or-restart", true},

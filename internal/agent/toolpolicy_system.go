@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -151,7 +153,14 @@ func (s *Server) planDnf(c *toolCall) (*toolPlan, error) {
 				return nil, notAllowed("the package "+p, "only package names are installed, no files, URLs or options")
 			}
 		}
-		return &toolPlan{args: a}, nil
+		// As /v1/pkg install: the scriptlets of what it upgrades on the
+		// way restart php-fpm and nginx.
+		return &toolPlan{args: a, wrap: func(ctx context.Context, run toolRun, _ io.Writer) (int, error) {
+			if err := s.vetPackageScripts(ctx, "install"); err != nil {
+				return 0, err
+			}
+			return run(a, nil)
+		}}, nil
 	}
 	return nil, refuseArgs("dnf", a, "not a form the panel uses")
 }

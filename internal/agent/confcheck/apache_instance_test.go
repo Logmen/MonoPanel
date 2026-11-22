@@ -126,6 +126,7 @@ func TestApacheInstanceRefusals(t *testing.T) {
 		{"log of the distribution's Apache", alexCust, "ErrorLog /var/log/apache2/error.log\n", []string{"/var/log/apache2/error.log"}},
 		{"relative log", alexMain, "ErrorLog logs/error_log\n", []string{"logs/error_log"}},
 		{"log of the site tree", alexMain, "ErrorLog /var/log/monopanel/sites/error.log\n", []string{"/var/log/monopanel/sites/error.log"}},
+		{"log below the account's logs", alexSite, "CustomLog /var/log/monopanel/sites/alex/sub/example.com.access.log combined\n", []string{"/var/log/monopanel/sites/alex/sub/example.com.access.log"}},
 		{"piped log", alexCust, "CustomLog \"|/bin/sh -c id\" combined\n", []string{"piped"}},
 		{"dotdot log", alexCust, "ErrorLog /var/log/monopanel/sites/alex/../shop/x.log\n", nil},
 		// What the checks refuse everywhere in /etc/apache2 stays refused.

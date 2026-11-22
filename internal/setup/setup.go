@@ -276,7 +276,7 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 	if err := agent.PrepareLogDir(cfg.LogDir, cfg.ServiceGroup); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile("/etc/tmpfiles.d/monopanel.conf", []byte(fmt.Sprintf("d %s 1771 root %s -\n", cfg.RunDir, cfg.ServiceGroup)), 0o644); err != nil {
+	if err := os.WriteFile("/etc/tmpfiles.d/monopanel.conf", []byte(tmpfilesConf(cfg)), 0o644); err != nil {
 		return nil, err
 	}
 
@@ -588,6 +588,14 @@ func chownName(path, owner, group string, mode os.FileMode) error {
 	}
 	_, err := agent.EnsureDirOwner(path, owner, group)
 	return err
+}
+
+// tmpfilesConf is mp setup's /etc/tmpfiles.d/monopanel.conf, the package's
+// file for this layout (it takes the package's place at boot): the run
+// directory, and php/ in it root's from boot — the php-fpm masters make the
+// pools' sockets there as root, and the API may write to the run directory.
+func tmpfilesConf(cfg config.Config) string {
+	return fmt.Sprintf("d %s 1771 root %s -\nd %s 0755 root root -\n", cfg.RunDir, cfg.ServiceGroup, filepath.Join(cfg.RunDir, "php"))
 }
 
 // chownTree hands the data directory back to the service user after setup

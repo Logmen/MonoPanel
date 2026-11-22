@@ -429,7 +429,10 @@ func (s *Server) jobPHPInstall(ctx context.Context, jc *jobs.Context) error {
 	if err != nil {
 		return s.phpFail(ctx, p.Version, err)
 	}
-	files := append([]agent.FileSpec{{Path: "/etc/tmpfiles.d/monopanel-php.conf", Content: fmt.Sprintf("d %s 0755 root root -\n", path.Join(s.cfg.RunDir, "php")), Mode: 0o644}, idle}, ini...)
+	// The socket directory is made at boot by the package's and mp setup's
+	// own tmpfiles file, and by the agent at its start: the API writes no
+	// tmpfiles line (/etc/tmpfiles.d is not on the agent's allow-list).
+	files := append([]agent.FileSpec{idle}, ini...)
 	jc.Logf("the distribution's pool %s: idle (nobody, a socket of root's alone)", idle.Path)
 	if conf, err := s.fpmSyslogConf(ctx, layout); err != nil {
 		jc.Logf("php-fpm.conf: the master keeps its log file (the panel's next start tries again): %v", err)

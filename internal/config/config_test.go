@@ -57,7 +57,8 @@ func TestSaveRoundTrip(t *testing.T) {
 
 // The configuration history is root's, in the agent's own directory, not
 // below the data directory the API owns; the write allow-list holds neither
-// systemd's unit directory nor that data directory.
+// systemd's unit directory nor that data directory, nor systemd-tmpfiles'
+// configuration.
 func TestAgentStateAndAllowList(t *testing.T) {
 	cfg := Default()
 	if cfg.AgentStateDir() != "/var/lib/monopanel-agent" || cfg.ConfHistoryDir() != "/var/lib/monopanel-agent/confhistory" {
@@ -71,7 +72,7 @@ func TestAgentStateAndAllowList(t *testing.T) {
 		t.Fatalf("override: %s", cfg.ConfHistoryDir())
 	}
 	for _, pre := range DefaultAllowedWritePrefixes {
-		if strings.HasPrefix(pre, "/etc/systemd") || strings.HasPrefix(pre, "/var/lib/monopanel/") || pre == "/var/lib/monopanel" {
+		if strings.HasPrefix(pre, "/etc/systemd") || strings.HasPrefix(pre, "/var/lib/monopanel/") || pre == "/var/lib/monopanel" || strings.HasPrefix(pre, "/etc/tmpfiles.d") {
 			t.Errorf("on the allow-list: %s", pre)
 		}
 	}

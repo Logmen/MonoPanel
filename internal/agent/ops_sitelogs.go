@@ -160,51 +160,76 @@ func ensureSiteLogTree(logDir, login string, ids siteLogIDs, files []string) (*S
 // root's entries root's, then opens <logDir>/sites (making it when it is
 // missing) and checks it is root's alone.
 func openSiteLogRoot(logDir string, ids siteLogIDs, resp *SiteLogsResponse) (int, error) {
+	top, err := openLogDir(logDir, ids, resp)
+	if err != nil {
+		return -1, err
+	}
+	defer unix.Close(top) //nolint:errcheck // a directory opened for reading
+	return siteLogDir(top, filepath.Join(logDir, "sites"), ids.rootUID, ids.rootGID, siteLogsMode, resp)
+}
+
+// openLogDir opens <logDir> and gives it root as its owner and the mode
+// that keeps root's entries root's (logDirFix).
+func openLogDir(logDir string, ids siteLogIDs, resp *SiteLogsResponse) (int, error) {
 	top, err := unix.Open(logDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return -1, &os.PathError{Op: "open", Path: logDir, Err: err}
 	}
-	defer unix.Close(top) //nolint:errcheck // a directory opened for reading
 	var st unix.Stat_t
 	if err := unix.Fstat(top, &st); err != nil {
+		unix.Close(top) //nolint:errcheck // a directory opened for reading
 		return -1, &os.PathError{Op: "stat", Path: logDir, Err: err}
 	}
 	// The service user's, as mp setup made it up to 0.8.19: root takes it
 	// over before it trusts anything below it — sites/ is checked right
-	// after, so what the old owner left in its place is refused.
+	// after, so what the old owner left in its place is refused (or, at the
+	// agent's start, taken over and cleared: prepareSiteLogTree).
 	if uid, gid, mode, change := logDirFix(&st, ids); change {
 		if uid >= 0 || gid >= 0 {
 			if err := unix.Fchown(top, uid, gid); err != nil {
+				unix.Close(top) //nolint:errcheck // a directory opened for reading
 				return -1, &os.PathError{Op: "chown", Path: logDir, Err: err}
 			}
 		}
 		if err := unix.Fchmod(top, mode); err != nil {
+			unix.Close(top) //nolint:errcheck // a directory opened for reading
 			return -1, &os.PathError{Op: "chmod", Path: logDir, Err: err}
 		}
 		resp.Changed++
 	}
-	return siteLogDir(top, filepath.Join(logDir, "sites"), ids.rootUID, ids.rootGID, siteLogsMode, resp)
+	return top, nil
+}
+
+// makeLogDir makes the panel's log directory when it is missing,
+// root:<service group> 1771 (root's group when gid is -1: there is no
+// service group).
+func makeLogDir(logDir, serviceGroup string, gid int) error {
+	if _, err := os.Lstat(logDir); !errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	d := DirSpec{Path: logDir, Mode: logDirMode, Owner: "root"}
+	if gid >= 0 {
+		d.Group = serviceGroup
+	}
+	_, _, err := ensureDirAt(d, &dirTrust{rootUID: os.Geteuid(), strict: true}, followAll)
+	return err
 }
 
 // PrepareLogDir makes the panel's log directory root:<service group> 1771 —
 // taking it over from the service user, whose it was up to 0.8.19 — and
 // sites/ in it root:root 0711, refusing a sites/ that is not root's alone
 // (what the old owner may have left there). mp setup's; the agent does the
-// same at its start. The directory is made when it is missing.
+// same at its start and goes further: it takes such a sites/ over and
+// clears the tree of what root does not put there (prepareSiteLogTree).
+// The directory is made when it is missing.
 func PrepareLogDir(logDir, serviceGroup string) error {
 	logDir = filepath.Clean(logDir)
 	gid, err := lookupGID(serviceGroup)
 	if err != nil {
 		gid = -1
 	}
-	if _, err := os.Lstat(logDir); errors.Is(err, os.ErrNotExist) {
-		d := DirSpec{Path: logDir, Mode: logDirMode, Owner: "root"}
-		if gid >= 0 {
-			d.Group = serviceGroup
-		}
-		if _, _, err := ensureDirAt(d, &dirTrust{rootUID: os.Geteuid(), strict: true}, followAll); err != nil {
-			return err
-		}
+	if err := makeLogDir(logDir, serviceGroup, gid); err != nil {
+		return err
 	}
 	sites, err := openSiteLogRoot(logDir, siteLogIDs{rootUID: os.Geteuid(), rootGID: os.Getegid(), serviceGID: gid, takeOver: os.Geteuid() == 0}, &SiteLogsResponse{})
 	if err != nil {
@@ -253,7 +278,8 @@ func siteLogDir(parent int, p string, rootUID, gid int, mode uint32, resp *SiteL
 	}
 	if int(st.Uid) != rootUID || st.Mode&0o022 != 0 {
 		unix.Close(fd) //nolint:errcheck // a directory opened for reading
-		return -1, fmt.Errorf("%w: %s (owner uid %d, mode %#o); give it to root and take the write bits of group and others away by hand", errNotRootsAlone, p, st.Uid, st.Mode&0o7777)
+		// Handed to root by hand, it would keep what its owner left in it.
+		return -1, fmt.Errorf("%w: %s (owner uid %d, mode %#o); restart monopanel-agent: at its start it takes the site log tree over and clears it of what root did not put there", errNotRootsAlone, p, st.Uid, st.Mode&0o7777)
 	}
 	changed := false
 	if int(st.Gid) != gid {

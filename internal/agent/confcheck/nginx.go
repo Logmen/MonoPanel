@@ -398,10 +398,10 @@ func (c *checker) nginxLogPath(what, v string) error {
 		return nil
 	}
 	p, ok := absPath(v)
-	if ok && underAny(p, "/var/log/nginx", c.l.siteLogRoot()) {
+	if ok && (under(p, "/var/log/nginx") || c.l.siteLog(p)) {
 		return nil
 	}
-	return notAllowed(fmt.Sprintf("%s %s", what, v), "the root master opens the log, appends to it and gives it to the worker user; logs go to /var/log/nginx or %s, stderr, syslog or off", c.l.siteLogRoot())
+	return notAllowed(fmt.Sprintf("%s %s", what, v), "the root master opens the log, appends to it and gives it to the worker user; logs go to /var/log/nginx or an account's directory of %s, stderr, syslog or off", c.l.siteLogRoot())
 }
 
 // runFile allows a pid or lock file right in /run (or /var/run): only root

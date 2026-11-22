@@ -71,6 +71,12 @@ func (s *Server) service(ctx context.Context, req *ServiceRequest) (*ServiceResp
 	if err := s.vetMountStart(unit, req.Action); err != nil {
 		return nil, err
 	}
+	switch req.Action {
+	case "start", "restart", "reload", "reload-or-restart":
+		if err := s.vetRootDaemonTrees(ctx, []string{unit}, nil); err != nil {
+			return nil, err
+		}
+	}
 	conn, err := systemd.Connect(ctx)
 	if err != nil {
 		return nil, &Error{Message: "systemd unreachable", Output: err.Error()}
@@ -126,6 +132,12 @@ func (s *Server) pkg(ctx context.Context, req *PkgRequest) (*PkgResponse, error)
 		return nil, err
 	}
 	defer cleanup()
+	// Only reading the index and the database runs no package's scripts.
+	if req.Action != "update-index" && req.Action != "query" && req.Action != "available" {
+		if err := s.vetPackageScripts(ctx, req.Action); err != nil {
+			return nil, err
+		}
+	}
 	pm := s.profile.Packages()
 	if pm.Name() == "none" {
 		return nil, &Error{Status: http.StatusNotImplemented, Message: "package management is unavailable on " + s.profile.Release().PrettyName}

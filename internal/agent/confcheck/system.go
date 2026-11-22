@@ -3,6 +3,7 @@ package confcheck
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -10,58 +11,42 @@ import (
 // root at boot: tmpfiles creates, writes, chowns and links any path
 // (C, L, w, f, x, z/Z), sysusers creates accounts and adds them to groups,
 // sysctl sets kernel parameters (kernel.core_pattern=| runs a program as
-// root on every crash). The panel writes one line of each kind it needs.
+// root on every crash). The panel writes one line of each kind it needs —
+// of tmpfiles none any more.
 
 func isTmpfiles(p string) bool { return under(p, "/etc/tmpfiles.d") }
 
-var (
-	// tmpfilesModeRe is a mode without special bits in which only the owner
-	// (root) writes: in a directory others may write, they could put a
-	// symlink where the root daemon creates its socket or pid file.
-	tmpfilesModeRe = regexp.MustCompile(`^0?[0-7][0145][0145]$`)
-	// plainPathRe is a path without quotes, C escapes (systemd unescapes
-	// \x2e\x2e to ".."), specifiers or globs.
-	plainPathRe = regexp.MustCompile(`^/[A-Za-z0-9._@+/-]*$`)
-)
+// plainPathRe is a path without quotes, C escapes (systemd unescapes
+// \x2e\x2e to ".."), specifiers or globs.
+var plainPathRe = regexp.MustCompile(`^/[A-Za-z0-9._@+/-]*$`)
 
-// checkTmpfiles allows "d <dir below RunDir> <mode> root root -": the
-// php-fpm socket directory and others like it.
+// checkTmpfiles allows the one line the API ever had the agent write there,
+// "d <RunDir>/php 0755 root root -", the php-fpm socket directory. The
+// package's and mp setup's own tmpfiles files carry it now, and
+// /etc/tmpfiles.d is off the write allow-list; the check holds for an
+// administrator who puts it back (agent.extra_write_prefixes). Any other
+// path below the run directory is reached through entries the API makes
+// there itself, and a run of systemd-tmpfiles over every file (--create
+// --remove by hand, a package script without a file name) follows their
+// symlinks as root: a d line chowns and chmods what it finds there, a D
+// line empties it.
 func checkTmpfiles(c *checker, _ string, content []byte) error {
 	lines, err := textLines(content)
 	if err != nil {
 		return err
 	}
+	dir := c.l.phpRunDir()
+	want := []string{"d", dir, "0755", "root", "root", "-"}
 	for i, raw := range lines {
 		s := trimBlanks(raw)
 		if s == "" || s[0] == '#' {
 			continue
 		}
-		f := blankFields(s)
-		what := fmt.Sprintf("tmpfiles line %q", s)
-		var err error
-		switch {
-		case f[0] != "d" && f[0] != "D":
-			err = notAllowed(what, "the panel makes directories (d); the other types write, copy, link, chown or remove paths as root at every boot")
-		case len(f) < 2 || len(f) > 6:
-			err = notAllowed(what, "d <path> <mode> <user> <group> [age]")
-		default:
-			p, ok := absPath(f[1])
-			switch {
-			case !ok || !plainPathRe.MatchString(f[1]) || !under(p, c.l.RunDir):
-				err = notAllowed(what, "the panel's directories are below %s", c.l.RunDir)
-			case len(f) > 2 && f[2] != "-" && !tmpfilesModeRe.MatchString(f[2]):
-				err = notAllowed(what, "the mode has no special bits, and only root writes to the directory")
-			case len(f) > 3 && f[3] != "root" && f[3] != "-":
-				err = notAllowed(what, "the directory is root's: a root process makes its files there")
-			case len(f) > 4 && f[4] != "root" && f[4] != "-":
-				err = notAllowed(what, "the directory is root's: a root process makes its files there")
-			case len(f) > 5 && f[5] != "-":
-				err = notAllowed(what, "the panel's directories are not cleaned by age")
-			}
+		if plainPathRe.MatchString(dir) && !hasDotDot(dir) && slices.Equal(blankFields(s), want) {
+			continue
 		}
-		if err := atLine(i+1, err); err != nil {
-			return err
-		}
+		err := notAllowed(fmt.Sprintf("tmpfiles line %q", s), "the panel's one line is %q, the php-fpm socket directory: any other path below %s is reached through entries the API makes there, and systemd-tmpfiles follows their symlinks as root — a d line chowns what it finds there, a D line empties it", strings.Join(want, " "), c.l.RunDir)
+		return atLine(i+1, err)
 	}
 	return nil
 }

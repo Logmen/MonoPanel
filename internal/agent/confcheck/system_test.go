@@ -103,13 +103,22 @@ func TestBootFilesRefusals(t *testing.T) {
 		{"tmpfiles specifier", tmp, "d /run/monopanel/%u 0755 root root -\n", nil},
 		{"tmpfiles escape", tmp, "d /run/monopanel/\\x2e\\x2e/\\x2e\\x2e/etc 0777 root root -\n", nil},
 		{"tmpfiles quoted", tmp, "d \"/run/monopanel/a b\" 0755 root root -\n", nil},
-		{"tmpfiles setuid mode", tmp, "d /run/monopanel/php 4755 root root -\n", []string{"special bits"}},
-		{"tmpfiles API owner", tmp, "d /run/monopanel/php 0755 monopanel monopanel -\n", []string{"root's"}},
-		{"tmpfiles age", tmp, "d /run/monopanel/php 0755 root root 10d\n", []string{"age"}},
+		{"tmpfiles setuid mode", tmp, "d /run/monopanel/php 4755 root root -\n", []string{"4755", "the panel's one line"}},
+		{"tmpfiles API owner", tmp, "d /run/monopanel/php 0755 monopanel monopanel -\n", []string{"monopanel monopanel"}},
+		{"tmpfiles age", tmp, "d /run/monopanel/php 0755 root root 10d\n", []string{"10d"}},
 		// Others could put a symlink where the root master makes its socket.
-		{"tmpfiles world-writable", tmp, "d /run/monopanel/php 0777 root root -\n", []string{"only root writes"}},
-		{"tmpfiles group-writable", tmp, "d /run/monopanel/php 0775 root root -\n", []string{"only root writes"}},
+		{"tmpfiles world-writable", tmp, "d /run/monopanel/php 0777 root root -\n", []string{"0777"}},
+		{"tmpfiles group-writable", tmp, "d /run/monopanel/php 0775 root root -\n", []string{"0775"}},
 		{"tmpfiles boot modifier", tmp, "d! /run/monopanel/php 0755 root root -\n", nil},
+		// Below the run directory every other path goes through entries the
+		// API made itself: a full tmpfiles run follows its symlinks there, a
+		// D line empties the directory one points to.
+		{"tmpfiles D through the API's symlink", tmp, "D /run/monopanel/A/L/monopanel 0755 root root -\n", []string{"D /run/monopanel/A/L/monopanel", "empties"}},
+		{"tmpfiles D of the socket directory", tmp, "D /run/monopanel/php 0755 root root -\n", nil},
+		{"tmpfiles d below the run directory", tmp, "d /run/monopanel/A 0755 root root -\n", []string{"/run/monopanel/A"}},
+		{"tmpfiles d below the socket directory", tmp, "d /run/monopanel/php/x 0755 root root -\n", nil},
+		{"tmpfiles the run directory", tmp, "d /run/monopanel 0755 root root -\n", nil},
+		{"tmpfiles the panel's line, then another", tmp, "d /run/monopanel/php 0755 root root -\nd /run/monopanel/x 0755 root root -\n", []string{"line 2"}},
 		{"sysusers root id", su, "u monopanel 0 \"x\" /var/lib/monopanel /usr/sbin/nologin\n", []string{"systemd's choice"}},
 		{"sysusers other name", su, "u evil - \"x\" /root /bin/bash\n", []string{"own accounts"}},
 		{"sysusers sudo", su, "m monopanel sudo\n", []string{"m monopanel sudo"}},
@@ -124,6 +133,11 @@ func TestBootFilesRefusals(t *testing.T) {
 		{"bad value", sc, "net.ipv6.ip_nonlocal_bind = 2\n", nil},
 		{"sysctl.conf", "/etc/sysctl.conf", "kernel.core_pattern=|/tmp/x\n", nil},
 	})
+	// The one line the panel had written there passes, however spaced, and
+	// so does a file of comments.
+	pass(t, tmp, "# the php-fpm socket directory\nd /run/monopanel/php 0755 root root -\n")
+	pass(t, tmp, "d\t/run/monopanel/php  0755 root\troot -")
+	pass(t, tmp, "# nothing\n\n")
 }
 
 func TestSSHRefusals(t *testing.T) {

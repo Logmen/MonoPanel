@@ -333,7 +333,7 @@ func (c *checker) apacheInstanceLog(inst *apacheInst, name, v string) error {
 		return nil
 	}
 	own := path.Join(c.l.siteLogRoot(), inst.login)
-	if p, ok := absPath(v); ok && under(p, own) {
+	if p, ok := absPath(v); ok && directChild(p, own) {
 		return nil
 	}
 	return notAllowed(what, "the root parent opens the log and the children of %s write to it: the logs of this Apache go to %s or syslog", inst.login, own)

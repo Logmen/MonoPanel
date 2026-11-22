@@ -32,6 +32,11 @@ type Server struct {
 	// panelMu serialises edits of config.yaml: each one reads the file,
 	// changes some keys and writes it back.
 	panelMu sync.Mutex
+	// siteLogTreeErr is why the agent's start did not finish taking the site
+	// log tree over and clearing it, nil once it did (roottrees.go);
+	// siteLogTreeMu guards it.
+	siteLogTreeMu  sync.Mutex
+	siteLogTreeErr error
 	// rootUID is the user whose directories root's walks trust as root's
 	// own: 0 for the agent as it runs, the test's user in tests.
 	rootUID int
@@ -174,7 +179,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		ServiceUser: s.cfg.ServiceUser, ServiceGroup: s.cfg.ServiceGroup,
 		WebGroup: s.cfg.WebGroup, CLIGroup: s.cfg.CLIGroup,
 	})
-	s.prepareDirs()
+	s.prepareDirs(ctx)
 	s.probeNoSymfollow(ctx)
 	s.logSandbox()
 	if os.Geteuid() == 0 {
@@ -234,15 +239,20 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 //
 //   - the run directory, root:<service group> 1771: the API makes its socket
 //     there, and the sticky bit keeps it from renaming root's entries — the
-//     agent's socket, php/, where the php-fpm masters make the pools'
-//     sockets as root;
+//     agent's socket, php/;
+//   - php/ in it, root:root 0755, where the php-fpm masters make the pools'
+//     sockets as root: taken over and cleared when someone else made it
+//     (roottrees.go);
 //   - the log directory, root:<service group> 1771, and sites/ in it,
-//     root:root 0711 (ops_sitelogs.go);
+//     root:root 0711 (ops_sitelogs.go), taken over and cleared the same way;
 //   - the agent's own directory and the configuration history, root 0700.
 //
 // Failures are logged, not fatal: the panel needs the agent up, and the calls
-// that rely on these directories check them again.
-func (s *Server) prepareDirs() {
+// that rely on these directories check them again — php-fpm, nginx and
+// Apache are not started, restarted or reloaded, nor packages installed,
+// while php/ or sites/ is not root's alone or sites/ not cleared
+// (vetRootDaemonTrees, vetPackageScripts).
+func (s *Server) prepareDirs(ctx context.Context) {
 	if os.Geteuid() != 0 {
 		return
 	}
@@ -259,8 +269,11 @@ func (s *Server) prepareDirs() {
 			s.log.Warn("agent directories", "dir", d.Path, "err", err)
 		}
 	}
-	if err := PrepareLogDir(s.cfg.LogDir, s.cfg.ServiceGroup); err != nil {
-		s.log.Warn("site log tree", "dir", s.cfg.LogDir, "err", err)
+	if err := s.preparePHPSocketDir(ctx); err != nil {
+		s.log.Error("php-fpm socket directory: php-fpm is not started, restarted or reloaded while it is not root's alone", "dir", filepath.Join(s.cfg.RunDir, "php"), "err", err)
+	}
+	if err := s.prepareSiteLogTree(ctx); err != nil {
+		s.log.Error("site log tree: nginx, Apache and php-fpm are not started, restarted or reloaded until it is root's alone and cleared; the agent tries again before each", "dir", s.cfg.LogDir, "err", err)
 	}
 	s.removeForeignAPISocket()
 }

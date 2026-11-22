@@ -751,6 +751,9 @@ func (s *Server) removePaths(ctx context.Context, req *RemovePathsRequest) (*Rem
 			return nil, &Error{Status: http.StatusForbidden, Message: err.Error()}
 		}
 	}
+	if err := s.vetRootDaemonTrees(ctx, req.Reload, req.Validate); err != nil {
+		return nil, err
+	}
 	resp := &RemovePathsResponse{Removed: []string{}}
 	root := filepath.Clean(s.cfg.WWWRoot)
 	var guard *shareGuard

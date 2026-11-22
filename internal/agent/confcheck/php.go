@@ -547,10 +547,10 @@ func (c *checker) fpmPool(e iniEntry) error {
 		// belong to the apache user, who could swap a log for a symlink the
 		// root master then appends to.
 		fp, ok := absPath(v)
-		if ok && !strings.ContainsAny(fp, "$*?[") && under(fp, c.l.siteLogRoot()) {
+		if ok && !strings.ContainsAny(fp, "$*?[") && c.l.siteLog(fp) {
 			return nil
 		}
-		return notAllowed(fmt.Sprintf("%s = %s", what, v), "the root master opens the log; a site's logs live in %s", c.l.siteLogRoot())
+		return notAllowed(fmt.Sprintf("%s = %s", what, v), "the root master opens the log; a site's logs live in its account's directory of %s", c.l.siteLogRoot())
 	case "php_value", "php_admin_value", "php_flag", "php_admin_flag":
 		switch strings.ToLower(e.offset) {
 		case "extension", "zend_extension":
