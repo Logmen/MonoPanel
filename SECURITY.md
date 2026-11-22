@@ -32,7 +32,7 @@ Only the latest release receives fixes; there are no maintenance branches before
 
 | Version | Supported |
 | --- | --- |
-| latest release (0.8.x) | yes |
+| latest release (0.9.x) | yes |
 | anything older | no — update first |
 
 ## What the panel considers a boundary
@@ -127,14 +127,32 @@ it gets fixed.
   (restic's Landlock sandbox and the view without symlinks of every tree a backup
   reads, which holds without Landlock too; `mp doctor` warns on a kernel without
   Landlock, saying how to turn it on where it is built in, where the agent may
-  not mount, or when the installed restic does not start in the sandbox). So is
+  not mount, or when the installed restic took too long to start in the sandbox,
+  and fails when it does not start there). So is
   reaching another account's Apache (Apache mode) past nginx, its allow list, its
   rate limit and the client address its `.htaccess` and PHP see, without that
   account's backend secret.
+- **Mail: one account's sender, another account's domain.** Before 0.9.0 an
+  account's site or mailbox could send mail as a domain of another account on the
+  same server, and opendkim signed it with that domain's key. Since 0.9.0 postfix
+  asks the panel's mail policy (the milter `monopanel-mailpolicy`) about every
+  message before opendkim signs it and refuses one whose envelope sender or header
+  From is in another account's domain: "550 5.7.1 <domain>: this server does not
+  send mail as a domain of another account"; the doctor's "mail policy" line says
+  whether the policy works. In scope: an account sending mail as another account's
+  domain (DKIM signature, this server's SPF/DMARC) — closed by the mail policy (on
+  EL `monopanel-mailguard` also closes the milter ports to the accounts). Out of
+  scope (known limitations): inbound mail with a forged sender (the panel does not
+  enforce DMARC on inbound); forwarding: an inbound message whose envelope and From
+  are in another account's domain, forwarded by a panel alias or an account's
+  `~/.forward` to an outside address, leaves this server with its envelope
+  unchanged (SPF passes) — until SRS.
 - **Authentication.** Session handling (a password change ends the account's
   other browser sessions, a suspension all of them), Bearer tokens, TOTP (setting
   it up anew takes switching it off with the password first), the login rate
-  limiter, the Origin check that stands in for CSRF tokens.
+  limiter, the Origin check that stands in for CSRF tokens. A suspension closes the
+  panel alone — sign-in, sessions, API tokens and the local socket; in 0.9.0 it
+  does not close SFTP/SSH, a known limitation the next release lifts.
 - **Generated configuration.** Values that reach nginx, Apache, php-fpm, cron or
   systemd templates and the mail maps come from user input. Anything that escapes
   its context there — a domain name that becomes a directive, a value that starts
@@ -213,7 +231,7 @@ release, or the release a later build (`git describe`, e.g. `0.8.19-5-gabc1234`)
 was made from, is a downgrade — an older signed release would bring back what
 later ones fixed — and the refusal points to the documented way back (README,
 "Going back to an older version") instead of inviting it. Root can still
-install an older package by hand; below 0.8.20 the package's preremove then says
+install an older package by hand; below 0.9.0 the package's preremove then says
 what that breaks and how to mend it, without failing the package transaction.
 
 If you believe the signing key or a published release has been tampered with,

@@ -41,7 +41,7 @@ an administrator a service in the list opens on the "Services" page, and at the 
 are the diagnostics, the same as `mp doctor`: services, config syntax, disk, memory,
 certificates, DNS, jobs, drift of generated files, restic's sandbox, the shared folders,
 the panel port's socket, the stack's package updates that wait, kernel modules and the
-moves of the upgrade to 0.8.20. A finding's details expand on a click, and the checks
+moves of the upgrade to 0.9.0. A finding's details expand on a click, and the checks
 can be run again. Some findings have a button next to them:
 fix a site or "Fix all sites", "Back to enforcing" for SELinux; findings about waiting
 updates, and about nginx, PHP, Apache and database services on a binary an upgrade
@@ -97,7 +97,7 @@ anything but the site's pool, `fastcgi_param PHP_VALUE` and others —
 written, and the message says so — "the panel does not take these directives (nothing
 was changed)" — rather than blaming nginx. "Logs" shows access, error, php, slow and the Apache logs,
 from the last 50 to 5000 lines (for a site that has not moved out of `data/logs` since the
-upgrade to 0.8.20, from the file written last: the one in `~/data/logs`, read as the
+upgrade to 0.9.0, from the file written last: the one in `~/data/logs`, read as the
 account, or the log tree's).
 
 ## PHP
@@ -178,8 +178,11 @@ random password and deletion, optionally with the messages; an alias's row has e
 its destinations. An administrator installs the mail server, changes its settings,
 applies the configuration again ("Apply now") and installs the webmail or reinstalls it
 over itself — the Roundcube database with the users' contacts and settings stays. If the
-mail server runs on a self-signed certificate, the panel warns about it. More in
-[06. Mail server](06-mail.md).
+mail server runs on a self-signed certificate, the panel warns about it (on EL STARTTLS
+on 587 does not work then — issue a certificate for the mail host name on the SSL page).
+DKIM switched on in the settings after the mail server was installed without it works
+once the mail server is installed again (`mp mail install`,
+[06 §12](06-mail.md#12-limitations)). More in [06. Mail server](06-mail.md).
 
 ## Files
 
@@ -335,7 +338,11 @@ remote repository loses DNS if the host replaces `resolv.conf` during a backup. 
 Linux's UEK, which has Landlock built in but not enabled, the line says how to turn it
 on. If `mp doctor` says "restic does not start in its sandbox", backups fail with that
 same error: the line names what the sandbox kept from restic — report it to the panel's
-developers and upgrade the panel once a release fixes it.
+developers and upgrade the panel once a release fixes it. The dashboard's diagnostics
+block counts it as a failure. "restic took too long to start in its sandbox" is a
+warning: the test did not finish within 30 seconds, as on a host too busy at that moment;
+the agent runs it again 10 minutes later, and if it keeps timing out, backups hang the
+same way — the line says what to look at.
 
 ## Migration
 
@@ -383,8 +390,8 @@ share one password; it can be generated, and changing it ends the account's brow
 sessions — its API tokens keep working; one's own password is changed with the current one. A new account takes a login, a password, an
 e-mail, a role, a quota (only stored so far) and SSH access. An account's row has its card
 (e-mail, UID, home directory, 2FA reset), the password, switching SFTP ↔ shell, cron, app
-services, Valkey, shared folders, API tokens, suspension (sign-in to the panel and over
-SFTP/SSH is closed and the sessions end, while sites, databases and cron keep working) and
+services, Valkey, shared folders, API tokens, suspension (sign-in to the panel is closed
+and the sessions end, while SFTP/SSH, sites, databases and cron keep working) and
 deletion, which asks you to type the login. The "Cron", "App services" and "Valkey" tabs
 show the same for all accounts at once. Deleting an account also removes its sites,
 databases, cron, app services, Valkey instances and certificates, and with the box ticked
