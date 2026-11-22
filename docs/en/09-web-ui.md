@@ -39,9 +39,12 @@ hour, six hours, a day, a week or a month. The "Table" button shows the same poi
 list, like `mp metrics`. If the agent does not answer, a warning says so at the top. For
 an administrator a service in the list opens on the "Services" page, and at the bottom
 are the diagnostics, the same as `mp doctor`: services, config syntax, disk, memory,
-certificates, DNS, jobs and drift of generated files. A finding's details expand on a
-click, and the checks can be run again. Some findings have a button next to them: fix a
-site or "Fix all sites", "Back to enforcing" for SELinux.
+certificates, DNS, jobs, drift of generated files, the stack's package updates that
+wait, kernel modules and the moves of the upgrade to 0.8.20. A finding's details expand
+on a click, and the checks can be run again. Some findings have a button next to them:
+fix a site or "Fix all sites", "Back to enforcing" for SELinux; findings about waiting
+updates, and about nginx, PHP, Apache and database services on a binary an upgrade
+replaced, have a "To the upgrade" link to the Extensions page.
 
 ## Sites
 
@@ -121,6 +124,19 @@ sites in apache mode has an Apache of its own, and the row tells whether all of 
 The PHP branches are listed here too, with the state of their php-fpm, and are
 managed on the PHP page. The memory and the number of connections for memcached are set
 here as well.
+
+When a component's repository has a newer version than the installed one, the version
+carries a "→ new version" tag (the tooltip says where from) and the row an Upgrade
+button. When updates of nginx, PHP or Apache wait, a banner above the list offers
+"Upgrade nginx, PHP and Apache" and says when the daily upgrade will install them, or
+that it is off, with a link to Settings. The panel
+asks before an upgrade and explains what restarts; the database server is upgraded only
+with its own button, as its restart is downtime for the sites. The PHP branches are
+upgraded together. A service still running the binary an upgrade replaced is marked: the
+new version takes effect after a restart. The Upgrade button also shows on a row whose
+service (or one of the accounts' Apaches) runs such a binary (apache2 upgraded by
+unattended-upgrades, say): there is nothing to install, and the service restarts after
+its configuration check. How an upgrade goes: [01 §9](01-architecture.md#9-packaging-installation-updates).
 
 ## Databases
 
@@ -249,10 +265,16 @@ panel again; a restart of the socket itself is carried out as a stop of it and a
 of the API. Instances of template units (modprobe@…, getty@…), targets, slices, devices
 and scopes, as well as debug-shell, emergency, rescue, console-getty, the power units
 (systemd-halt, -poweroff, -reboot, -kexec, -soft-reboot, -exit, -suspend, -hibernate,
--hybrid-sleep, -suspend-then-hibernate) and systemd-sysext/confext only report their
-state: the agent takes no action on them; the accounts' Apaches
-(`monopanel-apache@<login>`) are the exception. The page shows an agent's refusal with
-its reason (the API answers 403, not 502). The page is for administrators.
+-hybrid-sleep, -suspend-then-hibernate), systemd-sysext/confext and systemd-tmpfiles-*
+only report their state: the agent takes no action on them; the accounts' Apaches
+(`monopanel-apache@<login>`) are the exception. While the site log tree `sites/` is not
+root's alone or not cleared, the agent refuses to start, restart or reload php-fpm, nginx
+and Apache, and to install, upgrade or remove packages (PHP and stack installation jobs
+fail with that reason); while the socket directory `/run/monopanel/php` is not root's
+alone, it refuses the same for php-fpm and the packages. It says the agent should be
+restarted, and a site log tree not cleared yet it tries to clear again before each such
+action. The page shows an agent's refusal with its reason (the API answers 403, not 502).
+The page is for administrators.
 
 ## Backups
 
@@ -265,7 +287,12 @@ credentials are stored encrypted. A backup can be run for the whole server, an a
 site or a database; a snapshot is restored alongside, into `/var/lib/monopanel-agent/restore/<snapshot>`
 (root's alone), or in place — for the chosen paths in the web root, the panel's
 configuration, certificates, the ACME account and dumps, and after an explicit
-confirmation. Below is the
+confirmation. Before an in-place restore the agent checks that the file system the files
+go back to has room: the snapshot is first staged next to them, in a directory of the
+agent's on that file system. When there is not enough, the job fails at once, saying how
+much it takes and how much is free. A restore aside is checked for room too — in
+`/var/lib/monopanel-agent/restore`, on its file system — and refused at once when it is
+short: choose only the paths needed. Below is the
 history of runs, for all repositories or one, with their size and number of files. A
 repository can be forgotten: the panel stops writing to it and forgets its password, and
 the snapshots in it stay — they can be read again by adding the repository back with the
@@ -282,9 +309,12 @@ a private CA for a REST server goes into the system store (`update-ca-certificat
 `update-ca-trust`): root's own files such as `~/.aws/credentials`, or a `RESTIC_CACERT`
 outside the system directories, are out of the sandbox's reach. A local repository is a
 directory of restic's own (such as `/var/backups/monopanel`): the agent refuses one that
-holds other files too. When `mp doctor` says a backup follows the symlinks in the web
-root, the agent is not allowed to mount (usually a container's profile), and a server
-backup is then guarded by Landlock alone.
+holds other files too. When `mp doctor` says a backup follows the symlinks in the trees
+it saves, or that restic reads `resolv.conf` by inode, the agent is not allowed to mount
+(usually a container's profile): a server backup is then guarded by Landlock alone, and a
+remote repository loses DNS if the host replaces `resolv.conf` during a backup. On Oracle
+Linux's UEK, which has Landlock built in but not enabled, the line says how to turn it
+on.
 
 ## Migration
 
@@ -384,9 +414,11 @@ restarts. Below are the panel update (check,
 install the new or any other version, repository, channel, token, schedule and automatic
 installation; the release signing key is changed only on the server, `mp update trust`),
 webhooks signed with HMAC-SHA256 with a test delivery, trusted proxies for the visitor's
-real address (Cloudflare's networks are built in), the SELinux mode on EL, and the list
-of configuration templates — which of them are overridden by files in
-`/etc/monopanel/templates/`.
+real address (Cloudflare's networks are built in), the "Daily upgrade of nginx, PHP and
+Apache" card (on or off, the hour in server time, when it runs next and how the last run
+ended: what was upgraded, or the error; the database server is not upgraded this way),
+the SELinux mode on EL, and the list of configuration templates — which of them are
+overridden by files in `/etc/monopanel/templates/`.
 
 ## How to retake the screenshots
 

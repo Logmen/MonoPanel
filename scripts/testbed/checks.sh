@@ -331,7 +331,10 @@ carried_section() {
 
 	if [ -n "${snap:-}" ]; then
 		got=$(mp backup snapshots --target tbupbak --json </dev/null 2>/dev/null | pj '[s["id"] for s in d]')
-		if grep -qx "$snap" <<<"$got"; then pass "the snapshot ${snap:0:8} that $from made is in the repository"; else fail "the snapshot ${snap:0:8} of $from is not listed: $(tr '\n' ' ' <<<"$got" | cut -c1-200)"; fi
+		# restic up to 0.14 (Debian 12, Ubuntu 22.04) names a backup's snapshot
+		# by its short id in the summary the run keeps; the listing has the
+		# whole one, which starts with it (a hex id: no regex characters)
+		if grep -q "^$snap" <<<"$got"; then pass "the snapshot ${snap:0:8} that $from made is in the repository"; else fail "the snapshot ${snap:0:8} of $from is not listed: $(tr '\n' ' ' <<<"$got" | cut -c1-200)"; fi
 		d=$restore_root/$snap
 		restored+=("$d")
 		if timeout 1800 mp backup restore "$snap" --target tbupbak </dev/null >"$tmp/out" 2>&1; then
