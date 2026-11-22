@@ -78,7 +78,7 @@ func TestMailInstallRendersConfiguration(t *testing.T) {
 		"virtual_mailbox_maps = hash:/etc/postfix/monopanel/mailboxes",
 		"smtpd_sasl_type = dovecot",
 		"smtpd_tls_cert_file = ",
-		"smtpd_milters = local:/run/opendkim/opendkim.sock",
+		"smtpd_milters = { unix:/var/spool/postfix/private/monopanel-mailpolicy, default_action=tempfail }, local:/run/opendkim/opendkim.sock",
 	} {
 		if !strings.Contains(main, want) {
 			t.Errorf("main.cf без %q", want)
@@ -504,6 +504,21 @@ func TestMailInstallOnEL(t *testing.T) {
 					return nil
 				}
 			})
+			// postfix starts once before the first postfix check: the check
+			// would make its data directory with the label of /var/lib.
+			start, check := -1, -1
+			for i, c := range f.agent.Calls() {
+				body := string(c.Body)
+				if start < 0 && c.Path == "/v1/service" && strings.Contains(body, `"postfix.service"`) && strings.Contains(body, `"start"`) {
+					start = i
+				}
+				if check < 0 && c.Path == "/v1/config/apply" && strings.Contains(body, `"/usr/sbin/postfix","check"`) {
+					check = i
+				}
+			}
+			if start < 0 || check < 0 || start > check {
+				t.Errorf("postfix started at call %d, first postfix check at %d", start, check)
+			}
 			pkgs := ""
 			for _, tool := range f.agent.Tools() {
 				if tool.Name == "dnf" && strings.Contains(strings.Join(tool.Args, " "), "config-manager") {
@@ -537,7 +552,7 @@ func TestMailInstallOnEL(t *testing.T) {
 				"alias_maps = " + tc.mapType + ":/etc/aliases",
 				"smtpd_tls_protocols = " + tc.protocols + "\n",
 				"smtp_tls_CAfile = /etc/pki/tls/certs/ca-bundle.crt",
-				"smtpd_milters = inet:127.0.0.1:8891",
+				"smtpd_milters = { inet:127.0.0.1:8890, default_action=tempfail }, inet:127.0.0.1:8891\n",
 			} {
 				if !strings.Contains(main, want) {
 					t.Errorf("main.cf lacks %q:\n%s", want, main)
@@ -592,5 +607,30 @@ func TestMailInstallUsesCRBOnlyForTheTransaction(t *testing.T) {
 	}
 	if got := strings.Join(install, " "); !strings.HasPrefix(got, "-y install --enablerepo=crb ") || !strings.Contains(got, "opendkim") {
 		t.Fatalf("install with the repository for one transaction: %q", got)
+	}
+}
+
+// A fresh install does not start opendkim before the panel's opendkim.conf
+// is in place: on the distribution's (EL 10's names a key file that is not
+// there) the unit crash-loops into its start limit, and the install's reload
+// fails (seen on mp-alma10 with H22's fix pass, where the mail guard's
+// package install widened the gap between the two).
+func TestMailInstallStartsOpendkimOnThePanelsConfiguration(t *testing.T) {
+	old := fixtureOSRelease
+	fixtureOSRelease = "ID=almalinux\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=10.0\n"
+	defer func() { fixtureOSRelease = old }()
+	f := newMailFixtureOn(t, nil, func(f *siteFixture) { f.agent.Dormant = map[string]bool{"opendkim.service": true} })
+	conf, restart := -1, -1
+	for i, c := range f.agent.Calls() {
+		b := string(c.Body)
+		if c.Path == "/v1/config/apply" && strings.Contains(b, `"/etc/opendkim.conf"`) && conf < 0 {
+			conf = i
+		}
+		if c.Path == "/v1/service" && strings.Contains(b, "opendkim.service") && strings.Contains(b, "reload-or-restart") && restart < 0 {
+			restart = i
+		}
+	}
+	if conf < 0 || (restart >= 0 && restart < conf) {
+		t.Fatalf("opendkim (re)started at call %d, its configuration written at %d", restart, conf)
 	}
 }

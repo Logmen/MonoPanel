@@ -211,6 +211,12 @@ func TestCheckFileSpec(t *testing.T) {
 		{FileSpec{Path: "/etc/nginx/nginx.conf", Mode: 0o644, Group: "monopanel"}, false},
 		{FileSpec{Path: "/etc/nginx/nginx.conf", Mode: 0o644, Owner: "opendkim"}, false},
 		{FileSpec{Path: "/etc/postfix/main.cf", Mode: 0o644, Group: "dovecot"}, false},
+		// the mail policy: of its milter's group, that file alone
+		{FileSpec{Path: "/etc/postfix/monopanel/mail-policy.json", Mode: 0o640, Owner: "root", Group: "monopanel-mail"}, true},
+		{FileSpec{Path: "/etc/postfix/monopanel/mail-policy.json", Mode: 0o640, Owner: "monopanel-mail", Group: "monopanel-mail"}, false},
+		{FileSpec{Path: "/etc/postfix/monopanel/mailboxes", Mode: 0o640, Group: "monopanel-mail"}, false},
+		{FileSpec{Path: "/etc/postfix/monopanel/mail-policy.json.tmp", Mode: 0o640, Group: "monopanel-mail"}, false},
+		{FileSpec{Path: "/etc/postfix/main.cf", Mode: 0o644, Group: "monopanel-mail"}, false},
 	} {
 		if err := checkFileSpec(&c.f); (err == nil) != c.ok {
 			t.Errorf("%+v: %v, want ok=%v", c.f, err, c.ok)

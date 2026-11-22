@@ -75,6 +75,19 @@
 #                 upgrade) — and the cleanup after it takes the run's /tmp
 #                 for its own; none left; the daily upgrade on at 04:00 with
 #                 a next run; one version of each PHP branch everywhere
+#   mail policy   with a mail server: monopanel-mailpolicy runs as its own
+#                 user without capabilities; postfix asks it first (main.cf);
+#                 the policy file is root's, of its group, 0640, and names the
+#                 accounts' domains; an account neither reads it nor reaches
+#                 the policy (Debian/Ubuntu: postfix's own 0600 socket, which
+#                 monopanel-mailpolicy-unix.socket holds; EL: PID 1 holds
+#                 127.0.0.1:8890, and monopanel-mailguard resets an account's
+#                 connection to it and to opendkim's 8891); an account's
+#                 sendmail and loopback SMTP as another account's domain are
+#                 refused, so is a From with a comment inside the domain
+#                 (opendkim reads the domain without it), and the account
+#                 cannot take the other account's mail domain as a site alias;
+#                 its own domain arrives signed; the doctor's line ok
 #   selinux       EL: no AVC denial since boot in the audit log (ausearch
 #                 --input-logs); after an upgrade the one upgrade-seed.sh
 #                 makes itself under the previous release is EXPECTED, and
@@ -1989,6 +2002,148 @@ doctor_section() {
 	fi
 }
 
+# ----------------------------------------------------------- mail policy ----
+# mail_refused <since> <text>: postfix logged a milter-reject naming text
+mail_refused() { journalctl --since "@$1" --no-pager 2>/dev/null | grep 'milter-reject' | grep -qF "$2"; }
+mailpolicy_section() {
+	section "mail policy"
+	if [ "$(mp mail status --json </dev/null 2>/dev/null | pj 'd.get("installed", False)')" != true ]; then
+		skip "mail policy: no mail server on this host (mp mail install)"
+		return
+	fi
+	if [ "$objects" != 1 ]; then
+		skip "mail policy: the accounts of the checks are missing"
+		return
+	fi
+	local ma=$A.$vm-mail.test mb=$SH.$vm-mail.test box pid t0 tag f cap sock tok v
+	box=tbck@$ma
+	if ! timeout 300 mp mail domain add "$ma" --user "$A" </dev/null >"$tmp/out" 2>&1 || ! timeout 300 mp mail domain add "$mb" --user "$SH" </dev/null >>"$tmp/out" 2>&1 ||
+		! secret | timeout 300 mp mail box add "$box" --password-stdin >>"$tmp/out" 2>&1; then
+		fail "mail policy: the checks' mail domains: $(last "$tmp/out" 2)"
+		mp mail domain rm "$ma" </dev/null >/dev/null 2>&1
+		mp mail domain rm "$mb" </dev/null >/dev/null 2>&1
+		return
+	fi
+	pid=$(systemctl show -p MainPID --value monopanel-mailpolicy.service 2>/dev/null)
+	cap=$(awk '/^CapEff:/ {print $2}' "/proc/$pid/status" 2>/dev/null)
+	if unit_active monopanel-mailpolicy.service && [ "$(ps -o user= -p "$pid" 2>/dev/null)" = monopanel-mail ] && [ "$cap" = 0000000000000000 ] &&
+		grep -q '^NoNewPrivs:[[:space:]]*1' "/proc/$pid/status" 2>/dev/null; then
+		pass "monopanel-mailpolicy runs as monopanel-mail, without capabilities, NoNewPrivs"
+	else
+		fail "monopanel-mailpolicy: $(systemctl is-active monopanel-mailpolicy.service 2>&1), user $(ps -o user= -p "$pid" 2>/dev/null), CapEff ${cap:-?}"
+	fi
+	if [ "$deb" = 1 ]; then
+		sock=/var/spool/postfix/private/monopanel-mailpolicy
+		tok="{ unix:$sock, default_action=tempfail }"
+	else
+		tok="{ inet:127.0.0.1:8890, default_action=tempfail }"
+	fi
+	if [ "$(postconf -h smtpd_milters 2>/dev/null | cut -c1-${#tok})" = "$tok" ] && [ "$(postconf -h non_smtpd_milters 2>/dev/null | cut -c1-${#tok})" = "$tok" ]; then
+		pass "postfix asks the policy first: $tok"
+	else
+		fail "postfix's milters: smtpd $(postconf -h smtpd_milters 2>&1 | cut -c1-120); non_smtpd $(postconf -h non_smtpd_milters 2>&1 | cut -c1-120)"
+	fi
+	f=/etc/postfix/monopanel/mail-policy.json
+	if [ "$(stat -c '%U:%G %a' "$f" 2>/dev/null)" = "root:monopanel-mail 640" ] && grep -qF "\"$ma\"" "$f"; then
+		pass "the policy is root:monopanel-mail 0640 and names $A's domain"
+	else
+		fail "the policy: $(stat -c '%U:%G %a' "$f" 2>&1)"
+	fi
+	if [ "$(stat -c '%a' "$f")" = 640 ] && ! as_user "$SH" cat "$f" >/dev/null 2>&1; then
+		pass "an account cannot read the policy"
+	else
+		fail "an account reads $f"
+	fi
+	if [ "$deb" = 1 ]; then
+		if unit_active monopanel-mailpolicy-unix.socket && [ "$(stat -c '%U %a %F' "$sock" 2>/dev/null)" = "postfix 600 socket" ] &&
+			! as_user "$A" python3 -c 'import socket, sys; s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1])' "$sock" 2>/dev/null; then
+			pass "the policy's socket is postfix's own (0600, held by monopanel-mailpolicy-unix.socket); an account cannot reach it"
+		else
+			fail "the policy's socket: $(stat -c '%U %a %F' "$sock" 2>&1), $(systemctl is-active monopanel-mailpolicy-unix.socket 2>&1)"
+		fi
+	else
+		# The guard: an account's connection to the policy's port and to
+		# opendkim's is reset — or the account would have opendkim sign any
+		# domain itself.
+		if unit_active monopanel-mailguard.service && ! as_user "$A" python3 -c 'import socket, sys
+for port in (8890, 8891):
+    try:
+        socket.create_connection(("127.0.0.1", port), 5).close()
+    except OSError:
+        continue
+    sys.exit(0)
+sys.exit(1)' 2>/dev/null; then
+			pass "an account can connect neither to the policy (127.0.0.1:8890) nor to opendkim (127.0.0.1:8891): monopanel-mailguard"
+		else
+			fail "an account connects to 127.0.0.1:8890 or :8891 (monopanel-mailguard $(systemctl is-active monopanel-mailguard.service 2>&1))"
+		fi
+		# PID 1 holds the policy's port: no account can bind it while the
+		# service restarts.
+		if unit_active monopanel-mailpolicy-inet.socket && ss -Hltnp 'sport = :8890' 2>/dev/null | grep -q '"systemd",pid=1,' &&
+			! ss -Hltnpe 'sport = :8890' 2>/dev/null | grep -Eq ' uid:[1-9]'; then
+			pass "PID 1 holds 127.0.0.1:8890 (monopanel-mailpolicy-inet.socket), nobody else listens there"
+		else
+			fail "127.0.0.1:8890: $(ss -Hltnpe 'sport = :8890' 2>&1 | head -2 | tr '\n' ' ' | cut -c1-200)"
+		fi
+	fi
+	tag=$(rand)
+	t0=$(date +%s)
+	printf 'From: CEO <ceo@%s>\nTo: %s\nSubject: tbck-forged-%s\n\nforged\n' "$mb" "$box" "$tag" | as_user "$A" /usr/sbin/sendmail -t -i
+	if wait_until 60 mail_refused "$t0" "<$mb>"; then
+		pass "$A's sendmail as $SH's domain is refused (milter-reject)"
+	else
+		fail "$A's sendmail as $SH's domain went through: $(journalctl --since "@$t0" --no-pager 2>/dev/null | grep -F "$tag" | tail -1 | cut -c1-200)"
+	fi
+	# opendkim reads a domain without the comments and blanks inside it:
+	# "ceo@tbc(x)ksh..." and "ceo@tbc ksh..." are signed as $mb.
+	for v in "${mb:0:3}(x)${mb:3}" "${mb:0:3} ${mb:3}"; do
+		t0=$(date +%s)
+		printf 'From: CEO <ceo@%s>\nTo: %s\nSubject: tbck-forged-%s\n\nforged\n' "$v" "$box" "$tag" | as_user "$A" /usr/sbin/sendmail -t -i
+		if wait_until 60 mail_refused "$t0" "<$mb>"; then
+			pass "$A's sendmail with From <ceo@$v> is refused"
+		else
+			fail "$A's sendmail with From <ceo@$v> went through: $(journalctl --since "@$t0" --no-pager 2>/dev/null | grep -E 'DKIM-Signature field added' | tail -1 | cut -c1-200)"
+		fi
+	done
+	# An account cannot take another account's mail domain as a site's
+	# alias: the policy would give the name to both.
+	v="tbck-alias-$tag.$vm.test"
+	if as_user "$SH" mp site add "$v" --mode proxy --backend http://127.0.0.1:39999 --ssl none --alias "$ma" </dev/null >"$tmp/out" 2>&1; then
+		fail "$SH took $A's mail domain $ma as an alias: $(last "$tmp/out" 1)"
+		mp site rm "$v" --yes </dev/null >/dev/null 2>&1 || mp site rm "$v" </dev/null >/dev/null 2>&1
+	elif grep -q 'mail domain of another account' "$tmp/out"; then
+		pass "$SH cannot take $A's mail domain as a site's alias"
+	else
+		fail "$SH's site with $A's mail domain as an alias: $(last "$tmp/out" 2)"
+	fi
+	if as_user "$A" python3 - "$mb" "$box" <<'PY' >"$tmp/out" 2>&1; then
+import smtplib, sys
+mb, box = sys.argv[1:]
+s = smtplib.SMTP("127.0.0.1", 25, timeout=30)
+s.ehlo("localhost")
+code, text = s.mail("ceo@" + mb)
+print(code, text.decode())
+sys.exit(0 if code == 550 and b"5.7.1" in text else 1)
+PY
+		pass "$A over SMTP to 127.0.0.1 as $SH's domain: $(head -1 "$tmp/out" | cut -c1-120)"
+	else
+		fail "$A over SMTP to 127.0.0.1 as $SH's domain: $(last "$tmp/out" 2)"
+	fi
+	printf 'From: TBCK <noreply@%s>\nTo: %s\nSubject: tbck-own-%s\n\nown domain\n' "$ma" "$box" "$tag" | as_user "$A" /usr/sbin/sendmail -t -i -f "noreply@$ma"
+	if wait_until 60 sh -c 'grep -rlF "tbck-own-$1" "$2" | head -1 | xargs -r grep -q "^DKIM-Signature:.* d=$3;"' sh "$tag" "/var/mail/monopanel/$ma/tbck" "$ma"; then
+		pass "$A's mail as its own domain arrives, signed d=$ma"
+	else
+		fail "$A's mail as its own domain did not arrive signed in $box"
+	fi
+	if [ "$(doctor_line "mail policy" | cut -d' ' -f1)" = ok ]; then
+		pass "the doctor: mail policy ok"
+	else
+		fail "the doctor: mail policy $(doctor_line "mail policy")"
+	fi
+	mp mail domain rm "$ma" </dev/null >/dev/null 2>&1 || info "cleanup: mp mail domain rm $ma failed"
+	mp mail domain rm "$mb" </dev/null >/dev/null 2>&1 || info "cleanup: mp mail domain rm $mb failed"
+}
+
 # --------------------------------------------------------------- selinux ----
 # avc_expected <AVC record>: why the denial is one the run means to happen,
 # and true; false when it is not. Only after an upgrade, and only the
@@ -2088,6 +2243,7 @@ phprepo_section
 restic_section
 nodes_section
 pkgfiles_section
+mailpolicy_section
 section "cleanup"
 cleanup
 info "the accounts, sites, shares, targets and restored snapshots of the checks are gone$([ "$composer_ours" = 1 ] && echo ', and composer')"

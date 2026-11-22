@@ -316,8 +316,10 @@ type Postfix struct {
 	CertPath         string
 	KeyPath          string
 	RBL              []string
-	// Milter is the opendkim socket in Postfix notation, empty when DKIM is off.
-	Milter string
+	// Milters are smtpd_milters and non_smtpd_milters: the panel's mail
+	// policy first, with default_action=tempfail of its own, then opendkim
+	// when DKIM is on.
+	Milters string
 	// CompatLevel is "3.6", or "2" for Postfix older than 3.6.
 	CompatLevel string
 	// MapType is hash or lmdb, CacheType btree or lmdb: what this postfix is
@@ -338,6 +340,12 @@ type PostfixMaster struct {
 	MapsDir string
 	TLS     bool
 	Port25  bool
+	// PickupCleanup is the cleanup service local submissions go through,
+	// PickupDaemonName its {daemon_name}, PickupHeaderChecks its
+	// header_checks table (the mail policy's, internal/mailpolicy).
+	PickupCleanup      string
+	PickupDaemonName   string
+	PickupHeaderChecks string
 }
 
 // Dovecot feeds mail/dovecot.conf.tmpl (2.3 syntax).

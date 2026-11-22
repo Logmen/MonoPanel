@@ -1,0 +1,19 @@
+[Unit]
+Description=MonoPanel mail policy's port (EL)
+# PID 1 holds 127.0.0.1:8890 (milter_port_t) from boot on, also while the
+# policy restarts, is down or is killed: no local account can bind the port
+# in between and get postfix's connections, and those wait in its backlog
+# rather than fail. Only root and postfix may connect to it
+# (monopanel-mailguard.service).
+Before=postfix.service
+
+[Socket]
+ListenStream=127.0.0.1:8890
+Accept=no
+Service=monopanel-mailpolicy.service
+# No rate limit on the activations: a socket past its limit would close
+# and leave the port to whoever binds it first.
+TriggerLimitIntervalSec=0
+
+[Install]
+WantedBy=sockets.target

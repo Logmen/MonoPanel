@@ -43,6 +43,12 @@ func panelUnits() []panelUnit {
 		{apiService, apiUnit, true},
 		// A template: the API enables its instances, mp setup none.
 		{apacheUnitName, apacheUnit, false},
+		// The API enables them with the mail server: the policy, the socket
+		// of the OS family, and on EL the guard.
+		{mailPolicyUnitName, mailPolicyUnit, true},
+		{mailPolicyUnixName, mailPolicyUnixSocketUnit, false},
+		{mailPolicyInetName, mailPolicyInetSocketUnit, false},
+		{mailGuardUnitName, mailGuardUnit, true},
 	}
 }
 
@@ -213,6 +219,11 @@ func unitHistory() map[string][][]string {
 		apiService:     {{apiUnit060}, {apiUnit}},
 		apiSocket:      {{apiSocketUnit}},
 		apacheUnitName: {{apacheUnit090dev}, {apacheUnit}},
+		// 0.9.0's mail policy.
+		mailPolicyUnitName: {{mailPolicyUnit}},
+		mailPolicyUnixName: {{mailPolicyUnixSocketUnit}},
+		mailPolicyInetName: {{mailPolicyInetSocketUnit}},
+		mailGuardUnitName:  {{mailGuardUnit}},
 	}
 }
 

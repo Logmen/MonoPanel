@@ -27,6 +27,8 @@ import (
 	"path"
 	"strings"
 	"sync/atomic"
+
+	"monopanel/internal/mailpolicy"
 )
 
 // Layout is what the checks need to know about the panel's own directories
@@ -398,6 +400,13 @@ func CheckOwnership(p, owner, group string, mode uint32) error {
 		groupOK = groupOK || group == "opendkim"
 	case p == dovecotUsers:
 		groupOK = groupOK || group == "dovecot"
+	case p == mailpolicy.PolicyFile:
+		// The mail policy: root's, of the milter's group, 0640 — its
+		// milter reads it, the accounts do not.
+		if !ownerOK || group != mailpolicy.User || mode != mailpolicy.PolicyMode {
+			return notAllowed(fmt.Sprintf("owner %q, group %q, mode %04o for %s", owner, group, mode, p), "the mail policy is root's, of the group %s, %04o: its milter reads it and nobody else changes it", mailpolicy.User, mailpolicy.PolicyMode)
+		}
+		return nil
 	}
 	if !ownerOK {
 		return notAllowed(fmt.Sprintf("owner %q for %s", owner, p), "the file would be its owner's to rewrite after this check; root's files stay root's")

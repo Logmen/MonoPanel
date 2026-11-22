@@ -34,11 +34,12 @@ var consoleBinary = func() string {
 }
 
 // consoleForbidden are the commands that make no sense from a browser: the
-// daemons, the privilege-dropping helper, the installer, the demo build's
+// daemons (the mail policy's milter among them, and EL's mail guard, a unit's
+// root command), the privilege-dropping helper, the installer, the demo build's
 // server (mp demo; the demo's own guard looks only at the first argument),
 // and app-exec and sandbox-exec, which exec any program (as the panel's
 // service account, from the console).
-var consoleForbidden = map[string]bool{"api": true, "agent": true, "helper": true, "fsop": true, "setup": true, "update-run": true, "demo": true, "app-exec": true, "sandbox-exec": true}
+var consoleForbidden = map[string]bool{"api": true, "agent": true, "helper": true, "fsop": true, "setup": true, "update-run": true, "demo": true, "app-exec": true, "sandbox-exec": true, "mail-policy": true, "mail-guard": true}
 
 // consoleRootOnly are the commands for root on the server alone. mp update
 // trust sets the key every release is checked with before the agent installs

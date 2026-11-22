@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"monopanel/internal/mailpolicy"
 	"monopanel/internal/render"
 )
 
@@ -418,19 +419,22 @@ func TestMailContentPasses(t *testing.T) {
 	// ops_mail.go applyMailConfig in each variant it renders.
 	for _, withTLS := range []bool{false, true} {
 		for _, v := range []struct{ compat, mapType, cache, ca, protocols, milter string }{
-			{"3.6", "hash", "btree", "smtp_tls_CApath = /etc/ssl/certs", ">=TLSv1.2", "local:/run/opendkim/opendkim.sock"},
-			{"2", "hash", "btree", "smtp_tls_CApath = /etc/ssl/certs", "!SSLv2, !SSLv3, !TLSv1, !TLSv1.1", ""},
-			{"3.6", "lmdb", "lmdb", "smtp_tls_CAfile = /etc/pki/tls/certs/ca-bundle.crt", ">=TLSv1.2", "inet:127.0.0.1:8891"},
+			{"3.6", "hash", "btree", "smtp_tls_CApath = /etc/ssl/certs", ">=TLSv1.2", "{ unix:/run/monopanel-mailpolicy/policy.sock, default_action=tempfail }, local:/run/opendkim/opendkim.sock"},
+			{"2", "hash", "btree", "smtp_tls_CApath = /etc/ssl/certs", "!SSLv2, !SSLv3, !TLSv1, !TLSv1.1", "{ inet:127.0.0.1:8890, default_action=tempfail }"},
+			{"3.6", "lmdb", "lmdb", "smtp_tls_CAfile = /etc/pki/tls/certs/ca-bundle.crt", ">=TLSv1.2", "{ inet:127.0.0.1:8890, default_action=tempfail }, inet:127.0.0.1:8891"},
 		} {
 			main := renderT(t, "mail/main.cf.tmpl", render.Postfix{
 				Hostname: "mail.example.com", MapsDir: "/etc/postfix/monopanel", MailBase: "/var/mail/monopanel", MessageSizeBytes: 52428800,
 				VmailUID: 990, VmailGID: 990, TLS: withTLS, CertPath: "/var/lib/monopanel/mail/tls.crt", KeyPath: "/var/lib/monopanel/mail/tls.key",
-				RBL: []string{"zen.spamhaus.org", "bl.spamcop.net"}, Milter: v.milter, CompatLevel: v.compat, MapType: v.mapType, CacheType: v.cache, CA: v.ca, TLSProtocols: v.protocols,
+				RBL: []string{"zen.spamhaus.org", "bl.spamcop.net"}, Milters: v.milter, CompatLevel: v.compat, MapType: v.mapType, CacheType: v.cache, CA: v.ca, TLSProtocols: v.protocols,
 			})
 			add(fmt.Sprintf("main.cf tls=%v %s", withTLS, v.mapType), "/etc/postfix/main.cf", main)
 		}
 		for _, port25 := range []bool{false, true} {
-			add(fmt.Sprintf("master.cf tls=%v port25=%v", withTLS, port25), "/etc/postfix/master.cf", renderT(t, "mail/master.cf.tmpl", render.PostfixMaster{MapsDir: "/etc/postfix/monopanel", TLS: withTLS, Port25: port25}))
+			add(fmt.Sprintf("master.cf tls=%v port25=%v", withTLS, port25), "/etc/postfix/master.cf", renderT(t, "mail/master.cf.tmpl", render.PostfixMaster{
+				MapsDir: "/etc/postfix/monopanel", TLS: withTLS, Port25: port25,
+				PickupCleanup: mailpolicy.PickupCleanup, PickupDaemonName: mailpolicy.PickupDaemonName, PickupHeaderChecks: mailpolicy.HeaderChecksFile,
+			}))
 		}
 		for _, pop3 := range []bool{false, true} {
 			d := render.Dovecot{Hostname: "mail.example.com", MailBase: "/var/mail/monopanel", UsersFile: "/etc/dovecot/monopanel/users", VmailUser: "vmail",
@@ -458,7 +462,30 @@ func TestMailContentPasses(t *testing.T) {
 	add("dkim key", "/etc/opendkim/keys/example.com/mail.private", "-----BEGIN RSA PRIVATE KEY-----\nMIIEow==\n-----END RSA PRIVATE KEY-----\n")
 	add("dkim KeyTable", "/etc/opendkim/KeyTable", header+"mail._domainkey.example.com example.com:mail:/etc/opendkim/keys/example.com/mail.private\n")
 	add("dkim SigningTable", "/etc/opendkim/SigningTable", header+"*@example.com mail._domainkey.example.com\n")
-	add("dkim TrustedHosts", "/etc/opendkim/TrustedHosts", header+"127.0.0.1\n::1\nlocalhost\nmail.example.com\nexample.com\n")
+	add("dkim TrustedHosts", "/etc/opendkim/TrustedHosts", header+"127.0.0.1\n::1\nlocalhost\nmail.example.com\n")
+	// The mail policy's header table and its file (mail_policy.go).
+	add("pickup header checks", mailpolicy.HeaderChecksFile, mailpolicy.HeaderChecksContent)
+	add("mail policy", mailpolicy.PolicyFile, `{
+  "version": 1,
+  "hostname": "mail.example.com",
+  "delivery_user": "vmail",
+  "accounts": {
+    "admin": {
+      "domains": []
+    },
+    "alice": {
+      "domains": [
+        "example.com",
+        "shop.example.com",
+        "xn--80aswg.xn--p1ai"
+      ]
+    }
+  },
+  "mailboxes": {
+    "info@example.com": "alice"
+  }
+}
+`)
 	for _, sock := range []string{"local:/run/opendkim/opendkim.sock", "inet:8891@127.0.0.1"} {
 		add("opendkim.conf "+sock, "/etc/opendkim.conf", renderT(t, "mail/opendkim.conf.tmpl", render.OpenDKIM{Socket: sock, KeyTable: "/etc/opendkim/KeyTable", SigningTable: "/etc/opendkim/SigningTable", TrustedHosts: "/etc/opendkim/TrustedHosts"}))
 	}

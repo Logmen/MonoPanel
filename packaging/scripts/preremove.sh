@@ -13,8 +13,9 @@
 # next install (postinstall.sh) in the agent's directory, which only root
 # writes, the configurations of the accounts' Apaches
 # (confcheck.ApacheInstanceConf), the mount points of the shell guests'
-# shared folders (below the default www_root) and the boot-time files of the
-# run directory (mp setup's monopanel.conf, setup.tmpfilesConf).
+# shared folders (below the default www_root), the boot-time files of the
+# run directory (mp setup's monopanel.conf, setup.tmpfilesConf) and postfix's
+# main.cf, which names the mail policy.
 units=/etc/systemd/system
 packaged=/usr/lib/systemd/system
 bin=/usr/bin/monopanel
@@ -22,6 +23,7 @@ removed=/var/lib/monopanel-agent/package-removed
 accounts=/etc/apache2/monopanel/accounts
 shares=/var/www/.shares
 tmpfiles=/etc/tmpfiles.d
+maincf=/etc/postfix/main.cf
 
 # older=1: the version that replaces this one is older than 0.9.0. dpkg runs
 # this before it unpacks that version and names it, "upgrade <version>"
@@ -38,7 +40,16 @@ older=0
 removal=0
 case "${1:-}" in
 remove | purge | 0)
-	systemctl disable --now monopanel-api.socket monopanel-api.service monopanel-agent.service >/dev/null 2>&1 || true
+	# The mail policy goes with the binary it runs, and postfix, told to
+	# keep mail waiting while it is down (default_action=tempfail), would
+	# keep every message waiting for good: main.cf loses it, and postfix
+	# reloads, before its units stop (postremove.sh does the same after an
+	# older version replaced this one).
+	if [ -f "$maincf" ] && grep -Eq 'unix:[^ ,]*/monopanel-mailpolicy|inet:127\.0\.0\.1:8890' "$maincf"; then
+		sed -i -E 's#\{ (unix:[^ ,]*/monopanel-mailpolicy|inet:127\.0\.0\.1:8890), default_action=tempfail \}(, )?##' "$maincf" || true
+		postfix reload >/dev/null 2>&1 || true
+	fi
+	systemctl disable --now monopanel-api.socket monopanel-api.service monopanel-agent.service monopanel-mailpolicy.service monopanel-mailpolicy-unix.socket monopanel-mailpolicy-inet.socket monopanel-mailguard.service >/dev/null 2>&1 || true
 	# The removal turned the panel off, not the administrator. dpkg gives a
 	# package installed again over what the removal left the removed version,
 	# as it gives an upgrade the replaced one, and an upgrade enables nothing:
@@ -186,6 +197,11 @@ fi
 	if [ -n "$apps" ]; then
 		echo "  - apps that read an env file start through 'monopanel app-exec', which it lacks, and fail"
 		echo "    at their next start:$apps"
+	fi
+	if [ -f "$maincf" ] && grep -Eq 'unix:[^ ,]*/monopanel-mailpolicy|inet:127\.0\.0\.1:8890' "$maincf"; then
+		echo "  - its mail server runs without the panel's mail policy, which it does not have: postfix"
+		echo "    stops asking it once this version's files are gone, and an account can send as another"
+		echo "    account's domain again (an upgrade to 0.9.0 or later puts the policy back);"
 	fi
 	echo "Once it runs, as root:"
 	if [ "$apache" = 1 ]; then

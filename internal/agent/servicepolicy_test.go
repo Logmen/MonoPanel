@@ -32,6 +32,11 @@ func TestServicePolicy(t *testing.T) {
 		{"monopanel-update.service", "start", false},
 		{"monopanel-update.service", "status", true},
 		{"monopanel-api.service", "restart", true},
+		// the mail policy: the API enables, starts and restarts it with the
+		// mail server (mail_policy.go startMailPolicy)
+		{"monopanel-mailpolicy.service", "enable", true},
+		{"monopanel-mailpolicy.service", "start", true},
+		{"monopanel-mailpolicy.service", "restart", true},
 		// root shells and power
 		{"debug-shell.service", "start", false},
 		{"debug-shell.service", "enable", false},

@@ -621,3 +621,18 @@ type ShareRecordState struct {
 	What    string `json:"what,omitempty"`
 	Mounted bool   `json:"mounted"`
 }
+
+// MailPolicyProbeResponse answers /v1/mailpolicy/probe: whether the panel's
+// mail policy (monopanel-mailpolicy.service) answers the milter protocol's
+// option negotiation where postfix reaches it — and whatever listens there
+// is the panel's —, and whether main.cf has postfix ask it first.
+type MailPolicyProbeResponse struct {
+	OK bool `json:"ok"`
+	// Listener is where the agent asked (the socket, or 127.0.0.1:8890).
+	Listener string `json:"listener"`
+	Error    string `json:"error,omitempty"`
+	// Configured: smtpd_milters and non_smtpd_milters of main.cf begin
+	// with the policy; ConfigError says what is amiss otherwise.
+	Configured  bool   `json:"configured"`
+	ConfigError string `json:"config_error,omitempty"`
+}

@@ -295,6 +295,9 @@ func (s *Server) startupRefresh(ctx context.Context) {
 	s.refreshCLIGroup(ctx)
 	s.moveAppEnvOutOfUnits(ctx)
 	s.refreshComposerWrapper(ctx)
+	// A host whose mail server an older panel set up gets the mail policy:
+	// its unit, its file, main.cf with it before opendkim (mail.apply).
+	s.moveMailPolicy(ctx)
 	s.refreshRepoSchemes(ctx)
 	// Last: it may wait on packages.sury.org and two index updates.
 	s.switchPHPRepoToSury(ctx)
@@ -314,4 +317,7 @@ func (s *Server) retryMoves(ctx context.Context) {
 	s.refreshSELinuxSiteLogs(ctx)
 	s.moveSiteLogs(ctx)
 	s.refreshApacheInstances(ctx)
+	s.moveMailPolicy(ctx)
+	// A write of the mail policy that failed is done again.
+	s.refreshMailPolicy(ctx)
 }

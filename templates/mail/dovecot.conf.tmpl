@@ -140,4 +140,13 @@ plugin {
   quota_status_nouser = DUNNO
   quota_status_overquota = "552 5.2.2 Mailbox is full"
   sieve = file:{{ .MailBase }}/%d/%n/sieve;active={{ .MailBase }}/%d/%n/.dovecot.sieve
+  # A vacation reply goes out with the mailbox as its envelope sender: the
+  # panel's mail policy knows by it whose script sent the reply.
+  sieve_vacation_send_from_recipient = yes
+  # So does a redirect (a forward of the webmail's filters): it passes SPF
+  # as the forwarder's domain, and a bounce — the mail policy refuses a
+  # redirect of mail from another account's domain — returns to the
+  # forwarding mailbox with the message, not to its first sender. A message
+  # of the null sender (a bounce) keeps it.
+  sieve_redirect_envelope_from = recipient
 }

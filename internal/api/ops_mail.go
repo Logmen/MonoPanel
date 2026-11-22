@@ -11,10 +11,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,6 +28,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"monopanel/internal/agent"
+	"monopanel/internal/mailpolicy"
 	"monopanel/internal/osprofile"
 	"monopanel/internal/render"
 	"monopanel/internal/store"
@@ -217,12 +220,24 @@ func (s *Server) mailMaps(ctx context.Context, c mailConfig) ([]agent.FileSpec, 
 	}
 	byID := map[int64]*store.MailDomain{}
 	var domainLines, lenientLines, users, keyTable, signingTable []string
-	trusted := []string{"127.0.0.1", "::1", "localhost"}
-	if c.Hostname != "" {
-		if !mapToken(c.Hostname) {
-			return nil, nil, badMapEntry(fmt.Sprintf("the mail server hostname %q", c.Hostname), badMapName)
+	// opendkim signs the mail of these hosts (InternalHosts) and does not
+	// verify it (ExternalIgnoreList): the loopback and the host's own
+	// addresses — the clients the mail policy takes for local ones and
+	// checks (their socket's owner) before opendkim signs. Addresses only,
+	// no names: opendkim matches a name against the client's name postfix
+	// reports (its forward-confirmed reverse DNS), so that a name made any
+	// host whose PTR and A records say so — an account's mail domain here,
+	// the server's own host name seen through a NAT — one whose mail this
+	// server signs, while the policy took it for inbound mail and checked
+	// nothing.
+	if c.Hostname != "" && !mapToken(c.Hostname) {
+		return nil, nil, badMapEntry(fmt.Sprintf("the mail server hostname %q", c.Hostname), badMapName)
+	}
+	trusted := []string{"127.0.0.1", "::1"}
+	for _, ip := range append(s.hostIPs(), s.hostIPv6s()...) {
+		if a, err := netip.ParseAddr(ip); err == nil && !a.IsLoopback() && !slices.Contains(trusted, a.String()) {
+			trusted = append(trusted, a.String())
 		}
-		trusted = append(trusted, c.Hostname)
 	}
 	files := []agent.FileSpec{}
 	for _, d := range domains {
@@ -243,7 +258,6 @@ func (s *Server) mailMaps(ctx context.Context, c mailConfig) ([]agent.FileSpec, 
 		if d.Lenient && !d.SendOnly {
 			lenientLines = append(lenientLines, d.Name+" OK")
 		}
-		trusted = append(trusted, d.Name)
 		if !c.DKIM || d.DKIMSelector == "" || d.DKIMKeyEnc == "" || s.secrets == nil {
 			continue
 		}
@@ -339,6 +353,9 @@ func (s *Server) mailMaps(ctx context.Context, c mailConfig) ([]agent.FileSpec, 
 		agent.FileSpec{Path: postfixMapsDir + "/submission_header_checks", Mode: 0o644,
 			Content: header + "# Mail a client sends through 587/465 must not reveal the client's address.\n/^Received:.*with ESMTPSA/ IGNORE\n/^X-Originating-IP:/ IGNORE\n"},
 		agent.FileSpec{Path: dovecotUsers, Content: header + strings.Join(users, "\n") + "\n", Mode: 0o640, Owner: "root", Group: "dovecot"},
+		// The mail policy reads the sender of a local submission from the
+		// copy of pickup's header this table makes (mailpolicy).
+		agent.FileSpec{Path: mailpolicy.HeaderChecksFile, Content: mailpolicy.HeaderChecksContent, Mode: 0o644},
 	)
 	if c.DKIM {
 		files = append(files,
@@ -386,6 +403,15 @@ func (s *Server) applyMailConfig(ctx context.Context, logf func(string, ...any),
 			}
 		}
 	}
+	// The policy's account and its file before the mailboxes it names can
+	// sign in (the users file below), its unit running before postfix is
+	// told to wait for it (main.cf below).
+	if err := s.ensureMailPolicyAccount(ctx); err != nil {
+		return err
+	}
+	if err := s.writeMailPolicy(ctx); err != nil {
+		return err
+	}
 	files, maps, err := s.mailMaps(ctx, c)
 	if err != nil {
 		return err
@@ -402,11 +428,18 @@ func (s *Server) applyMailConfig(ctx context.Context, logf func(string, ...any),
 			dkimChanged = true
 		}
 	}
+	// One that does not run yet — a fresh install — is not started here: it
+	// would start on the distribution's opendkim.conf, which the panel's
+	// replaces only below (EL 10's names a key file that is not there: the
+	// unit crash-loops into its start limit, and the reload below fails),
+	// and the reload below starts it on the panel's.
 	if dkimChanged && c.DKIM {
-		if _, err := s.agent.Service(ctx, dkimService, "reload-or-restart"); err != nil {
-			return err
+		if st, err := s.agent.Service(ctx, dkimService, "status"); err == nil && st.Status.ActiveState == "active" {
+			if _, err := s.agent.Service(ctx, dkimService, "reload-or-restart"); err != nil {
+				return err
+			}
+			logf("opendkim restarted: the key tables changed")
 		}
-		logf("opendkim restarted: the key tables changed")
 	}
 	for _, m := range maps {
 		res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "postmap", Args: []string{c.mapType() + ":" + postfixMapsDir + "/" + m}, TimeoutSeconds: 60})
@@ -418,6 +451,19 @@ func (s *Server) applyMailConfig(ctx context.Context, logf func(string, ...any),
 		}
 	}
 
+	if err := s.startMailPolicy(ctx, logf); err != nil {
+		return err
+	}
+	// EL: a postfix that does not run starts before the check of the new
+	// configuration (postfix check) — which would make a missing data
+	// directory with /var/lib's label (jobMailInstall says more).
+	if s.profile.Family() != osprofile.FamilyDebian {
+		if st, err := s.agent.Service(ctx, postfixService, "status"); err == nil && st.Status.ActiveState != "active" {
+			if _, err := s.agent.Service(ctx, postfixService, "start"); err != nil {
+				logf("warning: postfix did not start before its configuration is checked: %v", err)
+			}
+		}
+	}
 	certPath, keyPath, kind, _ := s.mailTLS(ctx, c)
 	tls := certPath != ""
 	// The TLS session caches are Berkeley DB btree tables where postfix has
@@ -437,13 +483,16 @@ func (s *Server) applyMailConfig(ctx context.Context, logf func(string, ...any),
 	main, err := s.render.Render("mail/main.cf.tmpl", render.Postfix{
 		Hostname: c.Hostname, MapsDir: postfixMapsDir, MailBase: mailBase,
 		MessageSizeBytes: int64(c.MaxSizeMB) * 1024 * 1024, VmailUID: c.VmailUID, VmailGID: c.VmailGID,
-		TLS: tls, CertPath: certPath, KeyPath: keyPath, RBL: c.RBL, Milter: s.mailMilter(c),
+		TLS: tls, CertPath: certPath, KeyPath: keyPath, RBL: c.RBL, Milters: s.mailMilters(c),
 		CompatLevel: compat, MapType: c.mapType(), CacheType: cacheType, CA: ca, TLSProtocols: tlsProtocols,
 	})
 	if err != nil {
 		return err
 	}
-	master, err := s.render.Render("mail/master.cf.tmpl", render.PostfixMaster{MapsDir: postfixMapsDir, TLS: tls, Port25: c.Port25})
+	master, err := s.render.Render("mail/master.cf.tmpl", render.PostfixMaster{
+		MapsDir: postfixMapsDir, TLS: tls, Port25: c.Port25,
+		PickupCleanup: mailpolicy.PickupCleanup, PickupDaemonName: mailpolicy.PickupDaemonName, PickupHeaderChecks: mailpolicy.HeaderChecksFile,
+	})
 	if err != nil {
 		return err
 	}
@@ -500,6 +549,7 @@ func (s *Server) applyMailConfig(ctx context.Context, logf func(string, ...any),
 		}
 	}
 	logf("mail: %d files written, %d unchanged, TLS: %s", len(apply.Written)+len(data.Written), len(apply.Unchanged)+len(data.Unchanged), kind)
+	s.mailPolicyInPlace(ctx)
 	return s.applyWebmailPort(ctx, logf, c, certPath, keyPath)
 }
 
@@ -652,12 +702,17 @@ func (s *Server) forgetWebmail(ctx context.Context, logf func(string, ...any), d
 	return nil
 }
 
-func (s *Server) mailMilter(c mailConfig) string {
+// mailMilters are postfix's milters: the panel's mail policy first, with a
+// default action of its own — tempfail: while it is down mail waits, it
+// never leaves unchecked — then opendkim, under milter_default_action
+// (accept: while it is down mail goes unsigned), when DKIM is on.
+func (s *Server) mailMilters(c mailConfig) string {
+	policy := s.mailPolicyListener().MilterToken()
 	if !c.DKIM {
-		return ""
+		return policy
 	}
 	_, milter := s.dkimSocket()
-	return milter
+	return policy + ", " + milter
 }
 
 // dkimSocket is where opendkim listens, in its own notation and in

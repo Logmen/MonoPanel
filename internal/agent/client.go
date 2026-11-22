@@ -384,3 +384,9 @@ func (c *Client) ShareRecords(ctx context.Context) (*ShareRecordsResponse, error
 	var r ShareRecordsResponse
 	return &r, c.call(ctx, "/v1/shares/records", struct{}{}, &r)
 }
+
+// MailPolicyProbe asks whether the panel's mail policy answers postfix.
+func (c *Client) MailPolicyProbe(ctx context.Context) (*MailPolicyProbeResponse, error) {
+	var resp MailPolicyProbeResponse
+	return &resp, c.call(ctx, "/v1/mailpolicy/probe", struct{}{}, &resp)
+}

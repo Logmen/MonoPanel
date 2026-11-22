@@ -26,6 +26,7 @@ import (
 	"monopanel/internal/agent"
 	"monopanel/internal/agent/confcheck"
 	"monopanel/internal/config"
+	"monopanel/internal/mailpolicy"
 	"monopanel/internal/osprofile"
 	"monopanel/internal/systemd"
 )
@@ -191,6 +192,9 @@ type Agent struct {
 	// is active and enabled.
 	ActiveState   map[string]string
 	UnitFileState map[string]string
+	// Dormant units report inactive until something starts, restarts or
+	// reloads them (a package's service the install has not started yet).
+	Dormant map[string]bool
 	// ApacheLegacySites is the shared Apache's directory of 0.8.19 that
 	// /v1/apache/legacy reads with the real agent's code (empty: none).
 	ApacheLegacySites string
@@ -433,6 +437,26 @@ func (a *Agent) respond(path string, body []byte) any {
 	switch path {
 	case "/v1/ping":
 		return agent.PingResponse{OK: true, Version: "test", Hostname: "test-host", Sandbox: a.Sandbox}
+
+	case "/v1/mailpolicy/probe":
+		// The policy answers while its unit is not stopped (Fail makes it
+		// fail outright), at the listener main.cf names — a socket where
+		// main.cf names none —, and main.cf has postfix ask it when its
+		// milter lists begin with it, as the agent reads them.
+		resp := agent.MailPolicyProbeResponse{Listener: mailpolicy.SocketPath, ConfigError: "main.cf names no mail policy"}
+		main := a.files[mailpolicy.MainCFFile].Content
+		for _, debian := range []bool{true, false} {
+			l := mailpolicy.ListenerFor(debian)
+			if ok, _ := mailpolicy.MainCFAsks(main, l); ok {
+				resp.Listener, resp.Configured, resp.ConfigError = l.Address, true, ""
+			}
+		}
+		if a.units[mailpolicy.Unit] == "stop" {
+			resp.Error = "milter: session create: connection refused"
+			return resp
+		}
+		resp.OK = true
+		return resp
 
 	case "/v1/config/apply":
 		var req agent.ApplyConfigSetRequest
@@ -732,6 +756,8 @@ func (a *Agent) respond(path string, body []byte) any {
 		}
 		if v, ok := a.ActiveState[unit]; ok && (req.Action == "" || req.Action == "status") {
 			state = v
+		} else if a.Dormant[unit] && a.units[unit] == "" {
+			state = "inactive"
 		}
 		fileState := "enabled"
 		if v, ok := a.UnitFileState[unit]; ok {

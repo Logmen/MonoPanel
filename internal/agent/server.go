@@ -56,6 +56,9 @@ type Server struct {
 	// both.
 	lookupIP     LookupIP
 	daemonReload func(ctx context.Context) error
+	// mainCFPath and procRootPath are postfix's main.cf and where
+	// proc/net is, for the mail policy's probe: the host's but in tests.
+	mainCFPath, procRootPath string
 	// landlock is the Landlock ABI version restic runs its sandbox with
 	// (restic_sandbox.go), 0 when the kernel has none — landlockErr says
 	// why, and restic then runs as it is.
@@ -141,6 +144,7 @@ func (s *Server) Handler() http.Handler {
 	r.Post("/v1/shares/unbind", handle(s.shareUnbind))
 	r.Post("/v1/shares/status", handle(s.shareStatus))
 	r.Post("/v1/shares/records", handle(s.listShareRecords))
+	r.Post("/v1/mailpolicy/probe", handle(s.mailPolicyProbe))
 	// Потоки идут мимо handle(): у них тело — это данные, а не JSON.
 	r.Post("/v1/stream/out", s.streamOut)
 	r.Post("/v1/stream/in", s.streamIn)

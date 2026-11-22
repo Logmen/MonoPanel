@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"monopanel/internal/mailpolicy"
 	"monopanel/internal/osprofile"
 )
 
@@ -130,7 +131,7 @@ func (s *Server) checkPanelAccount(u *user.User) error {
 // (checkApacheUserLeaves).
 func (s *Server) systemLogins() map[string]bool {
 	web := s.profile.Web()
-	out := map[string]bool{mailUser: true, "postfix": true}
+	out := map[string]bool{mailUser: true, "postfix": true, mailpolicy.User: true}
 	for _, l := range []string{web.NginxUser, web.ApacheUser, osprofile.Sphinx(s.profile).User} {
 		if l != "" {
 			out[l] = true
@@ -208,6 +209,8 @@ func (s *Server) checkEnsureSystemUser(req *EnsureUnixUserRequest, existing *use
 		}
 	}
 	for _, g := range req.Groups {
+		// postfix joins the group of opendkim's socket; the mail policy's
+		// socket is postfix's own (mailpolicy.SocketPath).
 		ok := g == login ||
 			(g == s.cfg.WebGroup && login == web.NginxUser) ||
 			(g == "opendkim" && login == "postfix")

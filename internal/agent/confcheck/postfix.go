@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"monopanel/internal/mailpolicy"
 )
 
 // postfix: the master runs as root and starts every daemon from
@@ -24,6 +26,20 @@ func checkPostfix(c *checker, p string, content []byte) error {
 		return c.checkMainCf(content)
 	case p == postfixDir+"/master.cf":
 		return c.checkMasterCf(content)
+	case p == mailpolicy.PolicyFile:
+		// The mail policy (internal/mailpolicy): JSON its milter reads,
+		// exactly the shape the API writes.
+		if _, err := mailpolicy.Parse(content); err != nil {
+			return notAllowed("the mail policy "+p, "%v", err)
+		}
+		return nil
+	case p == mailpolicy.HeaderChecksFile:
+		// pickup's header table: one rule, the panel's, which the mail
+		// policy relies on to tell who sent a local submission.
+		if string(content) != mailpolicy.HeaderChecksContent {
+			return notAllowed("the header checks "+p, "the panel writes exactly its own table there (%s)", mailpolicy.HeaderChecksRule)
+		}
+		return nil
 	case directChild(p, postfixDir+"/monopanel"):
 		// Lookup tables (domains, mailboxes, aliases, senders, lenient,
 		// header checks): data that postmap compiles, nothing in them runs.

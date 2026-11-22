@@ -120,6 +120,16 @@ if [ "$upgrade" = "1" ]; then
 		systemctl try-restart monopanel-api.socket monopanel-agent.service >/dev/null 2>&1 || true
 	fi
 fi
+# The mail policy runs the panel's binary too: one that runs restarts on the
+# new one — its socket, which PID 1 holds, does not: postfix's connections
+# wait in its backlog for the moment the restart takes —, and the guard of
+# EL loads the new binary's table, which replaces the old one in one go (a
+# reload). What does not run stays as it is: the API starts it with the
+# mail server.
+if [ "$upgrade" = "1" ]; then
+	systemctl try-restart monopanel-mailpolicy.service >/dev/null 2>&1 || true
+	systemctl try-reload-or-restart monopanel-mailguard.service >/dev/null 2>&1 || true
+fi
 # After a removal nothing of the panel runs: mp setup starts it.
 if [ "$upgrade" = "1" ] && [ "$reinstall" = "0" ]; then
 	echo "MonoPanel updated."

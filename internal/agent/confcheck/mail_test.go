@@ -3,6 +3,8 @@ package confcheck
 import (
 	"strings"
 	"testing"
+
+	"monopanel/internal/mailpolicy"
 )
 
 const (
@@ -206,4 +208,60 @@ func TestOpenDKIMRefusals(t *testing.T) {
 	})
 	// opendkim cuts every line at its first "#".
 	pass(t, conf, "UserID opendkim # the package's account\nSocket local:/run/opendkim/opendkim.sock\n")
+}
+
+// The mail policy's file: the JSON the API writes, root's, of the milter's
+// group, 0640 — nothing else, and no other owner or mode.
+func TestMailPolicyFile(t *testing.T) {
+	good := `{"version":1,"hostname":"mail.example.com","delivery_user":"vmail","accounts":{"alice":{"domains":["example.com"]}},"mailboxes":{"info@example.com":"alice"}}`
+	if err := Check(mailpolicy.PolicyFile, []byte(good)); err != nil {
+		t.Fatalf("the API's policy: %v", err)
+	}
+	for name, content := range map[string]string{
+		"not json":       "accounts = alice\n",
+		"unknown field":  `{"version":1,"accounts":{},"mailboxes":{},"exec":"/bin/sh"}`,
+		"bad domain":     `{"version":1,"accounts":{"alice":{"domains":["*"]}},"mailboxes":{}}`,
+		"bad login":      `{"version":1,"accounts":{"../root":{"domains":[]}},"mailboxes":{}}`,
+		"orphan mailbox": `{"version":1,"accounts":{},"mailboxes":{"a@b.example":"bob"}}`,
+		"two values":     good + good,
+	} {
+		if err := Check(mailpolicy.PolicyFile, []byte(content)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	if err := CheckOwnership(mailpolicy.PolicyFile, "root", mailpolicy.User, 0o640); err != nil {
+		t.Errorf("root:%s 0640: %v", mailpolicy.User, err)
+	}
+	if err := CheckOwnership(mailpolicy.PolicyFile, "", mailpolicy.User, 0o640); err != nil {
+		t.Errorf("(root):%s 0640: %v", mailpolicy.User, err)
+	}
+	for _, o := range []struct {
+		owner, group string
+		mode         uint32
+	}{
+		{mailpolicy.User, mailpolicy.User, 0o640},
+		{"root", "root", 0o644},
+		{"root", mailpolicy.User, 0o644},
+		{"root", mailpolicy.User, 0o660},
+		{"root", mailpolicy.User, 0o600},
+		{"root", "monopanel", 0o640},
+		{"root", "", 0o640},
+	} {
+		if err := CheckOwnership(mailpolicy.PolicyFile, o.owner, o.group, o.mode); err == nil {
+			t.Errorf("%s:%s %04o accepted", o.owner, o.group, o.mode)
+		}
+	}
+	// The group is the policy's file's alone.
+	if err := CheckOwnership("/etc/postfix/monopanel/mailboxes", "root", mailpolicy.User, 0o640); err == nil {
+		t.Error("another map of the milter's group accepted")
+	}
+	// pickup's header table: exactly the panel's.
+	if err := Check(mailpolicy.HeaderChecksFile, []byte(mailpolicy.HeaderChecksContent)); err != nil {
+		t.Errorf("the panel's header table: %v", err)
+	}
+	for _, content := range []string{"", "/^Received:/ IGNORE\n", mailpolicy.HeaderChecksContent + "/^X:/ IGNORE\n"} {
+		if err := Check(mailpolicy.HeaderChecksFile, []byte(content)); err == nil {
+			t.Errorf("header table %q accepted", content)
+		}
+	}
 }

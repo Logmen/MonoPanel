@@ -1,0 +1,53 @@
+[Unit]
+Description=MonoPanel mail policy (postfix milter: no account sends as another account's domain)
+After=network.target
+# Postfix asks it about every message an account sends, before opendkim
+# signs; while it is down, mail waits (tempfail): it starts before postfix
+# (postfix@-.service is the postfix master of Debian 12 and Ubuntu up to
+# 24.04), and systemd never gives up restarting it. Its listener is a socket
+# unit's, which PID 1 holds while the service restarts or is down:
+# monopanel-mailpolicy-unix.socket on Debian and Ubuntu,
+# monopanel-mailpolicy-inet.socket on EL. The panel enables and starts them
+# with the mail server.
+Before=postfix.service postfix@-.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/monopanel mail-policy
+Restart=always
+RestartSec=1
+# Its own system user: it parses mail from untrusted senders, so it is not
+# root, not the API's user and not opendkim's, which holds the DKIM keys.
+User=monopanel-mail
+Group=monopanel-mail
+UMask=0077
+# It reads the policy (/etc/postfix/monopanel, readable) and /proc/net/tcp
+# of the host's network namespace — no PrivateNetwork — and writes nothing.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+MemoryMax=256M
+Environment=GOMEMLIMIT=192MiB
+TasksMax=256
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

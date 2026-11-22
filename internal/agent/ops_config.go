@@ -17,6 +17,7 @@ import (
 
 	"monopanel/internal/agent/confcheck"
 	"monopanel/internal/config"
+	"monopanel/internal/mailpolicy"
 )
 
 const historyKeep = 20
@@ -127,6 +128,10 @@ var fileOwners = []struct{ below, owner, group string }{
 	{"/etc/dovecot/", "", "dovecot"},
 }
 
+// fileGroups are single files of a daemon's group: the mail policy's file,
+// which its milter (and postfix) read.
+var fileGroups = map[string]string{mailpolicy.PolicyFile: mailpolicy.User}
+
 // checkFileSpec refuses an owner, a group or a mode config/apply must not
 // give a file: someone besides root (or the daemon the file is for) as its
 // owner or group, a mode that lets group or others write it, or a set-id or
@@ -142,6 +147,9 @@ func checkFileSpec(f *FileSpec) error {
 			owner = owner || (o.owner != "" && f.Owner == o.owner)
 			group = group || f.Group == o.group
 		}
+	}
+	if g, ok := fileGroups[f.Path]; ok {
+		group = group || f.Group == g
 	}
 	if !owner {
 		return fmt.Errorf("owner %q of %s is not allowed: files the agent writes there are root's", f.Owner, f.Path)

@@ -30,6 +30,14 @@ contents:
     dst: /usr/lib/systemd/system/monopanel-api.socket
   - src: ./packaging/systemd/monopanel-apache@.service
     dst: /usr/lib/systemd/system/monopanel-apache@.service
+  - src: ./packaging/systemd/monopanel-mailpolicy.service
+    dst: /usr/lib/systemd/system/monopanel-mailpolicy.service
+  - src: ./packaging/systemd/monopanel-mailpolicy-unix.socket
+    dst: /usr/lib/systemd/system/monopanel-mailpolicy-unix.socket
+  - src: ./packaging/systemd/monopanel-mailpolicy-inet.socket
+    dst: /usr/lib/systemd/system/monopanel-mailpolicy-inet.socket
+  - src: ./packaging/systemd/monopanel-mailguard.service
+    dst: /usr/lib/systemd/system/monopanel-mailguard.service
   - src: ./packaging/sysusers.d/monopanel.conf
     dst: /usr/lib/sysusers.d/monopanel.conf
   - src: ./packaging/tmpfiles.d/monopanel.conf
@@ -44,6 +52,7 @@ contents:
 scripts:
   postinstall: ./packaging/scripts/postinstall.sh
   preremove: ./packaging/scripts/preremove.sh
+  postremove: ./packaging/scripts/postremove.sh
 overrides:
   rpm:
     depends:

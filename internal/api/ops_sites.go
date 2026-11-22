@@ -224,9 +224,18 @@ func (s *Server) validateNames(ctx context.Context, domain string, aliases []str
 			if other, err := s.foreignDomain(ctx, ownerID, name); err != nil {
 				return nil, err
 			} else if other != "" && other != name {
-				// The name itself, when another account's site has it, is
-				// reported below as taken.
 				return nil, fmt.Errorf("%s is under %s, which belongs to another account", name, other)
+			} else if other == name {
+				// The name itself, when another account's site has it, is
+				// reported below as taken; that check knows sites only, and
+				// another account's mail domain is its owner's: a site of
+				// the name would hand the name's web to this account, and
+				// the mail policy too.
+				if md, err := s.db.GetMailDomain(ctx, name); err == nil && md.UserID != ownerID {
+					return nil, fmt.Errorf("%s is a mail domain of another account", name)
+				} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+					return nil, err
+				}
 			}
 		}
 	}

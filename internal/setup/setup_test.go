@@ -14,6 +14,7 @@ import (
 	"monopanel/internal/agent"
 	"monopanel/internal/agent/confcheck"
 	"monopanel/internal/config"
+	"monopanel/internal/mailpolicy"
 	"monopanel/internal/systemd"
 )
 
@@ -90,6 +91,10 @@ func TestUnitsAreThePackages(t *testing.T) {
 		"monopanel-api.service":     fmt.Sprintf(apiUnit, "/usr/bin/monopanel"),
 		"monopanel-api.socket":      apiSocketUnit,
 		"monopanel-apache@.service": apacheUnit,
+		mailPolicyUnitName:          fmt.Sprintf(mailPolicyUnit, "/usr/bin/monopanel"),
+		mailPolicyUnixName:          mailPolicyUnixSocketUnit,
+		mailPolicyInetName:          mailPolicyInetSocketUnit,
+		mailGuardUnitName:           unitText(mailGuardUnit, "/usr/bin/monopanel"),
 	} {
 		b, err := os.ReadFile(filepath.Join("..", "..", "packaging", "systemd", file))
 		if err != nil {
@@ -108,6 +113,46 @@ func TestUnitsAreThePackages(t *testing.T) {
 	}
 	if !strings.Contains(string(nfpm), "src: ./packaging/systemd/monopanel-apache@.service\n    dst: /usr/lib/systemd/system/monopanel-apache@.service\n") {
 		t.Error("the package does not ship monopanel-apache@.service")
+	}
+	for _, u := range []string{mailPolicyUnitName, mailPolicyUnixName, mailPolicyInetName, mailGuardUnitName} {
+		if !strings.Contains(string(nfpm), "src: ./packaging/systemd/"+u+"\n    dst: /usr/lib/systemd/system/"+u+"\n") {
+			t.Errorf("the package does not ship %s", u)
+		}
+	}
+	if !strings.Contains(string(nfpm), "\n  postremove: ./packaging/scripts/postremove.sh\n") {
+		t.Error("the package has no postremove script: going back below 0.9.0 would leave postfix waiting for the mail policy")
+	}
+	// The mail policy runs as its own user, fenced, with no capability, in
+	// the host's network namespace (it reads /proc/net/tcp), on the
+	// listener its socket unit holds — no RuntimeDirectory, which a stop
+	// would take away with the socket in it.
+	for _, line := range []string{"\nUser=monopanel-mail\n", "\nNoNewPrivileges=yes\n", "\nProtectSystem=strict\n", "\nProtectHome=yes\n", "\nPrivateTmp=yes\n",
+		"\nCapabilityBoundingSet=\n", "\nRestart=always\n", "\nStartLimitIntervalSec=0\n", "\nMemoryMax=256M\n", "\nBefore=postfix.service postfix@-.service\n"} {
+		if !strings.Contains(mailPolicyUnit, line) {
+			t.Errorf("the mail policy's unit lacks %q", line)
+		}
+	}
+	if strings.Contains(mailPolicyUnit, "\nPrivateNetwork=") || strings.Contains(mailPolicyUnit, "\nUser=root") || strings.Contains(mailPolicyUnit, "\nRuntimeDirectory=") {
+		t.Error("the mail policy's unit must see the host's network, run as its own user and leave its socket to the socket unit")
+	}
+	// PID 1 holds the policy's listener, also while the service restarts:
+	// on EL no account can take the port in between (review r1 F2, r3 F2);
+	// no rate limit closes it; Debian's socket is postfix's own.
+	for unit, lines := range map[string][]string{
+		mailPolicyInetSocketUnit: {"\nListenStream=127.0.0.1:8890\n", "\nService=monopanel-mailpolicy.service\n", "\nTriggerLimitIntervalSec=0\n", "\nWantedBy=sockets.target\n"},
+		mailPolicyUnixSocketUnit: {"\nListenStream=/var/spool/postfix/private/monopanel-mailpolicy\n", "\nSocketUser=postfix\n", "\nSocketGroup=postfix\n", "\nSocketMode=0600\n", "\nService=monopanel-mailpolicy.service\n", "\nTriggerLimitIntervalSec=0\n"},
+		// EL's guard loads its table before the network and the accounts'
+		// processes, and before opendkim and postfix (review r1 F1).
+		mailGuardUnit: {"\nType=oneshot\n", "\nRemainAfterExit=yes\n", "\nExecStart=%s mail-guard\n", "\nExecReload=%s mail-guard\n", "\nExecStop=%s mail-guard --remove\n", "\nDefaultDependencies=no\n", "\nBefore=network-pre.target opendkim.service postfix.service monopanel-mailpolicy-inet.socket shutdown.target\n"},
+	} {
+		for _, line := range lines {
+			if !strings.Contains(unit, line) {
+				t.Errorf("unit lacks %q:\n%s", line, unit)
+			}
+		}
+	}
+	if !strings.HasSuffix(mailpolicy.SocketPath, "/monopanel-mailpolicy") || !strings.Contains(mailPolicyUnixSocketUnit, "\nListenStream="+mailpolicy.SocketPath+"\n") || !strings.Contains(mailPolicyInetSocketUnit, "\nListenStream="+mailpolicy.TCPAddress+"\n") {
+		t.Error("the socket units listen elsewhere than mailpolicy's listeners")
 	}
 	// An account's Apache stops gracefully: SIGWINCH to the parent alone,
 	// which lets the requests in flight finish, bounded by the timeout.
@@ -162,7 +207,7 @@ func TestInstallUnitsWritesTheSocket(t *testing.T) {
 	}
 
 	res := install(false)
-	if res.SocketErr != nil || !slices.Equal(res.Wrote, []string{agentService, apiSocket, apacheUnitName}) || !res.Moved || reloads != 2 {
+	if res.SocketErr != nil || !slices.Equal(res.Wrote, []string{agentService, apiSocket, apacheUnitName, mailPolicyUnitName, mailPolicyUnixName, mailPolicyInetName, mailGuardUnitName}) || !res.Moved || reloads != 2 {
 		t.Fatalf("first: %+v, %d reloads", res, reloads)
 	}
 	if b, _ := os.ReadFile(filepath.Join(dir, agentService)); string(b) != unitText(agentUnit, "/usr/bin/monopanel") {
@@ -184,7 +229,7 @@ func TestInstallUnitsWritesTheSocket(t *testing.T) {
 	if res := install(false); res.SocketErr != nil || len(res.Wrote) != 0 || res.Moved || reloads != 2 {
 		t.Fatalf("again: %+v, %d reloads", res, reloads)
 	}
-	if res := install(true); res.SocketErr != nil || !slices.Equal(res.Wrote, []string{agentService, apiSocket, apiService, apacheUnitName}) {
+	if res := install(true); res.SocketErr != nil || !slices.Equal(res.Wrote, []string{agentService, apiSocket, apiService, apacheUnitName, mailPolicyUnitName, mailPolicyUnixName, mailPolicyInetName, mailGuardUnitName}) {
 		t.Fatalf("--install-units: %+v", res)
 	}
 	if b, _ := os.ReadFile(filepath.Join(dir, apiService)); string(b) != fmt.Sprintf(apiUnit, "/usr/bin/monopanel") {
@@ -291,7 +336,7 @@ func TestInstallUnitsOnAPackageInstall(t *testing.T) {
 	}
 
 	res, err = installUnits(ctx, dir, packaged, cfg, "/opt/monopanel/bin/monopanel", false, reload)
-	if err != nil || !slices.Equal(res.Wrote, []string{agentService, apiService}) || len(res.Removed)+len(res.Shadowing) != 0 {
+	if err != nil || !slices.Equal(res.Wrote, []string{agentService, apiService, mailPolicyUnitName, mailGuardUnitName}) || len(res.Removed)+len(res.Shadowing) != 0 {
 		t.Fatalf("--binary of its own: %+v %v", res, err)
 	}
 	if b, _ := os.ReadFile(filepath.Join(dir, apiService)); string(b) != fmt.Sprintf(apiUnit, "/opt/monopanel/bin/monopanel") {
@@ -299,7 +344,7 @@ func TestInstallUnitsOnAPackageInstall(t *testing.T) {
 	}
 	// Back on the package's binary, that unit runs another binary: it stays,
 	// and so does the warning that it overrides the package's.
-	if res, err := installUnits(ctx, dir, packaged, cfg, bin, false, reload); err != nil || len(res.Removed) != 0 || !slices.Equal(res.Shadowing, []string{filepath.Join(dir, agentService), filepath.Join(dir, apiService)}) {
+	if res, err := installUnits(ctx, dir, packaged, cfg, bin, false, reload); err != nil || len(res.Removed) != 0 || !slices.Equal(res.Shadowing, []string{filepath.Join(dir, agentService), filepath.Join(dir, apiService), filepath.Join(dir, mailPolicyUnitName), filepath.Join(dir, mailGuardUnitName)}) {
 		t.Fatalf("units of another binary: %+v %v", res, err)
 	}
 }
@@ -438,6 +483,11 @@ func TestUnitHistoryKeepsEveryRelease(t *testing.T) {
 		apiUnit:       "5c8adbb9b753b48608dad24d0b3b9ed56e43eaef0147c9502be75e63728902a7",
 		apiSocketUnit: "23112e254d6b8d747d276d2ed14cdb1e9c359203f27af9f1a1df793e1e4b5002",
 		apacheUnit:    "ccb74e2eb45271adfa66b1db8adc7e0f25238f0d49cbbc0478f952e0999f2c00",
+		// 0.9.0's mail policy, its sockets and EL's guard.
+		mailPolicyUnit:           "9eceba7eaf2d9ad51c7b9f7c51909101363f8fa1a7e910585b69ec0f9e151ca3",
+		mailPolicyUnixSocketUnit: "37b3be281a4f9f069f0e7e9ae441558898c581526321d604e00fa27dd7182b2a",
+		mailPolicyInetSocketUnit: "fe9ca75d9cc69bad18492f844fef1994eeac83baf1ab792edc34b5ee1fd1741e",
+		mailGuardUnit:            "31fe4555b30a7c8fce0d69e8cd9eb6dc0224949dd9dca56d8f51625e0a95b583",
 	} {
 		if got := fmt.Sprintf("%x", sha256.Sum256([]byte(text))); got != want {
 			t.Errorf("a unit's text changed (sha256 %s, pinned %s): keep the former one in unitHistory and pin the new one\n%s", got, want, text)

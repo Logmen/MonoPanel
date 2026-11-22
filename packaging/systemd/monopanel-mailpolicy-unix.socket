@@ -1,0 +1,22 @@
+[Unit]
+Description=MonoPanel mail policy's socket (Debian and Ubuntu)
+# PID 1 holds the socket from boot on, also while the policy restarts, is
+# down or is killed: postfix's connections wait in its backlog rather than
+# fail. It is in postfix's own private directory (postfix:root 0700), and
+# postfix's own: only postfix and root may open it.
+Before=postfix.service postfix@-.service
+
+[Socket]
+ListenStream=/var/spool/postfix/private/monopanel-mailpolicy
+SocketUser=postfix
+SocketGroup=postfix
+SocketMode=0600
+RemoveOnStop=yes
+Accept=no
+Service=monopanel-mailpolicy.service
+# No rate limit on the activations: the listener stays whatever the
+# service does.
+TriggerLimitIntervalSec=0
+
+[Install]
+WantedBy=sockets.target

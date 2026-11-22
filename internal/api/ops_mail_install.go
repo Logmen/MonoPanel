@@ -26,8 +26,9 @@ var mailPackages = []string{
 }
 
 // mailPackagesEL is the same stack under its EL names: dovecot is one package
-// with pigeonhole (sieve) beside it, and opendkim comes from EPEL.
-var mailPackagesEL = []string{"postfix", "dovecot", "dovecot-pigeonhole", "opendkim", "opendkim-tools"}
+// with pigeonhole (sieve) beside it, and opendkim comes from EPEL; nftables
+// loads the mail guard (mailpolicy.GuardUnit).
+var mailPackagesEL = []string{"postfix", "dovecot", "dovecot-pigeonhole", "opendkim", "opendkim-tools", "nftables"}
 
 // mailPkgs is the package list of this OS and the name dovecot's version is
 // asked under.
@@ -226,6 +227,18 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 		jc.Logf("dovecot 2.4: the configuration is written in the 2.4 syntax")
 	}
 
+	// EL's postfix makes its data directory (/var/lib/postfix, a %ghost
+	// of the package) at its first start, labelled postfix_data_t; postfix
+	// check, which every change of the configuration runs before the
+	// reload, makes a missing one as well — with /var/lib's label, in which
+	// the master cannot make its lock file, and postfix never starts (EL 10).
+	// It starts once before the first check: on the install's stub, which
+	// binds no port, or on the configuration it has.
+	if s.profile.Family() != osprofile.FamilyDebian {
+		if _, err := s.agent.Service(ctx, postfixService, "start"); err != nil {
+			jc.Logf("warning: postfix did not start before its configuration is written: %v", err)
+		}
+	}
 	if err := s.selinuxMailPolicy(ctx, jc); err != nil {
 		return err
 	}

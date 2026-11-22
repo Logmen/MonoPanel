@@ -82,17 +82,19 @@ func TestPackageScriptsOrderTheSocket(t *testing.T) {
 		}
 	}
 	pre := packageScript(t, "preremove.sh")
-	if !strings.Contains(pre, "systemctl disable --now monopanel-api.socket monopanel-api.service monopanel-agent.service") {
+	if !strings.Contains(pre, "systemctl disable --now monopanel-api.socket monopanel-api.service monopanel-agent.service monopanel-mailpolicy.service monopanel-mailpolicy-unix.socket monopanel-mailpolicy-inet.socket monopanel-mailguard.service") {
 		t.Error("preremove.sh leaves the socket listening")
 	}
 	// Neither script may fail the transaction it runs in.
-	for _, line := range strings.Split(pre, "\n") {
-		if l := strings.TrimSpace(line); l == "set -e" || strings.HasPrefix(l, "set -e ") {
-			t.Error("preremove.sh runs with set -e: any failing command would fail the transaction")
+	for name, script := range map[string]string{"preremove.sh": pre, "postremove.sh": packageScript(t, "postremove.sh")} {
+		for _, line := range strings.Split(script, "\n") {
+			if l := strings.TrimSpace(line); l == "set -e" || strings.HasPrefix(l, "set -e ") {
+				t.Errorf("%s runs with set -e: any failing command would fail the transaction", name)
+			}
 		}
-	}
-	if !strings.HasSuffix(pre, "\nexit 0\n") {
-		t.Error("preremove.sh does not end with exit 0")
+		if !strings.HasSuffix(script, "\nexit 0\n") {
+			t.Errorf("%s does not end with exit 0", name)
+		}
 	}
 	// The paths the preremove looks at are the panel's.
 	for _, line := range []string{"\nunits=" + systemUnitDir + "\n", "\npackaged=" + packageUnitDir + "\n", "\nbin=" + packageBinary + "\n",
@@ -130,6 +132,10 @@ is-enabled) case " $ENABLED " in *" $2 "*) exit 0 ;; esac; exit 1 ;;
 esac
 exit 0
 `,
+	"postfix": `#!/bin/sh
+echo "postfix $*" >> "$STUB_LOG"
+exit 0
+`,
 	"dpkg": `#!/bin/sh
 echo "dpkg $*" >> "$STUB_LOG"
 [ "$1" = "--compare-versions" ] && [ "$3" = "lt" ] || exit 2
@@ -139,6 +145,7 @@ exit 1
 	"monopanel": `#!/bin/sh
 echo "monopanel $*" >> "$STUB_LOG"
 case "$1" in
+mail-policy) exit "${MAILPOLICY:-0}" ;;
 api-socket-sync)
 	[ "$2" = "--probe" ] && exit "${PROBE:-0}"
 	[ "${MOVE:-0}" = 1 ] && printf '[Socket]\nListenStream=moved\n' > "$DROPIN"
@@ -167,7 +174,7 @@ type scriptRun struct {
 	root, bin, log string
 	env            []string
 	// Where the script's paths point.
-	units, packaged, accounts, shares, dropin, config, removed, tmpfiles string
+	units, packaged, accounts, shares, dropin, config, removed, tmpfiles, maincf string
 	// What the last run printed and called.
 	stdout, stderr string
 	calls          []string
@@ -183,10 +190,10 @@ func newScriptRun(t *testing.T) *scriptRun {
 		units: filepath.Join(root, "etc/systemd/system"), packaged: filepath.Join(root, "usr/lib/systemd/system"),
 		accounts: filepath.Join(root, "etc/apache2/monopanel/accounts"), shares: filepath.Join(root, "var/www/.shares"),
 		config: filepath.Join(root, "etc/monopanel/config.yaml"), removed: filepath.Join(root, "var/lib/monopanel-agent/package-removed"),
-		tmpfiles: filepath.Join(root, "etc/tmpfiles.d")}
+		tmpfiles: filepath.Join(root, "etc/tmpfiles.d"), maincf: filepath.Join(root, "etc/postfix/main.cf")}
 	r.dropin = filepath.Join(r.units, "monopanel-api.socket.d", "listen.conf")
 	stubDir := filepath.Join(root, "stubs")
-	for _, d := range []string{stubDir, r.units, r.packaged, filepath.Dir(r.dropin), filepath.Dir(r.config), filepath.Dir(r.removed), r.tmpfiles} {
+	for _, d := range []string{stubDir, r.units, r.packaged, filepath.Dir(r.dropin), filepath.Dir(r.config), filepath.Dir(r.removed), r.tmpfiles, filepath.Dir(r.maincf)} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -241,6 +248,7 @@ func (r *scriptRun) preremove() string {
 		"\naccounts=/etc/apache2/monopanel/accounts\n": "\naccounts=" + r.accounts + "\n",
 		"\nshares=/var/www/.shares\n":                  "\nshares=" + r.shares + "\n",
 		"\ntmpfiles=" + tmpfilesDir + "\n":             "\ntmpfiles=" + r.tmpfiles + "\n",
+		"\nmaincf=/etc/postfix/main.cf\n":              "\nmaincf=" + r.maincf + "\n",
 	} {
 		if !strings.Contains(s, from) {
 			r.t.Fatalf("preremove.sh lacks %q", from)
@@ -248,6 +256,23 @@ func (r *scriptRun) preremove() string {
 		s = strings.Replace(s, from, to, 1)
 	}
 	r.noSystemPaths("preremove.sh", s)
+	return s
+}
+
+// postremove is postremove.sh with its paths in the temporary root.
+func (r *scriptRun) postremove() string {
+	r.t.Helper()
+	s := packageScript(r.t, "postremove.sh")
+	for from, to := range map[string]string{
+		"\nbin=" + packageBinary + "\n":   "\nbin=" + r.bin + "\n",
+		"\nmaincf=/etc/postfix/main.cf\n": "\nmaincf=" + r.maincf + "\n",
+	} {
+		if !strings.Contains(s, from) {
+			r.t.Fatalf("postremove.sh lacks %q", from)
+		}
+		s = strings.Replace(s, from, to, 1)
+	}
+	r.noSystemPaths("postremove.sh", s)
 	return s
 }
 
@@ -588,7 +613,7 @@ func TestPreremoveThresholdAsDpkgOrdersIt(t *testing.T) {
 // none of it hears nothing.
 func TestPreremoveOnARemoval(t *testing.T) {
 	const tmpl = "monopanel-apache@.service"
-	const disable = "systemctl disable --now monopanel-api.socket monopanel-api.service monopanel-agent.service"
+	const disable = "systemctl disable --now monopanel-api.socket monopanel-api.service monopanel-agent.service monopanel-mailpolicy.service monopanel-mailpolicy-unix.socket monopanel-mailpolicy-inet.socket monopanel-mailguard.service"
 	for _, c := range []struct {
 		what string
 		env  []string
@@ -636,6 +661,36 @@ func TestPreremoveOnARemoval(t *testing.T) {
 			}
 		})
 	}
+	// postfix, told to keep mail waiting while the mail policy is down,
+	// would keep it waiting for good once the policy's binary is gone:
+	// main.cf loses the policy, opendkim stays — and postfix reloads before
+	// the policy's units stop, so that no message waits in between (review
+	// r2 F11).
+	t.Run("the mail policy leaves main.cf", func(t *testing.T) {
+		for _, c := range []struct{ before, after string }{
+			{"smtpd_milters = { unix:/var/spool/postfix/private/monopanel-mailpolicy, default_action=tempfail }, local:/run/opendkim/opendkim.sock\nnon_smtpd_milters = { unix:/var/spool/postfix/private/monopanel-mailpolicy, default_action=tempfail }, local:/run/opendkim/opendkim.sock\n",
+				"smtpd_milters = local:/run/opendkim/opendkim.sock\nnon_smtpd_milters = local:/run/opendkim/opendkim.sock\n"},
+			{"smtpd_milters = { inet:127.0.0.1:8890, default_action=tempfail }, inet:127.0.0.1:8891\nnon_smtpd_milters = { inet:127.0.0.1:8890, default_action=tempfail }\n",
+				"smtpd_milters = inet:127.0.0.1:8891\nnon_smtpd_milters = \n"},
+		} {
+			r := newScriptRun(t)
+			writeFiles(t, filepath.Dir(r.maincf), map[string]string{"main.cf": c.before})
+			r.run(r.preremove(), nil, "remove")
+			if b, err := os.ReadFile(r.maincf); err != nil || string(b) != c.after {
+				t.Errorf("main.cf after the removal: %v\n%s\nwant\n%s", err, b, c.after)
+			}
+			reload, stop := slices.Index(r.calls, "postfix reload"), slices.Index(r.calls, disable)
+			if reload < 0 || stop < 0 || reload > stop {
+				t.Errorf("postfix reload at %d, the units stopped at %d: %v", reload, stop, r.calls)
+			}
+		}
+		r := newScriptRun(t)
+		writeFiles(t, filepath.Dir(r.maincf), map[string]string{"main.cf": "smtpd_milters = local:/run/opendkim/opendkim.sock\n"})
+		r.run(r.preremove(), []string{"OLDER=0.8.19"}, "upgrade", "0.8.19")
+		if b, _ := os.ReadFile(r.maincf); string(b) != "smtpd_milters = local:/run/opendkim/opendkim.sock\n" || r.called("postfix reload") {
+			t.Errorf("an upgrade touched main.cf: %s %v", b, r.calls)
+		}
+	})
 	t.Run("a host with nothing to say", func(t *testing.T) {
 		r := newScriptRun(t)
 		writeFiles(t, r.tmpfiles, map[string]string{"monopanel-php.conf": "d /run/monopanel/php 0755 root root -\n"})
@@ -795,4 +850,59 @@ func TestAReinstallAfterARemovalEnablesThePanel(t *testing.T) {
 	if r.called(enable) || r.stdout != "MonoPanel updated.\n" {
 		t.Fatalf("the upgrade after it: %q\n%s", r.stdout, strings.Join(r.calls, "\n"))
 	}
+}
+
+// Going back below 0.9.0 (or the package going): once the binary that stays
+// knows no mail policy, postremove takes the policy's token out of main.cf
+// and reloads postfix — otherwise postfix would keep every message, inbound
+// mail too, waiting for a policy nobody runs as soon as its last process
+// ended (review r2 F2, the lead's decision 5). Where the binary that stays
+// has the policy — an upgrade — or main.cf does not name it, nothing
+// happens; nor for what dpkg passes when it backs out.
+func TestPostremoveTakesThePolicyOutOfMainCf(t *testing.T) {
+	const withPolicy = "myhostname = mail.example.com\nsmtpd_milters = { inet:127.0.0.1:8890, default_action=tempfail }, inet:127.0.0.1:8891\nnon_smtpd_milters = { inet:127.0.0.1:8890, default_action=tempfail }, inet:127.0.0.1:8891\n"
+	const without = "myhostname = mail.example.com\nsmtpd_milters = inet:127.0.0.1:8891\nnon_smtpd_milters = inet:127.0.0.1:8891\n"
+	const stop = "systemctl disable --now monopanel-mailpolicy.service monopanel-mailpolicy-unix.socket monopanel-mailpolicy-inet.socket"
+	for _, c := range []struct {
+		what string
+		env  []string
+		args []string
+		act  bool
+	}{
+		{"dpkg, an older version", []string{"MAILPOLICY=1"}, []string{"upgrade", "0.8.19"}, true},
+		{"rpm, an older version", []string{"MAILPOLICY=1"}, []string{"1"}, true},
+		{"dpkg, the package removed", []string{"MAILPOLICY=127"}, []string{"remove"}, true},
+		{"rpm, the package removed", []string{"MAILPOLICY=127"}, []string{"0"}, true},
+		{"dpkg, an upgrade", nil, []string{"upgrade", "0.9.1"}, false},
+		{"rpm, an upgrade", nil, []string{"1"}, false},
+		{"dpkg backs out", []string{"MAILPOLICY=1"}, []string{"abort-upgrade", "0.9.0"}, false},
+	} {
+		t.Run(c.what, func(t *testing.T) {
+			r := newScriptRun(t)
+			writeFiles(t, filepath.Dir(r.maincf), map[string]string{"main.cf": withPolicy})
+			r.run(r.postremove(), c.env, c.args...)
+			b, _ := os.ReadFile(r.maincf)
+			if want := map[bool]string{true: without, false: withPolicy}[c.act]; string(b) != want {
+				t.Errorf("main.cf:\n%s\nwant\n%s", b, want)
+			}
+			if r.called("postfix reload") != c.act || r.called(stop) != c.act {
+				t.Errorf("acted %v: %v", c.act, r.calls)
+			}
+		})
+	}
+	t.Run("main.cf without the policy", func(t *testing.T) {
+		r := newScriptRun(t)
+		writeFiles(t, filepath.Dir(r.maincf), map[string]string{"main.cf": without})
+		r.run(r.postremove(), []string{"MAILPOLICY=1"}, "upgrade", "0.8.19")
+		if b, _ := os.ReadFile(r.maincf); string(b) != without || r.called("postfix reload") {
+			t.Errorf("main.cf: %s, calls %v", b, r.calls)
+		}
+	})
+	t.Run("no mail server", func(t *testing.T) {
+		r := newScriptRun(t)
+		r.run(r.postremove(), []string{"MAILPOLICY=1"}, "1")
+		if r.called("postfix reload") {
+			t.Errorf("calls %v", r.calls)
+		}
+	})
 }

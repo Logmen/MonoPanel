@@ -82,11 +82,16 @@ smtpd_soft_error_limit = 10
 smtpd_hard_error_limit = 20
 anvil_rate_time_unit = 60s
 
-{{- if .Milter }}
-
-# DKIM signing and verification of incoming mail.
+# The panel's mail policy comes first: no account sends as a domain of
+# another account, whether a mailbox over submission, a program through
+# sendmail or over SMTP to this host. While it is down mail waits
+# (default_action=tempfail), it never leaves unchecked. Then opendkim signs
+# and verifies; when it is down mail goes unsigned (milter_default_action).
+# The policy asks postfix for the macros it reads ({daemon_name},
+# {daemon_addr}, {daemon_port}, {auth_authen}); the connect list below names
+# them for a milter that does not ask.
 milter_default_action = accept
 milter_protocol = 6
-smtpd_milters = {{ .Milter }}
-non_smtpd_milters = {{ .Milter }}
-{{- end }}
+milter_connect_macros = j {daemon_name} {daemon_addr} {daemon_port} v _
+smtpd_milters = {{ .Milters }}
+non_smtpd_milters = {{ .Milters }}

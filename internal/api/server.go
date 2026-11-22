@@ -125,6 +125,19 @@ type Server struct {
 	// nor an agent call; no other lock here is taken under it, nor is it
 	// taken under one.
 	restoreMu sync.Mutex
+	// mailPolicyMu lets one write of the mail policy's file at a time
+	// render and write it (writeMailPolicy): the last written is the newest.
+	mailPolicyMu sync.Mutex
+	// mailPolicyWait is the pause between two asks whether the mail policy
+	// answers after its unit started (startMailPolicy).
+	mailPolicyWait time.Duration
+	// mailPolicyErr is why the last write of the policy's file failed, ""
+	// once one went through (a string; the doctor says it).
+	mailPolicyErr atomic.Value
+	// mailPolicyAwaitsUpdate: the move waits for the updater's verdict on
+	// this version (moveMailPolicyAfterUpdate), every mailPolicyUpdateStep.
+	mailPolicyAwaitsUpdate atomic.Bool
+	mailPolicyUpdateStep   time.Duration
 	// strayShares holds why the start-up refresh could not unbind a shared
 	// folder the agent keeps that no share names (an error by mount point,
 	// unbindStrayShares), for the doctor.
@@ -181,6 +194,7 @@ type Server struct {
 // and for nginx and an account's Apache to answer. Intended for tests.
 func (s *Server) SetReadinessWaits(poolSocket, nginx time.Duration) {
 	s.poolSocketWait, s.nginxWait, s.apacheWait = poolSocket, nginx, nginx
+	s.mailPolicyWait = min(s.mailPolicyWait, nginx)
 }
 
 // SetUnprivilegedPortStart overrides the reading of
@@ -237,6 +251,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 		db.SetAuditSink(s.auditFile(cfg.Log.AuditFile))
 	}
 	s.poolSocketWait, s.nginxWait, s.apacheWait = 10*time.Second, 15*time.Second, apacheWaitDefault
+	s.mailPolicyWait, s.mailPolicyUpdateStep = 200*time.Millisecond, 5*time.Second
 	s.apacheDial = (&net.Dialer{Timeout: time.Second}).DialContext
 	s.apacheLegacy = path.Join(profile.Web().ApacheConfDir, "monopanel")
 	s.agentWaitStep, s.jobsAgentWait = agentWaitStepFirst, jobsAgentWaitDefault
@@ -335,8 +350,8 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	r.Handle("/*", s.uiHandler())
 	s.router = r
 
-	s.jobs.Register("user.provision", s.jobUserProvision)
-	s.jobs.Register("user.delete", s.jobUserDelete)
+	s.jobs.Register("user.provision", s.withMailPolicy(s.jobUserProvision))
+	s.jobs.Register("user.delete", s.withMailPolicy(s.jobUserDelete))
 	s.jobs.Register("stack.install", s.jobStackInstall)
 	s.jobs.Register("apache.migrate", s.jobApacheMigrate)
 	s.jobs.Register("apache.backend", s.jobApacheBackend)
@@ -345,10 +360,10 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	s.jobs.Register("cert.issue", s.jobCertIssue)
 	s.jobs.Register("php.install", s.jobPHPInstall)
 	s.jobs.Register("php.remove", s.jobPHPRemove)
-	s.jobs.Register("site.apply", s.jobSiteApply)
+	s.jobs.Register("site.apply", s.withMailPolicy(s.jobSiteApply))
 	s.jobs.Register("site.fix", s.jobSiteFix)
 	s.jobs.Register("site.cms", s.jobSiteCMS)
-	s.jobs.Register("site.delete", s.jobSiteDelete)
+	s.jobs.Register("site.delete", s.withMailPolicy(s.jobSiteDelete))
 	s.jobs.Register("sites.move-ip", s.jobSitesMoveIP)
 	s.jobs.Register("backup.run", s.jobBackupRun)
 	s.jobs.Register("backup.restore", s.jobBackupRestore)
@@ -356,7 +371,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	s.jobs.Register("mail.install", s.jobMailInstall)
 	s.jobs.Register("mail.apply", s.jobMailApply)
 	s.jobs.Register("mail.webmail", s.jobWebmailInstall)
-	s.jobs.Register("migrate.run", s.jobMigrateRun)
+	s.jobs.Register("migrate.run", s.withMailPolicy(s.jobMigrateRun))
 	// A backup, a restore and a migration may run for hours (jobLimits).
 	for typ, d := range jobLimits {
 		s.jobs.SetLimit(typ, d)

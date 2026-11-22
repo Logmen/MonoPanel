@@ -198,6 +198,9 @@ func TestMailInstallKeepsEveryChangeMadeMeanwhile(t *testing.T) {
 
 // A webmail site that cannot be read — an error other than not found — is
 // not forgotten: mail.apply fails on it and the settings keep the webmail.
+// The mail policy reads every site before the render (writeMailPolicy), so
+// its read may be the one that fails: the render stops before it writes
+// anything, and the webmail stays all the same.
 func TestWebmailSiteLookupErrorKeepsTheWebmail(t *testing.T) {
 	f, _, home := newWebmailFixture(t)
 	installedWebmail(t, f, home)
@@ -212,7 +215,7 @@ func TestWebmailSiteLookupErrorKeepsTheWebmail(t *testing.T) {
 	}
 	var ref apitypes.JobRef
 	f.call(http.MethodPost, "/mail/apply", nil, http.StatusAccepted, &ref)
-	if job := f.waitJob(ref.JobID); job.Status != store.JobFailed || !strings.Contains(job.Error, "webmail site webmail.example.com") {
+	if job := f.waitJob(ref.JobID); job.Status != store.JobFailed || !(strings.Contains(job.Error, "webmail site webmail.example.com") || strings.Contains(job.Error, "mail policy")) {
 		t.Fatalf("mail.apply: %s %s\n%s", job.Status, job.Error, job.Log)
 	}
 	if c := f.s.loadMailConfig(f.ctx); c.Webmail != "webmail.example.com" {

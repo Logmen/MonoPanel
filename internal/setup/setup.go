@@ -28,6 +28,7 @@ import (
 	"monopanel/internal/client"
 	"monopanel/internal/config"
 	"monopanel/internal/i18n"
+	"monopanel/internal/mailpolicy"
 	"monopanel/internal/osprofile"
 	"monopanel/internal/store"
 	"monopanel/internal/systemd"
@@ -208,12 +209,151 @@ CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL CAP_CH
 WantedBy=multi-user.target
 `
 
+// mailPolicyUnit is the panel's mail policy (internal/mailpolicy), a milter
+// postfix asks before opendkim signs, as its own system user, on the
+// listener of a socket unit: mailPolicyUnixSocketUnit (Debian, Ubuntu) or
+// mailPolicyInetSocketUnit (EL); mailGuardUnit fences the loopback ports of
+// EL. The API enables and starts them with the mail server, mp setup none.
+const mailPolicyUnit = `[Unit]
+Description=MonoPanel mail policy (postfix milter: no account sends as another account's domain)
+After=network.target
+# Postfix asks it about every message an account sends, before opendkim
+# signs; while it is down, mail waits (tempfail): it starts before postfix
+# (postfix@-.service is the postfix master of Debian 12 and Ubuntu up to
+# 24.04), and systemd never gives up restarting it. Its listener is a socket
+# unit's, which PID 1 holds while the service restarts or is down:
+# monopanel-mailpolicy-unix.socket on Debian and Ubuntu,
+# monopanel-mailpolicy-inet.socket on EL. The panel enables and starts them
+# with the mail server.
+Before=postfix.service postfix@-.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=%s mail-policy
+Restart=always
+RestartSec=1
+# Its own system user: it parses mail from untrusted senders, so it is not
+# root, not the API's user and not opendkim's, which holds the DKIM keys.
+User=monopanel-mail
+Group=monopanel-mail
+UMask=0077
+# It reads the policy (/etc/postfix/monopanel, readable) and /proc/net/tcp
+# of the host's network namespace — no PrivateNetwork — and writes nothing.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+MemoryMax=256M
+Environment=GOMEMLIMIT=192MiB
+TasksMax=256
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
+`
+
+const mailPolicyUnixSocketUnit = `[Unit]
+Description=MonoPanel mail policy's socket (Debian and Ubuntu)
+# PID 1 holds the socket from boot on, also while the policy restarts, is
+# down or is killed: postfix's connections wait in its backlog rather than
+# fail. It is in postfix's own private directory (postfix:root 0700), and
+# postfix's own: only postfix and root may open it.
+Before=postfix.service postfix@-.service
+
+[Socket]
+ListenStream=/var/spool/postfix/private/monopanel-mailpolicy
+SocketUser=postfix
+SocketGroup=postfix
+SocketMode=0600
+RemoveOnStop=yes
+Accept=no
+Service=monopanel-mailpolicy.service
+# No rate limit on the activations: the listener stays whatever the
+# service does.
+TriggerLimitIntervalSec=0
+
+[Install]
+WantedBy=sockets.target
+`
+
+const mailPolicyInetSocketUnit = `[Unit]
+Description=MonoPanel mail policy's port (EL)
+# PID 1 holds 127.0.0.1:8890 (milter_port_t) from boot on, also while the
+# policy restarts, is down or is killed: no local account can bind the port
+# in between and get postfix's connections, and those wait in its backlog
+# rather than fail. Only root and postfix may connect to it
+# (monopanel-mailguard.service).
+Before=postfix.service
+
+[Socket]
+ListenStream=127.0.0.1:8890
+Accept=no
+Service=monopanel-mailpolicy.service
+# No rate limit on the activations: a socket past its limit would close
+# and leave the port to whoever binds it first.
+TriggerLimitIntervalSec=0
+
+[Install]
+WantedBy=sockets.target
+`
+
+const mailGuardUnit = `[Unit]
+Description=MonoPanel mail guard (EL: only root and postfix connect to the local milter ports)
+# opendkim (127.0.0.1:8891) and the mail policy (127.0.0.1:8890) listen on
+# loopback ports, which every local process can reach: an account that
+# spoke the milter protocol to opendkim itself would have any domain of the
+# SigningTable signed. An nftables table of its own resets the connection of
+# anyone but root and postfix to either port, from before the network and
+# the accounts' processes start. The panel enables and starts it with the
+# mail server on EL.
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target opendkim.service postfix.service monopanel-mailpolicy-inet.socket shutdown.target
+Wants=network-pre.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=%s mail-guard
+# The table replaces itself in one transaction: a reload leaves no moment
+# without it, as a stop and a start would.
+ExecReload=%s mail-guard
+ExecStop=%s mail-guard --remove
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+`
+
 // The panel's units (panelUnits).
 const (
-	agentService   = "monopanel-agent.service"
-	apiService     = "monopanel-api.service"
-	apiSocket      = "monopanel-api.socket"
-	apacheUnitName = "monopanel-apache@.service"
+	agentService       = "monopanel-agent.service"
+	apiService         = "monopanel-api.service"
+	apiSocket          = "monopanel-api.socket"
+	apacheUnitName     = "monopanel-apache@.service"
+	mailPolicyUnitName = mailpolicy.Unit
+	mailPolicyUnixName = mailpolicy.SocketUnitUnix
+	mailPolicyInetName = mailpolicy.SocketUnitInet
+	mailGuardUnitName  = mailpolicy.GuardUnit
 )
 
 // Run performs the setup.
@@ -256,6 +396,14 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 	}
 	// The service user hands the API socket to the CLI group, so it has to be a member.
 	if _, err := agent.EnsureUnixUser(ctx, profile, &agent.EnsureUnixUserRequest{Login: cfg.ServiceUser, System: true, PrimaryGroup: cfg.ServiceGroup, Home: cfg.DataDir, Groups: []string{cfg.CLIGroup}, Comment: "MonoPanel service"}); err != nil {
+		return nil, err
+	}
+	// The mail policy's own user and group (sysusers.d does it where the
+	// package is installed).
+	if _, err := agent.EnsureGroup(ctx, &agent.EnsureGroupRequest{Name: mailpolicy.User, System: true}); err != nil {
+		return nil, err
+	}
+	if _, err := agent.EnsureUnixUser(ctx, profile, &agent.EnsureUnixUserRequest{Login: mailpolicy.User, System: true, PrimaryGroup: mailpolicy.User, Home: "/", Comment: "MonoPanel mail policy"}); err != nil {
 		return nil, err
 	}
 

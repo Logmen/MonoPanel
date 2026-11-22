@@ -32,6 +32,7 @@ import (
 	"monopanel/internal/agent/confcheck"
 	"monopanel/internal/buildinfo"
 	"monopanel/internal/config"
+	"monopanel/internal/mailpolicy"
 	"monopanel/internal/osprofile"
 	"monopanel/internal/sysinfo"
 	"monopanel/internal/systemd"
@@ -188,6 +189,11 @@ func (a *Agent) Handler() http.Handler {
 	r.Post("/v1/shares/unbind", handle(a.shareUnbind))
 	r.Post("/v1/shares/status", handle(a.shareStatus))
 	r.Post("/v1/shares/records", handle(a.shareRecords))
+	// The demo's mail policy answers as the real one would: the unit runs
+	// as far as the pretend systemd is concerned.
+	r.Post("/v1/mailpolicy/probe", handle(func(context.Context, *struct{}) (*agent.MailPolicyProbeResponse, error) {
+		return &agent.MailPolicyProbeResponse{OK: true, Listener: mailpolicy.SocketPath, Configured: true}, nil
+	}))
 	r.Post("/v1/stream/out", a.streamOut)
 	r.Post("/v1/stream/in", notInDemo)
 	return r

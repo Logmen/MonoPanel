@@ -1,0 +1,28 @@
+[Unit]
+Description=MonoPanel mail guard (EL: only root and postfix connect to the local milter ports)
+# opendkim (127.0.0.1:8891) and the mail policy (127.0.0.1:8890) listen on
+# loopback ports, which every local process can reach: an account that
+# spoke the milter protocol to opendkim itself would have any domain of the
+# SigningTable signed. An nftables table of its own resets the connection of
+# anyone but root and postfix to either port, from before the network and
+# the accounts' processes start. The panel enables and starts it with the
+# mail server on EL.
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target opendkim.service postfix.service monopanel-mailpolicy-inet.socket shutdown.target
+Wants=network-pre.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/monopanel mail-guard
+# The table replaces itself in one transaction: a reload leaves no moment
+# without it, as a stop and a start would.
+ExecReload=/usr/bin/monopanel mail-guard
+ExecStop=/usr/bin/monopanel mail-guard --remove
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

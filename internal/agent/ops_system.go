@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"sync"
 
+	"monopanel/internal/mailpolicy"
 	"monopanel/internal/sysinfo"
 )
 
@@ -31,9 +32,9 @@ func (s *Server) ensureGroup(ctx context.Context, req *EnsureGroupRequest) (*Ens
 		return nil, &Error{Status: http.StatusBadRequest, Message: "invalid group name"}
 	}
 	switch req.Name {
-	case s.cfg.WebGroup, s.cfg.CLIGroup, sftpGroup, mailUser:
+	case s.cfg.WebGroup, s.cfg.CLIGroup, sftpGroup, mailUser, mailpolicy.User:
 	default:
-		return nil, notAllowed("the group "+req.Name, "the panel makes only "+s.cfg.WebGroup+", "+s.cfg.CLIGroup+", "+sftpGroup+" and "+mailUser)
+		return nil, notAllowed("the group "+req.Name, "the panel makes only "+s.cfg.WebGroup+", "+s.cfg.CLIGroup+", "+sftpGroup+", "+mailUser+" and "+mailpolicy.User)
 	}
 	return EnsureGroup(ctx, req)
 }
