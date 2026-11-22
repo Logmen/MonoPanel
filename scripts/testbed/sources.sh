@@ -283,7 +283,10 @@ migrate_bitrixvm() {
 	pw=$(ssh -o BatchMode=yes "$src" 'getent shadow bitrix | cut -d: -f2')
 	dbpw=$(ssh -o BatchMode=yes "$src" "\$(command -v python3 || command -v python) -c \"import re;print(re.search(r\\\"'password'\\s*=>\\s*'([^']*)'\\\", open('/home/bitrix/www/bitrix/.settings.php').read()).group(1))\"")
 	log "$dst: checks"
-	check "site answers with Bitrix over the new server" "ssh -o BatchMode=yes $(vm "$dst") \"for i in 1 2 3 4 5 6; do curl -sI --resolve $main:80:$dstip http://$main/ | grep -q 'X-Powered-CMS: Bitrix' && exit 0; sleep 5; done; exit 1\""
+	# Bitrix's kernel answers: its header, or — once the source's trial has
+	# run out, as on a testbed VM after 30 days — its own page saying so,
+	# which it shows on the source as well
+	check "site answers with Bitrix over the new server" "ssh -o BatchMode=yes $(vm "$dst") \"for i in 1 2 3 4 5 6; do curl -sI --resolve $main:80:$dstip http://$main/ | grep -q 'X-Powered-CMS: Bitrix' && exit 0; curl -s --resolve $main:80:$dstip http://$main/ | grep -q 'coupon_activation.php' && exit 0; sleep 5; done; exit 1\""
 	check "old /home/bitrix paths rewritten in dbconn.php" "ssh -o BatchMode=yes $(vm "$dst") \"grep -q '/var/www/bitrix/.bx_temp' /var/www/bitrix/data/www/$main/bitrix/php_interface/dbconn.php\""
 	check "database user logs in with the password from .settings.php" "ssh -o BatchMode=yes $(vm "$dst") \"mysql -u bitrix0 -p'$dbpw' -N -e 'select 1' sitemanager\" >/dev/null 2>&1"
 	check "unix password hash identical" "[ \"\$(ssh -o BatchMode=yes $(vm "$dst") 'getent shadow bitrix | cut -d: -f2')\" = '$pw' ]"

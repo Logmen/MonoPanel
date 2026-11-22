@@ -193,6 +193,8 @@ tbup_answers() { [ "$(get "$1" /tbup.php)" = 200 ] && grep -q '^tbup-ok' "$tmp/b
 # mounted_at <path>: something is mounted at exactly that path — mountinfo
 # as it is: findmnt would resolve a symlink there (the guest's) to its target
 mounted_at() { awk -v m="$1" '$5 == m { found = 1 } END { exit !found }' /proc/self/mountinfo; }
+# unit_active <unit>: systemd shows the unit active
+unit_active() { [ "$(systemctl show -p ActiveState --value "$1" 2>/dev/null)" = active ]; }
 # links_to <path> <target>: path is a symlink to exactly that target
 links_to() { [ -L "$1" ] && [ "$(readlink "$1")" = "$2" ]; }
 installed() { [ "$(mp stack list --json </dev/null 2>/dev/null | pj "[c[\"installed\"] for c in d if c[\"name\"] == \"$1\"][0]")" = true ]; }
@@ -421,7 +423,9 @@ carried_shares() {
 		fail "/root/tbup.env names no folder swapped for a symlink (attack=): an upgrade-seed.sh older than these checks"
 		return
 	fi
-	mpt=$www/tbupsf/$attack folder=$doc/$attack
+	# the share's name is $attack, the folder it shows the site's attack/
+	# (upgrade-seed.sh: --path attack --name $attack)
+	mpt=$www/tbupsf/$attack folder=$doc/${attack_dir:-attack}
 	# the line numbers of the first "taken off" for it and of the first
 	# "taken over": the mounts are checked before the slow removals
 	order=$(journalctl -u monopanel-agent --no-pager -o cat 2>/dev/null | awk -v m="mount_point=$mpt " '/was taken off/ && index($0, m) && !off { off = NR } /shared folder was taken over/ && !over { over = NR } END { print off + 0, over + 0 }')
@@ -849,6 +853,10 @@ bind_checks() {
 	else
 		fail "$mpt does not show $folder: ${top:-nothing mounted there} (want the root ${fsroot%/}$rel of $fsmnt)"
 	fi
+	# systemd reads the mount table at most a few times a second: right
+	# after a burst of mounts and unmounts (the guest's switch above) the
+	# unit of a bind made a moment ago may not be loaded yet
+	wait_until 30 unit_active "$unit"
 	frag=$(systemctl show -p FragmentPath --value "$unit" 2>/dev/null)
 	act=$(systemctl show -p ActiveState --value "$unit" 2>/dev/null)
 	if [ -z "$frag" ] && [ "$act" = active ]; then
@@ -1223,7 +1231,10 @@ SetEnv PHP_ADMIN_VALUE \"open_basedir=/\""
 	if grep -qiE 'Server Version|Apache Status|Scoreboard' "$tmp/body"; then fail "A's .htaccess shows Apache's status page ($c)"; else pass "SetHandler server-status in an .htaccess shows no status page ($c)"; fi
 	secretB="tbck-secret-$(rand)"
 	put "$B" "$docBA/tbck-secret.txt" "$secretB"
-	ln -sfn "$docBA/tbck-secret.txt" "$docAA/tbck-leak" && chown -h "$A:$(id -gn "$A")" "$docAA/tbck-leak"
+	# the account makes the link itself: chown -h of uutils coreutils (Ubuntu
+	# 26.04) changes the link's target, here the other account's file
+	rm -f "$docAA/tbck-leak"
+	as_user "$A" ln -s "$docBA/tbck-secret.txt" "$docAA/tbck-leak"
 	hta 'Options -SymLinksIfOwnerMatch +FollowSymLinks'
 	c=$(get "$AA" /tbck-leak)
 	if grep -qF "$secretB" "$tmp/body"; then fail "a symlink in A's site with FollowSymLinks serves B's file ($c)"; else pass "a symlink with FollowSymLinks reaches nothing of B's ($c)"; fi
@@ -1382,7 +1393,10 @@ restic_section() {
 	info "restic sandbox: ${sb:-no line in mp doctor}"
 	text="tbck-backup-$(rand)"
 	put "$A" "$docA/tbck-backup.txt" "$text"
-	ln -sfn /etc/monopanel "$www/$A/data/tbck-link" && chown -h "$A:$(id -gn "$A")" "$www/$A/data/tbck-link"
+	# the account makes the link itself: chown -h of uutils coreutils (Ubuntu
+	# 26.04) changes the link's target, which would hand /etc/monopanel over
+	rm -f "$www/$A/data/tbck-link"
+	as_user "$A" ln -s /etc/monopanel "$www/$A/data/tbck-link"
 	if ! secret | timeout 120 mp backup target add tbck --type local --repo "$repo" --password-stdin >"$tmp/out" 2>&1; then
 		fail "mp backup target add tbck: $(last "$tmp/out" 2)"
 		return
@@ -1491,7 +1505,8 @@ nodes_section() {
 	local snap want refused="$nodes/tbck-fifo, a FIFO|$nodes/tbck-suid, a set-user-ID file"
 	rm -rf "$nodes"
 	if ! as_user "$A" mkdir "$nodes" 2>"$tmp/err" || ! as_user "$A" mkfifo "$nodes/tbck-fifo" 2>"$tmp/err" ||
-		! install -o "$A" -g "$(id -gn "$A")" -m 4755 /bin/true "$nodes/tbck-suid" 2>"$tmp/err" || [ ! -p "$nodes/tbck-fifo" ] || [ ! -u "$nodes/tbck-suid" ]; then
+		! install -o "$A" -g "$(id -gn "$A")" -m 0755 /bin/true "$nodes/tbck-suid" 2>"$tmp/err" || ! chmod 4755 "$nodes/tbck-suid" 2>"$tmp/err" ||
+		[ ! -p "$nodes/tbck-fifo" ] || [ ! -u "$nodes/tbck-suid" ]; then
 		fail "a FIFO and a set-uid file of $A's in $nodes: $(last "$tmp/err") $(ls -l "$nodes" 2>&1 | tr '\n' ' ' | cut -c1-160)"
 		rm -rf "$nodes"
 		return
@@ -1611,8 +1626,11 @@ pkgfiles_section() {
 	else
 		fail "modprobe -n -v sctp: $(tr '\n' ' ' <<<"${out:-nothing}" | cut -c1-160)"
 	fi
-	out=$(cd / && setpriv --reuid="$(id -u nobody)" --regid="$(id -g nobody)" --clear-groups -- python3 -c 'import socket; socket.socket(socket.AF_INET, socket.SOCK_STREAM, 132); print("OPENED")' 2>&1)
-	if grep -q OPENED <<<"$out"; then
+	# told by the exit status: Python 3.13 and later print the code of -c,
+	# words and all, in the traceback of a refusal
+	out=$(cd / && setpriv --reuid="$(id -u nobody)" --regid="$(id -g nobody)" --clear-groups -- python3 -c 'import socket, sys; socket.socket(socket.AF_INET, socket.SOCK_STREAM, 132); sys.exit(7)' 2>&1)
+	rc=$?
+	if [ "$rc" = 7 ]; then
 		fail "nobody opened a socket of IPPROTO_SCTP"
 	elif grep -qE 'Errno (93|94)|not supported' <<<"$out"; then
 		pass "socket(AF_INET, SOCK_STREAM, IPPROTO_SCTP) as nobody: $(tail -1 <<<"$out" | cut -c1-80)"

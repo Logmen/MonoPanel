@@ -148,5 +148,6 @@ mark=$mark
 snap=$snap
 units="$units"
 attack=$attack
+attack_dir=attack
 EOF
 log "seeded with mp $from: $own, $sh, $sf$([ "$deb" = 1 ] && echo ", $apa"), tbupbak, composer, the swapped share $attack ($units)"
