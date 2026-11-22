@@ -364,6 +364,10 @@ func (s *Server) applyMailConfig(ctx context.Context, logf func(string, ...any),
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
+	// One render at a time, each from the settings as they are when its
+	// turn comes (mailRenderMu says why).
+	s.mailRenderMu.Lock()
+	defer s.mailRenderMu.Unlock()
 	c := s.loadMailConfig(ctx)
 	if !c.Installed {
 		return errors.New("mail server is not installed: mp mail install")

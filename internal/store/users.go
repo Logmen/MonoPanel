@@ -137,7 +137,10 @@ func (d *DB) SetUserUnix(ctx context.Context, id int64, uid, gid int, home strin
 	return err
 }
 
-// SetUserStatus updates the status.
+// SetUserStatus updates the status, whatever it is now: the removal's own
+// mark and the way back from its failure. Anything else that changes the
+// status goes through ActivateUser or UpdateUserProfile, which leave an
+// account being removed so.
 func (d *DB) SetUserStatus(ctx context.Context, id int64, status string) error {
 	res, err := d.sql.ExecContext(ctx, `UPDATE users SET status=?, updated_at=? WHERE id=?`, status, now(), id)
 	if err != nil {
@@ -147,6 +150,34 @@ func (d *DB) SetUserStatus(ctx context.Context, id int64, status string) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// ActivateUser makes an account active once its unix side is made — unless
+// its removal is under way (ErrBeingRemoved): the removal is queued, and
+// what reads the account meanwhile (a restore into its home, an apply of
+// its sites, the log rotation) must find it being removed.
+func (d *DB) ActivateUser(ctx context.Context, id int64) error {
+	res, err := d.sql.ExecContext(ctx, `UPDATE users SET status=?, updated_at=? WHERE id=? AND status<>?`, UserActive, now(), id, UserDeleting)
+	if err != nil {
+		return err
+	}
+	return d.userWritten(ctx, res, id)
+}
+
+// userWritten tells why a write that leaves an account being removed alone
+// changed no row: the account is gone (ErrNotFound) or being removed
+// (ErrBeingRemoved).
+func (d *DB) userWritten(ctx context.Context, res sql.Result, id int64) error {
+	if n, _ := res.RowsAffected(); n > 0 {
+		return nil
+	}
+	var status string
+	if err := d.sql.QueryRowContext(ctx, `SELECT status FROM users WHERE id=?`, id).Scan(&status); errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	return ErrBeingRemoved
 }
 
 // SetUserPassword stores a new password hash.
@@ -167,8 +198,14 @@ func (d *DB) DeleteUser(ctx context.Context, id int64) error {
 	return nil
 }
 
-// UpdateUserProfile writes email, shell, status and quota.
+// UpdateUserProfile writes email, shell, status and quota — not onto an
+// account being removed (ErrBeingRemoved): a change that read the account
+// before its removal was asked for would put the status it read back over
+// the mark. A gone account is ErrNotFound.
 func (d *DB) UpdateUserProfile(ctx context.Context, u *User) error {
-	_, err := d.sql.ExecContext(ctx, `UPDATE users SET email=?, shell=?, status=?, quota_mb=?, updated_at=? WHERE id=?`, nullStr(u.Email), boolInt(u.Shell), u.Status, nullIntPtr(u.QuotaMB), now(), u.ID)
-	return err
+	res, err := d.sql.ExecContext(ctx, `UPDATE users SET email=?, shell=?, status=?, quota_mb=?, updated_at=? WHERE id=? AND status<>?`, nullStr(u.Email), boolInt(u.Shell), u.Status, nullIntPtr(u.QuotaMB), now(), u.ID, UserDeleting)
+	if err != nil {
+		return err
+	}
+	return d.userWritten(ctx, res, u.ID)
 }

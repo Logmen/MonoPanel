@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"maps"
+	"slices"
 	"strings"
 )
 
@@ -157,15 +159,12 @@ func (d *DB) CreateSite(ctx context.Context, s *Site) error {
 
 // Clone is a copy of the site that shares nothing with it: the site as a
 // caller read it, kept aside before the caller changes it
-// (UpdateSiteChanges).
+// (UpdateSiteChanges). An empty list or map stays empty.
 func (s *Site) Clone() *Site {
 	c := *s
-	c.Aliases = append([]string(nil), s.Aliases...)
-	c.AllowFrom = append([]string(nil), s.AllowFrom...)
-	c.PHPIni = make(map[string]string, len(s.PHPIni))
-	for k, v := range s.PHPIni {
-		c.PHPIni[k] = v
-	}
+	c.Aliases = slices.Clone(s.Aliases)
+	c.AllowFrom = slices.Clone(s.AllowFrom)
+	c.PHPIni = maps.Clone(s.PHPIni)
 	if s.CertificateID != nil {
 		id := *s.CertificateID
 		c.CertificateID = &id
@@ -180,15 +179,18 @@ type siteColumn struct {
 }
 
 // siteColumns are the mutable columns of a site with s's values, in one
-// order: what UpdateSite writes and what UpdateSiteChanges compares.
+// order: what UpdateSite writes and what UpdateSiteChanges compares. A list
+// or a map that is not there is the empty one, as the store keeps it:
+// compared as "null" against "[]", the aliases of a site without any would
+// differ from themselves, and every change of the site would write the
+// aliases it read over one added meanwhile.
 func siteColumns(s *Site) []siteColumn {
-	aliases, _ := json.Marshal(s.Aliases)
-	ini, _ := json.Marshal(s.PHPIni)
-	allowFrom := s.AllowFrom
-	if allowFrom == nil {
-		allowFrom = []string{}
+	aliases, _ := json.Marshal(orEmpty(s.Aliases))
+	ini := []byte("{}")
+	if len(s.PHPIni) > 0 {
+		ini, _ = json.Marshal(s.PHPIni)
 	}
-	allow, _ := json.Marshal(allowFrom)
+	allow, _ := json.Marshal(orEmpty(s.AllowFrom))
 	return []siteColumn{
 		{"aliases", string(aliases)}, {"mode", s.Mode}, {"php_version", s.PHPVersion}, {"docroot", s.Docroot}, {"ip", s.IP},
 		{"http2", boolInt(s.HTTP2)}, {"http3", boolInt(s.HTTP3)}, {"ssl", s.SSL}, {"redirect_https", boolInt(s.RedirectHTTPS)},
@@ -229,15 +231,30 @@ func (d *DB) UpdateSite(ctx context.Context, s *Site) error {
 	return d.updateSiteColumns(ctx, s.ID, set, args)
 }
 
+// orEmpty is list, or the empty list for none.
+func orEmpty(list []string) []string {
+	if list == nil {
+		return []string{}
+	}
+	return list
+}
+
 // UpdateSiteChanges writes the fields of s that differ from was — the site
 // as the caller read it, kept aside (Clone) before the change — and leaves
 // every other column as it is now. A request or a job that read the site,
 // changed a field and wrote the whole row back would put back what changed
 // beside it meanwhile: the address sites.move-ip gave the site, a change
 // asked for at the same time — lost for good, the next apply renders the
-// row as it is. A status written this way goes in only while the site is
-// not being removed: its removal is queued and must find the site as it
-// left it. A site gone meanwhile is ErrNotFound.
+// row as it is. A list or a map is one column: two changes of the same one
+// at once still end with the later.
+//
+// Nothing goes onto a site being removed (ErrBeingRemoved): its removal is
+// queued and must find the site as its mark left it, and whoever asked for
+// the change must hear that it did not go in. The way back from a failure,
+// error to pending, is the one change of status a change of the site makes
+// of itself: it goes in only while the site is still failed — a suspension
+// given meanwhile stays. A status asked for (a suspension, its end) goes in
+// over any other. A site gone meanwhile is ErrNotFound.
 func (d *DB) UpdateSiteChanges(ctx context.Context, was, s *Site) error {
 	before := siteColumns(was)
 	var set []string
@@ -245,13 +262,43 @@ func (d *DB) UpdateSiteChanges(ctx context.Context, was, s *Site) error {
 	for i, c := range siteColumns(s) {
 		switch {
 		case c.value == before[i].value:
-		case c.name == "status":
-			set, args = append(set, "status=CASE WHEN status=? THEN status ELSE ? END"), append(args, SiteDeleting, c.value)
+		case c.name == "status" && was.Status == SiteError && s.Status == SitePending:
+			set, args = append(set, "status=CASE WHEN status=? THEN ? ELSE status END"), append(args, SiteError, SitePending)
 		default:
 			set, args = append(set, c.name+"=?"), append(args, c.value)
 		}
 	}
-	return d.updateSiteColumns(ctx, s.ID, set, args)
+	set = append(set, "updated_at=?")
+	args = append(args, now(), s.ID, SiteDeleting)
+	res, err := d.sql.ExecContext(ctx, `UPDATE sites SET `+strings.Join(set, ", ")+` WHERE id=? AND status<>?`, args...)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		return nil
+	}
+	var status string
+	if err := d.sql.QueryRowContext(ctx, `SELECT status FROM sites WHERE id=?`, s.ID).Scan(&status); errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	return ErrBeingRemoved
+}
+
+// MarkSiteDeleting marks a site being removed and changes nothing else of
+// its row: what another request changed meanwhile stays, as the removal
+// finds it. A site marked already is marked again — its removal asked for
+// once more, say after the panel stopped before it queued the first.
+func (d *DB) MarkSiteDeleting(ctx context.Context, id int64) error {
+	res, err := d.sql.ExecContext(ctx, `UPDATE sites SET status=?, updated_at=? WHERE id=?`, SiteDeleting, now(), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // SaveAppliedSite stores what a site.apply decided and nothing else: the

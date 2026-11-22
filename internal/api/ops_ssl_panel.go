@@ -201,6 +201,9 @@ func (s *Server) registerPanelTLS() {
 		if err != nil {
 			return nil, err
 		}
+		if err := s.siteStays(ctx, site); err != nil {
+			return nil, err
+		}
 		if site.SSL != "auto" {
 			// The certificate job re-applies auto-SSL sites it covers; a
 			// site with SSL off would stay on HTTP. The setting alone goes in
@@ -208,7 +211,7 @@ func (s *Server) registerPanelTLS() {
 			was := site.Clone()
 			site.SSL = "auto"
 			if err := s.db.UpdateSiteChanges(ctx, was, site); err != nil {
-				return nil, err
+				return nil, siteChangeRefused(site, err)
 			}
 		}
 		names := append([]string{site.Domain}, site.Aliases...)

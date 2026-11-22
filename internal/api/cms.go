@@ -141,6 +141,11 @@ func (s *Server) registerCMS() {
 		if err != nil {
 			return nil, err
 		}
+		// Asked before anything is made; the job asks again under the
+		// site's lock (cmsSiteStays).
+		if err := siteOwnerStays(site, owner); err != nil {
+			return nil, err
+		}
 		if owner.UnixUID == nil {
 			return nil, huma.Error422UnprocessableEntity("the owner has no unix account yet")
 		}
@@ -220,7 +225,7 @@ func (s *Server) registerCMS() {
 			was := site.Clone()
 			site.Preset = def.Preset
 			if err := s.db.UpdateSiteChanges(ctx, was, site); err != nil {
-				return nil, err
+				return nil, siteChangeRefused(site, err)
 			}
 			payload.ApplyPreset = true
 		}
@@ -315,10 +320,31 @@ func (s *Server) jobSiteCMS(ctx context.Context, jc *jobs.Context) error {
 		if err := s.jobSiteApply(ctx, jc); err != nil {
 			return fmt.Errorf("apply the preset: %w", err)
 		}
-		site, err = s.db.GetSite(ctx, p.SiteID)
-		if err != nil {
-			return err
-		}
+	}
+
+	// From here on the install changes the site's docroot, the owner's
+	// databases and the files in the home, under the site's lock — the one
+	// the removal of a site's configuration takes, site.delete's and
+	// user.delete's for each of the account's sites (removeSiteConfig) —
+	// with the site and its owner read again under it. A removal that came
+	// first left them being removed, or gone: the install stops before it
+	// empties the docroot, makes a database after the account's were
+	// dropped, or unpacks root's files into a home on its way out. One that
+	// comes later waits for the install and then takes away what it made:
+	// the files with the site or the home, the database recorded as the
+	// owner's with the account's (user.delete lists the databases once it
+	// is past the sites). Unlike the webmail's, the download is inside: it
+	// streams straight into the unpack. The lock holds back only the jobs of
+	// other keys that touch the site — its account's removal, which has to
+	// wait, and the rare move of its address or its Apache; the site's own
+	// jobs wait for the install anyway, under its job lock. The preset's
+	// apply above takes the lock itself.
+	defer s.lockSite(p.SiteID)()
+	if site, owner, err = s.cmsSiteStays(ctx, p.SiteID); err != nil {
+		return err
+	}
+	if l = s.layoutFor(site, owner); l.php == nil {
+		return errors.New("no PHP layout for this OS")
 	}
 
 	jc.Progress(10, "checking the docroot")
@@ -412,13 +438,41 @@ func (s *Server) jobSiteCMS(ctx context.Context, jc *jobs.Context) error {
 	// stays (UpdateSiteChanges); the whole row read then would put it back.
 	was := site.Clone()
 	site.CMS, site.CMSVersion, site.CMSAt, site.CMSDatabase = def.ID, version, time.Now().UTC().Format(time.RFC3339), p.Database
-	if err := s.db.UpdateSiteChanges(ctx, was, site); err != nil {
+	if err := s.db.UpdateSiteChanges(ctx, was, site); errors.Is(err, store.ErrBeingRemoved) {
+		// The site's removal, asked for during the install, waits for it
+		// under the site's job lock and takes what it made.
+		return fmt.Errorf("site %s is being removed: %s is not recorded on it", site.Domain, def.Name)
+	} else if err != nil {
 		return err
 	}
 	admin := siteURL + "/" + def.AdminPath
 	jc.Logf("administrator %s signs in at %s", p.AdminLogin, admin)
 	jc.Progress(100, fmt.Sprintf("%s %s installed: %s", def.Name, version, admin))
 	return nil
+}
+
+// cmsSiteStays reads the site of an install and its owner again, under the
+// site's lock (the caller holds it): a site or an account being removed, or
+// gone, stops the install before it changes anything of theirs.
+func (s *Server) cmsSiteStays(ctx context.Context, id int64) (*store.Site, *store.User, error) {
+	site, err := s.db.GetSite(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil, errors.New("the site was removed meanwhile: nothing was installed")
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	owner, err := s.db.GetUserByID(ctx, site.UserID)
+	if err != nil {
+		return nil, nil, err
+	}
+	switch {
+	case site.Status == store.SiteDeleting:
+		return nil, nil, fmt.Errorf("site %s is being removed: nothing was installed", site.Domain)
+	case owner.Status == store.UserDeleting:
+		return nil, nil, fmt.Errorf("the account %s is being removed: nothing was installed into its site %s", owner.Login, site.Domain)
+	}
+	return site, owner, nil
 }
 
 // cmsDeliver streams the distribution from its vendor into the docroot:

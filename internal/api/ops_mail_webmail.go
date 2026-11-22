@@ -257,7 +257,11 @@ func (s *Server) jobWebmailInstall(ctx context.Context, jc *jobs.Context) error 
 		}
 		was := cur.Clone()
 		cur.Docroot = "public_html"
-		if err := s.db.UpdateSiteChanges(ctx, was, cur); err != nil {
+		if err := s.db.UpdateSiteChanges(ctx, was, cur); errors.Is(err, store.ErrBeingRemoved) {
+			// Its removal, asked for since the run looked, takes what the
+			// run made, and the mail settings name no site on its way out.
+			return fmt.Errorf("site %s is being removed: the webmail is not installed into it", site.Domain)
+		} else if err != nil {
 			return err
 		}
 		jc.Logf("site %s now serves public_html, Roundcube's web root: its logs and temporary files stay out of reach", site.Domain)

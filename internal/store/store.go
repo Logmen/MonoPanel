@@ -26,6 +26,10 @@ var (
 	ErrNotFound = errors.New("not found")
 	// ErrExists is returned on unique constraint violations.
 	ErrExists = errors.New("already exists")
+	// ErrBeingRemoved is returned for a change of a site or an account whose
+	// removal is under way: it has its job queued, which must find the row
+	// as its removal left it.
+	ErrBeingRemoved = errors.New("being removed")
 )
 
 // DB wraps the SQLite handle.

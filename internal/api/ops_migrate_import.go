@@ -619,7 +619,11 @@ func (s *Server) jobMigrateRun(ctx context.Context, jc *jobs.Context) error {
 	}
 	failed += mailFailed
 
-	if err := s.db.SetUserStatus(ctx, u.ID, store.UserActive); err != nil {
+	// Not over a removal asked for during the move: it waits under the
+	// account's key and must find the account being removed (ActivateUser).
+	if err := s.db.ActivateUser(ctx, u.ID); errors.Is(err, store.ErrBeingRemoved) {
+		jc.Logf("the account %s is being removed: it stays so, and its removal takes what moved", u.Login)
+	} else if err != nil {
 		return err
 	}
 	mailboxes := 0

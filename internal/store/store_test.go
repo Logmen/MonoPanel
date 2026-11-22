@@ -69,6 +69,59 @@ func TestUsers(t *testing.T) {
 	}
 }
 
+// An account being removed keeps its mark: the end of a provision, a move
+// or a change of the profile that read the account before the mark leaves
+// it — and says so — while the removal's own writes (its mark, the way back
+// from its failure) go in.
+func TestUserStatusOfAnAccountBeingRemoved(t *testing.T) {
+	ctx := context.Background()
+	db := openTest(t)
+	u := &User{Login: "alex", Status: UserPending}
+	if err := db.CreateUser(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ActivateUser(ctx, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	read, _ := db.GetUserByID(ctx, u.ID)
+	if read.Status != UserActive {
+		t.Fatalf("activated: %s", read.Status)
+	}
+	read.Email, read.Status = "alex@example.com", UserSuspended
+	if err := db.UpdateUserProfile(ctx, read); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.GetUserByID(ctx, u.ID); got.Email != "alex@example.com" || got.Status != UserSuspended {
+		t.Fatalf("the profile: %q %s", got.Email, got.Status)
+	}
+	if err := db.SetUserStatus(ctx, u.ID, UserDeleting); err != nil {
+		t.Fatal(err)
+	}
+	read.Email, read.Status = "other@example.com", UserActive
+	if err := db.UpdateUserProfile(ctx, read); !errors.Is(err, ErrBeingRemoved) {
+		t.Fatalf("a profile written over the mark: %v", err)
+	}
+	if err := db.ActivateUser(ctx, u.ID); !errors.Is(err, ErrBeingRemoved) {
+		t.Fatalf("activated over the mark: %v", err)
+	}
+	if got, _ := db.GetUserByID(ctx, u.ID); got.Status != UserDeleting || got.Email != "alex@example.com" {
+		t.Fatalf("over the mark: %s %q", got.Status, got.Email)
+	}
+	if err := db.SetUserStatus(ctx, u.ID, UserSuspended); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.GetUserByID(ctx, u.ID); got.Status != UserSuspended {
+		t.Fatalf("after the removal failed: %s", got.Status)
+	}
+	read.ID = 999
+	if err := db.UpdateUserProfile(ctx, read); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("the profile of a gone account: %v", err)
+	}
+	if err := db.ActivateUser(ctx, 999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a gone account activated: %v", err)
+	}
+}
+
 func TestJobsClaimAndLock(t *testing.T) {
 	ctx := context.Background()
 	db := openTest(t)

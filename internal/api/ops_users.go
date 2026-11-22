@@ -130,6 +130,15 @@ func (s *Server) registerUserUpdate() {
 		if (b.Shell != nil || b.Status != "") && p.Role != store.RoleAdmin {
 			return nil, huma.Error403Forbidden("administrator role required")
 		}
+		// An account being removed takes no more changes: a status put over
+		// its mark would let a restore into the home the removal takes and
+		// the applies of its sites back in (restoreRefused,
+		// applySiteLocked), and a shell would queue a provision that makes
+		// the unix user again once the removal is over. A removal asked for
+		// after this read is caught by the write (UpdateUserProfile).
+		if u.Status == store.UserDeleting {
+			return nil, accountBeingRemoved(u)
+		}
 		if b.Email != "" {
 			u.Email = b.Email
 		}
@@ -184,7 +193,12 @@ func (s *Server) registerUserUpdate() {
 			u.Shell = *b.Shell
 			reprovision = true
 		}
-		if err := s.db.UpdateUserProfile(ctx, u); err != nil {
+		switch err := s.db.UpdateUserProfile(ctx, u); {
+		case errors.Is(err, store.ErrBeingRemoved):
+			return nil, accountBeingRemoved(u)
+		case errors.Is(err, store.ErrNotFound):
+			return nil, huma.Error404NotFound("user not found")
+		case err != nil:
 			return nil, err
 		}
 		out := &createUserOutput{Status: http.StatusAccepted, Body: apitypes.UserWithJob{User: u}}
@@ -332,11 +346,34 @@ func (s *Server) ensureSSHConfig(ctx context.Context) error {
 	return err
 }
 
+// accountBeingRemoved is the answer to a change of an account whose removal
+// is under way.
+func accountBeingRemoved(u *store.User) error {
+	return huma.Error409Conflict(fmt.Sprintf("the account %s is being removed", u.Login))
+}
+
 // jobUserProvision creates the unix user and the FASTPANEL-style home layout.
+// Not for an account being removed or gone: one queued before the removal
+// — the account's creation, a change of its shell — runs first, under the
+// same key, and would make a home for the removal to purge (and an in-place
+// restore to write into meanwhile); one queued after it would make the unix
+// user and the home again, for nobody.
 func (s *Server) jobUserProvision(ctx context.Context, jc *jobs.Context) error {
 	var p userProvisionPayload
 	if err := jc.Unmarshal(&p); err != nil {
 		return err
+	}
+	u, err := s.db.GetUserByID(ctx, p.UserID)
+	if errors.Is(err, store.ErrNotFound) {
+		jc.Progress(100, "the account is gone: nothing to provision")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if u.Status == store.UserDeleting {
+		jc.Progress(100, "the account "+u.Login+" is being removed: nothing to provision")
+		return nil
 	}
 	return s.provisionUser(ctx, p, jc.Logf, jc.Progress)
 }
@@ -411,10 +448,15 @@ func (s *Server) provisionUser(ctx context.Context, p userProvisionPayload, logf
 		}
 	}
 	progress(90, "saving")
+	// The unix identity goes in whatever the status: a removal asked for
+	// meanwhile needs it to remove the unix user this made. The account
+	// stays being removed, then (ActivateUser).
 	if err := s.db.SetUserUnix(ctx, p.UserID, u.UID, u.GID, u.Home); err != nil {
 		return err
 	}
-	if err := s.db.SetUserStatus(ctx, p.UserID, store.UserActive); err != nil {
+	if err := s.db.ActivateUser(ctx, p.UserID); errors.Is(err, store.ErrBeingRemoved) {
+		logf("the account %s is being removed: it stays so, and its removal takes the unix user and the home", p.Login)
+	} else if err != nil {
 		return err
 	}
 	if err := s.applySiteLogrotate(ctx); err != nil {

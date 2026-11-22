@@ -203,8 +203,9 @@ func TestMoveSiteIP(t *testing.T) {
 
 // A change written as what differs from the site as it was read goes in
 // alone: the address sites.move-ip gave the site meanwhile and a field
-// another request changed stay, and so does a removal asked for meanwhile —
-// a status goes in only over a site that is not being removed.
+// another request changed stay. The way back from a failure goes in only
+// while the site is still failed, a status asked for over any other, and
+// nothing over a removal asked for meanwhile.
 func TestUpdateSiteChanges(t *testing.T) {
 	ctx := context.Background()
 	db := openTest(t)
@@ -240,26 +241,190 @@ func TestUpdateSiteChanges(t *testing.T) {
 		t.Errorf("the change: client_max_body %s, php_ini %v, aliases %v, status %s %q", got.ClientMaxBody, got.PHPIni, got.Aliases, got.Status, got.LastError)
 	}
 
-	// A removal asked for after the read keeps the site being removed.
+	// The way back from a failure, read as failed, over a suspension given
+	// after the read: the suspension stays, the rest of the change goes in.
+	if err := db.SetSiteStatus(ctx, s.ID, SiteError, "boom"); err != nil {
+		t.Fatal(err)
+	}
 	read, _ = db.GetSite(ctx, s.ID)
 	was = read.Clone()
-	read.Status, read.HTTP3 = SiteSuspended, true
-	if err := db.SetSiteStatus(ctx, s.ID, SiteDeleting, ""); err != nil {
+	read.Status, read.HTTP2 = SitePending, true
+	if err := db.SetSiteStatus(ctx, s.ID, SiteSuspended, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.UpdateSiteChanges(ctx, was, read); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := db.GetSite(ctx, s.ID); got.Status != SiteDeleting || !got.HTTP3 {
-		t.Errorf("over a removal: status %s, http3 %v", got.Status, got.HTTP3)
+	if got, _ := db.GetSite(ctx, s.ID); got.Status != SiteSuspended || !got.HTTP2 {
+		t.Errorf("the way back from a failure over a suspension: status %s, http2 %v", got.Status, got.HTTP2)
 	}
-	// Nothing changed is no error; a site that is gone is.
+	// A status asked for — the end of the suspension — goes in over one
+	// given meanwhile (an apply of the suspended site that failed).
+	read, _ = db.GetSite(ctx, s.ID)
+	was = read.Clone()
+	read.Status = SitePending
+	if err := db.SetSiteStatus(ctx, s.ID, SiteError, "boom"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateSiteChanges(ctx, was, read); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.GetSite(ctx, s.ID); got.Status != SitePending {
+		t.Errorf("a status asked for over another: %s", got.Status)
+	}
+	// Nothing changed is no error.
 	if err := db.UpdateSiteChanges(ctx, read, read); err != nil {
 		t.Fatalf("nothing to change: %v", err)
 	}
+
+	// A removal asked for after the read: nothing goes in, the site stays
+	// being removed, and the caller hears it — nothing to change included.
+	read, _ = db.GetSite(ctx, s.ID)
+	was = read.Clone()
+	read.Status, read.HTTP3 = SiteSuspended, true
+	if err := db.MarkSiteDeleting(ctx, s.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateSiteChanges(ctx, was, read); !errors.Is(err, ErrBeingRemoved) {
+		t.Fatalf("over a removal: %v", err)
+	}
+	if got, _ := db.GetSite(ctx, s.ID); got.Status != SiteDeleting || got.HTTP3 {
+		t.Errorf("over a removal: status %s, http3 %v", got.Status, got.HTTP3)
+	}
+	if err := db.UpdateSiteChanges(ctx, was, was); !errors.Is(err, ErrBeingRemoved) {
+		t.Fatalf("nothing to change over a removal: %v", err)
+	}
+	// A site that is gone is ErrNotFound.
 	gone := read.Clone()
 	gone.ID = 999
 	if err := db.UpdateSiteChanges(ctx, gone, gone); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a site that is gone: %v", err)
+	}
+}
+
+// The removal's mark changes the status alone: what another request changed
+// after the removal read the site stays. A site marked already is marked
+// again; a site that is gone is ErrNotFound.
+func TestMarkSiteDeleting(t *testing.T) {
+	ctx := context.Background()
+	db := openTest(t)
+	u := &User{Login: "alex"}
+	db.CreateUser(ctx, u)
+	s := &Site{UserID: u.ID, Domain: "example.com", PHPVersion: "8.4", IP: "192.0.2.1", Status: SiteError, LastError: "boom"}
+	if err := db.CreateSite(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	if moved, err := db.MoveSiteIP(ctx, s.ID, "192.0.2.1", "198.51.100.7"); err != nil || !moved {
+		t.Fatalf("move: %v %v", moved, err)
+	}
+	for range 2 {
+		if err := db.MarkSiteDeleting(ctx, s.ID); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := db.GetSite(ctx, s.ID); got.Status != SiteDeleting || got.IP != "198.51.100.7" || got.LastError != "boom" {
+			t.Fatalf("after the mark: status %s, ip %s, last error %q", got.Status, got.IP, got.LastError)
+		}
+	}
+	if err := db.MarkSiteDeleting(ctx, 999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a site that is gone: %v", err)
+	}
+}
+
+// A site and its untouched copy are the same in every column: a column in
+// which they differed would be written by every UpdateSiteChanges, over
+// what another writer put there meanwhile. So for a site read from the
+// store, with its empty lists and map, and for one made in code without
+// them: to the store, none is the empty one.
+func TestSiteCloneComparesEqualToTheSite(t *testing.T) {
+	ctx := context.Background()
+	db := openTest(t)
+	u := &User{Login: "alex"}
+	db.CreateUser(ctx, u)
+	s := &Site{UserID: u.ID, Domain: "example.com", PHPVersion: "8.4"}
+	if err := db.CreateSite(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	read, err := db.GetSite(ctx, s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	same := func(what string, a, b *Site) {
+		t.Helper()
+		x, y := siteColumns(a), siteColumns(b)
+		for i := range x {
+			if x[i].value != y[i].value {
+				t.Errorf("%s: column %s: %v against %v", what, x[i].name, x[i].value, y[i].value)
+			}
+		}
+	}
+	same("read from the store", read, read.Clone())
+	none := &Site{Domain: "example.com"}
+	same("made in code", none, none.Clone())
+	same("none and empty", none, &Site{Domain: "example.com", Aliases: []string{}, AllowFrom: []string{}, PHPIni: map[string]string{}})
+}
+
+// A site without aliases — every site as created, until one is added: a
+// change read before another request added an alias leaves the alias alone.
+func TestUpdateSiteChangesKeepsAnAliasAddedMeanwhile(t *testing.T) {
+	ctx := context.Background()
+	db := openTest(t)
+	u := &User{Login: "alex"}
+	db.CreateUser(ctx, u)
+	s := &Site{UserID: u.ID, Domain: "example.com", PHPVersion: "8.4"}
+	if err := db.CreateSite(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	read, _ := db.GetSite(ctx, s.ID)
+	was := read.Clone()
+	read.ClientMaxBody = "128m"
+	other, _ := db.GetSite(ctx, s.ID)
+	otherWas := other.Clone()
+	other.Aliases = []string{"www.example.com"}
+	if err := db.UpdateSiteChanges(ctx, otherWas, other); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateSiteChanges(ctx, was, read); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.GetSite(ctx, s.ID); got.ClientMaxBody != "128m" || len(got.Aliases) != 1 || got.Aliases[0] != "www.example.com" {
+		t.Errorf("client_max_body %s, aliases %v (want 128m, [www.example.com])", got.ClientMaxBody, got.Aliases)
+	}
+}
+
+// Setting a field back to nothing — "", 0, false, no certificate, an empty
+// list or map — is a change, and it goes in.
+func TestUpdateSiteChangesWritesZeroValues(t *testing.T) {
+	ctx := context.Background()
+	db := openTest(t)
+	u := &User{Login: "alex"}
+	db.CreateUser(ctx, u)
+	c := &Certificate{Name: "example.com", Names: []string{"example.com"}, Kind: CertKindACME, KeyType: "ec256", Status: CertPending}
+	if err := db.UpsertCertificate(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	cid := c.ID
+	s := &Site{UserID: u.ID, Domain: "example.com", PHPVersion: "8.4", Aliases: []string{"www.example.com"}, AllowFrom: []string{"192.0.2.0/24"},
+		PHPIni: map[string]string{"memory_limit": "256M"}, IPv6: "2001:db8::1", HTTP2: true, HTTP3: true, RedirectHTTPS: true, StaticByNginx: true,
+		AllowExec: true, SecurityHeaders: true, RateLimit: 10, CertificateID: &cid, Backend: "http://127.0.0.1:3000", Preset: "wordpress",
+		CMS: "wordpress", CMSVersion: "6.9", CMSAt: "2026-01-01T00:00:00Z", CMSDatabase: "alex_wordpress", SessionStore: SessionStoreValkey,
+		Docroot: "public_html", IP: "192.0.2.1", LastError: "boom", Status: SiteError}
+	if err := db.CreateSite(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	read, _ := db.GetSite(ctx, s.ID)
+	was := read.Clone()
+	read.Aliases, read.AllowFrom, read.PHPIni = nil, nil, nil
+	read.IPv6, read.HTTP2, read.HTTP3, read.RedirectHTTPS, read.StaticByNginx, read.AllowExec, read.SecurityHeaders, read.RateLimit = "", false, false, false, false, false, false, 0
+	read.CertificateID, read.Backend, read.Preset, read.CMS, read.CMSVersion, read.CMSAt, read.CMSDatabase, read.SessionStore = nil, "", "", "", "", "", "", ""
+	read.Docroot, read.IP, read.LastError, read.Status = "", "", "", SitePending
+	if err := db.UpdateSiteChanges(ctx, was, read); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := db.GetSite(ctx, s.ID)
+	if len(got.Aliases) != 0 || len(got.AllowFrom) != 0 || len(got.PHPIni) != 0 || got.IPv6 != "" || got.HTTP2 || got.HTTP3 || got.RedirectHTTPS ||
+		got.StaticByNginx || got.AllowExec || got.SecurityHeaders || got.RateLimit != 0 || got.CertificateID != nil || got.Backend != "" ||
+		got.Preset != "" || got.CMS != "" || got.CMSVersion != "" || got.CMSAt != "" || got.CMSDatabase != "" || got.SessionStore != "" ||
+		got.Docroot != "" || got.IP != "" || got.LastError != "" || got.Status != SitePending {
+		t.Errorf("not set back: %+v", got)
 	}
 }

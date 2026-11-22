@@ -104,6 +104,26 @@ type Server struct {
 	// for short steps only, never across the webmail job's work in the
 	// site's tree nor an install.
 	webmailMu sync.Mutex
+	// mailRenderMu lets one mail render run at a time (applyMailConfig),
+	// from its read of the settings and the mail data to its last write: a
+	// render that read them before a change and wrote after the change's
+	// own render would put the files back as they were — the message size,
+	// the webmail's block on a port switched off — until the next mail
+	// change. Taken before webmailMu, never under it nor under a site's
+	// lock; a render takes seconds (the agent's checks and reloads).
+	mailRenderMu sync.Mutex
+	// restoreMu keeps an in-place restore and the removal of the home or
+	// the tree it writes into from both going ahead: the removal of an
+	// account or a site holds it from its look for such restores to its
+	// status mark (markRemoval), a restore's request across its check of
+	// the removals under way and its queueing (enqueueRestore), the
+	// restore's job across that check as it starts (jobBackupRestore).
+	// Whichever comes second finds the other — the mark, which nothing but
+	// the removal itself takes away, or the restore queued or running — and
+	// is refused. Held for those database steps alone, never across restic
+	// nor an agent call; no other lock here is taken under it, nor is it
+	// taken under one.
+	restoreMu sync.Mutex
 	// strayShares holds why the start-up refresh could not unbind a shared
 	// folder the agent keeps that no share names (an error by mount point,
 	// unbindStrayShares), for the doctor.
@@ -140,7 +160,8 @@ type Server struct {
 	lookup func(ctx context.Context, name string) ([]string, error)
 	// restoresRead, set by a test, runs after each read of the in-place
 	// restores the removal of an account or a site looks for
-	// (inPlaceRestoreInto): the test moves a restore on between the reads.
+	// (inPlaceRestoreInto), restoreMu held: the test moves a restore on
+	// between the reads, or asks for one before the removal's mark.
 	restoresRead func()
 	// restartDelay is how long a restart of monopanel-api that a request
 	// asked for waits after the answer; tests need no wait.

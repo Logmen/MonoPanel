@@ -103,6 +103,52 @@ func (s *Server) loadSiteFor(ctx context.Context, domain string) (*store.Site, e
 	return site, nil
 }
 
+// siteStays refuses a change of a site whose removal is under way — its own
+// (site.delete) or its account's (user.delete, which removes the account's
+// sites itself): the removal is queued, what the change wrote or queued
+// would be taken away or skipped, and the answer would say it went in. A
+// removal asked for between the request's read and its write is caught by
+// the write (store.ErrBeingRemoved, siteChangeRefused).
+func (s *Server) siteStays(ctx context.Context, site *store.Site) error {
+	owner, err := s.db.GetUserByID(ctx, site.UserID)
+	if err != nil {
+		return err
+	}
+	return siteOwnerStays(site, owner)
+}
+
+// siteOwnerStays is siteStays for a caller that read the owner already.
+func siteOwnerStays(site *store.Site, owner *store.User) error {
+	if site.Status == store.SiteDeleting {
+		return huma.Error409Conflict(fmt.Sprintf("site %s is being removed", site.Domain))
+	}
+	if owner.Status == store.UserDeleting {
+		return huma.Error409Conflict(fmt.Sprintf("the account %s is being removed, and its site %s with it", owner.Login, site.Domain))
+	}
+	return nil
+}
+
+// siteChangeRefused is the answer to a change of a site that did not go in
+// because the site's removal was asked for meanwhile (UpdateSiteChanges).
+func siteChangeRefused(site *store.Site, err error) error {
+	if errors.Is(err, store.ErrBeingRemoved) {
+		return huma.Error409Conflict(fmt.Sprintf("site %s is being removed", site.Domain))
+	}
+	return err
+}
+
+// siteAsStored is the site as its row is after a change, for the answer:
+// what went in together with what changed beside it — the address
+// sites.move-ip gave the site, a suspension that kept the way back from a
+// failure out — not the copy the request changed. The copy when the row
+// cannot be read.
+func (s *Server) siteAsStored(ctx context.Context, site *store.Site) *store.Site {
+	if cur, err := s.db.GetSite(ctx, site.ID); err == nil {
+		return cur
+	}
+	return site
+}
+
 func validateIni(ini map[string]string) error {
 	for k, v := range ini {
 		if !iniKeyRe.MatchString(k) || !allowedIniKeys[k] {
@@ -374,6 +420,9 @@ func (s *Server) registerSites() {
 		if err != nil {
 			return nil, err
 		}
+		if err := s.siteStays(ctx, site); err != nil {
+			return nil, err
+		}
 		// Only what the request changes goes in (UpdateSiteChanges):
 		// sites.move-ip or another request may change the site between this
 		// read and the write, and the whole row written back would undo it.
@@ -521,14 +570,14 @@ func (s *Server) registerSites() {
 			site.Status = store.SitePending
 		}
 		if err := s.db.UpdateSiteChanges(ctx, was, site); err != nil {
-			return nil, err
+			return nil, siteChangeRefused(site, err)
 		}
 		jobID, err := s.enqueueSiteApply(ctx, site, p.Login)
 		if err != nil {
 			return nil, err
 		}
 		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "site.update", Target: site.Domain, IP: requestInfo(ctx).IP})
-		return &siteJobOutput{Status: http.StatusAccepted, Body: apitypes.SiteWithJob{Site: site, JobID: jobID}}, nil
+		return &siteJobOutput{Status: http.StatusAccepted, Body: apitypes.SiteWithJob{Site: s.siteAsStored(ctx, site), JobID: jobID}}, nil
 	})
 
 	for _, action := range []string{"apply", "suspend", "unsuspend", "fix"} {
@@ -543,6 +592,9 @@ func (s *Server) registerSites() {
 			p := principalFrom(ctx)
 			site, err := s.loadSiteFor(ctx, in.Domain)
 			if err != nil {
+				return nil, err
+			}
+			if err := s.siteStays(ctx, site); err != nil {
 				return nil, err
 			}
 			if action == "fix" {
@@ -572,14 +624,14 @@ func (s *Server) registerSites() {
 				}
 			}
 			if err := s.db.UpdateSiteChanges(ctx, was, site); err != nil {
-				return nil, err
+				return nil, siteChangeRefused(site, err)
 			}
 			jobID, err := s.enqueueSiteApply(ctx, site, p.Login)
 			if err != nil {
 				return nil, err
 			}
 			s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "site." + action, Target: site.Domain, IP: requestInfo(ctx).IP})
-			return &siteJobOutput{Status: http.StatusAccepted, Body: apitypes.SiteWithJob{Site: site, JobID: jobID}}, nil
+			return &siteJobOutput{Status: http.StatusAccepted, Body: apitypes.SiteWithJob{Site: s.siteAsStored(ctx, site), JobID: jobID}}, nil
 		})
 	}
 
@@ -592,18 +644,19 @@ func (s *Server) registerSites() {
 			return nil, err
 		}
 		// Not beside an in-place restore into the site's tree (restoreRefused
-		// says why); one asked for from now on is refused, the site being
-		// marked below.
+		// says why): refused while one is queued or runs, marked otherwise,
+		// and a restore asked for or starting from then on is refused
+		// (markRemoval).
 		owner, err := s.db.GetUserByID(ctx, site.UserID)
 		if err != nil {
 			return nil, err
 		}
-		if err := s.restoreWaitedFor(ctx, "the site", s.layoutFor(site, owner).siteRoot); err != nil {
-			return nil, err
-		}
-		was := site.Clone()
-		site.Status = store.SiteDeleting
-		if err := s.db.UpdateSiteChanges(ctx, was, site); err != nil {
+		root := s.layoutFor(site, owner).siteRoot
+		// The status alone: a change made since the read stays
+		// (MarkSiteDeleting).
+		if err := s.markRemoval(ctx, "the site", root, func() error {
+			return s.db.MarkSiteDeleting(ctx, site.ID)
+		}); err != nil {
 			return nil, err
 		}
 		job, err := s.jobs.Enqueue(ctx, "site.delete", sitePayload{SiteID: site.ID, Purge: in.Purge}, jobs.WithLockKey("site:"+site.Domain), jobs.WithRequestedBy(p.Login))
@@ -1323,7 +1376,9 @@ func (s *Server) reapplySitesForCert(ctx context.Context, logf func(string, ...a
 				continue
 			}
 			seen[site.ID] = true
-			// The certificate alone (UpdateSiteChanges says why).
+			// The certificate alone (UpdateSiteChanges says why); a site
+			// whose removal was asked for meanwhile gets neither it nor an
+			// apply.
 			was := site.Clone()
 			id := c.ID
 			site.CertificateID = &id

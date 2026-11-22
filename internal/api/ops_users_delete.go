@@ -55,15 +55,6 @@ func (s *Server) registerUserDelete() {
 				return nil, huma.Error422UnprocessableEntity("the last administrator cannot be deleted")
 			}
 		}
-		// Not beside an in-place restore into the home (restoreRefused says
-		// why); one asked for from now on is refused, the account being
-		// marked below. An account without a unix user has no home to
-		// remove.
-		if u.UnixUID != nil {
-			if err := s.restoreWaitedFor(ctx, "the account", s.homeOf(u)); err != nil {
-				return nil, err
-			}
-		}
 		sites, err := s.db.ListSites(ctx, u.ID)
 		if err != nil {
 			return nil, err
@@ -72,7 +63,15 @@ func (s *Server) registerUserDelete() {
 		for _, site := range sites {
 			payload.Sites = append(payload.Sites, site.Domain)
 		}
-		if err := s.db.SetUserStatus(ctx, u.ID, store.UserDeleting); err != nil {
+		// Not beside an in-place restore into the home (restoreRefused says
+		// why): refused while one is queued or runs, marked otherwise, and a
+		// restore asked for or starting from then on is refused
+		// (markRemoval). The home of an account without a unix user yet
+		// counts too: a provision under way may still make it, for the
+		// removal to purge.
+		if err := s.markRemoval(ctx, "the account", s.homeOf(u), func() error {
+			return s.db.SetUserStatus(ctx, u.ID, store.UserDeleting)
+		}); err != nil {
 			return nil, err
 		}
 		job, err := s.jobs.Enqueue(ctx, "user.delete", payload, jobs.WithLockKey("user:"+u.Login), jobs.WithRequestedBy(p.Login))

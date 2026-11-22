@@ -368,7 +368,7 @@ func TestSitesMoveIPTakesTheWebmailPortAlong(t *testing.T) {
 // mp site set writes what it changes and nothing else of what it read: the
 // address sites.move-ip gave the site between the request's read and its
 // write stays — the apply after it renders the site there — and so does a
-// removal asked for meanwhile.
+// removal asked for meanwhile, which refuses the change.
 func TestSiteChangeKeepsWhatChangedMeanwhile(t *testing.T) {
 	f := newSiteFixture(t)
 	f.s.SetHostIPs(func() []string { return []string{"10.0.0.1", "10.0.0.2"} })
@@ -419,17 +419,18 @@ func TestSiteChangeKeepsWhatChangedMeanwhile(t *testing.T) {
 	}
 
 	// A change that also takes an error back to pending, while the site's
-	// removal is asked for.
+	// removal is asked for: refused at its write, the site left as its mark
+	// left it.
 	if err := f.db.SetSiteStatus(f.ctx, site.ID, store.SiteError, "boom"); err != nil {
 		t.Fatal(err)
 	}
 	beside(func() {
-		if err := f.db.SetSiteStatus(f.ctx, site.ID, store.SiteDeleting, ""); err != nil {
+		if err := f.db.MarkSiteDeleting(f.ctx, site.ID); err != nil {
 			t.Error(err)
 		}
 	})
-	change(map[string]any{"ipv6": "2001:db8::1", "client_max_body": "256m"})
-	if got, _ := f.db.GetSite(f.ctx, site.ID); got.Status != store.SiteDeleting || got.ClientMaxBody != "256m" {
+	f.call(http.MethodPatch, "/sites/one.example.com", map[string]any{"ipv6": "2001:db8::1", "client_max_body": "256m"}, http.StatusConflict, nil)
+	if got, _ := f.db.GetSite(f.ctx, site.ID); got.Status != store.SiteDeleting || got.ClientMaxBody != "128m" {
 		t.Fatalf("a change beside the removal: status %s, client_max_body %s", got.Status, got.ClientMaxBody)
 	}
 }

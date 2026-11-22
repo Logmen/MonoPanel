@@ -275,12 +275,7 @@ func (s *Server) registerBackups() {
 				return nil, huma.Error422UnprocessableEntity("include paths must be absolute")
 			}
 		}
-		if in.Body.InPlace {
-			if err := s.restoreRefused(ctx, in.Body.Include); err != nil {
-				return nil, huma.Error409Conflict(err.Error())
-			}
-		}
-		job, err := s.jobs.Enqueue(ctx, "backup.restore", backupPayload{TargetID: t.ID, Snapshot: in.Body.Snapshot, Include: in.Body.Include, InPlace: in.Body.InPlace}, jobs.WithLockKey("backup:"+t.Name), jobs.WithRequestedBy(p.Login))
+		job, err := s.enqueueRestore(ctx, t, backupPayload{TargetID: t.ID, Snapshot: in.Body.Snapshot, Include: in.Body.Include, InPlace: in.Body.InPlace}, p.Login)
 		if err != nil {
 			return nil, err
 		}
@@ -589,8 +584,14 @@ func (s *Server) jobBackupRestore(ctx context.Context, jc *jobs.Context) error {
 	if p.InPlace {
 		target = "/"
 		// Asked again as the job starts: it may have waited for the
-		// target's other jobs since the request.
-		if err := s.restoreRefused(ctx, p.Include); err != nil {
+		// target's other jobs since the request. Under restoreMu, so that
+		// it does not fall between a removal's look for restores and its
+		// mark — for the check alone: held across restic, it would keep
+		// every removal waiting for hours.
+		s.restoreMu.Lock()
+		err = s.restoreRefused(ctx, p.Include)
+		s.restoreMu.Unlock()
+		if err != nil {
 			return err
 		}
 	}
@@ -621,14 +622,58 @@ func (s *Server) jobBackupRestore(ctx context.Context, jc *jobs.Context) error {
 // them behind, and what the restore wrote meanwhile, owned as the snapshot
 // has it, would land in a home on its way out or outlive its account. The
 // removal of an account or a site is refused while such a restore is queued
-// or runs (inPlaceRestoreInto). The restore never waits on a site's lock:
-// restic runs for hours, and a lock waited on holds a worker.
+// or runs (inPlaceRestoreInto). Those checks, and what each side leaves for
+// the other to find, go under restoreMu: the removal holds it from its look
+// for restores to its status mark (markRemoval), the request across its
+// check and its queueing (enqueueRestore), the job across its check as it
+// starts, claimed — running — by then. A restore asked for or started while
+// a removal is between its look and its mark waits for the mark and is
+// refused; a removal that starts once a restore is queued finds it. Never
+// both — for the mark stays until the removal is over or failed: nothing
+// else puts a status over it (store.ActivateUser, UpdateUserProfile and
+// UpdateSiteChanges leave a row being removed as it is), and an account
+// without a unix user yet is looked at by its home all the same. The
+// restore never waits on a site's lock, and restoreMu is never held across
+// restic: restic runs for hours, and a lock waited on holds a worker or a
+// request.
+
+// enqueueRestore queues a restore under its target's lock key. An in-place
+// one is checked against the removals under way first (restoreRefused, a
+// 409) and queued under restoreMu, the check included: a removal that has
+// started is seen by the check, one that starts meanwhile waits and finds
+// the restore queued.
+func (s *Server) enqueueRestore(ctx context.Context, t *store.BackupTarget, p backupPayload, by string) (*store.Job, error) {
+	if p.InPlace {
+		s.restoreMu.Lock()
+		defer s.restoreMu.Unlock()
+		if err := s.restoreRefused(ctx, p.Include); err != nil {
+			return nil, huma.Error409Conflict(err.Error())
+		}
+	}
+	return s.jobs.Enqueue(ctx, "backup.restore", p, jobs.WithLockKey("backup:"+t.Name), jobs.WithRequestedBy(by))
+}
+
+// markRemoval starts the removal of an account or a site: refused (a 409)
+// while an in-place restore into dir — the home or the tree it removes — is
+// queued or runs (restoreWaitedFor), marked being removed by mark otherwise.
+// Both under restoreMu: a restore asked for or starting meanwhile would
+// have been checked against a removal not marked yet, and is checked once
+// the mark is in.
+func (s *Server) markRemoval(ctx context.Context, what, dir string, mark func() error) error {
+	s.restoreMu.Lock()
+	defer s.restoreMu.Unlock()
+	if err := s.restoreWaitedFor(ctx, what, dir); err != nil {
+		return err
+	}
+	return mark()
+}
 
 // restoreRefused tells why an in-place restore must not write where its
 // includes lie: in the home of an account being removed, or the tree of a
 // site being removed. A path at or above such a home or tree (the web root
-// itself) counts as well. An account without a unix user has no home its
-// removal touches.
+// itself) counts as well. So does the home of an account without a unix
+// user yet: a provision under way when its removal was asked for may still
+// make it.
 func (s *Server) restoreRefused(ctx context.Context, includes []string) error {
 	if len(includes) == 0 {
 		return nil
@@ -640,7 +685,7 @@ func (s *Server) restoreRefused(ctx context.Context, includes []string) error {
 	owners := map[int64]*store.User{}
 	for _, u := range users {
 		owners[u.ID] = u
-		if u.Status != store.UserDeleting || u.UnixUID == nil {
+		if u.Status != store.UserDeleting {
 			continue
 		}
 		if inc := overlapping(includes, s.homeOf(u)); inc != "" {
@@ -666,8 +711,10 @@ func (s *Server) restoreRefused(ctx context.Context, includes []string) error {
 // writes into dir — an include at, below or above it — for the removal of
 // an account (its home) or a site (its tree), which is refused until it is
 // over. The queued restores are read first: a restore the runner claims
-// between the two reads is running by the second and found there, where
-// read the other way round it would be in neither list.
+// between the two reads is running by the second and found there, and the
+// removal gives way to it. Read the other way round it would be in neither
+// list: the removal would be marked, and the restore, whose start check
+// waits for restoreMu meanwhile, refused as it starts.
 func (s *Server) inPlaceRestoreInto(ctx context.Context, dir string) (*store.Job, error) {
 	for _, status := range []string{store.JobQueued, store.JobRunning} {
 		list, err := s.db.ListJobsFiltered(ctx, store.JobFilter{Type: "backup.restore", Status: status, Limit: 1000})
