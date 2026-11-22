@@ -19,7 +19,7 @@ DEV_SSH  ?= ssh
 DEV_SCP  ?= scp
 GOLANGCI_VERSION ?= v2.13.2
 
-.PHONY: build build-arm64 demo test test-race test-short cover cover-html lint vet fmt fmt-check check web web-check web-stub e2e deb rpm packages arch-artifacts sign release keygen deploy-dev clean help testbed-up testbed-reset testbed-down testbed-status testbed-deploy testbed-e2e testbed-matrix testbed-migrate testbed-dns testbed-cms
+.PHONY: build build-arm64 demo test test-race test-short cover cover-html lint vet fmt fmt-check check web web-check web-stub e2e deb rpm packages arch-artifacts sign release keygen deploy-dev clean help testbed-up testbed-reset testbed-down testbed-status testbed-deploy testbed-e2e testbed-checks testbed-matrix testbed-upgrade testbed-migrate testbed-dns testbed-cms testbed-sources testbed-full
 
 help: ## Show the available targets
 	@grep -hE '^[a-z0-9-]+:.*##' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*## "} {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -159,7 +159,7 @@ testbed-down: ## Destroy the testbed VMs
 testbed-sources: ## BitrixVM / FASTPANEL sources for the migration: ARGS="install|seed|migrate ..."
 	scripts/testbed/testbed.sh sources $(ARGS)
 
-testbed-full: ## The whole testbed for a release: matrix, migrations, CMS, foreign sources, doctor (STAGES="matrix cms" for a part)
+testbed-full: ## The whole testbed for a release: upgrade, matrix with checks, migrations, CMS, foreign sources, doctor (STAGES="matrix cms" for a part)
 	scripts/testbed/full-run.sh $(STAGES)
 
 testbed-status: ## Show the testbed VMs
@@ -173,8 +173,15 @@ testbed-e2e: ## Run the end-to-end tests against VM=<name>
 	@[ -n "$(VM)" ] || { echo "make testbed-e2e VM=debian13"; exit 2; }
 	scripts/testbed/testbed.sh e2e $(VM)
 
-testbed-matrix: ## reset + deploy + e2e on every testbed VM in parallel, then a summary
+testbed-checks: ## The hardening checks (scripts/testbed/checks.sh) on VM=<name>, PASS/FAIL per line
+	@[ -n "$(VM)" ] || { echo "make testbed-checks VM=debian13"; exit 2; }
+	scripts/testbed/testbed.sh checks $(VM)
+
+testbed-matrix: ## reset + deploy + e2e + checks on every testbed VM in parallel, then a summary
 	scripts/testbed/testbed.sh matrix $(VM)
+
+testbed-upgrade: ## The previous release, its objects, a pure package upgrade to this build, checks (VM=<name>, TB_FROM=v0.8.19)
+	scripts/testbed/testbed.sh upgrade $(VM)
 
 testbed-dns: ## Create the VMs' A records in the Cloudflare zone from .dev/testbed.env
 	scripts/testbed/testbed.sh dns up
