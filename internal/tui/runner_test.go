@@ -51,8 +51,11 @@ func TestExecRunnerStdin(t *testing.T) {
 }
 
 func TestExecRunnerCancel(t *testing.T) {
-	r := execRunner{exe: "/bin/sh"}
-	ch, cancel, err := r.start(runJob{argv: []string{"-c", "sleep 30"}}, []string{"PATH=/usr/bin:/bin"})
+	// sleep itself, not through a shell: a shell that forks it and waits
+	// takes the SIGINT alone, and the grandchild keeps the output pipe open
+	// for its 30 seconds after the shell is killed (flaky on CI runners)
+	r := execRunner{exe: "/bin/sleep"}
+	ch, cancel, err := r.start(runJob{argv: []string{"30"}}, []string{"PATH=/usr/bin:/bin"})
 	if err != nil {
 		t.Fatal(err)
 	}
