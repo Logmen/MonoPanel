@@ -48,7 +48,10 @@ it gets fixed.
   That includes `config.yaml` and `secret.key`, which no generic agent operation
   writes, and the directories and files under `/var/www` that the agent makes or
   reads as root: a symlink a client plants there must not redirect such a write
-  or read.
+  or read. The agent treats the API as untrusted: a program, an argument shape,
+  a configuration directive, a systemd unit or a path the panel itself never
+  sends, accepted by the agent and turned into root, is in scope — so is a path
+  the API could swap between the agent's check and its use.
 - **User → user, and user → administrator.** A panel account may only act on its
   own sites, databases, files and cron. Escaping that, or reaching an
   administrator-only endpoint, is in scope. Migration scopes, which read a whole
@@ -116,8 +119,12 @@ with an ed25519 key held as a repository secret; the public half is built into t
 panel (a fork builds in its own, or pins it on each server with `mp update trust`).
 Before an update is installed, the API process verifies the signature and the
 package digest, and the agent — which runs as root — verifies both again itself
-rather than trusting the unprivileged process that downloaded them. A panel with
-a key, built in or pinned, refuses an unsigned release outright.
+rather than trusting the unprivileged process that downloaded them: it first
+copies the package out of the API's directory into its own, root-only one, and
+checks and installs that copy. A panel with a key, built in or pinned, refuses an
+unsigned release outright, and the agent never installs a release older than the
+running one — an older signed release would bring back what later ones fixed; a
+downgrade is done by hand as root.
 
 If you believe the signing key or a published release has been tampered with,
 report it the same way as any other vulnerability.

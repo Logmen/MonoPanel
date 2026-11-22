@@ -205,7 +205,7 @@ mp                              # TUI-меню: разделы как в Web UI,
 `mp stack list`, `mp stack install apache`, `mp stack install|remove memcached|jpegoptim|git|composer|sphinx`, `mp stack memcached --memory-mb --max-conn`
 
 - Apache 2.4 на Debian/Ubuntu: mpm_event + proxy_fcgi, `conf-available/monopanel.conf`.
-- Страница «Расширения» в Web UI: memcached (только 127.0.0.1, память и число соединений настраиваются, перезапуск при смене), jpegoptim, git, composer (с getcomposer.org с проверкой контрольной суммы, работает на новейшей ветке PHP панели, повторная установка обновляет).
+- Страница «Расширения» в Web UI: memcached (только 127.0.0.1, память и число соединений настраиваются, перезапуск при смене), jpegoptim, git, composer (с getcomposer.org с проверкой контрольной суммы, работает на новейшей ветке PHP панели и от аккаунтов, не от root; повторная установка обновляет).
 - Sphinx для 1С-Битрикс: Sphinx 2.2 из дистрибутива на Debian/Ubuntu, сборка Sphinx 3 с sphinxsearch.com на EL; индекс `bitrix` по эталону из настроек Битрикса, устаревший индекс на диске пересоздаётся, SphinxQL на 127.0.0.1:9306.
 
 ### Firewall и Real IP

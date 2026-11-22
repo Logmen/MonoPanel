@@ -299,7 +299,7 @@ A panel account is a unix user with its own home directory: SFTP (chroot) or SSH
 cron jobs (added, edited in place and switched off) and app services — background applications such as a bot or a Node or Python
 backend under systemd, with a journal, details and editing in place. The panel and SFTP
 share one password; it can be generated, and changing it ends the account's browser
-sessions — its API tokens keep working. A new account takes a login, a password, an
+sessions — its API tokens keep working; one's own password is changed with the current one. A new account takes a login, a password, an
 e-mail, a role, a quota (only stored so far) and SSH access. An account's row has its card
 (e-mail, UID, home directory, 2FA reset), the password, switching SFTP ↔ shell, cron, app
 services, Valkey, shared folders, API tokens, suspension (sign-in to the panel and over
@@ -328,8 +328,8 @@ there. A site moves its sessions to Valkey in its own settings — the "PHP sess
 
 Instead of "Users", an ordinary account sees the "Account" page — its own things and
 nothing else. At the top is its card: login, role, access (SFTP or SSH), e-mail (which it
-can change), UID, home directory and the password change (its other browser sessions
-end, this one stays). Below are the "Cron", "App services" and "Valkey" tabs with the same
+can change), UID, home directory and the password change, which takes the current password
+(its other browser sessions end, this one stays). Below are the "Cron", "App services" and "Valkey" tabs with the same
 actions as an administrator has, but for itself only, "Shared folders" — folders of other
 accounts' sites given to this one (an administrator gives and takes them) — and "API
 tokens". Two-factor authentication is in "Settings".

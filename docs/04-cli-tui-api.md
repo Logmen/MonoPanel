@@ -42,7 +42,7 @@ mp config set <ключ> <значение> [--restart] [--local]   # web.hostna
 mp config templates                  # встроенные шаблоны конфигураций и их переопределения
 
 mp user add <login> [--password …|--password-stdin|--generate] [--email …] [--role user|admin] [--shell] [--quota МБ]   # квота пока только хранится
-mp user set <login> [--password …|--password-stdin|--generate] [--email …] [--shell|--sftp-only] [--status active|suspended]
+mp user set <login> [--password …|--password-stdin|--generate] [--current-password …|--current-password-stdin] [--email …] [--shell|--sftp-only] [--status active|suspended]   # свой пароль меняют с текущим (спрашивается в терминале)
 mp user list | show <login> | totp-reset <login>
 mp user rm <login> [--purge] [--yes]
 mp user share list <login> | add <login> --site <домен> --path <папка> [--name …] [--no-php] [--entry] | entry <login> <name> [--off] | rm <login> <name>   # папка сайта другого аккаунта по SFTP; entry — сессия начинается в ней

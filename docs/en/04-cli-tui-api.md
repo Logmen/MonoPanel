@@ -42,7 +42,7 @@ mp config set <key> <value> [--restart] [--local]       # web.hostname, web.list
 mp config templates                  # the built-in configuration templates and their overrides
 
 mp user add <login> [--password …|--password-stdin|--generate] [--email …] [--role user|admin] [--shell] [--quota MB]   # the quota is only stored for now
-mp user set <login> [--password …|--password-stdin|--generate] [--email …] [--shell|--sftp-only] [--status active|suspended]
+mp user set <login> [--password …|--password-stdin|--generate] [--current-password …|--current-password-stdin] [--email …] [--shell|--sftp-only] [--status active|suspended]   # one's own password is changed with the current one (asked on a terminal)
 mp user list | show <login> | totp-reset <login>
 mp user rm <login> [--purge] [--yes]
 mp user share list <login> | add <login> --site <domain> --path <folder> [--name …] [--no-php] [--entry] | entry <login> <name> [--off] | rm <login> <name>   # a folder of another account's site over SFTP; entry — the session starts inside it

@@ -137,7 +137,7 @@ HTTP/3: `listen … quic reuseport` допускается один раз на 
     ServerAlias www.example.com
     DocumentRoot /var/www/alex/data/www/example.com
     <Directory /var/www/alex/data/www/example.com>
-        AllowOverride All
+        AllowOverride All Options=Indexes,MultiViews,FollowSymLinks,SymLinksIfOwnerMatch,IncludesNOEXEC
         Options -Indexes +SymLinksIfOwnerMatch
         Require all granted
     </Directory>
@@ -172,7 +172,7 @@ pm.max_requests = 500
 request_terminate_timeout = 150s ; max_execution_time + 30
 slowlog = /var/log/monopanel/sites/alex/example.com.php.slow.log
 request_slowlog_timeout = 10s
-catch_workers_output = yes
+catch_workers_output = no        ; вывод воркера не идёт в лог мастера (root)
 clear_env = no                   ; PATH/HOME нужны composer/wp-cli
 env[PATH]   = /var/www/alex/data/bin:/usr/local/bin:/usr/bin:/bin
 env[TMPDIR] = /var/www/alex/data/tmp
