@@ -15,12 +15,17 @@
 #   tbupbak   a local backup target, /var/backups/tbup/repo, with one backup
 #             of user:tbupown
 #   composer  its wrapper as that release writes it
+#   atk       tbupsf's share of attack/, which tbupown then swaps for a
+#             symlink to tbupsh's data/tbup-victim (0755, a file in it):
+#             the release's own unit, restarted as root may, mounts that by
+#             path in tbupsf's chroot — the exposure the upgrade closes
 #
-# and leaves /root/tbup.env (the release, the marker, the snapshot) for
-# checks.sh, which TB_CARRIED=1 makes look at all of it after the upgrade.
-# Only commands and flags that 0.8.19 already has. Passwords are random and
-# go to mp on stdin; the one mp backup target add makes up and prints goes
-# to /dev/null, as nothing needs it — the panel restores through itself.
+# and leaves /root/tbup.env (the release, the marker, the snapshot, the
+# share units, the swapped share) for checks.sh, which TB_CARRIED=1 makes
+# look at all of it after the upgrade. Only commands and flags that 0.8.19
+# already has. Passwords are random and go to mp on stdin; the one mp backup
+# target add makes up and prints goes to /dev/null, as nothing needs it —
+# the panel restores through itself.
 set -euo pipefail
 export MP_LANG=en DEBIAN_FRONTEND=noninteractive
 umask 077
@@ -103,11 +108,45 @@ if [ ! -x /usr/local/bin/composer ]; then
 	step "mp stack install composer" mp stack install composer
 fi
 
+# The exposure the upgrade has to close, made last so that nothing above
+# sees it: a unit of this release mounts its folder by path, as root,
+# through whatever symlink the folder's owner has put there by then.
+# tbupsh's directory is open to all, but lies behind its data/ (0750) and
+# outside tbupsf's chroot; the unit, restarted (a reboot would do the
+# same), mounts it in that chroot. After the upgrade nothing may be
+# mounted there; checks.sh undoes the swap and has the panel mount the
+# folder again.
+attack=atk
+victim=$www/$sh/data/tbup-victim
+install -d -o "$sh" -g "$(id -gn "$sh")" -m 0755 "$victim"
+put "$sh" "$victim/tbup-victim.txt" "tbup-victim-$mark"
+step "mp user share add $sf (attack/ as $attack)" mp user share add "$sf" --site "$dom" --path attack --name "$attack"
+put "$own" "$doc/attack/tbup-attack.txt" "tbup-attack-$mark"
+unit=$(systemd-escape --path --suffix=mount "$www/$sf/$attack")
+log "$own swaps attack/ for a symlink to $victim"
+# shellcheck disable=SC2016 # the arguments of sh -c's own program
+(cd / && setpriv --reuid="$(id -u "$own")" --regid="$(id -g "$own")" --init-groups -- sh -c 'mv "$1" "$1.real" && ln -s "$2" "$1"' sh "$doc/attack" "$victim")
+step "systemctl restart $unit" systemctl restart "$unit"
+seen=$(cd / && setpriv --reuid="$(id -u "$sf")" --regid="$(id -g "$sf")" --init-groups -- cat "$www/$sf/$attack/tbup-victim.txt" 2>/dev/null || true)
+if [ "$seen" != "tbup-victim-$mark" ]; then
+	echo "$unit of $from did not mount $victim through $own's symlink ($(findmnt -rn -o SOURCE --mountpoint "$www/$sf/$attack" 2>&1 | tail -1)): the upgrade would have nothing to take off" >&2
+	exit 1
+fi
+log "$sf reads $victim/tbup-victim.txt in its chroot: $www/$sf/$attack shows $(findmnt -rn -o SOURCE --mountpoint "$www/$sf/$attack" | tail -1)"
+# the units of the shares as this release wrote them, for the journal's
+# "taken over" lines
+units=""
+for f in /etc/systemd/system/"$(systemd-escape --path "$www")"-*.mount; do
+	if [ -f "$f" ]; then units+="${units:+ }${f##*/}"; fi
+done
+
 umask 077
 cat >/root/tbup.env <<EOF
 # written by upgrade-seed.sh with mp $from, read by checks.sh (TB_CARRIED=1)
 from=$from
 mark=$mark
 snap=$snap
+units="$units"
+attack=$attack
 EOF
-log "seeded with mp $from: $own, $sh, $sf$([ "$deb" = 1 ] && echo ", $apa"), tbupbak, composer"
+log "seeded with mp $from: $own, $sh, $sf$([ "$deb" = 1 ] && echo ", $apa"), tbupbak, composer, the swapped share $attack ($units)"

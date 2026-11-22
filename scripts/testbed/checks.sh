@@ -13,7 +13,11 @@
 #   panel         mp, the API and the agent answer, on the same build
 #   carried       TB_CARRIED=1: what upgrade-seed.sh made with the previous
 #                 release came along (shares moved, the Apache site on its
-#                 account's Apache, the old backup restorable)
+#                 account's Apache, the old backup restorable); the units of
+#                 0.8.19's shares taken over, each once, none left, records
+#                 for the folders; the folder its owner swapped for a symlink
+#                 that 0.8.19's unit mounted by path taken off, failed, named
+#                 by the doctor, and mounted again once the swap is undone
 #   api socket    monopanel-api.socket holds the port: the API serves on it,
 #                 the port stays bound through restarts, nobody cannot take it
 #                 meanwhile, a connection starts a stopped API
@@ -21,7 +25,19 @@
 #                 targets, and still acts on nginx
 #   shares        a guest with a shell has its folder below <www>/.shares and a
 #                 symlink to it, an SFTP-only guest in its chroot; a switch
-#                 between the two moves it; no unit left in a home
+#                 between the two moves it, and the agent's records with it;
+#                 no unit left in a home. The agent binds them itself: no mount
+#                 unit file, a root 0600 record per folder, a peer group of
+#                 its own (a tmpfs below the guest's mount point shows neither
+#                 below the owner's folder nor in php-fpm's and nginx's
+#                 namespaces), every thread of the agent in its own namespace;
+#                 straight at the agent's socket a mount unit, a start of the
+#                 share's mount unit, a bind of the restore areas (no home)
+#                 and of a folder its owner swapped for a symlink (for the
+#                 symlink) are refused (403), mp site fix marks such a share
+#                 failed, leaves the symlink's target alone and mounts the
+#                 share again once undone; a folder in use is not unmounted;
+#                 the doctor's line is ok
 #   apache        Debian/Ubuntu: an Apache per account, apache2 off, www-data
 #                 out of the web group, an .htaccess reaches nothing of another
 #                 account, requests straight to an account's Apache get 403
@@ -31,17 +47,34 @@
 #   repositories  the panel's vendor sources are https
 #   restic        a backup through the panel, restored aside, a repository
 #                 directory holding other files refused
-#   doctor        restic sandbox ok (or EXPECTED), no api socket warning, no
-#                 failure, no warning doctor-expected.sh does not list
+#   restore nodes a snapshot with a FIFO and a set-uid file: restores in place
+#                 and aside that would bring them back are refused naming the
+#                 node, with nothing staged; a subtree beside them restores
+#   package files the tmpfiles lines of the run directory (monopanel-php.conf
+#                 kept after an upgrade), no "Duplicate line"; no copy of the
+#                 panel's units in /etc/systemd/system; the package's modprobe
+#                 rule alone, and sctp cannot load (from a bare binary: mp
+#                 setup's own units, rule and monopanel-php.conf)
+#   doctor        restic sandbox ok (or EXPECTED), the API's own api socket
+#                 line (counted once), no failure, no warning
+#                 doctor-expected.sh does not list
+#   package runs  the deploy's installs ran in monopanel-pkg-<run>.service
+#                 units (with none in the journal, after an upgrade, an index
+#                 refresh does — after the doctor, which must judge the index
+#                 as it was), none left; the daily upgrade on at 04:00 with a
+#                 next run; one version of each PHP branch everywhere
 #   selinux       EL: no AVC denial since boot
 #
 # What the checks make goes again at the end, also after a failure: the
-# accounts tbcka, tbckb, tbcksh and tbcksf with their sites and shares, the
-# backup targets tbck and tbckmix with /var/backups/tbck, the snapshots
-# restored aside, composer when the checks installed it. Leftovers of a run
-# that was cut short go first. What upgrade-seed.sh made (tbup*) stays. The
-# passwords of the accounts and repositories are random, go to mp on stdin
-# and are printed nowhere.
+# accounts tbcka, tbckb, tbcksh and tbcksf with their sites and shares (and
+# what they put in their homes: the swapped folder's target, the FIFO and the
+# set-uid file), the tmpfs mounts tbck-tmpfs, the backup targets tbck and
+# tbckmix with /var/backups/tbck, the snapshots restored aside, composer when
+# the checks installed it. Leftovers of a run that was cut short go first.
+# What upgrade-seed.sh made (tbup*) stays. The passwords of the accounts and
+# repositories are random, go to mp on stdin and are printed nowhere.
+#
+# shellcheck disable=SC2012,SC2016,SC2329 # ls -l only in messages; the awk, python and sh -c programs are single-quoted on purpose; wait_until runs functions by name
 set -u
 vm=${1:?usage: checks.sh <vm name>}
 here=$(cd "$(dirname "$0")" && pwd)
@@ -62,6 +95,14 @@ kernel=$(uname -r)
 context=deploy
 [ -z "${TB_CARRIED:-}" ] || context=upgrade
 restore_root=/var/lib/monopanel-agent/restore
+# conf <section> <key>: a key of a section of config.yaml, "" when unset
+conf() { awk -v s="$1:" -v k="$2:" '/^[^ #]/ { in_s = ($1 == s) } in_s && $1 == k { print $2; exit }' /etc/monopanel/config.yaml 2>/dev/null | tr -d "\"'"; }
+agent_sock=$(conf agent socket)
+agent_sock=${agent_sock:-$run/agent.sock}
+agent_state=$(conf agent state_dir)
+agent_state=${agent_state:-/var/lib/monopanel-agent}
+# the web root as systemd names the mount units below it (var-www)
+wesc=$(systemd-escape --path "$www")
 umask 077
 tmp=$(mktemp -d /root/tb-checks.XXXXXX) || exit 2
 
@@ -74,8 +115,12 @@ docA=$www/$A/data/www/$DA
 docAA=$www/$A/data/www/$AA
 docBA=$www/$B/data/www/$BA
 probe='<?php echo "tbck-ok uid=", function_exists("posix_getuid") ? posix_getuid() : "?", " ", isset($_SERVER["HTTP_X_MONOPANEL_BACKEND"]) ? "LEAK" : "nosecret", " ", isset($_SERVER["SCRIPT_URI"]) ? "uri" : "nouri", "\n";'
-objects=0 shares=0 apache=0 apache_sites=0 composer_ours=0 cleaned=0
+victim=$www/$SH/data/tbck-victim # another account's directory A points its folder at
+nodes=$www/$A/data/tbck-nodes    # a FIFO and a set-uid file of A's, for the restores
+sub=tbck-sub                     # where the shell guest mounts a tmpfs inside its folder
+objects=0 shares=0 apache=0 apache_sites=0 composer_ours=0 cleaned=0 backed=0
 restored=()
+area="" # what the web root's restore area holds before a restore
 
 # ---------------------------------------------------------------- output ----
 npass=0 nfail=0 nskip=0 nexp=0
@@ -152,6 +197,52 @@ mounted_at() { awk -v m="$1" '$5 == m { found = 1 } END { exit !found }' /proc/s
 links_to() { [ -L "$1" ] && [ "$(readlink "$1")" = "$2" ]; }
 installed() { [ "$(mp stack list --json </dev/null 2>/dev/null | pj "[c[\"installed\"] for c in d if c[\"name\"] == \"$1\"][0]")" = true ]; }
 listen_of() { awk '$1 == "Listen" {print $2; exit}' "/etc/apache2/monopanel/accounts/$1/httpd.conf" 2>/dev/null; }
+# agent_call <path> <json> [seconds]: the HTTP status of a call straight to
+# the agent's socket as root — what a compromised API could send it — with
+# the answer in $tmp/agent
+agent_call() {
+	curl -s -m "${3:-60}" -o "$tmp/agent" -w '%{http_code}' --unix-socket "$agent_sock" -X POST -H 'Content-Type: application/json' --data-binary "$2" "http://agent$1" </dev/null 2>/dev/null
+}
+# agent_said: the agent's answer to the last call, one line
+agent_said() { pj 'd.get("error", "") + (": " + d["output"] if d.get("output") else "")' <"$tmp/agent" | tr '\n' ' ' | cut -c1-200; }
+# agent_error: the whole error of the agent's answer to the last call, for a
+# look at why it refused
+agent_error() { pj 'd.get("error", "")' <"$tmp/agent"; }
+# jsn <python expression over a, the arguments>: JSON for the agent
+jsn() { python3 -c 'import json, sys; a = sys.argv[2:]; print(json.dumps(eval(sys.argv[1])))' "$@"; }
+# mount_ids <path>: the ids of the mounts at exactly that path, bottom first
+mount_ids() { awk -v m="$1" '$5 == m { printf "%s ", $1 }' /proc/self/mountinfo; }
+# mount_top <path>: the mountinfo line of the mount on top at exactly that path
+mount_top() { awk -v m="$1" '$5 == m { l = $0 } END { print l }' /proc/self/mountinfo; }
+# mount_of <path>: the mountinfo line of the mount the path lies on
+mount_of() { awk -v p="$1" 'BEGIN { best = -1 } { m = $5; if ((m == "/" || p == m || index(p, m "/") == 1) && length(m) >= best) { best = length(m); l = $0 } } END { print l }' /proc/self/mountinfo; }
+# peer <mountinfo line>: its peer group (shared:N), "" for a mount in none
+peer() { awk '{ for (i = 7; i <= NF && $i != "-"; i++) if ($i ~ /^shared:/) print $i }' <<<"$1"; }
+# tbck_tmpfs: the mount points of the checks' own tmpfs, deepest first
+tbck_tmpfs() { awk '{ for (i = 7; i < NF; i++) if ($i == "-") { if ($(i + 1) == "tmpfs" && $(i + 2) == "tbck-tmpfs") print $5; break } }' /proc/self/mountinfo | sort -r; }
+unmount_tbck_tmpfs() {
+	local m
+	while IFS= read -r m; do
+		[ -z "$m" ] || umount -l "$m" 2>/dev/null
+	done < <(tbck_tmpfs)
+}
+# unit_files: the mount unit files below the web root in /etc/systemd/system
+# and its .wants directories: systemd would mount them by path at boot
+unit_files() {
+	local f b
+	for f in /etc/systemd/system/*.mount /etc/systemd/system/*.wants/*.mount; do
+		[ -e "$f" ] || [ -L "$f" ] || continue
+		b=${f##*/}
+		[ "${b#"$wesc"-}" = "$b" ] || echo "${f#/etc/systemd/system/}"
+	done
+}
+# record_of <mount point>: the agent's record of the folder it bound there
+record_of() { echo "$agent_state/shares/$(systemd-escape --path "$1").share"; }
+# share_state <guest> <name>: "<status> <last error>" of the share as the API keeps it
+share_state() { mp user share list "$1" --json </dev/null 2>/dev/null | pj "[s[\"share\"].get(\"status\", \"\") + \" \" + \" \".join(s[\"share\"].get(\"last_error\", \"\").split()) for s in d if s[\"share\"][\"name\"] == \"$2\"][0]"; }
+share_failed() { [ "$(share_state "$1" "$2" | cut -d' ' -f1)" = failed ]; }
+# doctor_line <check>: "<status> <detail>" of one line of mp --json doctor
+doctor_line() { mp --json doctor </dev/null 2>/dev/null | pj "[c[\"status\"] + \" \" + \" \".join(c.get(\"detail\", \"\").split()) for c in d[\"checks\"] if c[\"name\"] == \"$1\"][0]"; }
 # settle: the panel and its agent answer and the job queue stays empty for
 # five polls in a row. After a package upgrade or a restart the API answers
 # at once, while the agent may still do its own start-up work for a minute
@@ -234,10 +325,15 @@ leftovers() {
 	done
 	[ -e /var/backups/tbck ] && return 0
 	[ -n "$(stale_restores)" ] && return 0
+	[ -n "$(tbck_tmpfs)" ] && return 0
 	[ -n "$(mp backup target list --json </dev/null 2>/dev/null | pj '[t["name"] for t in d if t["name"] in ("tbck", "tbckmix")]')" ]
 }
 cleanup_objects() {
 	local u t d
+	# a tmpfs inside a shared folder, and a process of the guest's in it,
+	# keep the folder busy: its unbind would fail
+	unmount_tbck_tmpfs
+	id "$SH" >/dev/null 2>&1 && pkill -u "$SH" -x sleep 2>/dev/null
 	for u in "$SH" "$SF"; do
 		mp user share rm "$u" "$SHARE" </dev/null >/dev/null 2>&1
 	done
@@ -292,13 +388,91 @@ panel_section() {
 }
 
 # --------------------------------------------------------------- carried ----
+# carried_shares <docroot> <domain>: what the agent made of the previous
+# release's shared folders at its first start (H19a): each mount unit taken
+# over, once, as its journal says, and none left; a record for each folder;
+# and the folder tbupown swapped for a symlink to a directory of tbupsh's,
+# which the previous release's unit mounted by path in tbupsf's chroot
+# (upgrade-seed.sh): taken off, the share failed with why, the doctor naming
+# it. Then the swap is undone and mp site fix mounts the folder again — the
+# end of the scenario, and what keeps the doctor's verdicts at the end free
+# of a warning that only this planted folder gives (no rule for it in
+# doctor-expected.sh). A run after the first finds the swap undone.
+carried_shares() {
+	local doc=$1 dom=$2 left u n mpt folder st order got=""
+	left=$(unit_files)
+	if [ -z "$left" ]; then
+		pass "no mount unit of a shared folder left in /etc/systemd/system or its .wants directories"
+	else
+		fail "mount units below $www left after the upgrade: $(tr '\n' ' ' <<<"$left" | cut -c1-200)"
+	fi
+	[ -n "${units:-}" ] || fail "/root/tbup.env names no unit of the previous release's shared folders (units=): an upgrade-seed.sh older than these checks"
+	for u in ${units:-}; do
+		n=$(journalctl -u monopanel-agent --no-pager -o cat 2>/dev/null | grep 'shared folder was taken over' | grep -cF "unit=$u ")
+		if [ "$n" = 1 ]; then
+			pass "journalctl -u monopanel-agent: $u of the previous release taken over, once"
+		else
+			fail "journalctl -u monopanel-agent: $n lines 'taken over' for $u, not one"
+		fi
+	done
+	record_check "$www/.shares/tbupsh/fromown" "$doc/shared"
+	record_check "$www/tbupsf/fromown" "$doc/shared" taken
+	if [ -z "${attack:-}" ]; then
+		fail "/root/tbup.env names no folder swapped for a symlink (attack=): an upgrade-seed.sh older than these checks"
+		return
+	fi
+	mpt=$www/tbupsf/$attack folder=$doc/$attack
+	# the line numbers of the first "taken off" for it and of the first
+	# "taken over": the mounts are checked before the slow removals
+	order=$(journalctl -u monopanel-agent --no-pager -o cat 2>/dev/null | awk -v m="mount_point=$mpt " '/was taken off/ && index($0, m) && !off { off = NR } /shared folder was taken over/ && !over { over = NR } END { print off + 0, over + 0 }')
+	if [ "${order% *}" = 0 ]; then
+		fail "journalctl -u monopanel-agent: no line 'taken off' for $mpt, where the previous release's unit mounted the target of tbupown's symlink"
+	elif [ "${order#* }" != 0 ] && [ "${order% *}" -gt "${order#* }" ]; then
+		fail "journalctl -u monopanel-agent: the mount at $mpt was taken off after the units were taken over (lines $order)"
+	else
+		pass "journalctl -u monopanel-agent: the mount at $mpt, which showed another directory than the folder, taken off before the units went"
+	fi
+	if [ -L "$folder" ]; then
+		if wait_until 240 share_failed tbupsf "$attack"; then
+			st=$(share_state tbupsf "$attack")
+			if grep -qi symlink <<<"$st"; then pass "tbupsf's $attack is failed: $(cut -c1-200 <<<"${st#failed }")"; else fail "tbupsf's $attack is failed, but not for the symlink: $(cut -c1-200 <<<"$st")"; fi
+		else
+			fail "tbupsf's $attack is not failed four minutes after the upgrade: $(share_state tbupsf "$attack" | cut -c1-200)"
+		fi
+		if ! mounted_at "$mpt" && [ ! -e "$mpt/tbup-victim.txt" ]; then
+			pass "nothing mounted at $mpt, where the previous release's unit mounted tbupsh's directory through tbupown's symlink"
+		else
+			fail "$mpt after the upgrade: $(mount_top "$mpt" | cut -c1-160); tbup-victim.txt $([ -e "$mpt/tbup-victim.txt" ] && echo shows || echo does not show)"
+		fi
+		st=$(doctor_line "shared folders")
+		if [ "${st%% *}" = warn ] && grep -qF "$attack" <<<"$st" && grep -qF tbupsf <<<"$st"; then
+			pass "doctor: shared folders names it: $(cut -c1-200 <<<"${st#warn }")"
+		else
+			fail "doctor: shared folders: ${st:-no line}"
+		fi
+		if as_user tbupown sh -c 'rm "$1" && mv "$1.real" "$1"' sh "$folder" 2>"$tmp/err" && timeout 600 mp site fix "$dom" </dev/null >"$tmp/out" 2>&1; then
+			info "tbupown undid the swap of $folder, and mp site fix $dom ran"
+		else
+			fail "undoing the swap of $folder and mp site fix $dom: $(last "$tmp/err") $(last "$tmp/out" 2)"
+		fi
+	else
+		info "$folder is a directory again: an earlier run of these checks undid tbupown's swap after it checked what the upgrade made of it"
+	fi
+	if wait_until 60 mounted_at "$mpt"; then got=$(as_user tbupsf cat "$mpt/tbup-attack.txt" 2>&1); fi
+	if [ "$(api_mount tbupsf "$attack")" = "$mpt true" ] && [ "$got" = "tbup-attack-${mark:-}" ]; then
+		pass "the swap undone: tbupsf's $attack mounted at $mpt again, and tbupsf reads the folder"
+	else
+		fail "tbupsf's $attack with the swap undone: $(api_mount tbupsf "$attack"), reading: $(cut -c1-120 <<<"${got:-nothing mounted}")"
+	fi
+	record_check "$mpt" "$folder"
+}
 carried_section() {
 	section "carried over from the previous release (upgrade-seed.sh)"
 	if [ ! -r /root/tbup.env ]; then
 		fail "/root/tbup.env is missing: upgrade-seed.sh did not run here"
 		return
 	fi
-	local from mark snap cli own=tbupown dom apa doc c st d got
+	local from mark snap units attack cli own=tbupown dom apa doc c st d got
 	# shellcheck disable=SC1091
 	. /root/tbup.env
 	dom=$own.$vm.test apa=apa.$own.$vm.test doc=$www/$own/data/www/$own.$vm.test
@@ -313,6 +487,7 @@ carried_section() {
 	info "drop-ins: $(systemctl show -p DropInPaths --value monopanel-api.service monopanel-api.socket 2>/dev/null | tr '\n' ' ')"
 
 	share_checks tbupsh tbupsf fromown "$doc/shared" tbup-shared.txt
+	carried_shares "$doc" "$dom"
 
 	if [ "$deb" = 1 ]; then
 		# how the move is carried out is the API's business (a job of its first
@@ -612,7 +787,8 @@ share_checks() {
 	got=$(api_mount "$sf" "$name")
 	if [ "$got" = "$mpt true" ]; then pass "the API reports $sf's $name mounted at $mpt"; else fail "the API reports $sf's $name: ${got:-nothing}"; fi
 }
-# switch_checks: the SFTP guest gets a shell and loses it again; its folder moves along
+# switch_checks: the SFTP guest gets a shell and loses it again; its folder
+# moves along, and the agent's record of it with it
 switch_checks() {
 	local mpt=$www/.shares/$SF/$SHARE home=$www/$SF/$SHARE
 	if timeout 300 mp user set "$SF" --shell </dev/null >"$tmp/out" 2>&1; then
@@ -621,6 +797,7 @@ switch_checks() {
 		else
 			fail "$SF given a shell: $SHARE is not at $mpt behind a symlink ($(ls -ld "$home" 2>&1 | cut -c1-120))"
 		fi
+		if [ -f "$(record_of "$mpt")" ] && [ ! -e "$(record_of "$home")" ]; then pass "the agent's record moved along: $(record_of "$mpt")"; else fail "the agent's records after the move: $(ls "$agent_state/shares" 2>&1 | tr '\n' ' ' | cut -c1-200)"; fi
 	else
 		fail "mp user set $SF --shell: $(last "$tmp/out" 2)"
 	fi
@@ -630,18 +807,335 @@ switch_checks() {
 		else
 			fail "$SF SFTP-only again: $SHARE is not back at $home ($(ls -ld "$home" 2>&1 | cut -c1-120))"
 		fi
+		if [ -f "$(record_of "$home")" ] && [ ! -e "$(record_of "$mpt")" ]; then pass "the agent's record moved back: $(record_of "$home")"; else fail "the agent's records after the move back: $(ls "$agent_state/shares" 2>&1 | tr '\n' ' ' | cut -c1-200)"; fi
 	else
 		fail "mp user set $SF --sftp-only: $(last "$tmp/out" 2)"
 	fi
 }
+# record_check <mount point> <folder> [taken]: the agent's record of the
+# folder it bound there, root's 0600 in its own directory (root 0700), names
+# the folder, the mount point and the directory bound (device:inode); taken:
+# a unit of the previous release taken over, whose record names no directory
+# until the folder is bound anew (its mount was checked by the folder's path)
+record_check() {
+	local mpt=$1 folder=$2 rec dir st got want
+	rec=$(record_of "$mpt")
+	dir=$(stat -c '%U %a' "$agent_state/shares" 2>&1)
+	st=$(stat -c '%U %a' "$rec" 2>&1)
+	got=$(pj '"%s %s %s:%s" % (d["what"], d["where"], d.get("dev", 0), d.get("ino", 0))' 2>/dev/null <"$rec")
+	want="$folder $mpt $(stat -c '%d:%i' "$folder" 2>/dev/null)"
+	if [ "$dir" = "root 700" ] && [ "$st" = "root 600" ] && { [ "$got" = "$want" ] || { [ -n "${3:-}" ] && [ "$got" = "$folder $mpt 0:0" ]; }; }; then
+		pass "the agent's record of $mpt: root 600 in $agent_state/shares (root 700), the folder $folder, device:inode ${got##* }"
+	else
+		fail "the agent's record of $mpt ($rec): ${st:-?} in a directory ${dir:-?}, '${got:-unreadable}', want '$want'"
+	fi
+}
+# bind_checks <mount point> <folder>: how the agent bound the folder (H19a):
+# a record of it, the mount showing the folder, no unit file behind the
+# mount unit systemd shows for it, a peer group of its own
+bind_checks() {
+	local mpt=$1 folder=$2 unit top fs fsroot fsmnt rel ps pf frag act
+	record_check "$mpt" "$folder"
+	unit=$(systemd-escape --path --suffix=mount "$mpt")
+	top=$(mount_top "$mpt")
+	fs=$(mount_of "$folder")
+	fsroot=$(awk '{print $4}' <<<"$fs")
+	fsmnt=$(awk '{print $5}' <<<"$fs")
+	rel=${folder#"$fsmnt"}
+	[ "$fsmnt" != / ] || rel=$folder
+	# the root of the bind is the folder's path in its file system
+	if [ -n "$top" ] && [ "$(awk '{print $4}' <<<"$top")" = "${fsroot%/}$rel" ]; then
+		pass "findmnt $mpt: $(findmnt -rn -o SOURCE,PROPAGATION --mountpoint "$mpt" 2>/dev/null | tail -1 | cut -c1-160)"
+	else
+		fail "$mpt does not show $folder: ${top:-nothing mounted there} (want the root ${fsroot%/}$rel of $fsmnt)"
+	fi
+	frag=$(systemctl show -p FragmentPath --value "$unit" 2>/dev/null)
+	act=$(systemctl show -p ActiveState --value "$unit" 2>/dev/null)
+	if [ -z "$frag" ] && [ "$act" = active ]; then
+		pass "$unit: active, from the mount table alone (FragmentPath empty)"
+	else
+		fail "$unit: ${act:-?}, FragmentPath ${frag:-empty}"
+	fi
+	ps=$(peer "$top")
+	pf=$(peer "$fs")
+	if [ -n "$top" ] && { [ -z "$ps" ] || [ "$ps" != "$pf" ]; }; then
+		pass "$mpt in a peer group of its own (${ps:-none}), not ${pf:-none} of $fsmnt where the folder lies"
+	else
+		fail "$mpt in the peer group ${pf:-?} of $fsmnt: a mount the guest makes inside shows in the owner's site"
+	fi
+}
+# guest_mount_checks: a mount the guest with a shell makes inside its folder
+# (root stands in for its fusermount) stays at the guest's mount point: it
+# shows neither below the owner's folder nor at the other guest's mount
+# point, in the host's mount namespace nor in php-fpm's and nginx's
+guest_mount_checks() {
+	local in=$www/.shares/$SH/$SHARE/$sub own=$docA/shared/$sub other=$www/$SF/$SHARE/$sub pid name r n=0
+	if ! as_user "$SH" mkdir "$www/$SH/$SHARE/$sub" 2>"$tmp/err"; then
+		fail "$SH cannot make $sub in its folder: $(last "$tmp/err")"
+		return
+	fi
+	if ! mount -t tmpfs -o size=1m,mode=0755 tbck-tmpfs "$in" 2>"$tmp/err"; then
+		fail "mount -t tmpfs at $in: $(last "$tmp/err")"
+	elif ! mounted_at "$in"; then
+		fail "the tmpfs mounted at $in is not in /proc/self/mountinfo"
+	else
+		if mounted_at "$own" || mounted_at "$other"; then
+			fail "a tmpfs mounted at $in shows at$(mounted_at "$own" && echo " $own")$(mounted_at "$other" && echo " $other")"
+		else
+			pass "a tmpfs mounted at $in (the guest's own mount) shows neither at $own nor at $other"
+		fi
+		for pid in $(pgrep -f '^php-fpm: master' | head -4) $(pgrep -o -x nginx); do
+			n=$((n + 1))
+			name=$(ps -o comm= -p "$pid" 2>/dev/null)
+			r=$(nsenter -t "$pid" -m -- awk -v o="$own" -v i="$in" '$5 == o { b = 1 } $5 == i { g = 1 } END { r = (b ? "below" : "clear") " " (g ? "seen" : "unseen"); print r }' /proc/self/mountinfo 2>&1)
+			case "$r" in
+			"clear seen") pass "in the mount namespace of $name ($pid): the tmpfs at the guest's mount point, not below the owner's folder" ;;
+			"clear unseen") pass "in the mount namespace of $name ($pid): the tmpfs not below the owner's folder (nor at the guest's mount point: that namespace does not see the guest's mounts)" ;;
+			below*) fail "in the mount namespace of $name ($pid): the tmpfs shows at $own" ;;
+			*) fail "nsenter -t $pid -m ($name): $(tail -1 <<<"$r" | cut -c1-160)" ;;
+			esac
+		done
+		[ "$n" -gt 0 ] || fail "no php-fpm master and no nginx to look into"
+	fi
+	unmount_tbck_tmpfs
+	rmdir "$docA/shared/$sub" 2>/dev/null
+}
+# agent_one_ns <pid>: every thread of the process is in its mount namespace,
+# which is not PID 1's
+agent_one_ns() {
+	local ns t n
+	ns=$(readlink "/proc/$1/ns/mnt" 2>/dev/null)
+	if [ -z "$ns" ] || [ "$ns" = "$(readlink /proc/1/ns/mnt)" ]; then
+		return 1
+	fi
+	for t in /proc/"$1"/task/*; do
+		n=$(readlink "$t/ns/mnt" 2>/dev/null) || continue
+		[ "$n" = "$ns" ] || return 1
+	done
+}
+# thread_checks: the agent joins the host's mount namespace for a bind or a
+# look at a mount point on a thread of its own that ends with the call, never
+# the main thread, which Go would park there for good (H19a): after 300 such
+# calls every thread of the agent is in the agent's own namespace
+thread_checks() {
+	local pid ok t n=0 spread
+	pid=$(systemctl show -p MainPID --value monopanel-agent.service 2>/dev/null)
+	if ! [ "${pid:-0}" -gt 1 ] 2>/dev/null; then
+		fail "monopanel-agent has no MainPID"
+		return
+	fi
+	cat >"$tmp/status.py" <<'EOF'
+import http.client, json, socket, sys
+class Conn(http.client.HTTPConnection):
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(30)
+        self.sock.connect(sys.argv[1])
+c, body, ok = Conn("agent"), json.dumps({"paths": sys.argv[3:]}), 0
+for _ in range(int(sys.argv[2])):
+    c.request("POST", "/v1/shares/status", body=body, headers={"Content-Type": "application/json"})
+    r = c.getresponse()
+    r.read()
+    ok += r.status == 200
+print(ok)
+EOF
+	ok=$(python3 "$tmp/status.py" "$agent_sock" 300 "$www/.shares/$SH/$SHARE" "$www/$SF/$SHARE" 2>&1 | tail -1)
+	for t in /proc/"$pid"/task/*; do n=$((n + 1)); done
+	if [ "$ok" != 300 ]; then
+		fail "300 shares/status calls straight at the agent: $(cut -c1-120 <<<"${ok:-none}") answered 200"
+	elif wait_until 10 agent_one_ns "$pid"; then
+		pass "after 300 calls that join the host's mount namespace all $n threads of the agent are in its own $(readlink "/proc/$pid/ns/mnt"), not PID 1's $(readlink /proc/1/ns/mnt)"
+	else
+		spread=$(for t in /proc/"$pid"/task/*; do readlink "$t/ns/mnt"; done 2>/dev/null | sort | uniq -c | awk '{ printf "%s%s x %s", (NR > 1 ? ", " : ""), $1, $2 }')
+		fail "the agent's threads: $spread; PID 1: $(readlink /proc/1/ns/mnt), the agent: $(readlink "/proc/$pid/ns/mnt")"
+	fi
+}
+# refusal_checks: what a compromised API might ask of the agent for a shared
+# folder, straight at its socket as root (H19a): a mount unit, which systemd
+# would mount by its What= path at boot; a start, restart, reload,
+# reload-or-restart or enable of a share's mount unit, after which systemd
+# would; a bind of the agent's own restore areas. Each is refused (403),
+# status passes (stop is not tried: it would unmount the folder), and the
+# mount point holds what it held
+refusal_checks() {
+	local mpt=$www/$SF/$SHARE unit shunit before had=0 c a codes="" what why content
+	unit=$(systemd-escape --path --suffix=mount "$mpt")
+	shunit=$(systemd-escape --path --suffix=mount "$www/.shares/$SH/$SHARE")
+	before=$(mount_ids "$mpt")
+	[ ! -e "/etc/systemd/system/$unit" ] || had=1
+	content=$(printf '[Mount]\nWhat=%s\nWhere=%s\nType=none\nOptions=bind\n' "$docA/shared" "$mpt")
+	c=$(agent_call /v1/units/apply "$(jsn '{"name": a[0], "content": a[1]}' "$unit" "$content")")
+	if [ "$c" = 403 ] && { [ "$had" = 1 ] || [ ! -e "/etc/systemd/system/$unit" ]; }; then
+		pass "units/apply of $unit straight at the agent: 403, $(agent_said | cut -c1-120)"
+	else
+		fail "units/apply of $unit straight at the agent: $c $(agent_said)"
+		if [ "$had" = 0 ] && [ -e "/etc/systemd/system/$unit" ]; then
+			rm -f "/etc/systemd/system/$unit"
+			systemctl daemon-reload
+		fi
+	fi
+	for a in start restart reload reload-or-restart enable; do
+		c=$(agent_call /v1/service "$(jsn '{"unit": a[0], "action": a[1]}' "$unit" "$a")")
+		codes+=" $a=$c"
+	done
+	c=$(agent_call /v1/service "$(jsn '{"unit": a[0], "action": "start"}' "$shunit")")
+	codes+=" start($shunit)=$c"
+	if [ "$codes" = " start=403 restart=403 reload=403 reload-or-restart=403 enable=403 start($shunit)=403" ]; then
+		pass "/v1/service start, restart, reload, reload-or-restart and enable of $unit, start of $shunit: 403 each, $(agent_said | cut -c1-100)"
+	else
+		fail "/v1/service of the shares' mount units:$codes"
+	fi
+	c=$(agent_call /v1/service "$(jsn '{"unit": a[0], "action": "status"}' "$unit")")
+	if [ "$c" = 200 ]; then pass "/v1/service status of $unit still passes"; else fail "/v1/service status of $unit: $c $(agent_said)"; fi
+	# The web root's restore area is made by the first in-place restore, and
+	# nothing of the checks' lies in it: a bind of a path there that does not
+	# exist is refused whatever the agent makes of the area. The refusal has
+	# to say why — the areas are no account's home.
+	for what in "$www/.restore/tbck" "$restore_root"; do
+		case "$what" in
+		"$www"/.*) why="the agent's own|no account's home|not the home of a panel account" ;;
+		*) why="not inside an account's home|not below the web root" ;;
+		esac
+		c=$(agent_call /v1/shares/bind "$(jsn '{"what": a[0], "where": a[1]}' "$what" "$mpt")")
+		if [ "$c" = 403 ] && agent_error | grep -qE "$why"; then
+			pass "shares/bind of $what at $mpt: 403, $(agent_said | cut -c1-120)"
+		else
+			fail "shares/bind of $what at $mpt: $c, not refused as no account's home: $(agent_said)"
+		fi
+	done
+	if mounted_at "$mpt" && [ "$(mount_ids "$mpt")" = "$before" ]; then
+		pass "$mpt holds the mount it held before (id $before)"
+	else
+		fail "the mounts at $mpt: '$before' before, '$(mount_ids "$mpt")' now"
+	fi
+}
+# sleeper_in <dir>: a process of the shell guest works in that directory
+sleeper_in() {
+	local p
+	for p in $(pgrep -u "$SH" -x sleep); do
+		[ "$(readlink "/proc/$p/cwd")" != "$1" ] || return 0
+	done
+	return 1
+}
+# busy_checks: a folder in use — a process of the guest's works in it — is
+# not unmounted: mp user share rm says so, and the folder stays mounted and
+# recorded (H19a)
+busy_checks() {
+	local mpt=$www/.shares/$SH/$SHARE out rc bg
+	as_user "$SH" sh -c 'cd "$1" && exec sleep 120' sh "$www/$SH/$SHARE" >/dev/null 2>&1 &
+	bg=$!
+	if ! wait_until 10 sleeper_in "$mpt"; then
+		fail "no process of $SH working in $mpt to keep it in use"
+		pkill -u "$SH" -x sleep 2>/dev/null
+		wait "$bg" 2>/dev/null
+		return
+	fi
+	out=$(timeout 120 mp user share rm "$SH" "$SHARE" </dev/null 2>&1)
+	rc=$?
+	pkill -u "$SH" -x sleep 2>/dev/null
+	wait "$bg" 2>/dev/null
+	if [ "$rc" -ne 0 ] && grep -q 'in use' <<<"$out" && mounted_at "$mpt" && [ -f "$(record_of "$mpt")" ]; then
+		pass "mp user share rm $SH $SHARE while $SH works in it: refused ($(grep -o 'it is in use[^)]*)' <<<"$out" | head -1)), mounted and recorded still"
+	else
+		fail "mp user share rm $SH $SHARE while the folder is in use: exit $rc, $(tail -1 <<<"$out" | cut -c1-200)"
+		if [ "$rc" -eq 0 ] && mkshare "$SH"; then info "$SH's $SHARE made again for the checks that follow"; fi
+	fi
+}
+# swap_checks: A swaps its shared folder for a symlink to a directory of
+# another account's ($SH's; open to all but behind $SH's own data/): its bind
+# straight at the agent is refused for the symlink and mounts nothing, mp site
+# fix marks both shares failed with why, leaves that directory as it was and
+# what is mounted — the folder bound before the swap — as it is; once A undoes
+# the swap, mp site fix mounts them again (H19a)
+swap_checks() {
+	local mpt=$www/$SF/$SHARE shm=$www/.shares/$SH/$SHARE before c st u want got mode
+	want=$(cat "$docA/shared/tbck-shared.txt" 2>/dev/null)
+	install -d -o "$SH" -g "$(id -gn "$SH")" -m 0755 "$victim"
+	put "$SH" "$victim/tbck-victim.txt" "tbck-victim-$(rand)"
+	mode="$(stat -c '%U:%G %a' "$victim" 2>&1) $(stat -c '%U:%G %a' "$victim/tbck-victim.txt" 2>&1)"
+	before=$(mount_ids "$mpt")
+	if ! as_user "$A" sh -c 'mv "$1" "$1.tbck-real" && ln -s "$2" "$1"' sh "$docA/shared" "$victim" 2>"$tmp/err"; then
+		fail "$A cannot swap $docA/shared for a symlink: $(last "$tmp/err")"
+		return
+	fi
+	# the directory is another account's: the agent's look at its owner
+	# refuses it too, and only the reason tells that the walk to the folder
+	# stopped at the symlink
+	c=$(agent_call /v1/shares/bind "$(jsn '{"what": a[0], "where": a[1]}' "$docA/shared" "$mpt")")
+	if [ "$c" = 403 ] && agent_error | grep -qF "$docA/shared is a symlink" && [ "$(mount_ids "$mpt")" = "$before" ] && [ ! -e "$mpt/tbck-victim.txt" ]; then
+		pass "shares/bind of $docA/shared, which $A swapped for a symlink to $victim: 403, nothing mounted anew ($(agent_said | cut -c1-140))"
+	else
+		fail "shares/bind of the swapped $docA/shared: $c, not refused for the symlink: $(agent_said); the mounts at $mpt: '$before' before, '$(mount_ids "$mpt")' now"
+	fi
+	timeout 600 mp site fix "$DA" </dev/null >"$tmp/out" 2>&1 || info "mp site fix $DA with the folder swapped: $(last "$tmp/out" 2)"
+	# the site's tree, its owner, ACLs and the guests' entries go through
+	# the symlink to nothing: what it points at stays the other account's
+	st="$(stat -c '%U:%G %a' "$victim" 2>&1) $(stat -c '%U:%G %a' "$victim/tbck-victim.txt" 2>&1)"
+	if [ "$st" = "$mode" ]; then
+		pass "mp site fix with the folder swapped left $victim as $SH made it ($st)"
+	else
+		fail "mp site fix with the folder swapped changed $victim and its file: $st, made $mode"
+	fi
+	for u in "$SH" "$SF"; do
+		st=$(share_state "$u" "$SHARE")
+		if [ "${st%% *}" = failed ] && grep -qi symlink <<<"$st"; then
+			pass "after mp site fix $u's $SHARE is failed: $(cut -c1-200 <<<"${st#failed }")"
+		else
+			fail "after mp site fix $u's $SHARE: ${st:-not listed}"
+		fi
+	done
+	if [ -e "$mpt/tbck-victim.txt" ] || [ -e "$shm/tbck-victim.txt" ]; then
+		fail "a guest's mount point shows $victim"
+	elif [ -n "$want" ] && [ "$(cat "$mpt/tbck-shared.txt" 2>/dev/null)" = "$want" ] && [ "$(cat "$shm/tbck-shared.txt" 2>/dev/null)" = "$want" ]; then
+		pass "both mount points still show the folder bound before the swap, nothing of $victim"
+	else
+		fail "the mount points after mp site fix: $mpt holds $(ls -A "$mpt" 2>&1 | tr '\n' ' ' | cut -c1-120)"
+	fi
+	if ! as_user "$A" sh -c 'rm "$1" && mv "$1.tbck-real" "$1"' sh "$docA/shared" 2>"$tmp/err"; then
+		fail "$A cannot undo the swap: $(last "$tmp/err")"
+		return
+	fi
+	timeout 600 mp site fix "$DA" </dev/null >"$tmp/out" 2>&1 || fail "mp site fix $DA after the swap was undone: $(last "$tmp/out" 2)"
+	for u in "$SH" "$SF"; do
+		st=$(share_state "$u" "$SHARE")
+		got=$(as_user "$u" cat "$www/$u/$SHARE/tbck-shared.txt" 2>&1)
+		if [ "${st%% *}" = active ] && [ "$(api_mount "$u" "$SHARE" | cut -d' ' -f2)" = true ] && [ -n "$want" ] && [ "$got" = "$want" ]; then
+			pass "the swap undone, mp site fix: $u's $SHARE active and mounted, $u reads the folder"
+		else
+			fail "after the swap was undone and mp site fix: $u's $SHARE ${st:-not listed}, $(api_mount "$u" "$SHARE"), reading: $(cut -c1-100 <<<"$got")"
+		fi
+	done
+}
+# share_doctor_check: the doctor's line on the shared folders: ok, with the count
+share_doctor_check() {
+	local st n
+	st=$(doctor_line "shared folders")
+	n=$(grep -oE '[0-9]+' <<<"${st#* }" | head -1)
+	if [ "${st%% *}" = ok ] && [ "${n:-0}" -ge 2 ]; then
+		pass "doctor: shared folders ok: ${st#ok }"
+	else
+		fail "doctor: shared folders: ${st:-no line}"
+	fi
+}
 shares_section() {
-	section "shared folders (H7)"
+	section "shared folders (H7, H19a)"
 	if [ "$shares" != 1 ]; then
 		fail "no shared folders to check (see above)"
 		return
 	fi
 	share_checks "$SH" "$SF" "$SHARE" "$docA/shared" tbck-shared.txt
 	switch_checks
+	local left
+	left=$(unit_files)
+	if [ -z "$left" ]; then pass "no mount unit below $www in /etc/systemd/system or its .wants directories"; else fail "mount units below $www: $(tr '\n' ' ' <<<"$left" | cut -c1-200)"; fi
+	bind_checks "$www/.shares/$SH/$SHARE" "$docA/shared"
+	bind_checks "$www/$SF/$SHARE" "$docA/shared"
+	guest_mount_checks
+	thread_checks
+	refusal_checks
+	busy_checks
+	swap_checks
+	share_doctor_check
 }
 
 # ---------------------------------------------------------------- apache ----
@@ -895,6 +1389,7 @@ restic_section() {
 	fi
 	if timeout 1800 mp backup run --scope "user:$A" --target tbck </dev/null >"$tmp/out" 2>&1; then
 		pass "a backup of user:$A into a local repository through the panel"
+		backed=1
 	else
 		fail "mp backup run --scope user:$A --target tbck: $(last "$tmp/out" 3)"
 		return
@@ -963,10 +1458,273 @@ restic_section() {
 	fi
 }
 
+# --------------------------------------------------------- restore nodes ----
+# restore_area: what the web root's restore area holds, where an in-place
+# restore stages
+restore_area() { find "$www/.restore" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | sort | tr '\n' ' '; }
+# refused_restore <what> <nodes it may name, an ERE> <snapshot> <mp backup
+# restore args...>: the job fails naming the node, and nothing is staged: the
+# restore area as it was, nothing aside, nothing restored in place
+refused_restore() {
+	local what=$1 want=$2 snap=$3 out rc now
+	shift 3
+	out=$(timeout 900 mp backup restore "$snap" --target tbck "$@" </dev/null 2>&1)
+	rc=$?
+	now=$(restore_area)
+	if [ "$rc" -ne 0 ] && grep -qE "it holds ($want)" <<<"$out" && [ "$now" = "$area" ] && [ ! -e "$restore_root/$snap" ] && [ "$(cat "$docA/tbck-inplace.txt" 2>/dev/null)" = changed ]; then
+		pass "restore $what: refused, $(grep -oE 'it holds [^,]+, [^,]+' <<<"$out" | head -1 | cut -c1-160); nothing staged in $www/.restore, nothing aside"
+	else
+		fail "restore $what: exit $rc, $(tail -1 <<<"$out" | cut -c1-200); $www/.restore holds '$now' (before: '$area')"
+	fi
+}
+# nodes_section: a backup of a tree holding a FIFO and a set-uid file; the
+# restores in place and aside that would bring them back are refused before
+# restic writes, naming the node, and a subtree beside them is restored in
+# place — a later job of the same type and lock than the refused ones, which
+# the doctor's jobs line then counts as fixed (H19a)
+nodes_section() {
+	section "restores bring back no FIFO and no set-uid file (H19a)"
+	if [ "$backed" != 1 ]; then
+		fail "no backup target of $A's to restore from (see above)"
+		return
+	fi
+	local snap want refused="$nodes/tbck-fifo, a FIFO|$nodes/tbck-suid, a set-user-ID file"
+	rm -rf "$nodes"
+	if ! as_user "$A" mkdir "$nodes" 2>"$tmp/err" || ! as_user "$A" mkfifo "$nodes/tbck-fifo" 2>"$tmp/err" ||
+		! install -o "$A" -g "$(id -gn "$A")" -m 4755 /bin/true "$nodes/tbck-suid" 2>"$tmp/err" || [ ! -p "$nodes/tbck-fifo" ] || [ ! -u "$nodes/tbck-suid" ]; then
+		fail "a FIFO and a set-uid file of $A's in $nodes: $(last "$tmp/err") $(ls -l "$nodes" 2>&1 | tr '\n' ' ' | cut -c1-160)"
+		rm -rf "$nodes"
+		return
+	fi
+	want="tbck-inplace-$(rand)"
+	put "$A" "$docA/tbck-inplace.txt" "$want"
+	if ! timeout 1800 mp backup run --scope "user:$A" --target tbck </dev/null >"$tmp/out" 2>&1; then
+		fail "mp backup run --scope user:$A --target tbck with the FIFO and the set-uid file: $(last "$tmp/out" 3)"
+		rm -rf "$nodes"
+		return
+	fi
+	snap=$(mp backup list --target tbck --json </dev/null 2>/dev/null | pj 'max((b for b in d if b.get("status") == "done"), key=lambda b: b["id"])["snapshot_id"]')
+	if ! [[ $snap =~ ^[0-9a-f]{8,64}$ ]]; then
+		fail "no snapshot of the backup with the FIFO and the set-uid file: ${snap:-none}"
+		rm -rf "$nodes"
+		return
+	fi
+	info "snapshot ${snap:0:8} holds $nodes/tbck-fifo and $nodes/tbck-suid (4755)"
+	restored+=("$restore_root/$snap")
+	put "$A" "$docA/tbck-inplace.txt" changed
+	area=$(restore_area)
+	refused_restore "in place of $www/$A" "$refused" "$snap" --include "$www/$A" --in-place
+	refused_restore "aside of $www/$A" "$refused" "$snap" --include "$www/$A"
+	refused_restore "in place of the set-uid file alone" "$nodes/tbck-suid, a set-user-ID file" "$snap" --include "$nodes/tbck-suid" --in-place
+	if timeout 1800 mp backup restore "$snap" --target tbck --include "$www/$A/data/www" --in-place </dev/null >"$tmp/out" 2>&1 &&
+		[ "$(cat "$docA/tbck-inplace.txt" 2>/dev/null)" = "$want" ] && [ "$(restore_area)" = "$area" ]; then
+		pass "restore in place of $www/$A/data/www beside them: done, $docA/tbck-inplace.txt back as backed up, nothing left staged"
+	else
+		fail "restore in place of $www/$A/data/www: $(last "$tmp/out" 2); tbck-inplace.txt: $(head -c 60 "$docA/tbck-inplace.txt" 2>&1); $www/.restore holds '$(restore_area)'"
+	fi
+	rm -rf "$nodes" "$docA/tbck-inplace.txt"
+}
+
+# --------------------------------------------------------- package files ----
+# pkgfiles_section: what the package keeps or prunes across an upgrade and
+# a deploy alike (H17, H19b): the tmpfiles lines of the run directory, read
+# as at boot without a "Duplicate line"; no copy of the panel's units in
+# /etc/systemd/system (mp setup up to 0.8.19 made them, a downgrade keeps
+# the Apache template there); the package's modprobe rule alone, and sctp
+# kept from loading — modprobe's word and a socket of the protocol, opened
+# by nobody. A panel set up from a bare binary (testbed.sh deploy --binary)
+# has mp setup's own files instead: its units in /etc/systemd/system, its
+# rule in /etc/modprobe.d, and monopanel-php.conf for the way back
+pkgfiles_section() {
+	section "the package's files: tmpfiles, unit copies, the modprobe rule (H17, H19b)"
+	local f=/etc/tmpfiles.d/monopanel.conf p=/etc/tmpfiles.d/monopanel-php.conf line dup u left="" frag out loaded=0 c rc pkg=0
+	line="d $run/php 0755 root root -"
+	if [ "$deb" = 1 ]; then
+		case "$(dpkg-query -W -f '${Status}' monopanel 2>/dev/null)" in *" installed") pkg=1 ;; esac
+	elif rpm -q monopanel >/dev/null 2>&1; then
+		pkg=1
+	fi
+	[ "$pkg" = 1 ] || info "no package monopanel here: the panel came as a bare binary, and mp setup's own files stand for the package's"
+	if grep -qxF "$line" "$f" 2>/dev/null && grep -qE "^d $run 1771 root [^ ]+ -\$" "$f"; then
+		pass "$f: the run directory 1771 and its php/ line"
+	else
+		fail "$f: $(grep -v '^#' "$f" 2>&1 | tr '\n' '|' | cut -c1-200)"
+	fi
+	if [ -f "$p" ] && [ ! -L "$p" ]; then
+		if [ "$(cat "$p")" = "$line" ]; then pass "$p kept, exactly '$line': what a version before 0.8.20 needs at boot"; else fail "$p: $(tr '\n' '|' <"$p" | cut -c1-200)"; fi
+	elif [ -e "$p" ] || [ -L "$p" ]; then
+		fail "$p is no plain file: $(ls -ld "$p" 2>&1 | cut -c1-160)"
+	elif [ "$context" = upgrade ]; then
+		fail "$p is gone: the previous release's API wrote it with PHP, and the package keeps it for the way back below 0.8.20"
+	elif [ "$pkg" = 0 ]; then
+		fail "no $p: mp setup writes it on a host without the package, for the way back below 0.8.20, which no preremove writes there"
+	else
+		pass "no $p on a fresh deploy: nothing of this build writes one ($f holds the line)"
+	fi
+	# --clean touches only lines with an age (these have none), and --prefix
+	# parses the files as at boot but keeps the lines of the run directory.
+	# Exit 65 is a line of some other file it could not parse; any other
+	# failure, and it read nothing — no "Duplicate line" proves nothing then
+	out=$(systemd-tmpfiles --clean --prefix="$run" 2>&1)
+	rc=$?
+	dup=$(grep -i 'duplicate line' <<<"$out")
+	if [ -n "$dup" ]; then
+		fail "systemd-tmpfiles: $(head -2 <<<"$dup" | tr '\n' ' ' | cut -c1-240)"
+	elif [ "$rc" != 0 ] && [ "$rc" != 65 ]; then
+		fail "systemd-tmpfiles --clean --prefix=$run did not read the files: exit $rc, $(tail -1 <<<"$out" | cut -c1-200)"
+	else
+		pass "systemd-tmpfiles reads the lines for $run as at boot without a 'Duplicate line' ($(systemd-tmpfiles --cat-config 2>/dev/null | grep -c "^d ${run}[/ ]") lines)"
+	fi
+	for u in monopanel-agent.service monopanel-api.service monopanel-api.socket monopanel-apache@.service; do
+		if [ -f "/etc/systemd/system/$u" ] && [ ! -L "/etc/systemd/system/$u" ]; then left+=" $u"; fi
+	done
+	for u in monopanel-agent.service monopanel-api.service monopanel-api.socket; do
+		frag=$(systemctl show -p FragmentPath --value "$u" 2>/dev/null)
+		case "$frag" in /etc/*) left+=" $u ($frag)" ;; esac
+	done
+	if [ "$pkg" = 0 ]; then
+		skip "no package: the panel's units in /etc/systemd/system are mp setup's, the only ones, no copies"
+	elif [ -z "$left" ]; then
+		pass "no copy of the panel's units in /etc/systemd/system, the Apache template's included: the package's apply ($(systemctl show -p FragmentPath --value monopanel-agent.service 2>/dev/null))"
+	else
+		fail "copies of the panel's units in /etc/systemd/system:$left"
+	fi
+	if [ "$pkg" = 0 ]; then
+		if [ -f /etc/modprobe.d/monopanel.conf ]; then
+			pass "no package: mp setup's /etc/modprobe.d/monopanel.conf applies"
+		else
+			fail "no package, and no /etc/modprobe.d/monopanel.conf, which mp setup writes on a host without it"
+		fi
+	elif [ ! -f /usr/lib/modprobe.d/monopanel.conf ]; then
+		fail "/usr/lib/modprobe.d/monopanel.conf, the package's rule, is missing"
+	elif [ -e /etc/modprobe.d/monopanel.conf ] || [ -L /etc/modprobe.d/monopanel.conf ]; then
+		fail "/etc/modprobe.d/monopanel.conf is there and replaces the package's rule: $(grep -c '^install ' /etc/modprobe.d/monopanel.conf 2>&1) install lines"
+	else
+		pass "the package's /usr/lib/modprobe.d/monopanel.conf applies, no /etc/modprobe.d/monopanel.conf"
+	fi
+	if lsmod 2>/dev/null | grep -q '^sctp '; then loaded=1; fi
+	out=$(modprobe -n -v sctp 2>&1)
+	if [ "$loaded" = 1 ]; then
+		fail "sctp is loaded: no rule unloads it"
+	elif grep -q '^install /bin/false' <<<"$out"; then
+		pass "modprobe -n -v sctp: $(head -1 <<<"$out" | cut -c1-80)"
+	else
+		fail "modprobe -n -v sctp: $(tr '\n' ' ' <<<"${out:-nothing}" | cut -c1-160)"
+	fi
+	out=$(cd / && setpriv --reuid="$(id -u nobody)" --regid="$(id -g nobody)" --clear-groups -- python3 -c 'import socket; socket.socket(socket.AF_INET, socket.SOCK_STREAM, 132); print("OPENED")' 2>&1)
+	if grep -q OPENED <<<"$out"; then
+		fail "nobody opened a socket of IPPROTO_SCTP"
+	elif grep -qE 'Errno (93|94)|not supported' <<<"$out"; then
+		pass "socket(AF_INET, SOCK_STREAM, IPPROTO_SCTP) as nobody: $(tail -1 <<<"$out" | cut -c1-80)"
+	else
+		fail "the SCTP socket as nobody did not get as far as the kernel: $(tail -1 <<<"$out" | cut -c1-160)"
+	fi
+	if [ "$loaded" = 0 ] && lsmod 2>/dev/null | grep -q '^sctp '; then
+		modprobe -r sctp 2>/dev/null
+		fail "sctp got loaded (unloaded again)"
+	fi
+	c=$(mp --json status </dev/null 2>/dev/null | pj '"container=" + (d["host"].get("container") or "")')
+	if [ "$c" = container= ]; then pass "the agent sees no container: the kernel loads modules with this host's rule"; else fail "the agent's container: ${c:-unknown (mp --json status)}"; fi
+}
+
+# ---------------------------------------------------------- package runs ----
+# journal_has <unit> <text>: the unit's journal holds the text
+journal_has() { journalctl -u "$1" --no-pager -o cat 2>/dev/null | grep -qF "$2"; }
+no_pkg_units() { [ -z "$(systemctl list-units --all --no-legend 'monopanel-pkg-*' 2>/dev/null)" ]; }
+# pkgrun_section: the package manager's changes run in a transient unit of
+# their own, monopanel-pkg-<run>.service (H18). What only reads (query,
+# available, candidates — the Stack page, the doctor, mp stack list) runs as
+# the agent's child, so no read goes through such a unit. A deploy installed
+# nginx, PHP and the database through the panel: its runs are in the
+# journal. After an upgrade this build has run none yet; then an index
+# refresh straight at the agent shows one, which installs nothing — after
+# the doctor, which judges the updates as the index last saw them, and once:
+# a later run of the checks finds it in the journal. Either way no unit and
+# no output file of a run may be left. The daily upgrade of nginx, PHP and
+# Apache is on at 04:00 with a next run; one version of each PHP branch
+# everywhere (H19c)
+pkgrun_section() {
+	section "the package manager in a unit of its own, the daily upgrade (H18, H19c)"
+	local run unit c n st out pv sl v ver sv qv
+	n=$(journalctl -u 'monopanel-pkg-*' --no-pager -o cat 2>/dev/null | grep -c '^Starting .*MonoPanel package manager')
+	if [ "$n" -gt 0 ]; then
+		pass "journalctl -u 'monopanel-pkg-*': $n runs of the package manager, each in a unit of its own$([ "$context" = deploy ] && echo ": the deploy's installs")"
+	else
+		# after an upgrade (or a reboot that took a volatile journal along)
+		info "no run of the package manager in a unit of its own in the journal ($context): an index refresh shows one"
+		run=$(rand)
+		unit=monopanel-pkg-$run.service
+		c=$(agent_call /v1/pkg "$(jsn '{"action": "update-index", "run": a[0]}' "$run")" 900)
+		if [ "$c" = 200 ]; then
+			info "update-index: $(pj 'd.get("output", "")' <"$tmp/agent" | grep -v '^ *$' | tail -1 | cut -c1-160)"
+		else
+			info "update-index: $c $(agent_said)"
+		fi
+		if wait_until 20 journal_has "$unit" 'MonoPanel package manager'; then
+			pass "the index refresh ran as $unit: $(journalctl -u "$unit" --no-pager -o cat 2>/dev/null | grep -m1 -F 'MonoPanel package manager' | cut -c1-160)"
+		else
+			fail "no journal of $unit: the index refresh did not run in a unit of its own (the agent: $c $(agent_said))"
+		fi
+	fi
+	if wait_until 20 no_pkg_units && [ -z "$(find "$agent_state/pkg" -name '*.out' 2>/dev/null)" ]; then
+		pass "no unit of a run left (systemctl list-units --all 'monopanel-pkg-*'), nor an output file in $agent_state/pkg"
+	else
+		fail "left of the runs: $(systemctl list-units --all --no-legend 'monopanel-pkg-*' 2>&1 | tr '\n' ' ' | cut -c1-160) $(find "$agent_state/pkg" -name '*.out' 2>/dev/null | tr '\n' ' ')"
+	fi
+	cat >"$tmp/auto.py" <<'EOF'
+import datetime, json, re, sys
+try:
+    d = json.load(sys.stdin)
+except Exception as e:
+    print("bad: not JSON:", e)
+    sys.exit()
+n = d.get("next_run") or ""
+if d.get("enabled") is not True or d.get("hour") != 4 or not n:
+    print("bad: enabled %s, hour %s, next run %s" % (d.get("enabled"), d.get("hour"), n or "none"))
+    sys.exit()
+# fromisoformat before 3.11 takes neither Z nor nine digits of a second
+t = datetime.datetime.fromisoformat(re.sub(r"\.\d+", "", n).replace("Z", "+00:00"))
+left = (t - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+if t.hour != 4 or t.minute != 0 or not -3600 < left <= 25 * 3600:
+    print("bad: next run %s, in %.1f h" % (n, left / 3600))
+else:
+    print("ok %s %s, in %.1f h" % (t.strftime("%Y-%m-%d %H:%M"), d.get("timezone", ""), left / 3600))
+EOF
+	st=$(mp --json stack auto-upgrade </dev/null 2>/dev/null | python3 "$tmp/auto.py" 2>&1)
+	out=$(mp stack auto-upgrade </dev/null 2>&1)
+	if [ "${st%% *}" = ok ] && grep -q '^daily upgrade of nginx, PHP and Apache: on, at 04:00 ' <<<"$out" && grep -qE '^next run: [0-9-]+ 04:00$' <<<"$out"; then
+		pass "mp stack auto-upgrade: on by default, at 04:00, next run ${st#ok }"
+	else
+		fail "mp stack auto-upgrade: ${st:-no answer}; $(head -2 <<<"$out" | tr '\n' ' ' | cut -c1-160)"
+	fi
+	pv=$(mp --json php list </dev/null 2>/dev/null | pj '[v["version"] + " " + (v.get("package_version") or "-") for v in d.get("installed") or [] if v.get("status") == "installed"]')
+	sl=$(mp --json stack list </dev/null 2>/dev/null)
+	[ -n "$pv" ] || fail "mp php list names no installed PHP branch"
+	while read -r v ver; do
+		[ -n "$v" ] || continue
+		sv=$(pj "[c.get(\"version\") or \"-\" for c in d if c[\"name\"] == \"php-$v\"][0]" <<<"$sl")
+		if [ "$deb" = 1 ]; then
+			# shellcheck disable=SC2016 # dpkg-query's own field
+			qv=$(dpkg-query -W -f '${Version}' "php$v-fpm" 2>/dev/null)
+		else
+			qv=$(rpm -q --qf '%{VERSION}-%{RELEASE}' "php${v/./}-php-fpm" 2>/dev/null)
+		fi
+		if [ "$ver" != - ] && [ "$ver" = "$sv" ] && [ "$ver" = "$qv" ]; then
+			pass "PHP $v: one version in mp php list, mp stack list and the package database, $ver"
+		else
+			fail "PHP $v: mp php list ${ver:-?}, mp stack list ${sv:-?}, the package database ${qv:-nothing}"
+		fi
+	done <<<"$pv"
+}
+
 # ---------------------------------------------------------------- doctor ----
-# doctor_verdicts: "TOKEN<tab>message" lines for what the doctor says
+# doctor_verdicts: "TOKEN<tab>message" lines for what the doctor says. The
+# API judges its socket itself (its "api socket" line, in --json too), and
+# mp prints that line as it is: it goes through the loop like any other, and
+# counts once. Only for an API without the line does mp judge the socket
+# itself, in the text alone — which is looked at then.
 doctor_verdicts() {
-	local json text status name detail why found=0
+	local json text status name detail why found=0 sock=0 n
 	json=$(mp --json doctor </dev/null 2>/dev/null)
 	text=$(mp doctor </dev/null 2>&1)
 	if [ -z "$json" ]; then
@@ -975,13 +1733,17 @@ doctor_verdicts() {
 	fi
 	while IFS=$'\t' read -r status name detail; do
 		[ -n "$name" ] || continue
+		[ "$name" != "api socket" ] || sock=$((sock + 1))
 		case "$status" in
 		ok)
-			if [ "$name" = "restic sandbox" ]; then
+			case "$name" in
+			"restic sandbox")
 				found=1
 				printf 'PASS\tdoctor: restic sandbox ok (%s)\n' "$detail"
 				if rule_for "restic sandbox"; then printf 'INFO\tdoctor-expected.sh allows a restic sandbox warning here that is gone: its rule can go\n'; fi
-			fi
+				;;
+			"api socket" | "kernel modules" | "shared folders") printf 'PASS\tdoctor: %s ok (%s)\n' "$name" "$(cut -c1-160 <<<"$detail")" ;;
+			esac
 			;;
 		warn)
 			[ "$name" = "restic sandbox" ] && found=1
@@ -995,10 +1757,20 @@ doctor_verdicts() {
 		esac
 	done < <(pj '"\n".join(c["status"] + "\t" + c["name"] + "\t" + " ".join(c.get("detail", "").split()) for c in d["checks"])' <<<"$json")
 	[ "$found" = 1 ] || printf 'FAIL\tdoctor: no restic sandbox line (an agent older than 0.8.20?)\n'
-	if grep -q '^\[WARN\] api socket' <<<"$text"; then
-		printf 'FAIL\tdoctor: %s\n' "$(grep -m1 '^\[WARN\] api socket' <<<"$text" | cut -c1-240)"
+	n=$(grep -c '^\[.\{4\}\] api socket' <<<"$text")
+	if [ "$sock" -gt 0 ]; then
+		if [ "$sock" = 1 ] && [ "$n" = 1 ]; then
+			printf 'PASS\tdoctor: the api socket line is the one the API judged, in --json and printed once by mp doctor\n'
+		else
+			printf 'FAIL\tdoctor: %s api socket lines in mp --json doctor, %s printed by mp doctor\n' "$sock" "$n"
+		fi
 	else
-		printf 'PASS\tdoctor: no api socket warning\n'
+		printf 'FAIL\tdoctor: no api socket line in mp --json doctor: an API older than this build does not judge its socket\n'
+		if grep -q '^\[WARN\] api socket' <<<"$text"; then
+			printf 'FAIL\tdoctor (mp judged): %s\n' "$(grep -m1 '^\[WARN\] api socket' <<<"$text" | cut -c1-240)"
+		else
+			printf 'PASS\tdoctor: no api socket warning from mp itself\n'
+		fi
 	fi
 	printf 'INFO\tdoctor: %s\n' "$(tail -1 <<<"$text")"
 }
@@ -1040,6 +1812,7 @@ selinux_section() {
 		skip "SELinux is disabled"
 		return
 	fi
+	info "the agent's domain: $(ps -o label= -p "$(systemctl show -p MainPID --value monopanel-agent.service 2>/dev/null)" 2>/dev/null)"
 	if ! command -v ausearch >/dev/null 2>&1; then
 		fail "SELinux $mode, but ausearch (audit) is missing: AVC denials cannot be counted"
 		return
@@ -1068,9 +1841,14 @@ fpm_section
 composer_section
 repos_section
 restic_section
+nodes_section
+pkgfiles_section
 section "cleanup"
 cleanup
 info "the accounts, sites, shares, targets and restored snapshots of the checks are gone$([ "$composer_ours" = 1 ] && echo ', and composer')"
 doctor_section
+# after the doctor: the index refresh of an upgraded host may bring news of
+# updates, which the doctor would warn of as waiting
+pkgrun_section
 selinux_section
 total
