@@ -381,6 +381,29 @@ func shareNSAgent() int {
 		fail("deeper mount", "unbind: %v", err)
 	}
 	inHostMountNS(func() error { return unix.Unmount(vol, unix.MNT_DETACH) }) //nolint:errcheck // what the step mounted, taken off again
+	// 7d. a volume at a home's data — an administrator's disk for one
+	// account's files: the folders of its sites are shared as before
+	bobData := filepath.Join(www, "bob", "data")
+	bobFolder, bobAt := filepath.Join(bobData, "www", "site", "f"), filepath.Join(www, "guest", "fromdata")
+	if err := os.MkdirAll(bobData, 0o755); err != nil {
+		fail("data volume", "%v", err)
+	} else if err := os.Mkdir(bobAt, 0o755); err != nil {
+		fail("data volume", "%v", err)
+	} else if err := inHostMountNS(func() error { return unix.Mount("tmpfs", bobData, "tmpfs", 0, "size=1m") }); err != nil {
+		fail("data volume", "mount: %v", err)
+	} else if err := os.MkdirAll(bobFolder, 0o755); err != nil {
+		fail("data volume", "%v", err)
+	} else if _, err := bind(bobFolder, bobAt); err != nil {
+		fail("data volume", "a folder on a volume at bob's data: %v", err)
+	} else if got := inode(hostView(bobAt)); got != inode(bobFolder) {
+		fail("data volume", "the host sees inode %d at %s, the folder is %d", got, bobAt, inode(bobFolder))
+	} else {
+		fmt.Println("ok data volume")
+	}
+	if _, err := s.shareUnbind(ctx, &ShareUnbindRequest{Where: bobAt}); err != nil {
+		fail("data volume", "unbind: %v", err)
+	}
+	inHostMountNS(func() error { return unix.Unmount(bobData, unix.MNT_DETACH) }) //nolint:errcheck // what the step mounted, taken off again
 	// 8. the goroutine that would join the host's namespace runs on the
 	// process's main thread: Go parks that thread for good once a goroutine
 	// locked to it ends, in the state it left it — the host's namespace,
@@ -458,7 +481,7 @@ func TestShareBindInTheHostsMountNamespace(t *testing.T) {
 	if err != nil || strings.Contains(string(out), "FAIL") {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for _, step := range []string{"bind", "status", "again", "unbind", "race", "symlink", "symlink above", "legacy", "kept", "main thread", "guest's mount", "busy", "crossed", "deeper mount"} {
+	for _, step := range []string{"bind", "status", "again", "unbind", "race", "symlink", "symlink above", "legacy", "kept", "main thread", "guest's mount", "busy", "crossed", "deeper mount", "data volume"} {
 		if !strings.Contains(string(out), "ok "+step+"\n") {
 			t.Errorf("step %s did not run:\n%s", step, out)
 		}

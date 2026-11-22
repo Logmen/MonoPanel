@@ -631,9 +631,8 @@ What an administrator notices after the upgrade from 0.8.19:
   nothing mounts the folders at boot, the panel binds them at its start, and until the
   API starts no shared folder is mounted. A folder its owner swapped for a symlink, a
   folder of an account in a system or privileged group (`users`, `sudo`, `docker` … — the
-  rules of an account's own units), and a folder of a home with something of its own
-  mounted on its `data` itself (a volume, say; a volume or dataset deeper down, for a
-  site's files, is no hindrance) the agent does not bind: its status is `failed` with why,
+  rules of an account's own units) the agent does not bind (a volume of your own at the
+  account's `data` or deeper down, for a site's files, is no hindrance): its status is `failed` with why,
   and the `shared folders` line of `mp doctor` names it; once the cause is fixed, run
   `mp site fix <domain>`. The folders of a guest in a system group can be taken away all
   the same: `mp user share rm` and `mp user rm` unbind them by the agent's record, without

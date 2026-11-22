@@ -267,7 +267,7 @@ func (s *Server) lockShareUnits(ctx context.Context) (func(), error) {
 	deadline := time.Now().Add(shareUnitWait)
 	for !s.shareMu.TryLock() {
 		if time.Now().After(deadline) {
-			return nil, &Error{Status: http.StatusServiceUnavailable, Message: "a shared folder cannot be bound or unbound now: an extraction or a restore below the web root is under way; try again when it is done"}
+			return nil, &Error{Status: http.StatusServiceUnavailable, Message: "a shared folder cannot be bound or unbound now: a long change below the web root is under way (an extraction, a restore, the owner and ACL passes of mp site fix, the removal of a home); try again when it is done"}
 		}
 		select {
 		case <-ctx.Done():

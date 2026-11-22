@@ -88,7 +88,9 @@ func TestShareSourceMustBeTheOwnersFolder(t *testing.T) {
 			// mount point of a shared folder bound after the walk's guard was
 			// read, or whose record went since: below it lies whatever it
 			// shows
-			first := ino(t, filepath.Join(h.www, "alex", "data"))
+			media := filepath.Join(h.www, "alex", "media")
+			mkdirs(t, filepath.Join(media, "x"))
+			first := ino(t, media)
 			old := mountIDOf
 			mountIDOf = func(fd int) (uint64, error) {
 				if fdIno(fd) == first {
@@ -97,8 +99,23 @@ func TestShareSourceMustBeTheOwnersFolder(t *testing.T) {
 				return 1, nil
 			}
 			t.Cleanup(func() { mountIDOf = old })
-			return h.site
+			return filepath.Join(media, "x")
 		}, "another mount than its home"},
+		{"on a volume of an administrator's at its home's data", func(t *testing.T, h *shareHost) string {
+			// data, the way to every folder of the account's sites, is no
+			// mount point of a shared folder: a mount on it is a volume for
+			// the account's files, shared as before
+			data := ino(t, filepath.Join(h.www, "alex", "data"))
+			old := mountIDOf
+			mountIDOf = func(fd int) (uint64, error) {
+				if fdIno(fd) == data {
+					return 2, nil
+				}
+				return 1, nil
+			}
+			t.Cleanup(func() { mountIDOf = old })
+			return h.site
+		}, ""},
 		{"on a mount of an administrator's deeper in its home", func(t *testing.T, h *shareHost) string {
 			// a volume for the site's files: shared as before
 			folder := ino(t, h.site)

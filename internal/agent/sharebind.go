@@ -346,6 +346,10 @@ func shareSourceErr(what, why string) *Error {
 	return &Error{Status: http.StatusForbidden, Message: fmt.Sprintf("the shared folder %s is refused: %s. A shared folder is a directory of its site owner's in the owner's home, reached from the web root without a symlink; mp site fix <its site> makes it one again", what, why)}
 }
 
+// accountDataDir is the directory of an account's own below its home: its
+// sites, logs and files (the panel's layout).
+const accountDataDir = "data"
+
 // mountIDOf is the mount the directory fd lies on (statx STATX_MNT_ID, Linux
 // 5.8): it stays the mount the descriptor was opened on, whatever is
 // unmounted or detached since. Tests replace it.
@@ -369,15 +373,17 @@ var mountIDOf = func(fd int) (uint64, error) {
 // another account's tree under the name. The descriptor is what gets bound:
 // what the owner renames afterwards changes nothing.
 //
-// The directory right below the home lies on the home's mount. That is
-// where the mount point of a shared folder in a home is — its owner an
-// SFTP-only guest of another account's, or a guest with a shell of a panel
-// older than 0.8.20 — and it leads into that account's tree, which the
-// records may not tell of as the walk crosses it (one not written yet as the
-// guard was read, one gone since: shareBind). Mounts deeper in the home are
-// an administrator's (a volume or a dataset for a site's files) or the
-// owner's own FUSE mounts, which show only what the owner may read: a folder
-// on one is shared as before.
+// The directory right below the home on the way lies on the home's mount,
+// data excepted. That is where the mount point of a shared folder in a home
+// is — its owner an SFTP-only guest of another account's, or a guest with a
+// shell of a panel older than 0.8.20 — and it leads into that account's
+// tree, which the records may not tell of as the walk crosses it (one not
+// written yet as the guard was read, one gone since: shareBind). data, the
+// way to every folder the panel shares, is never such a mount point; a
+// mount on it, and mounts deeper in the home, are an administrator's (a
+// volume or a dataset for an account's or a site's files) or the owner's
+// own FUSE mounts, which show only what the owner may read: a folder on one
+// is shared as before.
 func (s *Server) openShareSource(what string, g *shareGuard) (int, error) {
 	root := filepath.Clean(s.cfg.WWWRoot)
 	rel, ok := strings.CutPrefix(what, root+"/")
@@ -429,6 +435,14 @@ func (s *Server) openShareSource(what string, g *shareGuard) (int, error) {
 				return -1, &Error{Message: "the mount of " + home, Output: err.Error()}
 			}
 		case 1:
+			// data is the account's own directory, the way to every folder
+			// of its sites: no shared folder is ever bound on it — the panel
+			// names none so, and the agent binds only on directories of
+			// root's (mountPathDir) — so a mount there is an administrator's
+			// volume for the account's files
+			if name == accountDataDir {
+				break
+			}
 			switch mnt, err := mountIDOf(fd); {
 			case err != nil:
 				unix.Close(fd) //nolint:errcheck // a directory opened for reading
@@ -577,10 +591,10 @@ func (s *Server) unbindShareHere(where string) (bool, error) {
 // the mount is open, until the bind ends. But a bind of another folder at
 // that mount point detaches the mount, in use or not (bindShareHere), and an
 // unbind then takes that folder and the record away. So the walk refuses a
-// folder on another mount than the home it was reached from
-// (openShareSource): a descriptor stays on the mount it was opened on,
-// whatever goes before the lock. (open_tree would not clone a directory of
-// a detached mount either: EINVAL.)
+// folder whose way leaves the home's mount right below the home, where such
+// a mount point lies (openShareSource): a descriptor stays on the mount it
+// was opened on, whatever goes before the lock. (open_tree would not clone a
+// directory of a detached mount either: EINVAL.)
 func (s *Server) shareBind(ctx context.Context, req *ShareBindRequest) (*ShareBindResponse, error) {
 	if err := CheckShareBind(req.What, req.Where, s.unitHost()); err != nil {
 		return nil, &Error{Status: http.StatusForbidden, Message: "binding " + req.What + " at " + req.Where + " is not allowed: " + err.Error()}
@@ -889,9 +903,11 @@ var shareCheckWait = 10 * time.Second
 // by path, through whatever symlink the folder's owner had put there by
 // then. A mount that is neither the directory the agent bound there (its
 // record says which) nor the folder as shareBind opens it now is taken off,
-// in use or not — and so is one whose folder shareBind would refuse; the API
-// binds the folder again at its start if it passes, and marks the share
-// failed, with why, if not.
+// in use or not — and so is one whose folder the walk would not open now
+// (openShareSource: a symlink on the way, another owner, the owner no longer
+// a panel account); a guest that fails the account checks keeps what is
+// mounted for it until the next reboot. The API binds the folder again at
+// its start if it passes, and marks the share failed, with why, if not.
 // It runs before the agent listens, so it takes no lock. A check that does
 // not end within shareCheckWait, or within ctx, is left behind and the agent
 // goes on, and starts; should that check end later, it takes nothing off

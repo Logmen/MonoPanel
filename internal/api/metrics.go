@@ -651,9 +651,11 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 // one after another, the same component as well: an apache.backend that
 // went through says nothing of the apache.migrate before it, nor the
 // nightly upgrade of nginx, PHP and Apache of a failed mp stack install
-// memcached. A failure on a site or an account that is gone since is
-// history too (removesObject): nothing is left to fix. A job without a lock
-// key stays a failure.
+// memcached. A failure on a site or an account that a later site.delete or
+// user.delete of the same lock key removed is history too (removesObject):
+// nothing is left to fix. The sites a user.delete removes along with the
+// account keep their failures (site:<domain>) until they are a day old. A
+// job without a lock key stays a failure.
 func openFailures(failed, done []*store.Job, now time.Time) int {
 	fixed := map[string]int64{}
 	for _, j := range done {
