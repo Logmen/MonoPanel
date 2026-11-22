@@ -32,6 +32,7 @@ func withOSRelease(t *testing.T, osRelease string) {
 // which branches exist there, and explains a branch that does not.
 func TestPHPUbuntuWithoutPPAStaysWithDistroPackages(t *testing.T) {
 	withOSRelease(t, "ID=ubuntu\nVERSION_ID=26.04\nVERSION_CODENAME=resolute\n")
+	stubOndrejKey(t)
 	prev := ppaHasRelease
 	ppaHasRelease = func(context.Context, string) (bool, error) { return false, nil }
 	t.Cleanup(func() { ppaHasRelease = prev })

@@ -20,10 +20,13 @@ type failingReader struct{ err error }
 func (r failingReader) Read([]byte) (int, error) { return 0, r.err }
 
 // chownsAfterStream reports whether the docroot was handed to the account,
-// recursively, after the distribution was streamed into tar.
-func chownsAfterStream(t *testing.T, f *siteFixture, docroot, login string) (streamed, handed bool) {
+// recursively, by the calls from index from on, and whether the
+// distribution was streamed in meanwhile. The fake records a stream only
+// once it has read the body, which the client may break off earlier: the
+// order of the two records says nothing.
+func chownsAfterStream(t *testing.T, f *siteFixture, from int, docroot, login string) (streamed, handed bool) {
 	t.Helper()
-	for _, c := range f.agent.Calls() {
+	for _, c := range f.agent.Calls()[from:] {
 		switch c.Path {
 		case "/v1/stream/in":
 			streamed = true
@@ -32,7 +35,7 @@ func chownsAfterStream(t *testing.T, f *siteFixture, docroot, login string) (str
 			if err := json.Unmarshal(c.Body, &req); err != nil {
 				t.Fatal(err)
 			}
-			if streamed && req.Path == docroot && req.Owner == login && req.Group == login && req.Recursive {
+			if req.Path == docroot && req.Owner == login && req.Group == login && req.Recursive {
 				handed = true
 			}
 		}
@@ -52,6 +55,7 @@ func TestCMSBrokenDownloadHandsTheFilesOver(t *testing.T) {
 	}
 	t.Cleanup(func() { cmsFetch = stub })
 	site := f.createSite(map[string]any{"domain": "wp.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	from := len(f.agent.Calls())
 	_, job := f.installCMS(t, site.Domain, map[string]any{"cms": "wordpress", "title": "My blog"})
 	if job.Status != store.JobFailed || !strings.Contains(job.Error, "download WordPress broke off") || !strings.Contains(job.Error, "no data for 1m0s") {
 		t.Fatalf("the job must fail on the download and say so: %s %q", job.Status, job.Error)
@@ -59,7 +63,7 @@ func TestCMSBrokenDownloadHandsTheFilesOver(t *testing.T) {
 	if strings.Contains(job.Error, "agent unreachable") {
 		t.Fatalf("the agent did nothing wrong: %q", job.Error)
 	}
-	streamed, handed := chownsAfterStream(t, f, "/var/www/alex/data/www/wp.example.com", "alex")
+	streamed, handed := chownsAfterStream(t, f, from, "/var/www/alex/data/www/wp.example.com", "alex")
 	if !streamed || !handed {
 		t.Fatalf("what was unpacked must be handed to the account (streamed %v, handed %v): %+v", streamed, handed, f.agent.Calls())
 	}
@@ -74,11 +78,12 @@ func TestCMSFailedUnpackHandsTheFilesOver(t *testing.T) {
 	f := cmsFixture(t, map[string][]byte{"https://wordpress.org/latest.tar.gz": []byte("not a tarball")})
 	f.agent.Fail["/v1/stream/in"] = "tar: Unexpected EOF in archive"
 	site := f.createSite(map[string]any{"domain": "wp.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	from := len(f.agent.Calls())
 	_, job := f.installCMS(t, site.Domain, map[string]any{"cms": "wordpress", "title": "My blog"})
 	if job.Status != store.JobFailed || !strings.Contains(job.Error, "unpack WordPress") {
 		t.Fatalf("job: %s %q", job.Status, job.Error)
 	}
-	if _, handed := chownsAfterStream(t, f, "/var/www/alex/data/www/wp.example.com", "alex"); !handed {
+	if _, handed := chownsAfterStream(t, f, from, "/var/www/alex/data/www/wp.example.com", "alex"); !handed {
 		t.Fatalf("what was unpacked must be handed to the account: %+v", f.agent.Calls())
 	}
 }
@@ -168,11 +173,12 @@ func TestMigrateFilesHandsTheFilesOverWhenTheStreamBreaks(t *testing.T) {
 	tw.WriteHeader(&tar.Header{Name: "data/", Typeflag: tar.TypeDir, Mode: 0o750})                     //nolint:errcheck // test archive
 	tw.WriteHeader(&tar.Header{Name: "data/a.txt", Typeflag: tar.TypeReg, Mode: 0o640, Size: 1 << 20}) //nolint:errcheck // test archive
 	tw.Write(bytes.Repeat([]byte("a"), 4096))                                                          //nolint:errcheck // the rest never comes
+	from := len(f.agent.Calls())
 	err = f.s.migrateFiles(f.ctx, nil, brokenFilesSource{archive: buf.Bytes()}, migratePayload{}, u, "home", "", "")
 	if err == nil || !strings.Contains(err.Error(), "connection lost") {
 		t.Fatalf("the break must fail the part with its reason: %v", err)
 	}
-	if _, handed := chownsAfterStream(t, f, "/var/www/alex", "alex"); !handed {
+	if _, handed := chownsAfterStream(t, f, from, "/var/www/alex", "alex"); !handed {
 		t.Fatalf("what was unpacked must be handed to the account: %+v", f.agent.Calls())
 	}
 }

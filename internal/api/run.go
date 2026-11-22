@@ -89,6 +89,8 @@ func (s *Server) Run(ctx context.Context) error {
 				s.moveAppEnvOutOfUnits(ctx)
 				s.refreshComposerWrapper(ctx)
 				s.refreshRepoSchemes(ctx)
+				// Last: it may wait on keyserver.ubuntu.com.
+				s.refreshOndrejKey(ctx)
 				return
 			}
 			select {

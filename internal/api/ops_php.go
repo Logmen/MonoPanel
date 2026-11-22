@@ -26,11 +26,24 @@ import (
 )
 
 const (
-	suryKeyURL     = "https://packages.sury.org/php/apt.gpg"
-	ondrejKeyURL   = "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x14AA40EC0831756756D7F66C4F4EA0AAE5267A6C"
-	remiReleaseURL = "https://rpms.remirepo.net/enterprise/remi-release-%s.rpm"
-	settingPHPRepo = "php.repo"
-	settingTZ      = "php.timezone"
+	suryKeyURL = "https://packages.sury.org/php/apt.gpg"
+	// ondrejKeyFingerprint is the key Launchpad made for ppa:ondrej/php in
+	// 2024 (rsa4096, the PPA's signing_key_fingerprint). The PPA's InRelease
+	// still carries a signature by its 2012 key as well (rsa1024,
+	// 14AA40EC0831756756D7F66C4F4EA0AAE5267A6C), which apt 3 on Ubuntu 26.04
+	// refuses ("untrusted public key algorithm"): with only that key in the
+	// keyring every apt-get update there fails, and older apt versions
+	// accept the new key just as well.
+	ondrejKeyFingerprint = "B8DC7E53946656EFBCE4C1DD71DAEAAB4AD4CAB6"
+	ondrejKeyURL         = "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x" + ondrejKeyFingerprint
+	ondrejKeyring        = "/etc/apt/keyrings/ondrej-php.asc"
+	ondrejSource         = "/etc/apt/sources.list.d/ondrej-php.list"
+	remiReleaseURL       = "https://rpms.remirepo.net/enterprise/remi-release-%s.rpm"
+	settingPHPRepo       = "php.repo"
+	settingTZ            = "php.timezone"
+	// settingOndrejKey holds the fingerprint of the key the panel last put
+	// into the PPA's keyring.
+	settingOndrejKey = "php.repo.ondrej_key"
 )
 
 type phpListOutput struct {
@@ -199,16 +212,13 @@ func (s *Server) ensurePHPRepo(ctx context.Context, jc *jobs.Context) error {
 			}
 		}
 		if !useSury {
-			keyPEM, err := fetchText(ctx, ondrejKeyURL)
+			keyPEM, err := ondrejKey(ctx)
 			if err != nil {
-				return fmt.Errorf("download ondrej PPA key: %w", err)
-			}
-			if !strings.Contains(keyPEM, "BEGIN PGP PUBLIC KEY BLOCK") {
-				return errors.New("unexpected content from keyserver.ubuntu.com")
+				return err
 			}
 			files = []agent.FileSpec{
-				{Path: "/etc/apt/keyrings/ondrej-php.asc", Content: keyPEM, Mode: 0o644},
-				{Path: "/etc/apt/sources.list.d/ondrej-php.list", Content: fmt.Sprintf("deb [signed-by=/etc/apt/keyrings/ondrej-php.asc] https://ppa.launchpadcontent.net/ondrej/php/ubuntu %s main\n", rel.Codename), Mode: 0o644},
+				{Path: ondrejKeyring, Content: keyPEM, Mode: 0o644},
+				{Path: ondrejSource, Content: fmt.Sprintf("deb [signed-by=%s] https://ppa.launchpadcontent.net/ondrej/php/ubuntu %s main\n", ondrejKeyring, rel.Codename), Mode: 0o644},
 			}
 			jc.Logf("repository: ppa:ondrej/php (%s)", rel.Codename)
 		}
@@ -225,6 +235,10 @@ func (s *Server) ensurePHPRepo(ctx context.Context, jc *jobs.Context) error {
 		}
 		if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Origin: "php:repo"}); err != nil {
 			return err
+		}
+		if !useSury {
+			// Spares the start-up refresh a download it does not need.
+			s.db.SetSetting(ctx, settingOndrejKey, ondrejKeyFingerprint) //nolint:errcheck // the refresh only downloads the key once more
 		}
 		res, err := s.agent.Pkg(ctx, "update-index")
 		if err != nil {
@@ -669,4 +683,48 @@ func (s *Server) refreshPHPCLIIni(ctx context.Context, layout *osprofile.PHPLayo
 	}
 	_, err = s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Origin: "php:" + layout.Version})
 	return err
+}
+
+// ondrejKey downloads the PPA's signing key from keyserver.ubuntu.com.
+var ondrejKey = func(ctx context.Context) (string, error) {
+	keyPEM, err := fetchText(ctx, ondrejKeyURL)
+	if err != nil {
+		return "", fmt.Errorf("download ondrej PPA key: %w", err)
+	}
+	if !strings.Contains(keyPEM, "BEGIN PGP PUBLIC KEY BLOCK") {
+		return "", errors.New("unexpected content from keyserver.ubuntu.com")
+	}
+	return keyPEM, nil
+}
+
+// refreshOndrejKey gives a host that took ppa:ondrej/php before 0.8.20 the
+// PPA's current key, once: its keyring holds the 2012 key alone, which apt
+// on Ubuntu 26.04 already refuses and the others will in time. Nothing
+// happens without the PPA's source; a failed download tries again at the
+// next start.
+func (s *Server) refreshOndrejKey(ctx context.Context) {
+	if s.profile.Family() != osprofile.FamilyDebian || !strings.EqualFold(s.profile.Release().ID, "ubuntu") {
+		return
+	}
+	if v, _ := s.db.GetSetting(ctx, settingOndrejKey); v == ondrejKeyFingerprint {
+		return
+	}
+	st, err := s.agent.Stat(ctx, ondrejSource)
+	if err != nil || len(st.Entries) != 1 || !st.Entries[0].Exists {
+		return
+	}
+	keyPEM, err := ondrejKey(ctx)
+	if err != nil {
+		s.log.Warn("ppa:ondrej/php key", "err", err)
+		return
+	}
+	if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: []agent.FileSpec{{Path: ondrejKeyring, Content: keyPEM, Mode: 0o644}}, Origin: "php:repo"}); err != nil {
+		s.log.Warn("ppa:ondrej/php key", "err", err)
+		return
+	}
+	if err := s.db.SetSetting(ctx, settingOndrejKey, ondrejKeyFingerprint); err != nil {
+		s.log.Warn("ppa:ondrej/php key", "err", err)
+		return
+	}
+	s.log.Info("ppa:ondrej/php key renewed", "fingerprint", ondrejKeyFingerprint)
 }
