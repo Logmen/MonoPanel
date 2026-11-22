@@ -374,6 +374,10 @@ func (s *Server) registerSites() {
 		if err != nil {
 			return nil, err
 		}
+		// Only what the request changes goes in (UpdateSiteChanges):
+		// sites.move-ip or another request may change the site between this
+		// read and the write, and the whole row written back would undo it.
+		was := site.Clone()
 		b := in.Body
 		if b.Aliases != nil {
 			names, err := s.validateNames(ctx, site.Domain, *b.Aliases, site.ID, site.UserID)
@@ -516,7 +520,7 @@ func (s *Server) registerSites() {
 		if site.Status == store.SiteError {
 			site.Status = store.SitePending
 		}
-		if err := s.db.UpdateSite(ctx, site); err != nil {
+		if err := s.db.UpdateSiteChanges(ctx, was, site); err != nil {
 			return nil, err
 		}
 		jobID, err := s.enqueueSiteApply(ctx, site, p.Login)
@@ -549,6 +553,8 @@ func (s *Server) registerSites() {
 				s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "site.fix", Target: site.Domain, IP: requestInfo(ctx).IP})
 				return &siteJobOutput{Status: http.StatusAccepted, Body: apitypes.SiteWithJob{Site: site, JobID: job.ID}}, nil
 			}
+			// The status alone (UpdateSiteChanges says why).
+			was := site.Clone()
 			switch action {
 			case "suspend":
 				if p.Role != store.RoleAdmin {
@@ -565,7 +571,7 @@ func (s *Server) registerSites() {
 					site.Status = store.SitePending
 				}
 			}
-			if err := s.db.UpdateSite(ctx, site); err != nil {
+			if err := s.db.UpdateSiteChanges(ctx, was, site); err != nil {
 				return nil, err
 			}
 			jobID, err := s.enqueueSiteApply(ctx, site, p.Login)
@@ -585,8 +591,19 @@ func (s *Server) registerSites() {
 		if err != nil {
 			return nil, err
 		}
+		// Not beside an in-place restore into the site's tree (restoreRefused
+		// says why); one asked for from now on is refused, the site being
+		// marked below.
+		owner, err := s.db.GetUserByID(ctx, site.UserID)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.restoreWaitedFor(ctx, "the site", s.layoutFor(site, owner).siteRoot); err != nil {
+			return nil, err
+		}
+		was := site.Clone()
 		site.Status = store.SiteDeleting
-		if err := s.db.UpdateSite(ctx, site); err != nil {
+		if err := s.db.UpdateSiteChanges(ctx, was, site); err != nil {
 			return nil, err
 		}
 		job, err := s.jobs.Enqueue(ctx, "site.delete", sitePayload{SiteID: site.ID, Purge: in.Purge}, jobs.WithLockKey("site:"+site.Domain), jobs.WithRequestedBy(p.Login))
@@ -772,8 +789,22 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 	if err := jc.Unmarshal(&p); err != nil {
 		return err
 	}
-	return s.applySite(ctx, jc, p)
+	err := s.applySite(ctx, jc, p)
+	if errors.Is(err, errSiteGone) {
+		// Queued before the site went — by the webmail, the shared folders,
+		// sites.move-ip or a change of the site — and run after its
+		// site.delete or user.delete: that took the configuration away, and
+		// nothing is left to fix. A failure here would count in the doctor's
+		// jobs line for a site that does not exist.
+		jc.Progress(100, err.Error())
+		return nil
+	}
+	return err
 }
+
+// errSiteGone is what applySiteLocked answers for a site removed before it
+// got the site's lock; each caller decides what that means for it.
+var errSiteGone = errors.New("the site is gone: nothing to apply")
 
 // applySite is site.apply's work, under the site's lock (lockSite): the move
 // of the sites in Apache mode to their accounts' Apaches does it inline, site
@@ -797,6 +828,9 @@ func (s *Server) applySite(ctx context.Context, jc *jobs.Context, p sitePayload)
 // left, not what both read at once.
 func (s *Server) applySiteLocked(ctx context.Context, jc *jobs.Context, p sitePayload) error {
 	site, err := s.db.GetSite(ctx, p.SiteID)
+	if errors.Is(err, store.ErrNotFound) {
+		return errSiteGone
+	}
 	if err != nil {
 		return err
 	}
@@ -1289,9 +1323,11 @@ func (s *Server) reapplySitesForCert(ctx context.Context, logf func(string, ...a
 				continue
 			}
 			seen[site.ID] = true
+			// The certificate alone (UpdateSiteChanges says why).
+			was := site.Clone()
 			id := c.ID
 			site.CertificateID = &id
-			if err := s.db.UpdateSite(ctx, site); err != nil {
+			if err := s.db.UpdateSiteChanges(ctx, was, site); err != nil {
 				continue
 			}
 			if _, err := s.enqueueSiteApply(ctx, site, "scheduler"); err == nil {
@@ -1307,7 +1343,18 @@ func (s *Server) jobSiteDelete(ctx context.Context, jc *jobs.Context) error {
 	if err := jc.Unmarshal(&p); err != nil {
 		return err
 	}
+	// The site may be gone already: removed with its account by a
+	// user.delete, which runs beside this job under a key of its own, or by
+	// an earlier site.delete of it (one asked for twice, which runs after
+	// the first under the same key) — done then, with the files as that
+	// removal left them. A user.delete may also take the row between this
+	// job's removal of the configuration, which lets the site's lock go, and
+	// its DeleteSite below, which finds nothing left to delete then.
 	site, err := s.db.GetSite(ctx, p.SiteID)
+	if errors.Is(err, store.ErrNotFound) {
+		jc.Progress(100, "the site is gone already: its files are as its removal left them")
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -1319,7 +1366,7 @@ func (s *Server) jobSiteDelete(ctx context.Context, jc *jobs.Context) error {
 	if err := s.removeSiteConfig(ctx, jc, site, user, p.Purge); err != nil {
 		return s.siteFail(ctx, site, err)
 	}
-	if err := s.db.DeleteSite(context.WithoutCancel(ctx), site.ID); err != nil {
+	if err := s.db.DeleteSite(context.WithoutCancel(ctx), site.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
 		return err
 	}
 	s.refreshFail2ban(ctx)
@@ -1352,7 +1399,7 @@ func (s *Server) removeSiteConfig(ctx context.Context, jc *jobs.Context, site *s
 			}
 		}
 	}
-	rr, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: paths, Recursive: true, Validate: [][]string{web.NginxCheckArgv}, Reload: reload})
+	rr, err := s.removeSitePaths(ctx, jc, site, &agent.RemovePathsRequest{Paths: paths, Recursive: true, Validate: [][]string{web.NginxCheckArgv}, Reload: reload})
 	if err != nil {
 		return err
 	}
@@ -1373,6 +1420,36 @@ func (s *Server) removeSiteConfig(ctx context.Context, jc *jobs.Context, site *s
 		jc.Logf("%s: files kept in %s", site.Domain, l.siteRoot)
 	}
 	return nil
+}
+
+// removeSitePaths takes a site's configuration away for removeSiteConfig,
+// and the webmail with it when the site holds it. The mail settings name
+// that site, and only the webmail job, under the same site's lock, makes a
+// site the webmail: the server block that publishes it on its port goes in
+// the same checked reload, and the settings stop naming the site
+// (forgetWebmail). Left behind, the block would serve a docroot and a pool
+// socket that are gone and name logs in a directory the removal of the
+// account takes along — nginx's check then fails for every later change on
+// the host — and every mail change would fail on a webmail site that is
+// not there (applyWebmailPort). webmailMu keeps a mail change that read
+// the settings before from writing the block back after.
+func (s *Server) removeSitePaths(ctx context.Context, jc *jobs.Context, site *store.Site, req *agent.RemovePathsRequest) (*agent.RemovePathsResponse, error) {
+	if s.loadMailConfig(ctx).Webmail != site.Domain {
+		return s.agent.RemovePaths(ctx, req)
+	}
+	s.webmailMu.Lock()
+	defer s.webmailMu.Unlock()
+	// Asked again under the lock: the webmail may have moved to another site
+	// meanwhile, whose block on the port is not this site's to take.
+	if s.loadMailConfig(ctx).Webmail != site.Domain {
+		return s.agent.RemovePaths(ctx, req)
+	}
+	req.Paths = append(req.Paths, s.webmailConfPath())
+	rr, err := s.agent.RemovePaths(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return rr, s.forgetWebmail(ctx, jc.Logf, site.Domain)
 }
 
 // ensurePackages installs missing distro packages (idempotent, cheap when present).

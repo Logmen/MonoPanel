@@ -24,6 +24,13 @@ type userDeletePayload struct {
 	UserID int64  `json:"user_id"`
 	Login  string `json:"login"`
 	Purge  bool   `json:"purge"`
+	// Sites are the domains of the account's sites when the delete was
+	// queued. The job removes them inline, without a site.delete of their
+	// own, and once it went through the doctor's jobs line forgets their
+	// failures (site:<domain>) as it forgets the account's (jobFixes). A
+	// payload of an older panel has none: their failures count until they
+	// are a day old, as they did.
+	Sites []string `json:"sites,omitempty"`
 }
 
 func (s *Server) registerUserDelete() {
@@ -48,10 +55,27 @@ func (s *Server) registerUserDelete() {
 				return nil, huma.Error422UnprocessableEntity("the last administrator cannot be deleted")
 			}
 		}
+		// Not beside an in-place restore into the home (restoreRefused says
+		// why); one asked for from now on is refused, the account being
+		// marked below. An account without a unix user has no home to
+		// remove.
+		if u.UnixUID != nil {
+			if err := s.restoreWaitedFor(ctx, "the account", s.homeOf(u)); err != nil {
+				return nil, err
+			}
+		}
+		sites, err := s.db.ListSites(ctx, u.ID)
+		if err != nil {
+			return nil, err
+		}
+		payload := userDeletePayload{UserID: u.ID, Login: u.Login, Purge: in.Purge}
+		for _, site := range sites {
+			payload.Sites = append(payload.Sites, site.Domain)
+		}
 		if err := s.db.SetUserStatus(ctx, u.ID, store.UserDeleting); err != nil {
 			return nil, err
 		}
-		job, err := s.jobs.Enqueue(ctx, "user.delete", userDeletePayload{UserID: u.ID, Login: u.Login, Purge: in.Purge}, jobs.WithLockKey("user:"+u.Login), jobs.WithRequestedBy(p.Login))
+		job, err := s.jobs.Enqueue(ctx, "user.delete", payload, jobs.WithLockKey("user:"+u.Login), jobs.WithRequestedBy(p.Login))
 		if err != nil {
 			return nil, err
 		}
@@ -96,7 +120,10 @@ func (s *Server) jobUserDelete(ctx context.Context, jc *jobs.Context) error {
 				jc.Logf("certificate %s removed", c.Name)
 			}
 		}
-		if err := s.db.DeleteSite(ctx, site.ID); err != nil {
+		// The site's own site.delete, which runs beside this job under a
+		// key of its own, may have taken the row while this job waited for
+		// the site's lock: nothing is left to delete then.
+		if err := s.db.DeleteSite(ctx, site.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
 			return fail(err)
 		}
 	}

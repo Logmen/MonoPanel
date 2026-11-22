@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 )
 
 // Site statuses and modes.
@@ -154,16 +155,58 @@ func (d *DB) CreateSite(ctx context.Context, s *Site) error {
 	return nil
 }
 
-// UpdateSite writes every mutable field.
-func (d *DB) UpdateSite(ctx context.Context, s *Site) error {
+// Clone is a copy of the site that shares nothing with it: the site as a
+// caller read it, kept aside before the caller changes it
+// (UpdateSiteChanges).
+func (s *Site) Clone() *Site {
+	c := *s
+	c.Aliases = append([]string(nil), s.Aliases...)
+	c.AllowFrom = append([]string(nil), s.AllowFrom...)
+	c.PHPIni = make(map[string]string, len(s.PHPIni))
+	for k, v := range s.PHPIni {
+		c.PHPIni[k] = v
+	}
+	if s.CertificateID != nil {
+		id := *s.CertificateID
+		c.CertificateID = &id
+	}
+	return &c
+}
+
+// siteColumn is one mutable column of a site with its value as stored.
+type siteColumn struct {
+	name  string
+	value any
+}
+
+// siteColumns are the mutable columns of a site with s's values, in one
+// order: what UpdateSite writes and what UpdateSiteChanges compares.
+func siteColumns(s *Site) []siteColumn {
 	aliases, _ := json.Marshal(s.Aliases)
 	ini, _ := json.Marshal(s.PHPIni)
-	if s.AllowFrom == nil {
-		s.AllowFrom = []string{}
+	allowFrom := s.AllowFrom
+	if allowFrom == nil {
+		allowFrom = []string{}
 	}
-	allow, _ := json.Marshal(s.AllowFrom)
-	res, err := d.sql.ExecContext(ctx, `UPDATE sites SET aliases=?, mode=?, php_version=?, docroot=?, ip=?, http2=?, http3=?, ssl=?, redirect_https=?, redirect_www=?, static_by_nginx=?, fpm_pm=?, fpm_max_children=?, php_ini=?, allow_exec=?, client_max_body=?, certificate_id=?, backend=?, allow_from=?, preset=?, cms=?, cms_version=?, cms_at=?, cms_database=?, session_store=?, ipv6=?, security_headers=?, rate_limit=?, status=?, last_error=?, updated_at=? WHERE id=?`,
-		string(aliases), s.Mode, s.PHPVersion, s.Docroot, s.IP, boolInt(s.HTTP2), boolInt(s.HTTP3), s.SSL, boolInt(s.RedirectHTTPS), s.RedirectWWW, boolInt(s.StaticByNginx), s.FPMPM, s.FPMMaxChildren, string(ini), boolInt(s.AllowExec), s.ClientMaxBody, nullInt64Ptr(s.CertificateID), s.Backend, string(allow), s.Preset, s.CMS, s.CMSVersion, s.CMSAt, s.CMSDatabase, s.SessionStore, s.IPv6, boolInt(s.SecurityHeaders), s.RateLimit, s.Status, s.LastError, now(), s.ID)
+	allow, _ := json.Marshal(allowFrom)
+	return []siteColumn{
+		{"aliases", string(aliases)}, {"mode", s.Mode}, {"php_version", s.PHPVersion}, {"docroot", s.Docroot}, {"ip", s.IP},
+		{"http2", boolInt(s.HTTP2)}, {"http3", boolInt(s.HTTP3)}, {"ssl", s.SSL}, {"redirect_https", boolInt(s.RedirectHTTPS)},
+		{"redirect_www", s.RedirectWWW}, {"static_by_nginx", boolInt(s.StaticByNginx)}, {"fpm_pm", s.FPMPM},
+		{"fpm_max_children", s.FPMMaxChildren}, {"php_ini", string(ini)}, {"allow_exec", boolInt(s.AllowExec)},
+		{"client_max_body", s.ClientMaxBody}, {"certificate_id", nullInt64Ptr(s.CertificateID)}, {"backend", s.Backend},
+		{"allow_from", string(allow)}, {"preset", s.Preset}, {"cms", s.CMS}, {"cms_version", s.CMSVersion}, {"cms_at", s.CMSAt},
+		{"cms_database", s.CMSDatabase}, {"session_store", s.SessionStore}, {"ipv6", s.IPv6},
+		{"security_headers", boolInt(s.SecurityHeaders)}, {"rate_limit", s.RateLimit}, {"status", s.Status}, {"last_error", s.LastError},
+	}
+}
+
+// updateSiteColumns writes the assignments given, and updated_at, into the
+// site id; ErrNotFound when there is no such site.
+func (d *DB) updateSiteColumns(ctx context.Context, id int64, set []string, args []any) error {
+	set = append(set, "updated_at=?")
+	args = append(args, now(), id)
+	res, err := d.sql.ExecContext(ctx, `UPDATE sites SET `+strings.Join(set, ", ")+` WHERE id=?`, args...)
 	if err != nil {
 		return err
 	}
@@ -171,6 +214,44 @@ func (d *DB) UpdateSite(ctx context.Context, s *Site) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// UpdateSite writes every mutable field.
+func (d *DB) UpdateSite(ctx context.Context, s *Site) error {
+	if s.AllowFrom == nil {
+		s.AllowFrom = []string{}
+	}
+	var set []string
+	var args []any
+	for _, c := range siteColumns(s) {
+		set, args = append(set, c.name+"=?"), append(args, c.value)
+	}
+	return d.updateSiteColumns(ctx, s.ID, set, args)
+}
+
+// UpdateSiteChanges writes the fields of s that differ from was — the site
+// as the caller read it, kept aside (Clone) before the change — and leaves
+// every other column as it is now. A request or a job that read the site,
+// changed a field and wrote the whole row back would put back what changed
+// beside it meanwhile: the address sites.move-ip gave the site, a change
+// asked for at the same time — lost for good, the next apply renders the
+// row as it is. A status written this way goes in only while the site is
+// not being removed: its removal is queued and must find the site as it
+// left it. A site gone meanwhile is ErrNotFound.
+func (d *DB) UpdateSiteChanges(ctx context.Context, was, s *Site) error {
+	before := siteColumns(was)
+	var set []string
+	var args []any
+	for i, c := range siteColumns(s) {
+		switch {
+		case c.value == before[i].value:
+		case c.name == "status":
+			set, args = append(set, "status=CASE WHEN status=? THEN status ELSE ? END"), append(args, SiteDeleting, c.value)
+		default:
+			set, args = append(set, c.name+"=?"), append(args, c.value)
+		}
+	}
+	return d.updateSiteColumns(ctx, s.ID, set, args)
 }
 
 // SaveAppliedSite stores what a site.apply decided and nothing else: the
@@ -209,6 +290,21 @@ func (d *DB) SetSiteStatus(ctx context.Context, id int64, status, lastError stri
 func (d *DB) SetSiteStatusFrom(ctx context.Context, id int64, from, status, lastError string) error {
 	_, err := d.sql.ExecContext(ctx, `UPDATE sites SET status=?, last_error=?, updated_at=? WHERE id=? AND status=?`, status, lastError, now(), id, from)
 	return err
+}
+
+// MoveSiteIP puts a site that listens on from onto to, and changes nothing
+// else of the row but a status of error, which goes back to pending: the
+// site comes back on the new address with its next apply. A change made to
+// the site meanwhile (mp site set) stays; a site no longer on from, or one
+// being removed, is left as it is. It tells whether the site moved.
+func (d *DB) MoveSiteIP(ctx context.Context, id int64, from, to string) (bool, error) {
+	res, err := d.sql.ExecContext(ctx, `UPDATE sites SET ip=?, status=CASE WHEN status=? THEN ? ELSE status END, updated_at=? WHERE id=? AND ip=? AND status<>?`,
+		to, SiteError, SitePending, now(), id, from, SiteDeleting)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 // GetSite returns a site by id.

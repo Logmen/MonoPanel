@@ -170,7 +170,11 @@ func (s *Server) demandApacheBackends(ctx context.Context, jc *jobs.Context, don
 				continue
 			}
 			jc.Logf("%s: nginx sends the backend secret of the Apache of %s", site.Domain, u.Login)
-			if err := s.applySite(ctx, jc, sitePayload{SiteID: site.ID}); err != nil {
+			// A site removed meanwhile sends nothing to the Apache any more,
+			// and holds up the account's other sites no longer.
+			if err := s.applySite(ctx, jc, sitePayload{SiteID: site.ID}); errors.Is(err, errSiteGone) {
+				jc.Logf("%s: removed meanwhile", site.Domain)
+			} else if err != nil {
 				failed = append(failed, site.Domain+": "+err.Error())
 				ok = false
 			}

@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"monopanel/internal/apitypes"
 	"monopanel/internal/jobs"
 	"monopanel/internal/store"
 )
@@ -164,5 +167,136 @@ func TestDoctorJobsLineForgetsWhatIsGone(t *testing.T) {
 	// A site made again under the name and failing afterwards is a failure.
 	if got := openFailures([]*store.Job{job(20, "site.apply", "site:a.example.com")}, []*store.Job{job(10, "site.delete", "site:a.example.com")}, now); got != 1 {
 		t.Errorf("a failure after the delete: %d open", got)
+	}
+}
+
+// A user.delete removes the account's sites inline, without a site.delete
+// of their own. Once it went through, what failed on the sites it names —
+// the account's sites as they were when it was queued — is history as the
+// account's own failures are: not what failed on another account's site,
+// not what failed after the delete, and not with the payload of an older
+// panel, which names no sites.
+func TestDoctorJobsLineForgetsTheSitesOfADeletedAccount(t *testing.T) {
+	now := time.Now()
+	job := func(id int64, typ, lock, payload string) *store.Job {
+		return &store.Job{ID: id, Type: typ, LockKey: lock, Payload: json.RawMessage(payload), CreatedAt: store.Time(now.Add(-time.Hour))}
+	}
+	failed := []*store.Job{
+		job(1, "site.apply", "site:a.example.com", `{"site_id":1}`),
+		job(2, "site.fix", "site:a.example.com", `{"site_id":1}`),
+		job(3, "site.delete", "site:b.example.com", `{"site_id":2,"purge":true}`),
+		job(4, "site.apply", "site:c.example.com", `{"site_id":3}`),
+		job(5, "user.provision", "user:alex", `{}`),
+	}
+	const withSites = `{"user_id":2,"login":"alex","purge":true,"sites":["a.example.com","b.example.com"]}`
+	for _, c := range []struct {
+		name string
+		done []*store.Job
+		want int
+	}{
+		{"nothing gone", nil, 5},
+		{"the account and its sites", []*store.Job{job(10, "user.delete", "user:alex", withSites)}, 1},
+		{"a delete queued by an older panel", []*store.Job{job(10, "user.delete", "user:alex", `{"user_id":2,"login":"alex","purge":true}`)}, 4},
+		{"deleted before the failures", []*store.Job{job(0, "user.delete", "user:alex", withSites)}, 5},
+		// Only a user.delete speaks for the sites it names.
+		{"another job with the same payload", []*store.Job{job(10, "user.provision", "user:alex", withSites)}, 4},
+	} {
+		if got := openFailures(failed, c.done, now); got != c.want {
+			t.Errorf("%s: %d open, want %d", c.name, got, c.want)
+		}
+	}
+	// A site made again under the name and failing afterwards is a failure.
+	if got := openFailures([]*store.Job{job(20, "site.apply", "site:a.example.com", `{"site_id":7}`)}, []*store.Job{job(10, "user.delete", "user:alex", withSites)}, now); got != 1 {
+		t.Errorf("a failure after the delete: %d open", got)
+	}
+}
+
+// The delete of an account names its sites in the job it queues; once the
+// job went through, the doctor's jobs line no longer counts what failed on
+// them.
+func TestUserDeleteTakesItsSitesOffTheJobsLine(t *testing.T) {
+	f := newSiteFixture(t)
+	for _, d := range []string{"a.example.com", "b.example.com"} {
+		f.createSite(map[string]any{"domain": d, "user": "alex", "php_version": "8.4", "ssl": "none"})
+	}
+	f.agent.Fail["/v1/config/apply"] = "nginx: [emerg] unknown directive"
+	var ref apitypes.SiteWithJob
+	f.call(http.MethodPost, "/sites/a.example.com/apply", nil, http.StatusAccepted, &ref)
+	if job := f.waitJob(ref.JobID); job.Status != store.JobFailed {
+		t.Fatalf("the apply meant to fail: %s", job.Status)
+	}
+	delete(f.agent.Fail, "/v1/config/apply")
+	if got := f.doctorCheck("jobs"); !strings.HasPrefix(got, "warn: 1 failed") {
+		t.Fatalf("jobs line with the failed apply: %q", got)
+	}
+
+	var del apitypes.JobRef
+	f.call(http.MethodDelete, "/users/alex", nil, http.StatusAccepted, &del)
+	job := f.waitJob(del.JobID)
+	if job.Status != store.JobDone {
+		t.Fatalf("user.delete: %s %s", job.Status, job.Error)
+	}
+	var p userDeletePayload
+	if err := json.Unmarshal(job.Payload, &p); err != nil || !slices.Equal(p.Sites, []string{"a.example.com", "b.example.com"}) {
+		t.Fatalf("the delete names the sites %v (%v)", p.Sites, err)
+	}
+	if got := f.doctorCheck("jobs"); !strings.HasPrefix(got, "ok:") {
+		t.Fatalf("jobs line after the account went with its sites: %q", got)
+	}
+}
+
+// A site.apply that runs once its site is gone — queued by the webmail, the
+// shared folders or sites.move-ip, and run after the site's removal — has
+// nothing to render and ends done: a failure would count in the jobs line
+// for a site that does not exist.
+func TestSiteApplyOfAGoneSiteIsDone(t *testing.T) {
+	f := newSiteFixture(t)
+	site := f.createSite(map[string]any{"domain": "a.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	f.deleteSite("a.example.com")
+	id, err := f.s.enqueueSiteApply(f.ctx, site, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := f.waitJob(id)
+	if job.Status != store.JobDone || job.Message != "the site is gone: nothing to apply" {
+		t.Fatalf("an apply of a gone site: %s %q %s", job.Status, job.Message, job.Error)
+	}
+	if conf, ok := f.agent.File("/etc/nginx/monopanel/sites/a.example.com.conf"); ok {
+		t.Fatalf("the apply of a gone site wrote its server block:\n%s", conf)
+	}
+}
+
+// A removal that finds its site removed already — a site.delete asked for
+// twice, or one that a user.delete of the site's account got ahead of — is
+// done, not failed; so is a user.delete whose site went by its own
+// site.delete while it waited for the site's lock.
+func TestRemovalsOfAGoneSiteAreDone(t *testing.T) {
+	f := newSiteFixture(t)
+	a := f.createSite(map[string]any{"domain": "a.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	f.deleteSite("a.example.com")
+	again, err := f.s.jobs.Enqueue(f.ctx, "site.delete", sitePayload{SiteID: a.ID, Purge: true}, jobs.WithLockKey("site:a.example.com"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job := f.waitJob(again.ID); job.Status != store.JobDone || !strings.HasPrefix(job.Message, "the site is gone already") {
+		t.Fatalf("a site.delete of a gone site: %s %q %s", job.Status, job.Message, job.Error)
+	}
+
+	b := f.createSite(map[string]any{"domain": "b.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	var once sync.Once
+	f.agent.SetBefore(func(p string, body []byte) {
+		if p == "/v1/paths/remove" && strings.Contains(string(body), `"/etc/nginx/monopanel/sites/b.example.com.conf"`) {
+			once.Do(func() {
+				if err := f.db.DeleteSite(f.ctx, b.ID); err != nil {
+					t.Error(err)
+				}
+			})
+		}
+	})
+	t.Cleanup(func() { f.agent.SetBefore(nil) })
+	var del apitypes.JobRef
+	f.call(http.MethodDelete, "/users/alex", nil, http.StatusAccepted, &del)
+	if job := f.waitJob(del.JobID); job.Status != store.JobDone {
+		t.Fatalf("user.delete whose site went meanwhile: %s %s", job.Status, job.Error)
 	}
 }

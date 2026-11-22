@@ -173,6 +173,32 @@ func TestJobsClaimExclusive(t *testing.T) {
 	}
 }
 
+// A search by type finds the jobs of that type however many others came
+// after them, with the status filter as well.
+func TestListJobsByType(t *testing.T) {
+	ctx := context.Background()
+	db := openTest(t)
+	restore := &Job{Type: "backup.restore", LockKey: "backup:local"}
+	if err := db.EnqueueJob(ctx, restore); err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		if err := db.EnqueueJob(ctx, &Job{Type: "site.apply", LockKey: "site:1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list, err := db.ListJobsFiltered(ctx, JobFilter{Type: "backup.restore", Status: JobQueued, Limit: 2})
+	if err != nil || len(list) != 1 || list[0].ID != restore.ID {
+		t.Fatalf("queued restores: %+v %v", list, err)
+	}
+	if list, _ := db.ListJobsFiltered(ctx, JobFilter{Type: "backup.restore", Status: JobRunning}); len(list) != 0 {
+		t.Fatalf("running restores: %+v", list)
+	}
+	if list, _ := db.ListJobsFiltered(ctx, JobFilter{Limit: 2}); len(list) != 2 || list[0].Type != "site.apply" {
+		t.Fatalf("without a type: %+v", list)
+	}
+}
+
 func TestJobIdempotency(t *testing.T) {
 	ctx := context.Background()
 	db := openTest(t)

@@ -215,8 +215,11 @@ func (s *Server) registerCMS() {
 		}
 		payload := cmsPayload{SiteID: site.ID, CMS: def.ID, Title: title, AdminLogin: login, AdminEmail: email, AdminPasswordEnc: pwEnc, Edition: in.Body.Edition, Solution: in.Body.Solution, Database: dbName, DBPasswordEnc: dbEnc, Force: in.Body.Force, ReuseDatabase: reuse}
 		if site.Preset != def.Preset {
+			// The preset alone: a change made to the site since it was read
+			// above stays (UpdateSiteChanges).
+			was := site.Clone()
 			site.Preset = def.Preset
-			if err := s.db.UpdateSite(ctx, site); err != nil {
+			if err := s.db.UpdateSiteChanges(ctx, was, site); err != nil {
 				return nil, err
 			}
 			payload.ApplyPreset = true
@@ -404,8 +407,12 @@ func (s *Server) jobSiteCMS(ctx context.Context, jc *jobs.Context) error {
 	}
 	s.relabel(ctx, nil, l.docroot, true)
 
+	// The record of the install alone: the site was read minutes ago, and
+	// what changed since — mp site set, the address sites.move-ip gave it —
+	// stays (UpdateSiteChanges); the whole row read then would put it back.
+	was := site.Clone()
 	site.CMS, site.CMSVersion, site.CMSAt, site.CMSDatabase = def.ID, version, time.Now().UTC().Format(time.RFC3339), p.Database
-	if err := s.db.UpdateSite(ctx, site); err != nil {
+	if err := s.db.UpdateSiteChanges(ctx, was, site); err != nil {
 		return err
 	}
 	admin := siteURL + "/" + def.AdminPath

@@ -20,6 +20,7 @@ import (
 
 	"monopanel/internal/agent"
 	"monopanel/internal/apitypes"
+	"monopanel/internal/jobs"
 	"monopanel/internal/store"
 )
 
@@ -789,4 +790,496 @@ func TestWebmailMoveKeepsTheConfigurationInUse(t *testing.T) {
 	if c := f.s.loadMailConfig(f.ctx); c.Webmail != "mail2.example.com" {
 		t.Fatalf("webmail after the move: %q", c.Webmail)
 	}
+}
+
+// The webmail job works in the site's tree, the owner's database and the
+// mail settings under the site's lock, with the site and its owner read
+// again under it. A removal asked for before it got there — the owner's
+// (user.delete marks the account first, then lists its sites) or the
+// site's — stops the run before it unpacks, makes a database or names the
+// site in the mail settings; the site the run made already is not missed:
+// the account's removal takes it.
+func TestWebmailStopsForWhatIsBeingRemoved(t *testing.T) {
+	f, my, _ := newWebmailFixture(t)
+	alex, err := f.db.GetUserByLogin(f.ctx, "alex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// stopsBefore has fn run when the job looks at the database, after it
+	// found or made the site and before it takes the site's lock.
+	stopsBefore := func(fn func()) {
+		var once sync.Once
+		f.agent.ToolHook = func(req agent.ToolRequest) *agent.ToolResponse {
+			if req.Name == "mysql" && strings.Contains(req.Stdin, "information_schema.tables") {
+				once.Do(fn)
+			}
+			return my.hook(req)
+		}
+	}
+	nothingMade := func(name, domain string, n int) {
+		t.Helper()
+		for _, tool := range f.agent.Tools() {
+			if tool.Name == "tar" {
+				t.Fatalf("%s: Roundcube was unpacked", name)
+			}
+		}
+		for _, sql := range my.since(n) {
+			if !strings.Contains(sql, "information_schema.tables") {
+				t.Fatalf("%s: MySQL was changed: %q", name, sql)
+			}
+		}
+		if _, err := f.db.GetDatabaseByName(f.ctx, "alex_roundcube"); err == nil {
+			t.Fatalf("%s: the database was recorded", name)
+		}
+		if _, ok := f.agent.FileContaining("/var/www/alex/data/www/" + domain + "/config/config.inc.php"); ok {
+			t.Fatalf("%s: config.inc.php was written", name)
+		}
+		if c := f.s.loadMailConfig(f.ctx); c.Webmail != "" {
+			t.Fatalf("%s: the mail settings name the webmail %q", name, c.Webmail)
+		}
+	}
+
+	// The site removed while the job looked at the database.
+	f.createSite(map[string]any{"domain": "shop.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	f.settle()
+	shop, _ := f.db.GetSiteByDomain(f.ctx, "shop.example.com")
+	f.agent.Reset()
+	n := my.batches()
+	stopsBefore(func() {
+		if err := f.db.SetSiteStatus(f.ctx, shop.ID, store.SiteDeleting, ""); err != nil {
+			t.Error(err)
+		}
+	})
+	job := f.webmailJob(map[string]any{"domain": "shop.example.com", "user": "alex"})
+	if job.Status != store.JobFailed || job.Error != "site shop.example.com is being removed: the webmail is not installed into it" {
+		t.Fatalf("a site being removed: %s %q", job.Status, job.Error)
+	}
+	nothingMade("a site being removed", "shop.example.com", n)
+
+	// The owner removed while the job, having made the site, looked at the
+	// database.
+	f.agent.Reset()
+	n = my.batches()
+	stopsBefore(func() {
+		if err := f.db.SetUserStatus(f.ctx, alex.ID, store.UserDeleting); err != nil {
+			t.Error(err)
+		}
+	})
+	job = f.webmailJob(map[string]any{"domain": "webmail.example.com", "user": "alex"})
+	if job.Status != store.JobFailed || job.Error != "the account alex is being removed: the webmail is not installed for it" {
+		t.Fatalf("an account being removed: %s %q", job.Status, job.Error)
+	}
+	nothingMade("an account being removed", "webmail.example.com", n)
+	made, err := f.db.GetSiteByDomain(f.ctx, "webmail.example.com")
+	if err != nil {
+		t.Fatalf("the site the run made: %v", err)
+	}
+	// Asked once more, the job stops before it makes anything.
+	f.agent.Reset()
+	n = my.batches()
+	job = f.webmailJob(map[string]any{"domain": "mail2.example.com", "user": "alex"})
+	if job.Status != store.JobFailed || !strings.Contains(job.Error, "the account alex is being removed") {
+		t.Fatalf("an account being removed, asked again: %s %q", job.Status, job.Error)
+	}
+	if _, err := f.db.GetSiteByDomain(f.ctx, "mail2.example.com"); err == nil {
+		t.Fatal("a site was made for an account being removed")
+	}
+	if got := my.since(n); len(got) != 0 {
+		t.Fatalf("MySQL was asked for an account being removed: %q", got)
+	}
+	// The account's removal takes the site the run made.
+	del, err := f.s.jobs.Enqueue(f.ctx, "user.delete", userDeletePayload{UserID: alex.ID, Login: "alex", Purge: true}, jobs.WithLockKey("user:alex"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j := f.waitJob(del.ID); j.Status != store.JobDone {
+		t.Fatalf("user.delete: %s %s", j.Status, j.Error)
+	}
+	if _, err := f.db.GetSite(f.ctx, made.ID); err == nil {
+		t.Fatal("the site the webmail made outlived its account")
+	}
+}
+
+// A user.delete queued while the webmail job works in the account's site
+// waits for it, at that site's lock, and then takes away all it made: the
+// site, the database recorded as the account's (with its MySQL account),
+// the webmail in the mail settings. The site.apply the webmail queued and
+// that runs after ends done.
+func TestUserDeleteTakesTheWebmailItWaitedFor(t *testing.T) {
+	f, my, _ := newWebmailFixture(t)
+	// The job is held as it unpacks, under the site's lock; the fake goes on
+	// answering every other call meanwhile.
+	atTar, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	f.agent.SetBefore(func(p string, body []byte) {
+		if p == "/v1/tool" && strings.Contains(string(body), `"name":"tar"`) {
+			once.Do(func() {
+				close(atTar)
+				<-release
+			})
+		}
+	})
+	t.Cleanup(func() { f.agent.SetBefore(nil) })
+	var install apitypes.JobRef
+	f.call(http.MethodPost, "/mail/webmail", map[string]any{"domain": "webmail.example.com", "user": "alex"}, http.StatusAccepted, &install)
+	select {
+	case <-atTar:
+	case <-time.After(20 * time.Second):
+		close(release)
+		t.Fatal("the webmail job did not get to the files")
+	}
+	var del apitypes.JobRef
+	f.call(http.MethodDelete, "/users/alex?purge=true", nil, http.StatusAccepted, &del)
+	// The delete gets as far as the site and waits for its lock.
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		j, err := f.db.GetJob(f.ctx, del.JobID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if j.Status == store.JobRunning && j.Message == "sites" {
+			break
+		}
+		if j.Status != store.JobQueued && j.Status != store.JobRunning || time.Now().After(deadline) {
+			close(release)
+			t.Fatalf("user.delete: %s %q %s", j.Status, j.Message, j.Error)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if _, err := f.db.GetSiteByDomain(f.ctx, "webmail.example.com"); err != nil {
+		close(release)
+		t.Fatalf("the delete did not wait for the webmail: %v", err)
+	}
+	n := my.batches()
+	close(release)
+	if j := f.waitJob(install.JobID); j.Status != store.JobDone {
+		t.Fatalf("the webmail job: %s %s\n%s", j.Status, j.Error, j.Log)
+	}
+	if j := f.waitJob(del.JobID); j.Status != store.JobDone {
+		t.Fatalf("user.delete: %s %s\n%s", j.Status, j.Error, j.Log)
+	}
+	f.settle()
+	dropped := strings.Join(my.since(n), "\n")
+	for _, want := range []string{"CREATE DATABASE IF NOT EXISTS `alex_roundcube`", "DROP DATABASE IF EXISTS `alex_roundcube`;", "DROP USER IF EXISTS 'alex_roundcube'@'localhost';"} {
+		if !strings.Contains(dropped, want) {
+			t.Errorf("MySQL did not get %q:\n%s", want, dropped)
+		}
+	}
+	if strings.Index(dropped, "DROP DATABASE") < strings.Index(dropped, "CREATE DATABASE") {
+		t.Errorf("the database was dropped before the webmail made it:\n%s", dropped)
+	}
+	if _, err := f.db.GetDatabaseByName(f.ctx, "alex_roundcube"); err == nil {
+		t.Error("the webmail's database is still recorded")
+	}
+	if _, err := f.db.GetSiteByDomain(f.ctx, "webmail.example.com"); err == nil {
+		t.Error("the webmail's site outlived its account")
+	}
+	if c := f.s.loadMailConfig(f.ctx); c.Webmail != "" || c.WebmailVersion != "" {
+		t.Errorf("the mail settings still name the webmail: %q %q", c.Webmail, c.WebmailVersion)
+	}
+	list, _ := f.db.ListJobs(f.ctx, 500, "")
+	for _, j := range list {
+		if j.Type == "site.apply" && j.ID > install.JobID && j.Status != store.JobDone {
+			t.Errorf("the webmail's apply %d: %s %s", j.ID, j.Status, j.Error)
+		}
+	}
+}
+
+// The removal of the webmail's site takes the webmail with it: the server
+// block on its port goes in the same checked reload as the site's own, and
+// the mail settings no longer name the site (the port stays chosen), so
+// that mail.apply goes on working.
+func TestWebmailGoesWithItsSite(t *testing.T) {
+	f, _, home := newWebmailFixture(t)
+	installedWebmail(t, f, home, map[string]any{"port": 2096})
+	block := f.s.webmailConfPath()
+	if _, ok := f.agent.File(block); !ok {
+		t.Fatal("the webmail's block on its port was not written")
+	}
+	from := len(f.agent.Calls())
+	f.deleteSite("webmail.example.com")
+	together := false
+	for _, c := range f.agent.Calls()[from:] {
+		var req agent.RemovePathsRequest
+		if c.Path == "/v1/paths/remove" && json.Unmarshal(c.Body, &req) == nil {
+			together = together || slices.Contains(req.Paths, block) && slices.Contains(req.Paths, "/etc/nginx/monopanel/sites/webmail.example.com.conf") && len(req.Validate) > 0
+		}
+	}
+	if !together {
+		t.Error("the webmail's block did not go with the site's, in one checked reload")
+	}
+	if _, ok := f.agent.File(block); ok {
+		t.Fatal("the webmail's block outlived its site")
+	}
+	if c := f.s.loadMailConfig(f.ctx); c.Webmail != "" || c.WebmailVersion != "" || c.WebmailPort != 2096 {
+		t.Fatalf("mail settings after the site went: webmail %q, version %q, port %d", c.Webmail, c.WebmailVersion, c.WebmailPort)
+	}
+	var ref apitypes.JobRef
+	f.call(http.MethodPost, "/mail/apply", nil, http.StatusAccepted, &ref)
+	if job := f.waitJob(ref.JobID); job.Status != store.JobDone {
+		t.Fatalf("mail.apply after the webmail's site went: %s %s", job.Status, job.Error)
+	}
+	if _, ok := f.agent.File(block); ok {
+		t.Fatal("mail.apply wrote the block of a webmail without a site")
+	}
+}
+
+// An older panel removed the webmail's site and left the mail settings
+// naming it: every mail change then failed on the webmail port. mail.apply
+// now takes the site out of the settings and the block off the port. A site
+// that is being removed keeps its block until its removal takes it.
+func TestMailApplyForgetsAWebmailSiteThatIsGone(t *testing.T) {
+	f, _, home := newWebmailFixture(t)
+	installedWebmail(t, f, home, map[string]any{"port": 2096})
+	block := f.s.webmailConfPath()
+	site, err := f.db.GetSiteByDomain(f.ctx, "webmail.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mailApply := func() *store.Job {
+		t.Helper()
+		var ref apitypes.JobRef
+		f.call(http.MethodPost, "/mail/apply", nil, http.StatusAccepted, &ref)
+		return f.waitJob(ref.JobID)
+	}
+
+	if err := f.db.SetSiteStatus(f.ctx, site.ID, store.SiteDeleting, ""); err != nil {
+		t.Fatal(err)
+	}
+	from := len(f.agent.Calls())
+	if job := mailApply(); job.Status != store.JobDone || !strings.Contains(job.Log, "the webmail's site webmail.example.com is being removed") {
+		t.Fatalf("mail.apply beside the removal: %s %s\n%s", job.Status, job.Error, job.Log)
+	}
+	for _, c := range f.agent.Calls()[from:] {
+		if strings.Contains(string(c.Body), block) {
+			t.Fatalf("mail.apply touched the block of a webmail being removed: %s %s", c.Path, c.Body)
+		}
+	}
+	if _, ok := f.agent.File(block); !ok {
+		t.Fatal("the block of a webmail being removed went before its removal")
+	}
+
+	if err := f.db.DeleteSite(f.ctx, site.ID); err != nil {
+		t.Fatal(err)
+	}
+	if job := mailApply(); job.Status != store.JobDone {
+		t.Fatalf("mail.apply with the webmail's site gone: %s %s", job.Status, job.Error)
+	}
+	if _, ok := f.agent.File(block); ok {
+		t.Fatal("the block of a webmail whose site is gone stays")
+	}
+	if c := f.s.loadMailConfig(f.ctx); c.Webmail != "" || c.WebmailPort != 2096 {
+		t.Fatalf("mail settings: webmail %q, port %d", c.Webmail, c.WebmailPort)
+	}
+}
+
+// The same for a webmail without a port: nothing failed there, but the
+// settings went on naming the site an older panel removed, and the status
+// linked to it. mail.apply takes it out of the settings as well.
+func TestMailApplyForgetsAWebmailWithoutAPortWhoseSiteIsGone(t *testing.T) {
+	f, _, home := newWebmailFixture(t)
+	installedWebmail(t, f, home)
+	if c := f.s.loadMailConfig(f.ctx); c.Webmail != "webmail.example.com" || c.WebmailPort != 0 {
+		t.Fatalf("mail settings after the install: webmail %q, port %d", c.Webmail, c.WebmailPort)
+	}
+	site, err := f.db.GetSiteByDomain(f.ctx, "webmail.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.DeleteSite(f.ctx, site.ID); err != nil {
+		t.Fatal(err)
+	}
+	var ref apitypes.JobRef
+	f.call(http.MethodPost, "/mail/apply", nil, http.StatusAccepted, &ref)
+	if job := f.waitJob(ref.JobID); job.Status != store.JobDone || !strings.Contains(job.Log, "webmail.example.com held the webmail: the mail settings no longer name it") {
+		t.Fatalf("mail.apply with the webmail's site gone: %s %s\n%s", job.Status, job.Error, job.Log)
+	}
+	if c := f.s.loadMailConfig(f.ctx); c.Webmail != "" || c.WebmailVersion != "" {
+		t.Fatalf("mail settings: webmail %q, version %q", c.Webmail, c.WebmailVersion)
+	}
+	var status apitypes.MailStatus
+	f.call(http.MethodGet, "/mail", nil, http.StatusOK, &status)
+	if status.Webmail != "" || status.WebmailURL != "" {
+		t.Fatalf("the status still links to the webmail: %q %q", status.Webmail, status.WebmailURL)
+	}
+}
+
+// A mail change that read the mail settings before the webmail's site was
+// removed does not write the webmail's block back after the removal took it
+// away: the two take turns (webmailMu).
+func TestWebmailBlockDoesNotOutliveItsSite(t *testing.T) {
+	f, _, home := newWebmailFixture(t)
+	installedWebmail(t, f, home, map[string]any{"port": 2096})
+	block := f.s.webmailConfPath()
+	held, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	f.agent.SetBefore(func(p string, body []byte) {
+		if p == "/v1/config/apply" && strings.Contains(string(body), `"origin":"mail:webmail"`) {
+			once.Do(func() {
+				close(held)
+				<-release
+			})
+		}
+	})
+	t.Cleanup(func() { f.agent.SetBefore(nil) })
+	var apply apitypes.JobRef
+	f.call(http.MethodPost, "/mail/apply", nil, http.StatusAccepted, &apply)
+	select {
+	case <-held:
+	case <-time.After(20 * time.Second):
+		close(release)
+		t.Fatal("mail.apply did not get to the webmail's block")
+	}
+	var del apitypes.JobRef
+	f.call(http.MethodDelete, "/sites/webmail.example.com", nil, http.StatusAccepted, &del)
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		j, err := f.db.GetJob(f.ctx, del.JobID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if j.Status == store.JobRunning && j.Message == "removing configuration" || j.Status == store.JobDone || j.Status == store.JobFailed {
+			break
+		}
+		if time.Now().After(deadline) {
+			close(release)
+			t.Fatalf("site.delete: %s %q", j.Status, j.Message)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	if j := f.waitJob(apply.JobID); j.Status != store.JobDone {
+		t.Fatalf("mail.apply: %s %s", j.Status, j.Error)
+	}
+	if j := f.waitJob(del.JobID); j.Status != store.JobDone {
+		t.Fatalf("site.delete: %s %s", j.Status, j.Error)
+	}
+	if conf, ok := f.agent.File(block); ok {
+		t.Fatalf("the webmail's block outlived its site:\n%s", conf)
+	}
+	if c := f.s.loadMailConfig(f.ctx); c.Webmail != "" {
+		t.Fatalf("the mail settings name the webmail %q", c.Webmail)
+	}
+}
+
+// Every change of the mail settings goes in over the settings as they are
+// by then. mail.apply that notices another dovecot (it asks the agent
+// first) and an install run again (minutes of packages) read them before
+// the webmail's site went and an administrator changed the message size:
+// the webmail the site's removal took out stays out, the size stays. And
+// mp mail settings asked for while the removal holds them goes in after it.
+func TestMailSettingsKeepWhatChangedMeanwhile(t *testing.T) {
+	f, _, home := newWebmailFixture(t)
+	installedWebmail(t, f, home)
+	site, err := f.db.GetSiteByDomain(f.ctx, "webmail.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// beside is the removal of the webmail's site under way — its server
+	// block went and the settings no longer name it, the row is not gone
+	// yet — and mp mail settings --max-size.
+	beside := func(size int) {
+		if err := f.db.SetSiteStatus(f.ctx, site.ID, store.SiteDeleting, ""); err != nil {
+			t.Error(err)
+		}
+		f.s.webmailMu.Lock()
+		if err := f.s.forgetWebmail(f.ctx, func(string, ...any) {}, site.Domain); err != nil {
+			t.Error(err)
+		}
+		f.s.webmailMu.Unlock()
+		c := f.s.loadMailConfig(f.ctx)
+		c.MaxSizeMB = size
+		if err := f.s.saveMailConfig(f.ctx, c); err != nil {
+			t.Error(err)
+		}
+	}
+	reset := func() {
+		t.Helper()
+		f.settle()
+		if err := f.db.SetSiteStatus(f.ctx, site.ID, store.SiteActive, ""); err != nil {
+			t.Fatal(err)
+		}
+		c := f.s.loadMailConfig(f.ctx)
+		c.Webmail = site.Domain
+		if err := f.s.saveMailConfig(f.ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check := func(what string, size int) mailConfig {
+		t.Helper()
+		c := f.s.loadMailConfig(f.ctx)
+		if c.Webmail != "" || c.MaxSizeMB != size {
+			t.Fatalf("%s put back what it read: webmail %q, max size %d MB (want none, %d)", what, c.Webmail, c.MaxSizeMB, size)
+		}
+		return c
+	}
+
+	// mail.apply after a release upgrade brought another dovecot.
+	f.agent.PackageVersions = map[string]string{"dovecot-core": "1:2.3.21+dfsg1-3"}
+	var once sync.Once
+	f.agent.SetBefore(func(p string, body []byte) {
+		if p == "/v1/pkg" && strings.Contains(string(body), `"action":"query","packages":["dovecot-core"]`) {
+			once.Do(func() { beside(77) })
+		}
+	})
+	t.Cleanup(func() { f.agent.SetBefore(nil) })
+	var ref apitypes.JobRef
+	f.call(http.MethodPost, "/mail/apply", nil, http.StatusAccepted, &ref)
+	if job := f.waitJob(ref.JobID); job.Status != store.JobDone || !strings.Contains(job.Log, "dovecot 1.0-test → 1:2.3.21+dfsg1-3") {
+		t.Fatalf("mail.apply: %s %s\n%s", job.Status, job.Error, job.Log)
+	}
+	if c := check("mail.apply", 77); c.DovecotVersion != "1:2.3.21+dfsg1-3" {
+		t.Fatalf("the dovecot version: %q", c.DovecotVersion)
+	}
+
+	// mp mail install run again, as a repair.
+	reset()
+	var again sync.Once
+	f.agent.SetBefore(func(p string, body []byte) {
+		if p == "/v1/user/ensure" && strings.Contains(string(body), `"login":"vmail"`) {
+			again.Do(func() { beside(99) })
+		}
+	})
+	f.call(http.MethodPost, "/mail/install", map[string]any{"hostname": "mail.example.com"}, http.StatusAccepted, &ref)
+	if job := f.waitJob(ref.JobID); job.Status != store.JobDone {
+		t.Fatalf("mail.install: %s %s\n%s", job.Status, job.Error, job.Log)
+	}
+	if c := check("mail.install", 99); !c.Installed || c.Hostname != "mail.example.com" || c.VmailUID == 0 {
+		t.Fatalf("the install's own findings: installed %v, hostname %q, vmail uid %d", c.Installed, c.Hostname, c.VmailUID)
+	}
+
+	// mp mail settings asked for while the site's removal takes the webmail
+	// out of the settings (it holds them, forgetWebmail): the request's
+	// change goes in after it, over what it saved.
+	reset()
+	f.agent.SetBefore(nil)
+	f.s.webmailMu.Lock()
+	removal := f.s.loadMailConfig(f.ctx)
+	type answer struct {
+		status int
+		body   string
+		err    error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		status, body, err := f.send(http.MethodPut, "/mail/settings", map[string]any{"max_size_mb": 64})
+		answered <- answer{status, body, err}
+	}()
+	time.Sleep(200 * time.Millisecond)
+	removal.Webmail, removal.WebmailVersion = "", ""
+	if err := f.s.saveMailConfig(f.ctx, removal); err != nil {
+		t.Error(err)
+	}
+	f.s.webmailMu.Unlock()
+	select {
+	case a := <-answered:
+		if a.err != nil || a.status != http.StatusOK {
+			t.Fatalf("PUT /mail/settings: %d %s %v", a.status, a.body, a.err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("PUT /mail/settings did not answer")
+	}
+	check("mp mail settings", 64)
 }

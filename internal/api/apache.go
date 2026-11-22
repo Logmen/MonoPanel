@@ -796,7 +796,15 @@ func (s *Server) moveSiteToItsApache(ctx context.Context, jc *jobs.Context, site
 		return false, nil
 	}
 	jc.Logf("%s: to the Apache of %s", site.Domain, u.Login)
-	return true, s.applySiteLocked(ctx, jc, sitePayload{SiteID: site.ID})
+	// The row of a site being removed goes once its removal let the lock
+	// go, which may be by now: such a site has nothing to move.
+	if err := s.applySiteLocked(ctx, jc, sitePayload{SiteID: site.ID}); errors.Is(err, errSiteGone) {
+		jc.Logf("%s: removed meanwhile", site.Domain)
+		return false, nil
+	} else if err != nil {
+		return true, err
+	}
+	return true, nil
 }
 
 // legacyApacheCustom reads, through the agent, the custom directives an

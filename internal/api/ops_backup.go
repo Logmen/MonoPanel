@@ -275,6 +275,11 @@ func (s *Server) registerBackups() {
 				return nil, huma.Error422UnprocessableEntity("include paths must be absolute")
 			}
 		}
+		if in.Body.InPlace {
+			if err := s.restoreRefused(ctx, in.Body.Include); err != nil {
+				return nil, huma.Error409Conflict(err.Error())
+			}
+		}
 		job, err := s.jobs.Enqueue(ctx, "backup.restore", backupPayload{TargetID: t.ID, Snapshot: in.Body.Snapshot, Include: in.Body.Include, InPlace: in.Body.InPlace}, jobs.WithLockKey("backup:"+t.Name), jobs.WithRequestedBy(p.Login))
 		if err != nil {
 			return nil, err
@@ -583,6 +588,11 @@ func (s *Server) jobBackupRestore(ctx context.Context, jc *jobs.Context) error {
 	target := filepath.Join(agent.RestoreDir, p.Snapshot)
 	if p.InPlace {
 		target = "/"
+		// Asked again as the job starts: it may have waited for the
+		// target's other jobs since the request.
+		if err := s.restoreRefused(ctx, p.Include); err != nil {
+			return err
+		}
 	}
 	args := []string{"restore", p.Snapshot, "--target", target}
 	for _, inc := range p.Include {
@@ -599,6 +609,105 @@ func (s *Server) jobBackupRestore(ctx context.Context, jc *jobs.Context) error {
 	logTail(jc, res.Output, 3)
 	jc.Progress(100, "restored to "+target)
 	return nil
+}
+
+// An in-place restore writes into the accounts' homes, under the lock key of
+// its backup target, beside the jobs of the accounts and sites whose files it
+// brings back. The removal of an account or a site and such a restore keep
+// apart, in whichever order they are asked for: a restore whose includes lie
+// in the home of an account being removed or the tree of a site being removed
+// is refused, when asked for and again when it starts (restoreRefused) — the
+// removal takes those files away (a purge takes the home along) or leaves
+// them behind, and what the restore wrote meanwhile, owned as the snapshot
+// has it, would land in a home on its way out or outlive its account. The
+// removal of an account or a site is refused while such a restore is queued
+// or runs (inPlaceRestoreInto). The restore never waits on a site's lock:
+// restic runs for hours, and a lock waited on holds a worker.
+
+// restoreRefused tells why an in-place restore must not write where its
+// includes lie: in the home of an account being removed, or the tree of a
+// site being removed. A path at or above such a home or tree (the web root
+// itself) counts as well. An account without a unix user has no home its
+// removal touches.
+func (s *Server) restoreRefused(ctx context.Context, includes []string) error {
+	if len(includes) == 0 {
+		return nil
+	}
+	users, err := s.db.ListUsers(ctx)
+	if err != nil {
+		return err
+	}
+	owners := map[int64]*store.User{}
+	for _, u := range users {
+		owners[u.ID] = u
+		if u.Status != store.UserDeleting || u.UnixUID == nil {
+			continue
+		}
+		if inc := overlapping(includes, s.homeOf(u)); inc != "" {
+			return fmt.Errorf("the account %s is being removed: an in-place restore of %s does not write into its home %s meanwhile; restore it once the removal is done, or aside", u.Login, inc, s.homeOf(u))
+		}
+	}
+	sites, err := s.db.ListSites(ctx, 0)
+	if err != nil {
+		return err
+	}
+	for _, site := range sites {
+		if u := owners[site.UserID]; u != nil && site.Status == store.SiteDeleting {
+			root := s.layoutFor(site, u).siteRoot
+			if inc := overlapping(includes, root); inc != "" {
+				return fmt.Errorf("site %s is being removed: an in-place restore of %s does not write into its tree %s meanwhile; restore it once the removal is done, or aside", site.Domain, inc, root)
+			}
+		}
+	}
+	return nil
+}
+
+// inPlaceRestoreInto finds an in-place restore, queued or running, that
+// writes into dir — an include at, below or above it — for the removal of
+// an account (its home) or a site (its tree), which is refused until it is
+// over. The queued restores are read first: a restore the runner claims
+// between the two reads is running by the second and found there, where
+// read the other way round it would be in neither list.
+func (s *Server) inPlaceRestoreInto(ctx context.Context, dir string) (*store.Job, error) {
+	for _, status := range []string{store.JobQueued, store.JobRunning} {
+		list, err := s.db.ListJobsFiltered(ctx, store.JobFilter{Type: "backup.restore", Status: status, Limit: 1000})
+		if err != nil {
+			return nil, err
+		}
+		if s.restoresRead != nil {
+			s.restoresRead()
+		}
+		for _, j := range list {
+			var p backupPayload
+			if json.Unmarshal(j.Payload, &p) == nil && p.InPlace && overlapping(p.Include, dir) != "" {
+				return j, nil
+			}
+		}
+	}
+	return nil, nil
+}
+
+// restoreWaitedFor is the refusal of a removal that waits for an in-place
+// restore into what it removes, or nil when there is none.
+func (s *Server) restoreWaitedFor(ctx context.Context, what, dir string) error {
+	j, err := s.inPlaceRestoreInto(ctx, dir)
+	if err != nil || j == nil {
+		return err
+	}
+	return huma.Error409Conflict(fmt.Sprintf("an in-place restore into %s is %s (job %d): remove %s once it is over", dir, j.Status, j.ID, what))
+}
+
+// overlapping is the first of the absolute paths at, below or above dir
+// ("" for none).
+func overlapping(paths []string, dir string) string {
+	dir = path.Clean(dir)
+	below := func(p, d string) bool { return p == d || d == "/" || strings.HasPrefix(p, d+"/") }
+	for _, p := range paths {
+		if c := path.Clean(p); below(c, dir) || below(dir, c) {
+			return p
+		}
+	}
+	return ""
 }
 
 // dumpDatabase writes the dump of a database into out, a file of the API's

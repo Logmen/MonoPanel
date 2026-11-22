@@ -110,6 +110,21 @@ func (s *Server) saveMailConfig(ctx context.Context, c mailConfig) error {
 	return s.db.SetSetting(ctx, settingMail, string(b))
 }
 
+// changeMailConfig is how the mail settings change: change runs on them
+// read afresh, under webmailMu, and what it leaves is saved before anyone
+// else reads them to change them. They are one record, and a change that
+// saved what it had read earlier — before an install of minutes, or an
+// agent call — would put back what changed meanwhile: another change of the
+// settings, or the webmail its site's removal took out (forgetWebmail). It
+// answers the settings as saved. Not for a caller that holds webmailMu.
+func (s *Server) changeMailConfig(ctx context.Context, change func(c *mailConfig)) (mailConfig, error) {
+	s.webmailMu.Lock()
+	defer s.webmailMu.Unlock()
+	c := s.loadMailConfig(ctx)
+	change(&c)
+	return c, s.saveMailConfig(ctx, c)
+}
+
 // mailTLS returns the certificate the mail services should present. A valid
 // panel certificate for the mail hostname wins; otherwise a self-signed pair
 // under <data>/mail keeps the daemons able to start (and clients complaining).
@@ -359,8 +374,10 @@ func (s *Server) applyMailConfig(ctx context.Context, logf func(string, ...any),
 	if q, err := s.agent.Pkg(ctx, "query", dovecotPkg); err == nil {
 		if v := q.Installed[dovecotPkg]; v != "" && v != c.DovecotVersion {
 			logf("dovecot %s → %s", c.DovecotVersion, v)
-			c.DovecotVersion = v
-			if err := s.saveMailConfig(ctx, c); err != nil {
+			// The version alone, over the settings as they are by now
+			// (changeMailConfig says why); the rest of the run renders
+			// those.
+			if c, err = s.changeMailConfig(ctx, func(cur *mailConfig) { cur.DovecotVersion = v }); err != nil {
 				return err
 			}
 		}
@@ -509,8 +526,41 @@ func (s *Server) applyWebmailPort(ctx context.Context, logf func(string, ...any)
 		s.webmailMoved(ctx)
 		return nil
 	}
-	if c.WebmailPort == 0 || c.Webmail == "" || certPath == "" {
+	// The webmail's site and this block change together (webmailMu): the
+	// removal of the site takes both away (removeSitePaths), and a change
+	// that read the settings before it must not write the block back after.
+	s.webmailMu.Lock()
+	defer s.webmailMu.Unlock()
+	c.Webmail = s.loadMailConfig(ctx).Webmail
+	if c.Webmail == "" {
 		return drop()
+	}
+	// Looked for before the port: an older panel removed the site and left
+	// the settings naming it, with a port — every mail change then failed
+	// here — or without one, and the status went on linking to it.
+	site, err := s.db.GetSiteByDomain(ctx, c.Webmail)
+	if errors.Is(err, store.ErrNotFound) {
+		if err := s.forgetWebmail(ctx, logf, c.Webmail); err != nil {
+			return err
+		}
+		return drop()
+	}
+	if err != nil {
+		return fmt.Errorf("webmail site %s: %w", c.Webmail, err)
+	}
+	if c.WebmailPort == 0 || certPath == "" {
+		return drop()
+	}
+	owner, err := s.db.GetUserByID(ctx, site.UserID)
+	if err != nil {
+		return err
+	}
+	if site.Status == store.SiteDeleting || owner.Status == store.UserDeleting {
+		// Its removal takes the block away with the site's own server block
+		// and the settings with it; until then the block stays as it is, and
+		// none is written for a site on the way out.
+		logf("the webmail's site %s is being removed: the webmail port stays as it is until then", site.Domain)
+		return nil
 	}
 	// Its block logs into the site log tree, as the sites do, which nginx
 	// may open on an enforcing host only once the tree's label rule is in
@@ -527,10 +577,6 @@ func (s *Server) applyWebmailPort(ctx context.Context, logf func(string, ...any)
 		logf("warning: the webmail on port %d stays as it is: %v; nginx could not open its logs in the tree. The panel tries the rule again every hour; once it is in place, the next mail change (or mp mail apply) writes the webmail's server block", c.WebmailPort, err)
 		return nil
 	}
-	site, err := s.db.GetSiteByDomain(ctx, c.Webmail)
-	if err != nil {
-		return fmt.Errorf("webmail site %s: %w", c.Webmail, err)
-	}
 	// The host is prepared for the port once: the SELinux label that lets
 	// nginx bind it and the opening in firewalld, where there is one.
 	if v, _ := s.db.GetSetting(ctx, settingWebmailPortReady); v != fmt.Sprint(c.WebmailPort) {
@@ -541,10 +587,6 @@ func (s *Server) applyWebmailPort(ctx context.Context, logf func(string, ...any)
 		if err := s.db.SetSetting(ctx, settingWebmailPortReady, fmt.Sprint(c.WebmailPort)); err != nil {
 			return err
 		}
-	}
-	owner, err := s.db.GetUserByID(ctx, site.UserID)
-	if err != nil {
-		return err
 	}
 	l := s.layoutFor(site, owner)
 	ip := site.IP
@@ -582,6 +624,27 @@ func (s *Server) applyWebmailPort(ctx context.Context, logf func(string, ...any)
 	if len(res.Written) > 0 {
 		logf("webmail at https://%s:%d/", c.Hostname, c.WebmailPort)
 	}
+	return nil
+}
+
+// forgetWebmail takes a site whose removal took the webmail's server block
+// away out of the mail settings, read afresh, so that mail.apply looks for
+// it no more and the status links to it no more; the port stays chosen for
+// a webmail installed again. The caller holds webmailMu.
+func (s *Server) forgetWebmail(ctx context.Context, logf func(string, ...any), domain string) error {
+	c := s.loadMailConfig(ctx)
+	if c.Webmail != domain {
+		return nil
+	}
+	c.Webmail, c.WebmailVersion = "", ""
+	if err := s.saveMailConfig(context.WithoutCancel(ctx), c); err != nil {
+		return fmt.Errorf("mail settings: %w", err)
+	}
+	// No server block of an older panel logs into data/logs any more.
+	s.webmailMoved(ctx)
+	// A mail change of the API itself has no job log to say it in.
+	s.log.Info("mail: the webmail's site is gone, and the mail settings no longer name it", "site", domain)
+	logf("%s held the webmail: the mail settings no longer name it, and nothing serves the webmail now (mp mail webmail <domain> installs it again)", domain)
 	return nil
 }
 

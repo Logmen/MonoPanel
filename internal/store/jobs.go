@@ -169,6 +169,9 @@ type JobFilter struct {
 	Limit       int
 	Status      string
 	RequestedBy string
+	// Type is one job type: a search for a kind of job that may be anywhere
+	// in a long queue (the restores in place an account's removal waits for).
+	Type string
 }
 
 // ListJobsFiltered returns the newest jobs that match. The filters are part
@@ -188,6 +191,10 @@ func (d *DB) ListJobsFiltered(ctx context.Context, f JobFilter) ([]*Job, error) 
 	if f.RequestedBy != "" {
 		q += ` AND requested_by=?`
 		args = append(args, f.RequestedBy)
+	}
+	if f.Type != "" {
+		q += ` AND type=?`
+		args = append(args, f.Type)
 	}
 	rows, err := d.sql.QueryContext(ctx, q+` ORDER BY id DESC LIMIT ?`, append(args, limit)...)
 	if err != nil {

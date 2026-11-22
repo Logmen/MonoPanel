@@ -176,8 +176,9 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 	fresh := installed.Installed["postfix"] == ""
 	// Чужой демон на 25 порту — не редкость (на этом хосте его занимает
 	// приёмник mail-tester). Свой postfix узнаётся по баннеру с именем хоста.
+	port25Taken := false
 	if open, banner := s.probe(25, true); open && !strings.Contains(banner, c.Hostname) {
-		c.Port25 = false
+		c.Port25, port25Taken = false, true
 		jc.Logf("port 25 is taken by another service (%s), so accepting mail from outside is off; free the port and enable it in the settings", defaultBanner(firstLine(banner)))
 	}
 	if fresh {
@@ -266,8 +267,27 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 	s.agent.Tool(ctx, &agent.ToolRequest{Name: "newaliases", TimeoutSeconds: 30}) //nolint:errcheck // /etc/aliases пересобирается на всякий случай
 
 	jc.Progress(55, "certificate")
-	c.Installed = true
-	if err := s.saveMailConfig(ctx, c); err != nil {
+	// What the install found and decided goes in, over the settings as they
+	// are by now: the settings were read minutes ago, and a change made
+	// since — mp mail settings, the webmail its site's removal took out —
+	// stays (changeMailConfig). A name the request gave is the install's;
+	// without one, a name set meanwhile stays.
+	found := c
+	c, err = s.changeMailConfig(ctx, func(cur *mailConfig) {
+		if p.Hostname != "" || cur.Hostname == "" {
+			cur.Hostname = found.Hostname
+		}
+		if p.POP3 != nil {
+			cur.POP3 = *p.POP3
+		}
+		if port25Taken {
+			cur.Port25 = false
+		}
+		cur.PostfixVersion, cur.DovecotVersion, cur.MapType = found.PostfixVersion, found.DovecotVersion, found.MapType
+		cur.VmailUID, cur.VmailGID = found.VmailUID, found.VmailGID
+		cur.Installed = true
+	})
+	if err != nil {
 		return err
 	}
 	s.orderMailCertificate(ctx, jc, c)

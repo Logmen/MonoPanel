@@ -83,7 +83,8 @@ type Server struct {
 	apacheLocks sync.Map
 	// siteLocks holds a *sync.Mutex per site ID (lockSite): applySite runs
 	// in the site's own jobs and, inline, in the move of the sites to their
-	// accounts' Apaches.
+	// accounts' Apaches, and jobs under other keys change the site too (its
+	// removal with the account, sites.move-ip, the webmail).
 	siteLocks sync.Map
 	// movesMu orders the changes of the site moves (settingSiteMoves): the
 	// start-up refresh queues them, every site.apply that succeeds takes
@@ -93,6 +94,16 @@ type Server struct {
 	// the site log tree (selinuxSiteLogsRule): the start-up refresh, the
 	// hourly retry and every site.apply on a host where it is missing.
 	siteLogsRuleMu sync.Mutex
+	// webmailMu orders what names the webmail's site — the mail settings'
+	// Webmail, set by the webmail job and taken away with the site
+	// (forgetWebmail) — with the server block that publishes it on its port
+	// (applyWebmailPort): a mail change that read the setting before the
+	// site's removal does not write the block back after it. Every other
+	// change of the mail settings takes it too (changeMailConfig), so that
+	// none saves the Webmail it read before the removal took it out. Held
+	// for short steps only, never across the webmail job's work in the
+	// site's tree nor an install.
+	webmailMu sync.Mutex
 	// strayShares holds why the start-up refresh could not unbind a shared
 	// folder the agent keeps that no share names (an error by mount point,
 	// unbindStrayShares), for the doctor.
@@ -127,6 +138,10 @@ type Server struct {
 	hostIPv6s func() []string
 	// lookup resolves a name in public DNS; tests answer themselves.
 	lookup func(ctx context.Context, name string) ([]string, error)
+	// restoresRead, set by a test, runs after each read of the in-place
+	// restores the removal of an account or a site looks for
+	// (inPlaceRestoreInto): the test moves a restore on between the reads.
+	restoresRead func()
 	// restartDelay is how long a restart of monopanel-api that a request
 	// asked for waits after the answer; tests need no wait.
 	restartDelay time.Duration

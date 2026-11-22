@@ -271,7 +271,12 @@ func (s *Server) siteLogsPending(ctx context.Context, id int64) bool {
 // one site never run at once (they share its job lock), but the move of the
 // sites to their accounts' Apaches applies them inside a job of its own: the
 // lock keeps it and a site.apply of the same site from rendering and
-// applying side by side, each from what it read of the site.
+// applying side by side, each from what it read of the site. The jobs that
+// change a site under another key hold it as well, each for its step on
+// the site: the removal of its configuration (user.delete for each of the
+// account's sites, removeSiteConfig), sites.move-ip (moveSiteIP) and the
+// webmail's work in its tree. A job waiting for it holds a worker: it is
+// never held across a long run (a restore).
 func (s *Server) lockSite(id int64) func() {
 	m, _ := s.siteLocks.LoadOrStore(id, &sync.Mutex{})
 	mu := m.(*sync.Mutex)

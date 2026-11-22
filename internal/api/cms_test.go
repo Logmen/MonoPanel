@@ -21,6 +21,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"monopanel/internal/agent"
@@ -285,6 +286,50 @@ func TestCMSInstallWordPress(t *testing.T) {
 	}
 	if _, err := f.db.GetDatabaseByName(f.ctx, "alex_wordpress"); err != nil {
 		t.Fatalf("database record: %v", err)
+	}
+}
+
+// The CMS job records its install alone: the site was read minutes before,
+// and what changed meanwhile — the address sites.move-ip gave it, a field mp
+// site set changed — stays.
+func TestCMSInstallKeepsWhatChangedMeanwhile(t *testing.T) {
+	f := cmsFixture(t, map[string][]byte{"https://wordpress.org/latest.tar.gz": tarGz(t, map[string]string{"wordpress/index.php": "<?php", "wordpress/wp-config-sample.php": "<?php"})})
+	f.s.SetHostIPs(func() []string { return []string{"10.0.0.1", "10.0.0.2"} })
+	site := f.createSite(map[string]any{"domain": "wp.example.com", "user": "alex", "php_version": "8.4", "ssl": "none", "ip": "10.0.0.1"})
+	// While wp-cli reports the version it installed, the last step before
+	// the job writes its record.
+	var once sync.Once
+	f.agent.SetBefore(func(p string, body []byte) {
+		if p == "/v1/runas" && strings.Contains(string(body), `"core","version"`) {
+			once.Do(func() {
+				if moved, err := f.db.MoveSiteIP(f.ctx, site.ID, "10.0.0.1", "10.0.0.2"); err != nil || !moved {
+					t.Errorf("move-ip: %v %v", moved, err)
+				}
+				cur, err := f.db.GetSite(f.ctx, site.ID)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				cur.ClientMaxBody = "512m"
+				if err := f.db.UpdateSite(f.ctx, cur); err != nil {
+					t.Error(err)
+				}
+			})
+		}
+	})
+	t.Cleanup(func() { f.agent.SetBefore(nil) })
+	if _, job := f.installCMS(t, site.Domain, map[string]any{"cms": "wordpress", "title": "My blog"}); job.Status != store.JobDone {
+		t.Fatalf("install: %s %s", job.Status, job.Error)
+	}
+	got, err := f.db.GetSite(f.ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.IP != "10.0.0.2" || got.ClientMaxBody != "512m" {
+		t.Fatalf("what changed during the install is lost: ip %s, client_max_body %s", got.IP, got.ClientMaxBody)
+	}
+	if got.CMS != "wordpress" || got.CMSVersion != "7.1" || got.CMSAt == "" || got.CMSDatabase != "alex_wordpress" || got.Preset != "wordpress" {
+		t.Fatalf("the install's record: cms %s %s at %q database %s preset %s", got.CMS, got.CMSVersion, got.CMSAt, got.CMSDatabase, got.Preset)
 	}
 }
 

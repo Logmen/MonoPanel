@@ -656,9 +656,12 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 // nightly upgrade of nginx, PHP and Apache of a failed mp stack install
 // memcached. A failure on a site or an account that a later site.delete or
 // user.delete of the same lock key removed is history too (removesObject):
-// nothing is left to fix. The sites a user.delete removes along with the
-// account keep their failures (site:<domain>) until they are a day old. A
-// job without a lock key stays a failure.
+// nothing is left to fix. So is one on a site a user.delete removed along
+// with its account, inline and without a site.delete of the site's own: the
+// delete names the account's sites as they were when it was queued
+// (userDeletePayload.Sites). One queued by an older panel names none, and
+// their failures (site:<domain>) count until they are a day old. A job
+// without a lock key stays a failure.
 func openFailures(failed, done []*store.Job, now time.Time) int {
 	fixed := map[string]int64{}
 	for _, j := range done {
@@ -687,14 +690,23 @@ func openFailures(failed, done []*store.Job, now time.Time) int {
 // which it runs in full, for every site in Apache mode, and goes through
 // only when both did. Without them the jobs line would warn of the move for
 // a day after the repair the doctor itself pointed to. A job that removed
-// the object of its lock key has done every work on it (lockWork). Each
-// only one way: a site.apply that went through says nothing of a failed
-// site.delete, nor the move of a failed mp stack install apache.
+// the object of its lock key has done every work on it (lockWork), and a
+// user.delete every work on the sites it removed with the account as well.
+// Each only one way: a site.apply that went through says nothing of a
+// failed site.delete, nor the move of a failed mp stack install apache.
 func jobFixes(j *store.Job) []string {
 	own := jobWork(j)
 	switch {
 	case removesObject(j):
-		return []string{own, lockWork(j.LockKey)}
+		fixes := []string{own, lockWork(j.LockKey)}
+		if j.Type == "user.delete" {
+			var p userDeletePayload
+			_ = json.Unmarshal(j.Payload, &p)
+			for _, d := range p.Sites {
+				fixes = append(fixes, lockWork("site:"+d))
+			}
+		}
+		return fixes
 	case own == jobWork(&store.Job{Type: "stack.install", LockKey: j.LockKey, Payload: json.RawMessage(`{"component":"apache"}`)}):
 		return []string{own, jobWork(&store.Job{Type: "apache.migrate", LockKey: j.LockKey}), jobWork(&store.Job{Type: "apache.backend", LockKey: j.LockKey})}
 	}

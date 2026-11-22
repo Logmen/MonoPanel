@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -216,6 +217,12 @@ func (s *Server) registerSiteIP() {
 // unreachable anyway, nginx cannot bind their address — so that the check
 // passes for the default servers and then for each site as it comes back on
 // the new address.
+//
+// The list is made when the job starts; each site then moves under its lock
+// (moveSiteIP), from what it is by then. A site.apply of it takes the same
+// lock, so it renders either before the move — on the old address, which
+// fails or goes — or after it, on the new one, and never writes the file
+// back between the removal and the move.
 func (s *Server) jobSitesMoveIP(ctx context.Context, jc *jobs.Context) error {
 	var p sitesMoveIPPayload
 	if err := jc.Unmarshal(&p); err != nil {
@@ -233,47 +240,121 @@ func (s *Server) jobSitesMoveIP(ctx context.Context, jc *jobs.Context) error {
 		return nil
 	}
 	jc.Progress(10, "nginx configuration")
-	var confs []string
+	var moved []*store.Site
+	var failed error
+	webmail := false
 	for _, site := range sites {
-		user, err := s.db.GetUserByID(ctx, site.UserID)
+		ok, block, err := s.moveSiteIP(ctx, jc, site, p.To)
+		webmail = webmail || block
 		if err != nil {
-			return err
+			failed = fmt.Errorf("%s: %w", site.Domain, err)
+			break
 		}
-		confs = append(confs, s.layoutFor(site, user).nginxConf)
-	}
-	if _, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: confs}); err != nil {
-		return err
-	}
-	for _, site := range sites {
-		jc.Logf("%s: %s → %s", site.Domain, site.IP, p.To)
-		site.IP = p.To
-		if site.Status == store.SiteError {
-			site.Status = store.SitePending
-		}
-		if err := s.db.UpdateSite(ctx, site); err != nil {
-			return err
+		if ok {
+			moved = append(moved, site)
 		}
 	}
+	// What the host lost goes from nginx before any site comes back: a
+	// listen left on such an address fails every check, the sites' too.
 	if gone := s.pruneDefaultServers(ctx); len(gone) > 0 {
 		jc.Logf("removed the default servers of addresses no longer on this server: %s", strings.Join(gone, ", "))
 	}
 	files, err := s.nginxGlobalFiles()
-	if err != nil {
-		return err
+	if err == nil {
+		web := s.profile.Web()
+		// nginx may be down since boot: reload-or-restart brings it up.
+		if _, err = s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Validate: [][]string{web.NginxCheckArgv}, Reload: []string{web.NginxService}, Force: true, Origin: "stack:nginx"}); err != nil {
+			err = fmt.Errorf("default servers: %w", err)
+		}
 	}
-	web := s.profile.Web()
-	// nginx may be down since boot: reload-or-restart brings it up.
-	if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Validate: [][]string{web.NginxCheckArgv}, Reload: []string{web.NginxService}, Force: true, Origin: "stack:nginx"}); err != nil {
-		return fmt.Errorf("default servers: %w", err)
+	if failed == nil {
+		failed = err
 	}
+	// The sites that moved get their applies whatever failed after them:
+	// their configuration is gone, and a second move-ip, which lists what
+	// is still on the old address, would not find them.
 	jc.Progress(50, "sites")
-	for _, site := range sites {
+	for _, site := range moved {
 		id, err := s.enqueueSiteApply(ctx, site, jc.RequestedBy)
 		if err != nil {
-			return err
+			return errors.Join(failed, err)
 		}
 		jc.Logf("%s: job #%d applies the configuration", site.Domain, id)
 	}
-	jc.Progress(100, fmt.Sprintf("sites moved to %s: %d", p.To, len(sites)))
+	// The webmail's block on its port went with its site's (moveSiteIP):
+	// mail.apply writes it again, on the address the site has by then.
+	if webmail {
+		job, err := s.jobs.Enqueue(ctx, "mail.apply", struct{}{}, jobs.WithLockKey("mail"), jobs.WithRequestedBy(jc.RequestedBy))
+		if err != nil {
+			return errors.Join(failed, err)
+		}
+		jc.Logf("the webmail on its port: job #%d writes its server block again", job.ID)
+	}
+	if failed != nil {
+		return failed
+	}
+	jc.Progress(100, fmt.Sprintf("sites moved to %s: %d", p.To, len(moved)))
 	return nil
+}
+
+// moveSiteIP moves one site of the list to the address to, under its lock,
+// and tells whether it did. The site is read again under the lock: since the
+// job listed it, it may have been removed, its account or itself may be on
+// the way out, or an administrator may have put it on another address
+// (mp site set) — such a site is not moved and gets no apply from here. One
+// being removed loses its server block all the same, as its removal would:
+// it listens on an address the host lost, and nginx's check fails while it
+// is there. Only the address is written (store.MoveSiteIP): a change made
+// to the site meanwhile stays.
+//
+// The webmail on its port listens on its site's address as well
+// (applyWebmailPort), and nginx's check fails on that block just the same:
+// it goes with the site's, and the job then queues a mail.apply (webmail),
+// which writes it again on the address the site has by then. webmailMu,
+// held until the site has moved, keeps a mail change — applyWebmailPort
+// reads the site's address under it — from writing the block back on the
+// old address in between.
+func (s *Server) moveSiteIP(ctx context.Context, jc *jobs.Context, listed *store.Site, to string) (moved, webmail bool, err error) {
+	defer s.lockSite(listed.ID)()
+	site, err := s.db.GetSite(ctx, listed.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		jc.Logf("%s: removed meanwhile", listed.Domain)
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	if site.IP != listed.IP {
+		jc.Logf("%s: on %s now, not %s: left as it is", site.Domain, site.IP, listed.IP)
+		return false, false, nil
+	}
+	user, err := s.db.GetUserByID(ctx, site.UserID)
+	if err != nil {
+		return false, false, err
+	}
+	paths := []string{s.layoutFor(site, user).nginxConf}
+	if c := s.loadMailConfig(ctx); c.Webmail == site.Domain && c.WebmailPort > 0 {
+		s.webmailMu.Lock()
+		defer s.webmailMu.Unlock()
+		// Asked again under the lock (removeSitePaths says why).
+		if c := s.loadMailConfig(ctx); c.Webmail == site.Domain && c.WebmailPort > 0 {
+			paths, webmail = append(paths, s.webmailConfPath()), true
+		}
+	}
+	if _, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: paths}); err != nil {
+		return false, webmail, err
+	}
+	if site.Status == store.SiteDeleting || user.Status == store.UserDeleting {
+		jc.Logf("%s: being removed: its server block goes, the site does not move", site.Domain)
+		return false, webmail, nil
+	}
+	ok, err := s.db.MoveSiteIP(context.WithoutCancel(ctx), site.ID, listed.IP, to)
+	if err != nil || !ok {
+		if err == nil {
+			jc.Logf("%s: changed meanwhile (its address, or it is being removed): not moved", site.Domain)
+		}
+		return false, webmail, err
+	}
+	jc.Logf("%s: %s → %s", site.Domain, listed.IP, to)
+	return true, webmail, nil
 }

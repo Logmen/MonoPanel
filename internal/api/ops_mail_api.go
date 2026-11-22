@@ -166,48 +166,58 @@ func (s *Server) registerMail() {
 		OperationID: "mail-settings", Method: http.MethodPut, Path: "/mail/settings", Summary: "Change mail settings", Tags: []string{"mail"}, Security: secured, Metadata: adminOnly,
 	}, func(ctx context.Context, in *mailSettingsInput) (*mailStatusOutput, error) {
 		p := principalFrom(ctx)
-		c := s.loadMailConfig(ctx)
-		if in.Body.Hostname != "" {
+		b := in.Body
+		// Every value is checked first; the change then goes in over the
+		// settings as they are by then (changeMailConfig says why).
+		hostname := ""
+		if b.Hostname != "" {
 			// The name goes into main.cf, dovecot.conf and opendkim's
 			// TrustedHosts as it is: a host name and nothing else.
-			h := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(in.Body.Hostname), "."))
-			if !mailDomainOK(h) {
+			hostname = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(b.Hostname), "."))
+			if !mailDomainOK(hostname) {
 				return nil, huma.Error422UnprocessableEntity("mail server hostname must be fully qualified, e.g. mail.example.com")
 			}
-			c.Hostname = h
 		}
-		if in.Body.MaxSizeMB > 0 {
-			c.MaxSizeMB = in.Body.MaxSizeMB
-		}
-		if in.Body.POP3 != nil {
-			c.POP3 = *in.Body.POP3
-		}
-		if in.Body.DKIM != nil {
-			c.DKIM = *in.Body.DKIM
-		}
-		if in.Body.Port25 != nil {
-			c.Port25 = *in.Body.Port25
-		}
-		if in.Body.WebmailPort != nil {
-			port := *in.Body.WebmailPort
-			if port != 0 && (port < 1024 || port == s.panelPort() || port == 80 || port == 443) {
+		if b.WebmailPort != nil {
+			if port := *b.WebmailPort; port != 0 && (port < 1024 || port == s.panelPort() || port == 80 || port == 443) {
 				return nil, huma.Error422UnprocessableEntity("choose a free port above 1024 for the webmail, e.g. 2096")
 			}
-			c.WebmailPort = port
 		}
-		if in.Body.RBL != nil {
-			list := []string{}
-			for _, r := range *in.Body.RBL {
+		rbl := []string{}
+		if b.RBL != nil {
+			for _, r := range *b.RBL {
 				if r = strings.TrimSpace(strings.ToLower(r)); r != "" {
 					if !mailDomainOK(strings.TrimSuffix(r, ".")) {
 						return nil, huma.Error422UnprocessableEntity("a blocklist must be a domain, e.g. zen.spamhaus.org")
 					}
-					list = append(list, r)
+					rbl = append(rbl, r)
 				}
 			}
-			c.RBL = list
 		}
-		if err := s.saveMailConfig(ctx, c); err != nil {
+		c, err := s.changeMailConfig(ctx, func(cur *mailConfig) {
+			if hostname != "" {
+				cur.Hostname = hostname
+			}
+			if b.MaxSizeMB > 0 {
+				cur.MaxSizeMB = b.MaxSizeMB
+			}
+			if b.POP3 != nil {
+				cur.POP3 = *b.POP3
+			}
+			if b.DKIM != nil {
+				cur.DKIM = *b.DKIM
+			}
+			if b.Port25 != nil {
+				cur.Port25 = *b.Port25
+			}
+			if b.WebmailPort != nil {
+				cur.WebmailPort = *b.WebmailPort
+			}
+			if b.RBL != nil {
+				cur.RBL = rbl
+			}
+		})
+		if err != nil {
 			return nil, err
 		}
 		if c.Installed {

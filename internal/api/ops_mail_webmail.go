@@ -129,6 +129,26 @@ func (s *Server) jobWebmailInstall(ctx context.Context, jc *jobs.Context) error 
 		return fmt.Errorf("database %s holds the schema of a newer Roundcube (%d) than %s, the one this panel installs (%d): the panel does not put an older Roundcube over it", dbName, version, roundcubeVersion, schema.newest)
 	}
 
+	// From here on the run changes the site's tree, the owner's database,
+	// the site's docroot and the mail settings, under the site's lock — the
+	// one the removal of the site takes, site.delete's and user.delete's for
+	// each of the account's sites (removeSiteConfig) — with the site and its
+	// owner read again under it. A removal that came first left them being
+	// removed, or gone: the run stops before it leaves a root-owned tree in
+	// the home, a database after the account or a webmail on a site that is
+	// not there. One that comes later waits for the run and takes away what
+	// it made: the tree with the site or the home, the database recorded as
+	// the owner's with the account's (user.delete lists the databases once
+	// it is past the sites), the webmail with its site. A site this run made
+	// is never missed: user.delete marks the account before it lists the
+	// account's sites, so a site made after that listing finds the account
+	// being removed here. The download stays outside: it takes minutes, and
+	// the lock holds back the site's own jobs.
+	defer s.lockSite(site.ID)()
+	if err := s.webmailSiteStays(ctx, site.ID); err != nil {
+		return err
+	}
+
 	jc.Progress(35, "unpacking")
 	if _, err := s.agent.EnsureDirs(ctx, &agent.EnsureDirsRequest{Dirs: []agent.DirSpec{
 		{Path: l.siteRoot, Mode: 0o750, Owner: owner.Login, Group: s.cfg.WebGroup},
@@ -235,8 +255,9 @@ func (s *Server) jobWebmailInstall(ctx context.Context, jc *jobs.Context) error 
 		if err != nil {
 			return err
 		}
+		was := cur.Clone()
 		cur.Docroot = "public_html"
-		if err := s.db.UpdateSite(ctx, cur); err != nil {
+		if err := s.db.UpdateSiteChanges(ctx, was, cur); err != nil {
 			return err
 		}
 		jc.Logf("site %s now serves public_html, Roundcube's web root: its logs and temporary files stay out of reach", site.Domain)
@@ -250,13 +271,17 @@ func (s *Server) jobWebmailInstall(ctx context.Context, jc *jobs.Context) error 
 	}
 	// The settings are read again: the download takes minutes, and a change
 	// made meanwhile (mp mail settings, the webmail port included) must not
-	// be written back over. Only a port the request names is the run's.
-	c = s.loadMailConfig(ctx)
-	c.Webmail, c.WebmailVersion = site.Domain, roundcubeVersion
-	if p.Port != 0 {
-		c.WebmailPort = p.Port
-	}
-	if err := s.saveMailConfig(ctx, c); err != nil {
+	// be written back over (changeMailConfig). Only a port the request names
+	// is the run's. The removal of the webmail's site — of the one it moves
+	// from, too — takes the site out of them under the same lock
+	// (forgetWebmail).
+	c, err = s.changeMailConfig(ctx, func(cur *mailConfig) {
+		cur.Webmail, cur.WebmailVersion = site.Domain, roundcubeVersion
+		if p.Port != 0 {
+			cur.WebmailPort = p.Port
+		}
+	})
+	if err != nil {
 		return err
 	}
 	// Under the site's own lock key, site:<domain>, as every job of the site
@@ -287,6 +312,11 @@ func (s *Server) webmailSite(ctx context.Context, jc *jobs.Context, c mailConfig
 	if errors.Is(err, store.ErrNotFound) {
 		if requested.UnixUID == nil {
 			return nil, nil, errors.New("the owner has no unix account")
+		}
+		// Asked before anything is made or downloaded; the run asks again
+		// under the site's lock (webmailSiteStays).
+		if err := webmailOwnerStays(requested); err != nil {
+			return nil, nil, err
 		}
 		if err := s.webmailDBFree(ctx, requested); err != nil {
 			return nil, nil, err
@@ -330,6 +360,12 @@ func (s *Server) webmailSite(ctx context.Context, jc *jobs.Context, c mailConfig
 	if owner.UnixUID == nil {
 		return nil, nil, errors.New("the owner has no unix account")
 	}
+	if site.Status == store.SiteDeleting {
+		return nil, nil, fmt.Errorf("site %s is being removed: the webmail is not installed into it", site.Domain)
+	}
+	if err := webmailOwnerStays(owner); err != nil {
+		return nil, nil, err
+	}
 	if site.Mode == store.ModeProxy || site.PHPVersion == "" {
 		return nil, nil, fmt.Errorf("site %s does not run PHP, and the webmail needs it", site.Domain)
 	}
@@ -348,6 +384,36 @@ func (s *Server) webmailSite(ctx context.Context, jc *jobs.Context, c mailConfig
 		jc.Logf("site %s keeps PHP %s (mp site set %s --php %s changes it)", site.Domain, site.PHPVersion, site.Domain, p.PHPVersion)
 	}
 	return site, owner, nil
+}
+
+// webmailOwnerStays refuses an account on the way out: the webmail would
+// make a site, a tree and a database for it that its removal may not see.
+func webmailOwnerStays(owner *store.User) error {
+	if owner.Status == store.UserDeleting {
+		return fmt.Errorf("the account %s is being removed: the webmail is not installed for it", owner.Login)
+	}
+	return nil
+}
+
+// webmailSiteStays reads the webmail's site and its owner again, under the
+// site's lock (the caller holds it): a site or an account that is being
+// removed, or gone, stops the run before it changes anything of theirs.
+func (s *Server) webmailSiteStays(ctx context.Context, id int64) error {
+	site, err := s.db.GetSite(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return errors.New("the webmail's site was removed meanwhile: nothing was installed")
+	}
+	if err != nil {
+		return err
+	}
+	if site.Status == store.SiteDeleting {
+		return fmt.Errorf("site %s is being removed: the webmail is not installed into it", site.Domain)
+	}
+	owner, err := s.db.GetUserByID(ctx, site.UserID)
+	if err != nil {
+		return err
+	}
+	return webmailOwnerStays(owner)
 }
 
 // webmailSiteFree makes sure the archive lands on nothing that belongs to the
