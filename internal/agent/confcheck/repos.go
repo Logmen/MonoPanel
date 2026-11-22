@@ -147,8 +147,11 @@ func aptRepository(raw string) (aptSource, error) {
 	return aptSource{}, fmt.Errorf("the panel adds the repositories of nginx.org, ppa:ondrej/php, packages.sury.org/php and repo.mysql.com; a package from anywhere else runs its scripts as root")
 }
 
-// checkAptPreferences allows pins (no priority above 1000: that downgrades
-// to old, vulnerable versions).
+// checkAptPreferences allows pins with a priority from 1 to 999: from 1000
+// on apt installs the pinned version even when that is a downgrade (to an
+// old, vulnerable one: the vendors' repositories keep every release), and a
+// negative one keeps a package from ever being installed or upgraded, its
+// security updates included (apt_preferences(5); 0 is undefined there).
 func checkAptPreferences(content []byte) error {
 	lines, err := textLines(content)
 	if err != nil {
@@ -168,8 +171,8 @@ func checkAptPreferences(content []byte) error {
 				err = notAllowed(fmt.Sprintf("apt preference %q", s), "bad line")
 			}
 		case "Pin-Priority":
-			if n, perr := strconv.Atoi(v); perr != nil || n > 1000 {
-				err = notAllowed(fmt.Sprintf("apt preference %q", s), "a priority above 1000 downgrades packages")
+			if n, perr := strconv.Atoi(v); perr != nil || n < 1 || n >= 1000 {
+				err = notAllowed(fmt.Sprintf("apt preference %q", s), "a priority of 1000 or more downgrades packages, one below 1 keeps them from their updates; the panel pins from 1 to 999")
 			}
 		default:
 			err = notAllowed(fmt.Sprintf("apt preference %q", s), "a preference has Package, Pin and Pin-Priority")

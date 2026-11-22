@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -30,53 +31,31 @@ const updateUnit = "monopanel-update.service"
 // few tens of megabytes.
 const maxPackageSize = 512 << 20
 
-var versionRe = regexp.MustCompile(`^[0-9][0-9A-Za-z.+~-]{0,63}$`)
+var (
+	versionRe = regexp.MustCompile(`^[0-9][0-9A-Za-z.+~-]{0,63}$`)
+	sha256Re  = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
+)
+
+// openUpdatesDir opens the agent's update directory (root's, 0700). Tests,
+// which cannot make directories of root's, replace it.
+var openUpdatesDir = func(p string) (int, error) { return ensureRootDir(p, 0o700) }
 
 // installPanel installs a release the API downloaded into its downloads
 // directory. That directory is the API's: whatever is checked there could be
 // swapped before the package manager reads it. So the package is first copied
 // into the agent's own directory (root's alone), without following a symlink,
 // and the copy is what gets checked and installed.
+//
+// What the copy must hash to is settled before anything is copied: the
+// request's digest, and with a release key the one the signed checksums give
+// the release's package. A copy that does not hash to it never takes the
+// staged name — the name an update-run started by an earlier request is about
+// to hand to the package manager.
 func (s *Server) installPanel(ctx context.Context, req *InstallPanelRequest) (*InstallPanelResponse, error) {
-	if !versionRe.MatchString(req.Version) {
-		return nil, &Error{Status: http.StatusBadRequest, Message: "invalid version"}
-	}
-	pkg := filepath.Clean(req.Package)
-	// The name is the release's own (updater.AssetName): the signed checksum
-	// list names it, and with it the version being installed.
-	name := updater.AssetName(updater.Kind(string(s.profile.Family())), runtime.GOARCH, req.Version)
-	if filepath.Dir(pkg) != s.cfg.DownloadsDir() || filepath.Base(pkg) != name {
-		return nil, &Error{Status: http.StatusBadRequest, Message: "package must be " + name + " staged in " + s.cfg.DownloadsDir()}
-	}
-	// An older release would bring back what later ones fixed, the agent's
-	// own checks included: the API alone does not get to go back.
-	if updater.Newer(req.Version, buildinfo.Version) {
-		return nil, &Error{Status: http.StatusForbidden, Message: fmt.Sprintf("installing %s over %s is a downgrade, which the panel does not do: install the older package by hand as root", req.Version, buildinfo.Version)}
-	}
-	staged, sum, err := s.stagePackage(pkg)
+	staged, sum, signed, err := s.stageRelease(req)
 	if err != nil {
 		return nil, err
 	}
-	if !strings.EqualFold(sum, req.SHA256) {
-		return nil, &Error{Status: http.StatusBadRequest, Message: "package digest does not match the request"}
-	}
-
-	signed := false
-	if key, _ := updater.ReleaseKey(s.cfg.Update.PublicKey); key != "" {
-		if req.Sums == "" || req.Sig == "" {
-			return nil, &Error{Status: http.StatusBadRequest, Message: "release is unsigned but this host requires a signature"}
-		}
-		if err := updater.VerifySums(key, []byte(req.Sums), []byte(req.Sig)); err != nil {
-			return nil, &Error{Status: http.StatusBadRequest, Message: "release signature: " + err.Error()}
-		}
-		if want := updater.ParseSums([]byte(req.Sums))[name]; !strings.EqualFold(want, sum) {
-			return nil, &Error{Status: http.StatusBadRequest, Message: "package is not the one the signed checksums describe"}
-		}
-		signed = true
-	} else {
-		s.log.Warn("installing a panel package without a signature check: update.public_key is none", "package", staged)
-	}
-
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, &Error{Message: "locate the panel binary", Output: err.Error()}
@@ -97,34 +76,80 @@ func (s *Server) installPanel(ctx context.Context, req *InstallPanelRequest) (*I
 	return &InstallPanelResponse{Unit: updateUnit, Started: true, Signed: signed}, nil
 }
 
+// stageRelease checks an install request and stages its package: the copy
+// in the agent's update directory, its SHA-256, and whether a signature
+// vouched for it.
+func (s *Server) stageRelease(req *InstallPanelRequest) (staged, sum string, signed bool, err error) {
+	if !versionRe.MatchString(req.Version) {
+		return "", "", false, &Error{Status: http.StatusBadRequest, Message: "invalid version"}
+	}
+	pkg := filepath.Clean(req.Package)
+	// The name is the release's own (updater.AssetName): the signed checksum
+	// list names it, and with it the version being installed.
+	name := updater.AssetName(updater.Kind(string(s.profile.Family())), runtime.GOARCH, req.Version)
+	if filepath.Dir(pkg) != s.cfg.DownloadsDir() || filepath.Base(pkg) != name {
+		return "", "", false, &Error{Status: http.StatusBadRequest, Message: "package must be " + name + " staged in " + s.cfg.DownloadsDir()}
+	}
+	// An older release would bring back what later ones fixed, the agent's
+	// own checks included: the API alone does not get to go back.
+	if updater.Downgrade(buildinfo.Version, req.Version) {
+		return "", "", false, &Error{Status: http.StatusForbidden, Message: fmt.Sprintf("installing %s over %s is a downgrade, which the panel does not do: install the older package by hand as root", req.Version, buildinfo.Version)}
+	}
+	if !sha256Re.MatchString(req.SHA256) {
+		return "", "", false, &Error{Status: http.StatusBadRequest, Message: "the package digest is not a SHA-256"}
+	}
+	want := strings.ToLower(req.SHA256)
+	if key, _ := updater.ReleaseKey(s.cfg.Update.PublicKey); key != "" {
+		if req.Sums == "" || req.Sig == "" {
+			return "", "", false, &Error{Status: http.StatusBadRequest, Message: "release is unsigned but this host requires a signature"}
+		}
+		if err := updater.VerifySums(key, []byte(req.Sums), []byte(req.Sig)); err != nil {
+			return "", "", false, &Error{Status: http.StatusBadRequest, Message: "release signature: " + err.Error()}
+		}
+		if listed := updater.ParseSums([]byte(req.Sums))[name]; !strings.EqualFold(listed, want) {
+			return "", "", false, &Error{Status: http.StatusBadRequest, Message: "package is not the one the signed checksums describe"}
+		}
+		signed = true
+	} else {
+		s.log.Warn("installing a panel package without a signature check: update.public_key is none", "package", pkg)
+	}
+	staged, err = s.stagePackage(pkg, want)
+	if err != nil {
+		return "", "", false, err
+	}
+	return staged, want, signed, nil
+}
+
 // stagePackage copies the package pkg (in the downloads directory) into the
-// agent's update directory and returns the copy and its SHA-256. The
-// downloads directory is reached without following a symlink below the data
-// directory, the package is opened without following one either, and it
-// must be a plain file.
-func (s *Server) stagePackage(pkg string) (string, string, error) {
+// agent's update directory, where it takes pkg's name once its SHA-256 is
+// want, and returns the copy. The downloads directory is reached without
+// following a symlink below the data directory, the package is opened without
+// following one either, and it must be a plain file.
+func (s *Server) stagePackage(pkg, want string) (string, error) {
 	src, err := openDirBelow(s.cfg.DataDir, filepath.Dir(pkg), false, 0)
 	if err != nil {
-		return "", "", &Error{Status: http.StatusBadRequest, Message: "no such package: " + pkg, Output: err.Error()}
+		return "", &Error{Status: http.StatusBadRequest, Message: "no such package: " + pkg, Output: err.Error()}
 	}
 	defer unix.Close(src) //nolint:errcheck // a directory opened for reading
 	dir := s.cfg.AgentUpdatesDir()
-	dst, err := ensureRootDir(dir, 0o700)
+	dst, err := openUpdatesDir(dir)
 	if err != nil {
-		return "", "", &Error{Message: "prepare " + dir, Output: err.Error()}
+		return "", &Error{Message: "prepare " + dir, Output: err.Error()}
 	}
 	defer unix.Close(dst) //nolint:errcheck // a directory opened for reading
 	name := filepath.Base(pkg)
-	sum, err := copyPackage(src, dst, name)
+	err = copyPackage(src, dst, name, want)
 	switch {
+	case errors.Is(err, errDigest):
+		return "", &Error{Status: http.StatusBadRequest, Message: "package digest does not match the request"}
 	case errors.Is(err, errNotPackage):
-		return "", "", &Error{Status: http.StatusBadRequest, Message: pkg + ": " + err.Error()}
+		return "", &Error{Status: http.StatusBadRequest, Message: pkg + ": " + err.Error()}
 	case err != nil:
-		return "", "", &Error{Message: "stage the package", Output: err.Error()}
+		return "", &Error{Message: "stage the package", Output: err.Error()}
 	}
-	pruneStaged(dst, dir, name)
+	pruneStaged(dst, name)
 	s.pruneLegacyBackups()
-	return filepath.Join(dir, name), sum, nil
+	return filepath.Join(dir, name), nil
 }
 
 // pruneLegacyBackups removes the binaries updates up to 0.8.19 kept in the
@@ -136,55 +161,73 @@ func (s *Server) pruneLegacyBackups() {
 		return
 	}
 	defer unix.Close(dfd) //nolint:errcheck // a directory opened for reading
-	dup, err := unix.Dup(dfd)
-	if err != nil {
-		return
-	}
-	d := os.NewFile(uintptr(dup), s.cfg.UpdatesDir())
-	defer d.Close()
-	names, _ := d.Readdirnames(-1)
-	for _, n := range names {
+	for _, n := range dirNames(dfd) {
 		if strings.HasPrefix(n, "monopanel-") {
 			_ = unix.Unlinkat(dfd, n, 0)
 		}
 	}
 }
 
-var errNotPackage = errors.New("not a package file")
+// dirNames lists the directory dfd, read through a descriptor of its own.
+func dirNames(dfd int) []string {
+	dup, err := unix.Dup(dfd)
+	if err != nil {
+		return nil
+	}
+	d := os.NewFile(uintptr(dup), "")
+	defer d.Close()
+	names, _ := d.Readdirnames(-1)
+	return names
+}
+
+var (
+	errNotPackage = errors.New("not a package file")
+	errDigest     = errors.New("the package digest does not match")
+)
 
 // copyPackage copies name from the directory src into the directory dst
-// (made next to the name and renamed over it) and returns its SHA-256.
-func copyPackage(src, dst int, name string) (string, error) {
+// under a name of its own, and renames the copy to name once its SHA-256 is
+// want: whatever an earlier request staged there stays unless this copy is
+// the package both were checked to be.
+func copyPackage(src, dst int, name, want string) error {
 	fd, err := unix.Openat(src, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
 	if err != nil {
 		if errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOENT) {
-			return "", fmt.Errorf("%w: %v", errNotPackage, err)
+			return fmt.Errorf("%w: %v", errNotPackage, err)
 		}
-		return "", err
+		return err
 	}
 	in := os.NewFile(uintptr(fd), name)
 	defer in.Close()
 	var st unix.Stat_t
 	if err := unix.Fstat(fd, &st); err != nil {
-		return "", err
+		return err
 	}
 	if st.Mode&unix.S_IFMT != unix.S_IFREG {
-		return "", fmt.Errorf("%w: not a plain file", errNotPackage)
+		return fmt.Errorf("%w: not a plain file", errNotPackage)
 	}
 	if st.Size > maxPackageSize {
-		return "", fmt.Errorf("%w: %d bytes, more than a panel package has", errNotPackage, st.Size)
+		return fmt.Errorf("%w: %d bytes, more than a panel package has", errNotPackage, st.Size)
 	}
-	tmp := "." + name + ".part"
-	_ = unix.Unlinkat(dst, tmp, 0)
+	// A name no other request uses: two requests at once each write their
+	// own copy, and neither renames the other's.
+	var nonce [8]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return err
+	}
+	tmp := "." + hex.EncodeToString(nonce[:]) + ".part"
 	wfd, err := unix.Openat(dst, tmp, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
 	if err != nil {
-		return "", err
+		return err
 	}
 	out := os.NewFile(uintptr(wfd), tmp)
 	h := sha256.New()
 	n, err := io.Copy(io.MultiWriter(out, h), io.LimitReader(in, maxPackageSize+1))
 	if err == nil && n > maxPackageSize {
 		err = fmt.Errorf("%w: it grew past %d bytes while being copied", errNotPackage, int64(maxPackageSize))
+	}
+	if err == nil && !strings.EqualFold(hex.EncodeToString(h.Sum(nil)), want) {
+		err = errDigest
 	}
 	if err == nil {
 		err = out.Sync()
@@ -197,23 +240,19 @@ func copyPackage(src, dst int, name string) (string, error) {
 	}
 	if err != nil {
 		_ = unix.Unlinkat(dst, tmp, 0)
-		return "", err
+		return err
 	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return nil
 }
 
-// pruneStaged removes packages staged by earlier updates: only the one being
-// installed is of any use. The binary backups of update-run stay.
-func pruneStaged(dfd int, dir, keep string) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	for _, e := range entries {
-		n := e.Name()
-		if n == keep || e.IsDir() || !(strings.HasSuffix(n, ".deb") || strings.HasSuffix(n, ".rpm") || strings.HasSuffix(n, ".part")) {
+// pruneStaged removes packages staged by earlier updates and copies left by
+// requests that failed: only the one being installed is of any use. The
+// binary backups of update-run stay.
+func pruneStaged(dfd int, keep string) {
+	for _, n := range dirNames(dfd) {
+		if n == keep || !(strings.HasSuffix(n, ".deb") || strings.HasSuffix(n, ".rpm") || strings.HasSuffix(n, ".part")) {
 			continue
 		}
-		_ = unix.Unlinkat(dfd, n, 0)
+		_ = unix.Unlinkat(dfd, n, 0) // a directory stays: unlinkat without AT_REMOVEDIR
 	}
 }

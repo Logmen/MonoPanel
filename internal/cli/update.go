@@ -3,12 +3,12 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -280,20 +280,13 @@ func updateRunCmd() *cobra.Command {
 			// root's alone: a rollback copies this back as the panel binary
 			BackupDir: cfg.AgentUpdatesDir(),
 			// the state goes into the API's data directory without following
-			// a symlink the API may have left there
-			WriteState: func(dir string, data []byte) error {
-				err := agent.InstallFile(updater.StateFile(dir), data, 0o644)
-				if errors.Is(err, os.ErrNotExist) {
-					if _, err = agent.EnsureDir(agent.DirSpec{Path: dir, Mode: 0o755}); err == nil {
-						err = agent.InstallFile(updater.StateFile(dir), data, 0o644)
-					}
-				}
-				return err
-			},
-			Binary: panelBinary(),
-			Argv:   profile.Packages().InstallArgv([]string{pkg}),
-			Units:  []string{cfg.Update.AgentUnit, cfg.Update.APIUnit},
-			Ready:  panelVersionProbe(cfg),
+			// a symlink the API may have left there, and without giving
+			// whatever directory it put under the name another mode
+			WriteState: writeUpdateState,
+			Binary:     panelBinary(),
+			Argv:       profile.Packages().InstallArgv([]string{pkg}),
+			Units:      []string{cfg.Update.AgentUnit, cfg.Update.APIUnit},
+			Ready:      panelVersionProbe(cfg),
 		}
 		return inst.Run(cmd.Context())
 	}}
@@ -305,6 +298,12 @@ func updateRunCmd() *cobra.Command {
 	c.MarkFlagRequired("sha256")
 	c.MarkFlagRequired("version")
 	return c
+}
+
+// writeUpdateState writes update-run's state.json into dir, the API's
+// DataDir/updates: made (root's 0755) when missing, used as it is otherwise.
+func writeUpdateState(dir string, data []byte) error {
+	return agent.InstallFileIn(dir, filepath.Base(updater.StateFile(dir)), data, 0o755, 0o644)
 }
 
 func panelBinary() string {

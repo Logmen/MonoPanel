@@ -281,6 +281,11 @@ func (a *Agent) respond(path string, body []byte) any {
 	case "/v1/config/apply":
 		var req agent.ApplyConfigSetRequest
 		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		// Like the agent: the units to reload or restart pass the service
+		// policy before anything is written.
+		if err := agent.CheckReloads(req.Reload, req.Restart); err != nil {
+			return err
+		}
 		for _, f := range req.Files {
 			if refused(f.Path) {
 				return refusal(f.Path)
@@ -377,6 +382,9 @@ func (a *Agent) respond(path string, body []byte) any {
 	case "/v1/paths/remove":
 		var req agent.RemovePathsRequest
 		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		if err := agent.CheckReloads(req.Reload); err != nil {
+			return err
+		}
 		for _, p := range req.Paths {
 			if refused(p) {
 				return refusal(p)

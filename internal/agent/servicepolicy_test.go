@@ -30,6 +30,12 @@ func TestServicePolicy(t *testing.T) {
 		{"emergency.service", "start", false},
 		{"systemd-reboot.service", "start", false},
 		{"systemd-confext.service", "restart", false},
+		{"systemd-exit.service", "start", false},
+		{"systemd-suspend.service", "start", false},
+		{"systemd-hibernate.service", "start", false},
+		{"systemd-hybrid-sleep.service", "start", false},
+		{"systemd-suspend-then-hibernate.service", "start", false},
+		{"systemd-suspend.service", "status", true},
 		// arguments of the caller's choosing
 		{"modprobe@dccp.service", "start", false},
 		{"systemd-nspawn@box.service", "start", false},

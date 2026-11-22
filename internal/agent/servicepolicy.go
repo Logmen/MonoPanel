@@ -15,17 +15,22 @@ import (
 
 // statusOnlyUnits are plain units that only report their state, with why.
 var statusOnlyUnits = map[string]string{
-	"debug-shell.service":         "it is a root shell on tty9",
-	"emergency.service":           "it is the emergency shell",
-	"rescue.service":              "it is the rescue shell",
-	"console-getty.service":       "it is a login prompt on the console",
-	"systemd-halt.service":        "it halts the machine",
-	"systemd-poweroff.service":    "it powers the machine off",
-	"systemd-reboot.service":      "it reboots the machine",
-	"systemd-kexec.service":       "it boots another kernel",
-	"systemd-soft-reboot.service": "it restarts the whole userspace",
-	"systemd-sysext.service":      "it lays system extension images over /usr",
-	"systemd-confext.service":     "it lays configuration extension images over /etc",
+	"debug-shell.service":                    "it is a root shell on tty9",
+	"emergency.service":                      "it is the emergency shell",
+	"rescue.service":                         "it is the rescue shell",
+	"console-getty.service":                  "it is a login prompt on the console",
+	"systemd-halt.service":                   "it halts the machine",
+	"systemd-poweroff.service":               "it powers the machine off",
+	"systemd-reboot.service":                 "it reboots the machine",
+	"systemd-kexec.service":                  "it boots another kernel",
+	"systemd-soft-reboot.service":            "it restarts the whole userspace",
+	"systemd-exit.service":                   "it powers the machine off (exit is poweroff outside a container)",
+	"systemd-suspend.service":                "it suspends the machine",
+	"systemd-hibernate.service":              "it hibernates the machine",
+	"systemd-hybrid-sleep.service":           "it suspends and hibernates the machine",
+	"systemd-suspend-then-hibernate.service": "it suspends, then hibernates the machine",
+	"systemd-sysext.service":                 "it lays system extension images over /usr",
+	"systemd-confext.service":                "it lays configuration extension images over /etc",
 }
 
 // actionableKinds are the unit types the agent acts on; the others (targets,
@@ -77,6 +82,10 @@ func fullUnit(unit string) string {
 	}
 	return unit
 }
+
+// CheckReloads is the check of the units config/apply and paths/remove
+// reload or restart, for the agent's doubles.
+func CheckReloads(units ...[]string) error { return checkUnits("restart", units...) }
 
 // checkUnits vets the units config/apply and paths/remove reload or restart
 // (a restart starts a unit that is not running).

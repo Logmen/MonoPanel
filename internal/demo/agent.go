@@ -364,6 +364,10 @@ func HostLoad(t time.Time) (load float64, memUsed uint64) {
 }
 
 func (a *Agent) applyConfigSet(_ context.Context, req *agent.ApplyConfigSetRequest) (*agent.ApplyConfigSetResponse, error) {
+	// The real agent's service policy for what gets reloaded, before any file.
+	if err := agent.CheckReloads(req.Reload, req.Restart); err != nil {
+		return nil, err
+	}
 	resp := &agent.ApplyConfigSetResponse{Written: []string{}, Unchanged: []string{}, Validated: len(req.Validate)}
 	for _, f := range req.Files {
 		content := f.Content
@@ -606,6 +610,9 @@ func (a *Agent) ensureSymlink(_ context.Context, req *agent.EnsureSymlinkRequest
 }
 
 func (a *Agent) removePaths(_ context.Context, req *agent.RemovePathsRequest) (*agent.RemovePathsResponse, error) {
+	if err := agent.CheckReloads(req.Reload); err != nil {
+		return nil, err
+	}
 	resp := &agent.RemovePathsResponse{Removed: []string{}}
 	for _, p := range req.Paths {
 		if a.real(p) {

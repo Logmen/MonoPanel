@@ -474,6 +474,39 @@ func InstallFile(path string, data []byte, mode os.FileMode) error {
 	return writeFileAt(w.fd, w.resolved, filepath.Base(p), data, uint32(mode.Perm()), -1, -1)
 }
 
+// InstallFileIn is InstallFile for a file of root's in a directory of the
+// API's that may be missing (update-run's state.json in DataDir/updates):
+// the parent is reached as InstallFile reaches a directory, the directory is
+// made there (root's, mode as the umask leaves it) when it is missing, and is
+// opened without following a symlink. A directory already there is used as it
+// is, never given another mode or owner: in a parent the API may write to it
+// can be any directory the API put under the name, one of root's included.
+func InstallFileIn(dir, name string, data []byte, dirMode, mode os.FileMode) error {
+	d := filepath.Clean(dir)
+	if !filepath.IsAbs(d) || d == "/" || name == "" || strings.Contains(name, "/") || name == "." || name == ".." {
+		return fmt.Errorf("%s in %s: not a file the agent writes", name, dir)
+	}
+	parent, err := walkDir("/", filepath.Dir(d), walkOpts{trust: setupTrust(), follow: followAll, uid: -1, gid: -1})
+	if err != nil {
+		return err
+	}
+	defer parent.close()
+	base := filepath.Base(d)
+	here := filepath.Join(parent.resolved, base)
+	if err := unix.Mkdirat(parent.fd, base, uint32(dirMode.Perm())); err != nil && !errors.Is(err, unix.EEXIST) {
+		return &os.PathError{Op: "mkdir", Path: here, Err: err}
+	}
+	fd, err := unix.Openat(parent.fd, base, dirFlags, 0)
+	if errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR) {
+		return fmt.Errorf("%w: refusing %s", errSymlinkInPath, here)
+	}
+	if err != nil {
+		return &os.PathError{Op: "open", Path: here, Err: err}
+	}
+	defer unix.Close(fd) //nolint:errcheck // a directory opened for reading
+	return writeFileAt(fd, here, name, data, uint32(mode.Perm()), -1, -1)
+}
+
 // PlainFile tells whether path is there, reached as InstallFile reaches it;
 // something under the name that is no plain file — a symlink above all — is
 // an error (errNotPlainFile), and so is a symlink on the way root did not

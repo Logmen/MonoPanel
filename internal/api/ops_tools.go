@@ -470,21 +470,41 @@ func composerWrapper(php string) string {
 // (up to 0.8.19), on the PHP CLI it already names.
 func (s *Server) refreshComposerWrapper(ctx context.Context) {
 	b, err := os.ReadFile(composerBin)
-	if err != nil || strings.Contains(string(b), confcheck.ComposerRootGuard) {
+	if err != nil {
 		return
 	}
-	php := ""
-	for _, l := range strings.Split(string(b), "\n") {
-		if f := strings.Fields(l); len(f) == 4 && f[0] == "exec" && f[2] == composerPhar && strings.HasPrefix(f[1], "/") {
-			php = f[1]
-		}
-	}
-	if php == "" {
+	content, ok := refreshedComposerWrapper(string(b))
+	if !ok {
 		return
 	}
-	if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: []agent.FileSpec{{Path: composerBin, Content: composerWrapper(php), Mode: 0o755}}, Origin: "composer"}); err != nil {
+	if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: []agent.FileSpec{{Path: composerBin, Content: content, Mode: 0o755}}, Origin: "composer"}); err != nil {
 		s.log.Warn("composer wrapper", "err", err)
 	}
+}
+
+// refreshedComposerWrapper is the wrapper that replaces old, the content of
+// /usr/local/bin/composer, when old is the panel's wrapper without the root
+// guard: one that passes the agent's check already stays, and so does a file
+// that is not the panel's (no exec of its composer.phar). The wrapper of a
+// host the panel knew no PHP CLI path of execs composer.phar directly
+// ("exec  <phar>").
+func refreshedComposerWrapper(old string) (string, bool) {
+	if confcheck.Check(composerBin, []byte(old)) == nil {
+		return "", false
+	}
+	php, found := "", false
+	for _, l := range strings.Split(old, "\n") {
+		switch f := strings.Fields(l); {
+		case len(f) == 4 && f[0] == "exec" && f[2] == composerPhar && f[3] == `"$@"` && strings.HasPrefix(f[1], "/"):
+			php, found = f[1], true
+		case len(f) == 3 && f[0] == "exec" && f[1] == composerPhar && f[2] == `"$@"`:
+			php, found = "", true
+		}
+	}
+	if !found {
+		return "", false
+	}
+	return composerWrapper(php), true
 }
 
 // installComposer puts the current stable composer.phar under /usr/local/lib

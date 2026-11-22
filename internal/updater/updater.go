@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -525,6 +526,44 @@ func Newer(current, candidate string) bool {
 		return true
 	}
 	return semver.Compare(n, c) > 0
+}
+
+// Downgrade reports whether installing candidate over current goes back. An
+// older release does, and so does the release a build made after it was
+// built from: "0.8.19-5-gabc1234" holds 0.8.19 and five commits more, which
+// installing 0.8.19 would take away (Normalize compares the two as equal, so
+// that the build is not offered the release as an update). The same version
+// again, a working tree's "-dirty" build of it included, is a reinstall, not
+// a downgrade. An unparsable current version (a hand-built binary) blocks
+// nothing; an unparsable candidate over a known version is refused.
+func Downgrade(current, candidate string) bool {
+	c, n := Normalize(current), Normalize(candidate)
+	if !semver.IsValid(c) {
+		return false
+	}
+	if !semver.IsValid(n) {
+		return true
+	}
+	if cmp := semver.Compare(n, c); cmp != 0 {
+		return cmp < 0
+	}
+	return describeDistance(current) > describeDistance(candidate)
+}
+
+var describeDistanceRe = regexp.MustCompile(`-(\d+)-g[0-9a-f]{6,}$`)
+
+// describeDistance is how many commits a git describe version lies after its
+// tag: 5 for "0.8.19-5-gabc1234", 0 for the tag itself.
+func describeDistance(v string) int {
+	m := describeDistanceRe.FindStringSubmatch(Version(v))
+	if m == nil {
+		return 0
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // AssetName is the file name of a release artefact. The release workflow

@@ -44,6 +44,44 @@ func TestNewerComparesVersions(t *testing.T) {
 	}
 }
 
+// The agent refuses what Downgrade calls one. A build made after a tag holds
+// commits the tag lacks: installing the tag over it goes back, although the
+// update check (Newer) rightly offers the tag nothing.
+func TestDowngrade(t *testing.T) {
+	cases := []struct {
+		current, candidate string
+		want               bool
+	}{
+		{"0.8.19", "0.8.20", false},
+		{"0.8.19", "0.8.19", false},       // a reinstall
+		{"0.8.19-dirty", "0.8.19", false}, // the release a working tree was built on
+		{"0.8.19", "0.8.18", true},
+		{"0.8.19", "v0.8.18", true},
+		{"0.8.19-5-gabc1234", "0.8.19", true}, // five commits back
+		{"0.8.19-5-gabc1234-dirty", "0.8.19", true},
+		{"0.8.19-5-gabc1234", "0.8.19-5-gabc1234", false},
+		{"0.8.19-5-gabc1234", "0.8.19-7-gdef5678", false},
+		{"0.8.19-5-gabc1234", "0.8.20", false},
+		{"0.8.19-5-gabc1234", "0.8.18", true},
+		{"0.9.0-beta.2", "0.9.0-beta.1", true}, // prereleases in order
+		{"0.9.0-beta.1", "0.9.0-beta.2", false},
+		{"0.9.0", "0.9.0-beta.2", true}, // the release is past its betas
+		{"0.9.0-beta.2", "0.9.0", false},
+		{"0.9.0-beta.1-2-gabc1234", "0.9.0-beta.1", true},
+		{"0.8.20", "0.8.20+rebuild", false}, // build metadata changes nothing
+		{"0.0.0-dev", "0.8.19", false},      // the Makefile's version without git
+		{"dev", "0.1.0", false},             // a hand-built binary blocks nothing
+		{"", "0.1.0", false},
+		{"0.8.19", "0.8.19.1", true}, // not a version: refused over a known one
+		{"0.8.19", "latest", true},
+	}
+	for _, c := range cases {
+		if got := Downgrade(c.current, c.candidate); got != c.want {
+			t.Errorf("Downgrade(%q, %q) = %v, want %v", c.current, c.candidate, got, c.want)
+		}
+	}
+}
+
 func TestAssetNames(t *testing.T) {
 	if got := AssetName("deb", "amd64", "v0.6.0"); got != "monopanel_0.6.0_amd64.deb" {
 		t.Errorf("deb name: %s", got)
