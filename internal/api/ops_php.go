@@ -405,15 +405,7 @@ func (s *Server) jobPHPInstall(ctx context.Context, jc *jobs.Context) error {
 	logTail(jc, res.Output, 3)
 	jc.Logf("core: %s", strings.Join(layout.CorePackages, " "))
 	jc.Progress(55, "optional extensions")
-	skipped := []string{}
-	for _, pkg := range layout.ExtraPackages {
-		if _, err := s.agent.Pkg(ctx, "install", pkg); err != nil {
-			skipped = append(skipped, pkg)
-		}
-	}
-	if len(skipped) > 0 {
-		jc.Logf("not available for this branch, skipped: %s", strings.Join(skipped, " "))
-	}
+	s.installPHPExtras(ctx, jc, layout)
 
 	jc.Progress(75, "configuration")
 	if _, err := s.agent.EnsureDirs(ctx, &agent.EnsureDirsRequest{Dirs: []agent.DirSpec{{Path: path.Join(s.cfg.RunDir, "php"), Mode: 0o755, Owner: "root", Group: "root"}}}); err != nil {
@@ -481,6 +473,141 @@ func (s *Server) jobPHPInstall(ctx context.Context, jc *jobs.Context) error {
 	jc.Logf("PHP %s (%s): %d extension packages", p.Version, pkgVersion, len(exts))
 	jc.Progress(100, "PHP "+p.Version+" ready")
 	return nil
+}
+
+// installPHPExtras installs a branch's optional extensions in one run of the
+// package manager. A run that installs packages of a branch restarts its
+// php-fpm (on Debian the fpm package's trigger, once at the end of the run):
+// with a run per package a fresh Debian 12 restarted php8.4-fpm about every
+// 1.5 s, more often than systemd's start limit lets a unit start (5 in
+// 10 s), and systemd refused the panel's own reload right after. The
+// repositories are asked first which of the packages they carry (old
+// branches lack some); only when the one run fails are the packages
+// installed one by one, so that one broken package does not keep the others
+// out.
+func (s *Server) installPHPExtras(ctx context.Context, jc *jobs.Context, layout *osprofile.PHPLayout) {
+	extras := layout.ExtraPackages
+	if len(extras) == 0 {
+		return
+	}
+	var carried, other []string
+	if res, err := s.agent.Pkg(ctx, "available", extras...); err != nil {
+		// Not known: the one run says, or the runs one by one after it.
+		jc.Logf("cannot ask the repositories for the optional extensions (%v): trying all of them", err)
+		carried = extras
+	} else {
+		for _, pkg := range extras {
+			if _, ok := res.Available[pkg]; ok {
+				carried = append(carried, pkg)
+			} else {
+				other = append(other, pkg)
+			}
+		}
+	}
+	var failed []string
+	if len(carried) > 0 {
+		if _, err := s.agent.Pkg(ctx, "install", carried...); err == nil {
+			jc.Logf("optional extensions: %s", strings.Join(carried, " "))
+		} else {
+			jc.Logf("the optional extensions did not install in one run (%s): installing them one by one", pkgFailure(err))
+			var installed []string
+			installed, failed = s.installEach(ctx, jc.Logf, carried)
+			if len(installed) > 0 {
+				jc.Logf("optional extensions: %s", strings.Join(installed, " "))
+			}
+		}
+	}
+	if len(other) > 0 {
+		// A name no repository carries as a package of its own may be one
+		// that another package provides, and apt and dnf install it by that
+		// name: Ubuntu's own PHP ships php-imagick as php8.3-imagick,
+		// Debian's php8.4-xml brings php8.4-xsl. Those go in one more run;
+		// should a name nothing provides fail it, one by one, quietly.
+		provided, missing := other, []string(nil)
+		if _, err := s.agent.Pkg(ctx, "install", other...); err != nil {
+			provided, missing = s.installEach(ctx, nil, other)
+		}
+		// An extension that is there all the same — built into a package
+		// the branch has already — is no gap either.
+		if len(missing) > 0 {
+			have := s.phpModuleNames(ctx, layout)
+			var skipped []string
+			for _, pkg := range missing {
+				if name := extensionName(pkg, layout.Version); name != "" && have[name] {
+					provided = append(provided, pkg)
+				} else {
+					skipped = append(skipped, pkg)
+				}
+			}
+			missing = skipped
+		}
+		if len(provided) > 0 {
+			jc.Logf("provided by other packages of the branch: %s", strings.Join(provided, " "))
+		}
+		if len(missing) > 0 {
+			jc.Logf("not available for this branch, skipped: %s", strings.Join(missing, " "))
+		}
+	}
+	if len(failed) > 0 {
+		jc.Logf("did not install, skipped: %s", strings.Join(failed, " "))
+	}
+}
+
+// installEach installs packages one run each and tells which went in; logf,
+// when set, gets why each of the others did not.
+func (s *Server) installEach(ctx context.Context, logf func(string, ...any), pkgs []string) (installed, failed []string) {
+	for _, pkg := range pkgs {
+		if _, err := s.agent.Pkg(ctx, "install", pkg); err != nil {
+			if logf != nil {
+				logf("%s: %s", pkg, pkgFailure(err))
+			}
+			failed = append(failed, pkg)
+			continue
+		}
+		installed = append(installed, pkg)
+	}
+	return installed, failed
+}
+
+// pkgFailure is a failed run of the package manager in one line: the
+// agent's message and the last lines of the output, where apt and dnf say
+// what went wrong.
+func pkgFailure(err error) string {
+	var ae *agent.Error
+	if errors.As(err, &ae) && ae.Output != "" {
+		return oneLine(ae.Message+": "+lastLinesJoin(ae.Output, 3), 400)
+	}
+	return oneLine(err.Error(), 400)
+}
+
+// phpModuleNames are the extensions a branch has an ini file for, installed
+// with it or with another package: Debian's mods-available, the branch's
+// php.d of Remi ("20-xsl.ini").
+func (s *Server) phpModuleNames(ctx context.Context, layout *osprofile.PHPLayout) map[string]bool {
+	el := s.profile.Family() == osprofile.FamilyRHEL
+	dir := "/etc/php/" + layout.Version + "/mods-available"
+	if el {
+		if len(layout.IniDirs) == 0 {
+			return nil
+		}
+		dir = layout.IniDirs[0]
+	}
+	res, err := s.agent.ListDir(ctx, dir)
+	if err != nil {
+		return nil
+	}
+	names := map[string]bool{}
+	for _, e := range res.Entries {
+		name, ok := strings.CutSuffix(e.Name, ".ini")
+		if !ok || e.IsDir {
+			continue
+		}
+		if _, rest, cut := strings.Cut(name, "-"); el && cut {
+			name = rest
+		}
+		names[name] = true
+	}
+	return names
 }
 
 // extensionName maps a package name to its extension ("php8.4-gd" -> "gd",

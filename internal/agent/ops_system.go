@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 
 	"monopanel/internal/sysinfo"
-	"monopanel/internal/systemd"
 )
 
 func (s *Server) systemInfo(_ context.Context, _ *struct{}) (*sysinfo.Info, error) {
@@ -77,22 +76,19 @@ func (s *Server) service(ctx context.Context, req *ServiceRequest) (*ServiceResp
 			return nil, err
 		}
 	}
-	conn, err := systemd.Connect(ctx)
+	conn, err := connectSystemd(ctx)
 	if err != nil {
 		return nil, &Error{Message: "systemd unreachable", Output: err.Error()}
 	}
 	defer conn.Close()
 	switch req.Action {
-	case "start":
-		err = conn.Start(ctx, unit)
+	case "start", "restart", "reload-or-restart":
+		// Once more after a refusal for the start limit (startlimit.go).
+		err = s.startUnit(ctx, conn, req.Action, unit)
 	case "stop":
 		err = conn.Stop(ctx, unit)
 	case "reload":
 		err = conn.Reload(ctx, unit)
-	case "restart":
-		err = conn.Restart(ctx, unit)
-	case "reload-or-restart":
-		err = conn.ReloadOrRestart(ctx, unit)
 	case "enable":
 		err = conn.Enable(ctx, unit)
 	case "disable":
@@ -104,6 +100,10 @@ func (s *Server) service(ctx context.Context, req *ServiceRequest) (*ServiceResp
 		return nil, &Error{Status: http.StatusBadRequest, Message: "unknown action: " + req.Action}
 	}
 	if err != nil {
+		var ae *Error
+		if errors.As(err, &ae) {
+			return nil, ae // the checks before the retry refused it
+		}
 		return nil, &Error{Message: req.Action + " " + unit + " failed", Output: err.Error()}
 	}
 	resp := &ServiceResponse{}

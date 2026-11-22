@@ -12,6 +12,7 @@ import (
 	"monopanel/internal/agent"
 	"monopanel/internal/osprofile"
 	"monopanel/internal/render"
+	"monopanel/internal/systemd"
 )
 
 const (
@@ -107,7 +108,8 @@ func (s *Server) fail2banSiteLogs(ctx context.Context) (access, errs []string) {
 
 // applyFail2ban writes the jails from the panel's state: the sites' logs and
 // the trusted addresses. fail2ban is restarted only when the file changed
-// (restart forces it: the package has just been installed).
+// (restart forces it: the package has just been installed, or fail2ban is
+// down — refreshFail2ban).
 func (s *Server) applyFail2ban(ctx context.Context, restart bool) error {
 	nginx := false
 	if q, err := s.agent.Pkg(ctx, "query", "nginx"); err == nil {
@@ -141,12 +143,28 @@ func (s *Server) applyFail2ban(ctx context.Context, restart bool) error {
 
 // refreshFail2ban brings the jails up to date after the sites changed, and at
 // startup on a host that got its jails from an older panel. Without fail2ban
-// it does nothing.
+// it does nothing. A fail2ban that should run and does not — enabled, but
+// stopped or failed: a restart systemd refused for the start limit (every
+// new site restarts it, and an import creates them back to back), a crash —
+// is restarted, once a refresh, even when the jails stay as they are: the
+// agent restarts it only for jails that changed, and so nothing else would.
 func (s *Server) refreshFail2ban(ctx context.Context) {
 	if v, _ := s.db.GetSetting(ctx, settingFail2ban); v != "installed" {
 		return
 	}
-	if err := s.applyFail2ban(ctx, false); err != nil {
+	restart := false
+	if res, err := s.agent.Service(ctx, fail2banService, "status"); err == nil && fail2banDown(res.Status) {
+		s.log.Warn("fail2ban is enabled but not running: restarting it with the jails", "state", res.Status.ActiveState, "sub_state", res.Status.SubState)
+		restart = true
+	}
+	if err := s.applyFail2ban(ctx, restart); err != nil {
 		s.log.Warn("fail2ban jails", "err", err)
 	}
+}
+
+// fail2banDown tells a fail2ban that is to run at boot and does not run
+// now. One an administrator disabled stays as it is, and one starting or
+// stopping is on its way.
+func fail2banDown(st systemd.Status) bool {
+	return st.UnitFileState == "enabled" && (st.ActiveState == "inactive" || st.ActiveState == "failed")
 }

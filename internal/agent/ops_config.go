@@ -17,7 +17,6 @@ import (
 
 	"monopanel/internal/agent/confcheck"
 	"monopanel/internal/config"
-	"monopanel/internal/systemd"
 )
 
 const historyKeep = 20
@@ -256,25 +255,37 @@ func (s *Server) applyConfigSet(ctx context.Context, req *ApplyConfigSetRequest)
 		return resp, nil
 	}
 	if len(req.Reload)+len(req.Restart) > 0 {
-		conn, err := systemd.Connect(ctx)
+		conn, err := connectSystemd(ctx)
 		if err != nil {
 			return nil, &Error{Message: "files applied but systemd is unreachable", Output: err.Error()}
 		}
 		defer conn.Close()
+		// Each once more after a refusal for the start limit (startlimit.go).
 		for _, u := range req.Reload {
-			if err := conn.ReloadOrRestart(ctx, u); err != nil {
-				return nil, &Error{Message: "files applied but reload failed", Output: err.Error()}
+			if err := s.startUnit(ctx, conn, "reload-or-restart", u); err != nil {
+				return nil, appliedButFailed("reload", err)
 			}
 			resp.Reloaded = append(resp.Reloaded, u)
 		}
 		for _, u := range req.Restart {
-			if err := conn.Restart(ctx, u); err != nil {
-				return nil, &Error{Message: "files applied but restart failed", Output: err.Error()}
+			if err := s.startUnit(ctx, conn, "restart", u); err != nil {
+				return nil, appliedButFailed("restart", err)
 			}
 			resp.Reloaded = append(resp.Reloaded, u)
 		}
 	}
 	return resp, nil
+}
+
+// appliedButFailed is the answer to a config/apply whose files are in place
+// and whose reload or restart failed; a refusal of the agent's own — the
+// checks before the retry after a start limit — keeps its status.
+func appliedButFailed(what string, err error) *Error {
+	var ae *Error
+	if errors.As(err, &ae) {
+		return &Error{Status: ae.Status, Message: "files applied but " + what + " refused: " + ae.Message, Output: ae.Output}
+	}
+	return &Error{Message: "files applied but " + what + " failed", Output: err.Error()}
 }
 
 // fileEntry is a file the transaction replaced, with what to put back.

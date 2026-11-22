@@ -89,6 +89,10 @@ type Server struct {
 	// start-up refresh queues them, every site.apply that succeeds takes
 	// its site out.
 	movesMu sync.Mutex
+	// siteLogsRuleMu lets one call at a time add the SELinux label rule of
+	// the site log tree (selinuxSiteLogsRule): the start-up refresh, the
+	// hourly retry and every site.apply on a host where it is missing.
+	siteLogsRuleMu sync.Mutex
 	// apacheLegacy is the directory of the shared Apache's configuration of
 	// 0.8.19 and older (/etc/apache2/monopanel), whose files the upgrade
 	// carries over and removes (the agent reads them); tests point it

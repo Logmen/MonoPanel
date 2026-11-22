@@ -257,11 +257,14 @@ func (s *Server) startupRefresh(ctx context.Context) {
 // retryMoves queues again, once an hour after the start-up refresh ran, the
 // moves of an upgrade that did not finish and whose next try is due: a cause
 // fixed meanwhile — a PHP branch installed again, another site's broken file
-// that failed nginx -t for the whole host — needs no restart of the panel.
+// that failed nginx -t for the whole host, a semanage that failed at the
+// start — needs no restart of the panel. The SELinux label rule of the log
+// tree comes first, as at start: until it is in place no site's logs move.
 func (s *Server) retryMoves(ctx context.Context) {
 	if !s.refreshed.Load() {
 		return
 	}
+	s.refreshSELinuxSiteLogs(ctx)
 	s.moveSiteLogs(ctx)
 	s.refreshApacheInstances(ctx)
 }

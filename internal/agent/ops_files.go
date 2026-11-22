@@ -18,7 +18,6 @@ import (
 	"golang.org/x/sys/unix"
 
 	"monopanel/internal/osprofile"
-	"monopanel/internal/systemd"
 )
 
 // safeHomePath checks that p lies below WWWRoot and that no component below
@@ -817,13 +816,18 @@ func (s *Server) removePaths(ctx context.Context, req *RemovePathsRequest) (*Rem
 		}
 	}
 	if len(req.Reload) > 0 && len(resp.Removed) > 0 {
-		conn, err := systemd.Connect(ctx)
+		conn, err := connectSystemd(ctx)
 		if err != nil {
 			return nil, &Error{Message: "systemd unreachable", Output: err.Error()}
 		}
 		defer conn.Close()
 		for _, u := range req.Reload {
-			if err := conn.ReloadOrRestart(ctx, u); err != nil {
+			// Once more after a refusal for the start limit (startlimit.go).
+			if err := s.startUnit(ctx, conn, "reload-or-restart", u); err != nil {
+				var ae *Error
+				if errors.As(err, &ae) {
+					return nil, ae // the checks before the retry refused it
+				}
 				return nil, &Error{Message: "reload " + u, Output: err.Error()}
 			}
 		}

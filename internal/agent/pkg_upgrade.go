@@ -155,7 +155,7 @@ var procRoot = "/proc"
 // restarts, as a reload re-reads the configuration without executing the new
 // binary (nginx's HUP, Apache's graceful restart). The kernel shows such a
 // file as "<path> (deleted)".
-func binaryReplaced(ctx context.Context, conn *systemd.Conn, unit string, st systemd.Status) bool {
+func binaryReplaced(ctx context.Context, conn systemdConn, unit string, st systemd.Status) bool {
 	if !strings.HasSuffix(unit, ".service") || (st.ActiveState != "active" && st.ActiveState != "reloading") {
 		return false
 	}

@@ -846,6 +846,14 @@ func (s *Server) applySiteLocked(ctx context.Context, jc *jobs.Context, p sitePa
 			return s.siteFail(ctx, site, err)
 		}
 	}
+	// The servers of a live site open its logs in the tree, which SELinux
+	// lets them only once the tree's label rule is in place; the suspended
+	// stub logs nothing, and its pool goes.
+	if !suspended {
+		if err := s.siteLogsRuleReady(ctx, jc.Logf); err != nil {
+			return s.siteFail(ctx, site, err)
+		}
+	}
 
 	jc.Progress(10, "directories and permissions")
 	if err := s.siteTree(ctx, jc, l, user); err != nil {

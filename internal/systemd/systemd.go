@@ -5,6 +5,7 @@ package systemd
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	sd "github.com/coreos/go-systemd/v22/dbus"
@@ -28,6 +29,17 @@ func (c *Conn) Close() { c.c.Close() }
 
 type unitOp func(ctx context.Context, name, mode string, ch chan<- string) (int, error)
 
+// JobError is a job systemd ran and that did not end "done": Result is the
+// job's own result ("failed", "dependency", "timeout", "canceled" …), not
+// the unit's (Conn.Result says why the unit's last run ended).
+type JobError struct {
+	Op, Unit, Result string
+}
+
+func (e *JobError) Error() string {
+	return fmt.Sprintf("%s %s: job result %q", e.Op, e.Unit, e.Result)
+}
+
 func (c *Conn) wait(ctx context.Context, op string, unit string, fn unitOp) error {
 	ch := make(chan string, 1)
 	if _, err := fn(ctx, unit, "replace", ch); err != nil {
@@ -36,7 +48,7 @@ func (c *Conn) wait(ctx context.Context, op string, unit string, fn unitOp) erro
 	select {
 	case res := <-ch:
 		if res != "done" {
-			return fmt.Errorf("%s %s: job result %q", op, unit, res)
+			return &JobError{Op: op, Unit: unit, Result: res}
 		}
 		return nil
 	case <-ctx.Done():
@@ -89,6 +101,38 @@ func (c *Conn) Disable(ctx context.Context, unit string) error {
 
 // DaemonReload re-reads unit files.
 func (c *Conn) DaemonReload(ctx context.Context) error { return c.c.ReloadContext(ctx) }
+
+// unitTypes are the D-Bus interfaces of the unit types that carry a Result,
+// by the suffix of the unit's name.
+var unitTypes = map[string]string{
+	"service": "Service", "socket": "Socket", "mount": "Mount", "automount": "Automount",
+	"swap": "Swap", "timer": "Timer", "path": "Path",
+}
+
+// Result is the unit's Result property, why its last run ended: "success",
+// "exit-code", "signal", "start-limit-hit" … ($SERVICE_RESULT in
+// systemd.exec(5)); "" for a unit type that has none.
+func (c *Conn) Result(ctx context.Context, unit string) (string, error) {
+	typ := unitTypes[unit[strings.LastIndexByte(unit, '.')+1:]]
+	if typ == "" {
+		return "", nil
+	}
+	p, err := c.c.GetUnitTypePropertyContext(ctx, unit, typ, "Result")
+	if err != nil {
+		return "", fmt.Errorf("Result of %s: %w", unit, err)
+	}
+	r, _ := p.Value.Value().(string)
+	return r, nil
+}
+
+// ResetFailed is systemctl reset-failed of one unit: the unit leaves the
+// failed state, and its start limit counts from zero again.
+func (c *Conn) ResetFailed(ctx context.Context, unit string) error {
+	if err := c.c.ResetFailedUnitContext(ctx, unit); err != nil {
+		return fmt.Errorf("reset-failed %s: %w", unit, err)
+	}
+	return nil
+}
 
 // Status is a summary of a unit's state.
 type Status struct {

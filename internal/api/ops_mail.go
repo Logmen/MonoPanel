@@ -512,6 +512,21 @@ func (s *Server) applyWebmailPort(ctx context.Context, logf func(string, ...any)
 	if c.WebmailPort == 0 || c.Webmail == "" || certPath == "" {
 		return drop()
 	}
+	// Its block logs into the site log tree, as the sites do, which nginx
+	// may open on an enforcing host only once the tree's label rule is in
+	// place: without it the block would fail the next start of nginx, for
+	// every site (a reload keeps the block that runs), or every mail change
+	// where the check before the reload catches it. The rule is tried
+	// first; where it still is not in place, the block stays as it is — one
+	// an older panel set up, logging into data/logs, the move of the logs
+	// re-renders once the rule is there — and the rest of the mail settings
+	// go through: every mail change passes here.
+	if err := s.siteLogsRuleMissing(ctx, logf); err != nil {
+		// A mail change of the API itself has no job log to say it in.
+		s.log.Warn("mail: the webmail on its port stays as it is until the SELinux label rule of the site log tree is in place; the panel tries the rule again every hour", "port", c.WebmailPort, "err", err)
+		logf("warning: the webmail on port %d stays as it is: %v; nginx could not open its logs in the tree. The panel tries the rule again every hour; once it is in place, the next mail change (or mp mail apply) writes the webmail's server block", c.WebmailPort, err)
+		return nil
+	}
 	site, err := s.db.GetSiteByDomain(ctx, c.Webmail)
 	if err != nil {
 		return fmt.Errorf("webmail site %s: %w", c.Webmail, err)

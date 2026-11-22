@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/danielgtaylor/huma/v2"
 	"monopanel/internal/apitypes"
@@ -122,49 +123,105 @@ func (s *Server) selinuxHostingPolicy(ctx context.Context, jc *jobs.Context) err
 	return s.db.SetSetting(ctx, settingSELinux, selinuxPolicyVersion)
 }
 
-// refreshSELinuxSiteLogs gives the host the rule of the site log tree at
-// start, once (and again should log_dir change), and relabels the tree: a
-// panel up to 0.8.19 kept the site logs in data/logs, and moveSiteLogs right
-// after switches the sites to the tree, which nginx and php-fpm could not
-// write with the var_log_t it inherits. A host never prepared for hosting and
-// without sites gets the rule with the whole policy, when nginx or PHP is
-// installed.
+// refreshSELinuxSiteLogs gives the host the rule of the site log tree, once
+// (and again should log_dir change), and relabels the tree: a panel up to
+// 0.8.19 kept the site logs in data/logs, and moveSiteLogs right after
+// switches the sites to the tree, which nginx and php-fpm could not write
+// with the var_log_t it inherits. It runs at start, every hour while the
+// rule is not in place (retryMoves) — a semanage that failed, then fixed,
+// lets the sites move within the hour, not at the next start of the panel —
+// and before a site is applied (siteLogsRuleReady). A host never prepared
+// for hosting and without sites gets the rule with the whole policy, when
+// nginx or PHP is installed.
 func (s *Server) refreshSELinuxSiteLogs(ctx context.Context) {
-	if s.profile.MAC() != "selinux" {
-		return
+	if err := s.selinuxSiteLogsRule(ctx); err != nil {
+		s.log.Warn("selinux: site logs context", "err", err)
 	}
+}
+
+// selinuxSiteLogsRule is refreshSELinuxSiteLogs with the reason it failed.
+// One runs at a time (siteLogsRuleMu): the jobs of an import apply their
+// sites side by side, and each would run semanage and the relabel again.
+func (s *Server) selinuxSiteLogsRule(ctx context.Context) error {
+	if s.profile.MAC() != "selinux" {
+		return nil
+	}
+	s.siteLogsRuleMu.Lock()
+	defer s.siteLogsRuleMu.Unlock()
 	fc := s.selinuxSiteLogsContext()
 	if v, _ := s.db.GetSetting(ctx, settingSELinuxSiteLogs); v == fc[0] {
-		return
+		return nil
 	}
 	if v, _ := s.db.GetSetting(ctx, settingSELinux); v == "" {
 		// SELinux came on after the sites: the base policy labels a
 		// data/logs under /var/www itself, nothing labels the tree. The
 		// rule cannot wait for a site fix, and semanage may be missing.
 		if sites, err := s.db.ListSites(ctx, 0); err != nil || len(sites) == 0 {
-			return
+			return nil
 		}
 		if _, err := s.agent.Pkg(ctx, "install", "policycoreutils-python-utils"); err != nil {
-			s.log.Warn("selinux: semanage for the site logs context", "err", err)
-			return
+			return fmt.Errorf("install semanage: %w", err)
 		}
 	}
 	if err := s.selinuxFileContext(ctx, fc[0], fc[1]); err != nil {
-		s.log.Warn("selinux: site logs context", "err", err)
-		return
+		return err
 	}
 	// -i: the tree may not be there yet; the agent labels what it makes.
 	res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "restorecon", Args: []string{"-R", "-i", s.siteLogsRoot()}, TimeoutSeconds: 120})
 	if err != nil {
-		s.log.Warn("selinux: site logs relabel", "err", err)
-		return
+		return fmt.Errorf("relabel %s: %w", s.siteLogsRoot(), err)
 	}
 	if res.ExitCode != 0 {
-		s.log.Warn("selinux: site logs relabel", "output", strings.TrimSpace(res.Output))
-		return
+		return fmt.Errorf("relabel %s: %s", s.siteLogsRoot(), strings.TrimSpace(res.Output))
 	}
-	s.db.SetSetting(ctx, settingSELinuxSiteLogs, fc[0]) //nolint:errcheck // retried at the next start
+	s.db.SetSetting(ctx, settingSELinuxSiteLogs, fc[0]) //nolint:errcheck // retried within the hour
 	s.log.Info("selinux: the site logs are httpd_log_t", "dir", s.siteLogsRoot())
+	return nil
+}
+
+// siteLogsRuleReady is the SELinux side of applying a site, before anything
+// is written: nginx, Apache and php-fpm (httpd_t) open the site's logs in
+// the tree, and without the tree's label rule those are var_log_t, which
+// they may not append to — nginx serves on with its old configuration, and
+// a php-fpm reload that cannot open a pool's logs stops every site of the
+// branch. The rule is added first when it is not in place yet (the same
+// selinuxSiteLogsRule as at start and every hour). Where it still is not,
+// an enforcing host gets the reason back and nothing is applied: what runs
+// now stays — for a site an older panel set up, its logs in data/logs, as
+// the move of the sites' logs leaves it until the rule is there; the agent
+// lets no new configuration name those, so that root opens no log in a
+// directory the site's account owns. A permissive host denies nothing, and
+// the relabel that comes with the rule sets its labels right.
+func (s *Server) siteLogsRuleReady(ctx context.Context, logf func(string, ...any)) error {
+	if err := s.siteLogsRuleMissing(ctx, logf); err != nil {
+		return fmt.Errorf("%w: nginx and php-fpm could not open the site's logs there, and a php-fpm reload that cannot would stop every site of the branch, so nothing was applied, and what of the site runs stays as it was; the panel tries the rule again every hour — apply the site once it is in place", err)
+	}
+	return nil
+}
+
+// siteLogsRuleMissing adds the SELinux label rule of the site log tree when
+// it is not in place yet and says, on an enforcing host where it still is
+// not, why: what renders logs into the tree for nginx, Apache or php-fpm
+// waits for it (siteLogsRuleReady, the webmail on its port). Without SELinux
+// or with the rule there it is nil, and on a permissive host too, after a
+// warning through logf.
+func (s *Server) siteLogsRuleMissing(ctx context.Context, logf func(string, ...any)) error {
+	if s.siteLogsLabelled(ctx) {
+		return nil
+	}
+	err := s.selinuxSiteLogsRule(ctx)
+	switch {
+	case s.siteLogsLabelled(ctx):
+		logf("selinux: %s labelled httpd_log_t (the label rule of the site log tree)", s.siteLogsRoot())
+		return nil
+	case err == nil:
+		err = errors.New("not added")
+	}
+	if s.selinuxStatus().Mode != "enforcing" {
+		logf("warning: the SELinux label rule of %s is not in place (%v); SELinux is permissive and denies nothing now, the panel adds the rule within the hour", s.siteLogsRoot(), err)
+		return nil
+	}
+	return fmt.Errorf("the SELinux label rule of %s is not in place (%v)", s.siteLogsRoot(), err)
 }
 
 // ensureSELinuxModule installs the panel's policy module once per version.

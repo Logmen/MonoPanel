@@ -135,9 +135,10 @@ func (s *Server) refreshSiteLogrotate(ctx context.Context) {
 // site.apply that succeeds, whoever queued it; one whose job failed waits
 // longer each time (retryDelay), and the doctor says why it has not moved.
 // On a host with SELinux nothing is queued before the tree's label rule is
-// in place (siteLogsLabelled): the next start tries the rule again. The old
-// files stay where they are: they are the account's own, and nothing writes
-// them once the site has moved.
+// in place (siteLogsLabelled): the hourly retry tries the rule again right
+// before (retryMoves), and so does the next start. The old files stay where
+// they are: they are the account's own, and nothing writes them once the
+// site has moved.
 //
 // Until then the rotation and fail2ban do not cover the site's logs in
 // data/logs, and that is the right way round: the agent refuses logrotate
@@ -227,7 +228,7 @@ func (s *Server) moveSiteLogs(ctx context.Context) {
 	}
 	if !labelled {
 		if pending > 0 {
-			s.log.Warn("site logs: the sites stay on their data/logs until the SELinux label rule of the log tree is in place (see \"selinux: site logs context\" above); the next start tries again", "dir", root, "sites", pending)
+			s.log.Warn("site logs: the sites stay on their data/logs until the SELinux label rule of the log tree is in place (see \"selinux: site logs context\" above); the panel tries the rule again every hour", "dir", root, "sites", pending)
 		}
 		return
 	}
