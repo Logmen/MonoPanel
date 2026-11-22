@@ -183,6 +183,23 @@ func child(args []string) int {
 			} else {
 				fmt.Printf("fd %s: open\n", arg)
 			}
+		case "fds":
+			// the descriptors the program holds besides its standard
+			// streams, by what they lead to
+			for n := 3; n < 256; n++ {
+				flags, err := unix.FcntlInt(uintptr(n), unix.F_GETFL, 0)
+				if err != nil {
+					continue
+				}
+				target, err := os.Readlink("/proc/self/fd/" + strconv.Itoa(n))
+				if err != nil {
+					target = err.Error()
+				}
+				if flags&unix.O_PATH != 0 {
+					target += " (O_PATH)"
+				}
+				fmt.Printf("fd: %s\n", target)
+			}
 		case "wait":
 			// the test does something meanwhile and says "go"
 			fmt.Println("waiting")
@@ -339,6 +356,49 @@ func TestReadOnlyBelowTheTree(t *testing.T) {
 	)
 	if b, _ := os.ReadFile(filepath.Join(tree, "sub", "inside")); string(b) != "inside" {
 		t.Fatalf("the file changed: %q", b)
+	}
+}
+
+// A rule may name a single file of procfs — the kernel's FIPS switch, which
+// Red Hat's Go reads as every program it built starts —: the program reads
+// that file and nothing else of /proc, neither a sibling nor its own
+// /proc/self. procfs makes a new inode whenever it looks a name up anew, once
+// the dentry left the cache, and a rule holds the inode it was made for: the
+// program inherits the rule's descriptor, which keeps the dentry and so the
+// inode the path leads to; the descriptor of a rule elsewhere it does not.
+// Where the kernel has no FIPS switch (CONFIG_CRYPTO_FIPS) another sysctl
+// stands in for it.
+func TestProcfsFileRule(t *testing.T) {
+	needLandlock(t)
+	file := "/proc/sys/crypto/fips_enabled"
+	if _, err := os.Stat(file); err != nil {
+		file = "/proc/sys/kernel/osrelease"
+	}
+	want, err := os.ReadFile(file)
+	if err != nil {
+		t.Skipf("%s: %v", file, err)
+	}
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "f"), "a file")
+	out, code := run(t, sandboxed(t, []string{"--ro", file, "--ro", dir},
+		"read", file, "read", filepath.Join(dir, "f"),
+		"read", "/proc/sys/kernel/ostype", "read", "/proc/self/status", "read", "/proc/self/environ",
+		"list", "/proc/sys", "list", "/proc", "fds"))
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	wantLines(t, out,
+		"read "+file+": ok "+strings.TrimSpace(string(want)),
+		"read "+filepath.Join(dir, "f")+": ok a file",
+		"read /proc/sys/kernel/ostype: denied",
+		"read /proc/self/status: denied",
+		"read /proc/self/environ: denied",
+		"list /proc/sys: denied",
+		"list /proc: denied",
+		"fd: "+file+" (O_PATH)",
+	)
+	if strings.Count(out, "(O_PATH)") != 1 || strings.Contains(out, "fd: "+dir) {
+		t.Errorf("the program holds descriptors of other rules:\n%s", out)
 	}
 }
 

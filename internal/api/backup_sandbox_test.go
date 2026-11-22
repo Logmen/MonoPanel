@@ -144,3 +144,52 @@ func TestDoctorResticSandbox(t *testing.T) {
 		t.Fatalf("no Landlock, no view: %+v", c)
 	}
 }
+
+// The agent runs the installed restic's restic version in the sandbox a
+// backup gets: one that starts there the doctor names; one that does not —
+// Red Hat's Go exits when it cannot read the kernel's FIPS switch — fails
+// every backup, and the doctor warns with restic's own error and what to do,
+// first, so that no rule of the testbed's doctor-expected.sh that allows a
+// host's missing Landlock (^no Landlock) takes it for that.
+func TestDoctorResticSelfTest(t *testing.T) {
+	f := newSiteFixture(t)
+	find := func() *apitypes.Check {
+		var d apitypes.Doctor
+		f.call(http.MethodGet, "/system/doctor", nil, http.StatusOK, &d)
+		for i := range d.Checks {
+			if d.Checks[i].Name == "restic sandbox" {
+				return &d.Checks[i]
+			}
+		}
+		t.Fatal("no restic sandbox line")
+		return nil
+	}
+	const (
+		bin     = "/usr/bin/restic"
+		version = "restic 0.19.1 compiled with go1.26.4 (Red Hat 1.26.4-1.el9_8) on linux/amd64"
+		failed  = "error reading /proc/sys/crypto/fips_enabled: open /proc/sys/crypto/fips_enabled: permission denied (exit 1)"
+	)
+	f.agent.Sandbox = &agent.SandboxInfo{Landlock: 6, NoSymfollow: true, PrivateEtc: true, Restic: bin, ResticVersion: version}
+	if c := find(); c.Status != "ok" || c.Detail != "Landlock ABI 6; restic starts as a backup's restic would ("+version+")" {
+		t.Fatalf("a restic that starts in its sandbox: %+v", c)
+	}
+	f.agent.Sandbox = &agent.SandboxInfo{Landlock: 6, NoSymfollow: true, PrivateEtc: true, Restic: bin, ResticError: failed}
+	c := find()
+	if c.Status != "warn" || !strings.HasPrefix(c.Detail, "restic does not start in its sandbox — "+bin+" version there: "+failed+". ") ||
+		!strings.Contains(c.Detail, "Every backup fails") || !strings.Contains(c.Detail, "does not run restic outside it") ||
+		!strings.Contains(c.Detail, "panel's developers") || !strings.Contains(c.Detail, "upgrade the panel") || !strings.HasSuffix(c.Detail, "The sandbox: Landlock ABI 6") {
+		t.Fatalf("a restic that does not start in its sandbox: %+v", c)
+	}
+	// without Landlock a backup's restic still goes through sandbox-exec, for
+	// its view: the self-test's failure comes before the missing Landlock,
+	// its success after it
+	hint := "Landlock is built into this kernel but not enabled: add it to the kernel's lsm= list and reboot — grubby --update-kernel=ALL --args=lsm=lockdown,capability,yama,selinux,bpf,landlock"
+	f.agent.Sandbox = &agent.SandboxInfo{Error: "landlock: operation not supported", Hint: hint, NoSymfollow: true, Restic: bin, ResticError: failed}
+	if c := find(); c.Status != "warn" || !strings.HasPrefix(c.Detail, "restic does not start in its sandbox") || !strings.Contains(c.Detail, failed) || !strings.Contains(c.Detail, "The sandbox: no Landlock (landlock: operation not supported)") {
+		t.Fatalf("no Landlock, a restic that does not start: %+v", c)
+	}
+	f.agent.Sandbox = &agent.SandboxInfo{Error: "landlock: operation not supported", Hint: hint, NoSymfollow: true, Restic: bin, ResticVersion: version}
+	if c := find(); c.Status != "warn" || !strings.HasPrefix(c.Detail, "no Landlock (") || !strings.HasSuffix(c.Detail, "; restic starts as a backup's restic would ("+version+")") {
+		t.Fatalf("no Landlock, a restic that starts: %+v", c)
+	}
+}

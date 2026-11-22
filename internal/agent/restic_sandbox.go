@@ -49,6 +49,12 @@ import (
 // confinement. The agent says so when it starts and the doctor shows it, with
 // how to turn Landlock on.
 //
+// A restic the sandbox keeps from what it reads as it starts cannot back up
+// at all — EPEL's, built with Red Hat's Go, ended on the kernel's FIPS switch
+// (resticSystemReads) —, so the agent runs restic version in a backup's
+// sandbox as it starts and once the binary changed (selfTestRestic), and the
+// doctor says when restic does not start there.
+//
 // Every check of the policy stays as it is (resticBackupPath, resticEnv, the
 // shapes): the sandbox is a second wall, not the first.
 
@@ -62,16 +68,38 @@ import (
 // is not — /etc/shadow, the host keys in /etc/ssh, /etc/ssl/private,
 // /etc/pki/tls/private, root's home — stays out of reach, and so does
 // whatever a backed-up home points at there.
+//
+// Of /proc one file alone, the kernel's FIPS switch (fipsSwitch): Red Hat's
+// Go — EPEL builds restic with it — reads it as every program it built
+// starts, and a refusal ends the program there (golang-fips: hostfips,
+// crypto/internal/backend), before restic has parsed its arguments; EL's
+// libcrypto, ssh's too, reads it to decide on FIPS mode and takes a refusal
+// for "off". In FIPS mode that Go up to go1.26 does its crypto in OpenSSL,
+// as ssh always does: libcrypto and the FIPS provider lie in /usr/lib64
+// (resticSystemExecs), openssl.cnf and the crypto policies are here, and so
+// is the provider's configuration, fips_local.cnf — a link to the crypto
+// policies' back-end, which libcrypto loads in FIPS mode alone; without it
+// the provider would run without what the policy sets. The third-party
+// providers of /etc/pki/tls/openssl.d stay out: restic and ssh need none,
+// libcrypto skips an include that is not there, and a provider loaded in the
+// sandbox would find little of what it reads.
 var resticSystemReads = []string{
 	"/etc/passwd", "/etc/group", "/etc/nsswitch.conf",
 	"/etc/hosts", "/etc/host.conf", "/etc/resolv.conf", "/etc/gai.conf", "/etc/services", "/etc/protocols", "/etc/mdns.allow",
 	"/etc/localtime", "/usr/share/zoneinfo",
-	"/etc/ssl/certs", "/etc/ssl/openssl.cnf", "/etc/pki/tls/certs", "/etc/pki/tls/openssl.cnf", "/etc/pki/ca-trust",
+	"/etc/ssl/certs", "/etc/ssl/openssl.cnf", "/etc/pki/tls/certs", "/etc/pki/tls/openssl.cnf", "/etc/pki/tls/fips_local.cnf", "/etc/pki/ca-trust",
 	"/etc/ca-certificates", "/usr/share/ca-certificates", "/usr/local/share/ca-certificates",
 	"/etc/crypto-policies", "/usr/share/crypto-policies",
 	"/etc/ld.so.cache", "/etc/ld.so.preload",
 	"/dev/urandom",
+	fipsSwitch,
 }
+
+// fipsSwitch is where the kernel says whether it runs in FIPS mode: 0444,
+// "0" or "1", and missing from a kernel built without CONFIG_CRYPTO_FIPS,
+// which Red Hat's Go and libcrypto take for "off" — and then no rule names
+// it (systemPaths).
+const fipsSwitch = "/proc/sys/crypto/fips_enabled"
 
 // The names of resticSystemReads below /etc and the rest: the former go into
 // the private /etc where the agent may mount (resticRules).
@@ -201,6 +229,186 @@ func (s *Server) probeNoSymfollow(ctx context.Context) {
 	if s.privateEtcErr = probe(sandbox.Rules{Etc: resticEtcReads}); s.privateEtcErr == nil {
 		s.privateEtc = true
 	}
+}
+
+// resticSelfTest is what came of running a restic binary in its sandbox
+// (selfTestRestic).
+type resticSelfTest struct {
+	bin string
+	id  binaryID
+	at  time.Time
+	// version is what restic said when it started, err why it did not
+	version string
+	err     error
+}
+
+// binaryID tells one restic binary from another: an upgrade renames a new
+// file over the old one, a reinstall writes it anew.
+type binaryID struct {
+	dev, ino     uint64
+	size         int64
+	mtime, ctime unix.Timespec
+}
+
+func statBinary(p string) (binaryID, error) {
+	var st unix.Stat_t
+	if err := unix.Stat(p, &st); err != nil {
+		return binaryID{}, &os.PathError{Op: "stat", Path: p, Err: err}
+	}
+	return binaryID{dev: st.Dev, ino: st.Ino, size: st.Size, mtime: st.Mtim, ctime: st.Ctim}, nil
+}
+
+// resticSelfTestTimeout bounds the self-test's run: restic version prints a
+// line and exits within a fraction of a second.
+var resticSelfTestTimeout = 30 * time.Second
+
+// resticRetestAfter is how long a failed self-test stands before a ping runs
+// it again on the same binary: a failure that came of a moment's trouble — a
+// host too busy to start restic in time — does not stay in the doctor until
+// restic or the agent change.
+const resticRetestAfter = 10 * time.Minute
+
+// selfTestRestic runs the installed restic's `restic version` in the sandbox
+// a backup's restic gets — the rules of resticRules, the private /etc and the
+// mount namespace, as confineRestic builds them and planRunner starts them —
+// and keeps what came of it for the ping, and so for the doctor. A restic
+// that cannot start there fails every backup the same way, at once, and
+// every other run the sandbox confines: EPEL's, built with Red Hat's Go,
+// exited on its first read of /proc/sys/crypto/fips_enabled, which the
+// sandbox did not grant then. The next such read — a new toolchain, a new
+// restic — this finds before a backup does; restic version needs no
+// repository and reads nothing of anybody's.
+//
+// The agent runs it as it starts, in the background — it changes nothing
+// the agent does, so the API need not wait for it —, and a ping again once
+// the binary is another one — the panel installs restic with a host's first
+// backup, the package manager upgrades it while the agent runs — or a
+// failure is older than resticRetestAfter (pingResticSelfTest). A failure
+// changes nothing else: restic keeps running in its sandbox and never
+// outside it, and a backup fails as it would — the doctor and the agent's
+// log say why and what to do.
+//
+// nil: nothing to test — restic is not installed, a backup's restic runs
+// without a sandbox (no Landlock and no view), or the agent has no
+// sandbox-exec (a test's bare Server) —, or nothing found: ctx ended while
+// restic ran (the agent stopping), which ended restic rather than found it
+// failing.
+func (s *Server) selfTestRestic(ctx context.Context) *resticSelfTest {
+	if s.sandboxExe == "" || s.landlock < 1 && !s.noSymfollow {
+		return nil
+	}
+	s.resticTestMu.Lock()
+	defer s.resticTestMu.Unlock()
+	bin, id, ok := installedRestic()
+	if !ok {
+		// not installed, or gone again: nothing to say
+		s.resticTest.Store(nil)
+		return nil
+	}
+	last := s.resticTest.Load()
+	if last != nil && last.bin == bin && last.id == id && (last.err == nil || time.Since(last.at) < resticRetestAfter) {
+		return last
+	}
+	t := &resticSelfTest{bin: bin, id: id, at: time.Now()}
+	t.version, t.err = s.runResticSelfTest(ctx, bin)
+	if ctx.Err() != nil {
+		return nil
+	}
+	s.resticTest.Store(t)
+	if last == nil || last.bin != t.bin || last.version != t.version || fmt.Sprint(last.err) != fmt.Sprint(t.err) {
+		s.logResticSelfTest(t)
+	}
+	return t
+}
+
+// installedRestic is the restic binary the agent runs (resolveTool) and
+// what tells it from another one; ok is false when restic is not installed.
+func installedRestic() (string, binaryID, bool) {
+	bin, err := resolveTool("restic")
+	if err != nil {
+		return "", binaryID{}, false
+	}
+	id, err := statBinary(bin)
+	if err != nil {
+		return "", binaryID{}, false
+	}
+	return bin, id, true
+}
+
+// resticPingWait is how long a ping waits for a self-test it sets off or
+// finds under way. restic version is done in a fraction of a second, but one
+// that hangs is found out only after resticSelfTestTimeout, and a status
+// page gives up on the agent after 5 s, the API's wait for the agent after
+// 10 s: they would report an agent that does not answer.
+var resticPingWait = 2 * time.Second
+
+// pingResticSelfTest is what a ping says of the self-test: selfTestRestic,
+// which tests a binary installed or upgraded since the last run — waited for
+// no longer than resticPingWait. The run then goes on, and a later ping has
+// its outcome; this one has what the last run found of the binary installed
+// now — a failure being tested again stays in the doctor meanwhile, a binary
+// not tested yet has nothing.
+func (s *Server) pingResticSelfTest(ctx context.Context) *resticSelfTest {
+	done := make(chan *resticSelfTest, 1)
+	go func() { done <- s.selfTestRestic(context.WithoutCancel(ctx)) }()
+	wait := time.NewTimer(resticPingWait)
+	defer wait.Stop()
+	select {
+	case t := <-done:
+		return t
+	case <-wait.C:
+	}
+	last := s.resticTest.Load()
+	if bin, id, ok := installedRestic(); !ok || last == nil || last.bin != bin || last.id != id {
+		return nil
+	}
+	return last
+}
+
+// runResticSelfTest runs bin's restic version in its sandbox (selfTestRestic)
+// and returns what restic said.
+func (s *Server) runResticSelfTest(ctx context.Context, bin string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, resticSelfTestTimeout)
+	defer cancel()
+	plan := s.resticSelfTestPlan()
+	defer plan.close()
+	out := &tailBuffer{max: 1 << 20}
+	code, err := planRunner(ctx, plan, bin, "", out)(plan.args, nil)
+	return resticSelfTestOutcome(ctx, code, err, out.String())
+}
+
+// resticSelfTestPlan is the self-test's plan: restic version, with the
+// environment and the sandbox a plan of planRestic's has, but for the
+// repository, which version needs none of.
+func (s *Server) resticSelfTestPlan() *toolPlan {
+	return &toolPlan{args: []string{"version"}, env: []string{"RESTIC_CACHE_DIR=" + s.resticCacheDir()}, confine: s.confineRestic("", nil)}
+}
+
+// resticSelfTestOutcome is what the self-test's restic said: the first line
+// of a restic that started (restic 0.19.1 compiled with go1.26.4 …), and of
+// one that did not its own error line with the exit status — or why it did
+// not run at all.
+func resticSelfTestOutcome(ctx context.Context, code int, err error, out string) (string, error) {
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return "", fmt.Errorf("restic version did not finish within %s", resticSelfTestTimeout)
+	case ctx.Err() != nil:
+		return "", ctx.Err()
+	case err != nil:
+		return "", err
+	case code != 0:
+		return "", fmt.Errorf("%s (exit %d)", firstLine(out, "it said nothing"), code)
+	}
+	return firstLine(out, ""), nil
+}
+
+// logResticSelfTest says in the agent's log what the self-test found.
+func (s *Server) logResticSelfTest(t *resticSelfTest) {
+	if t.err != nil {
+		s.log.Error("restic does not start in its sandbox: every backup fails the same way, and so does every other restic run the sandbox confines; the agent does not run restic outside it. Report restic's error, which names what the sandbox kept from it, to the panel's developers and upgrade the panel once a release fixes it", "restic", t.bin, "err", t.err)
+		return
+	}
+	s.log.Info("restic starts in its sandbox", "restic", t.bin, "version", t.version)
 }
 
 // sandboxRestic has each run of the plan's restic go through the sandbox.
@@ -397,6 +605,9 @@ func (s *Server) resticRules(bin string, args []string, repo string) (*resticAcc
 		}
 		acc.target = args[i+1]
 	case "ls", "snapshots", "cat", "init", "forget":
+	case "version":
+		// the agent's own test of the sandbox (selfTestRestic), which the
+		// policy never takes from the API
 	default:
 		return nil, notAllowed("restic "+args[0]+" in the sandbox", "not a command the panel runs")
 	}
@@ -851,6 +1062,20 @@ func (m *sshMaster) stop(out io.Writer) {
 	if said := strings.TrimSpace(m.out.String()); said != "" && out != nil {
 		fmt.Fprintf(out, "ssh: %s\n", said)
 	}
+}
+
+// firstLine is the first line a program said, cut at 400 bytes — the line of
+// an error, which a Go panic's goroutines follow —, or none.
+func firstLine(s, none string) string {
+	for l := range strings.Lines(s) {
+		if l = strings.TrimSpace(l); l != "" {
+			if len(l) > 400 {
+				l = strings.ToValidUTF8(l[:400], "") + "…"
+			}
+			return l
+		}
+	}
+	return none
 }
 
 // firstLines is the first few lines of what a program said, or none.

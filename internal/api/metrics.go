@@ -269,8 +269,27 @@ func check(name, status, detail string) apitypes.Check {
 }
 
 // resticSandboxCheck is the doctor's line on how restic runs, from what the
-// agent's ping says of its sandbox.
+// agent's ping says of its sandbox — and on whether the installed restic
+// starts in it at all: one that does not (Red Hat's Go exits when the sandbox
+// keeps /proc/sys/crypto/fips_enabled from it) fails every backup at once,
+// and every other run the sandbox confines. That comes first, where no rule
+// of the testbed's doctor-expected.sh that allows a host's missing Landlock
+// takes it for that.
 func resticSandboxCheck(sb *agent.SandboxInfo) apitypes.Check {
+	c := resticSandboxState(sb)
+	switch {
+	case sb.ResticError != "":
+		c.Status = "warn"
+		c.Detail = fmt.Sprintf("restic does not start in its sandbox — %s version there: %s. Every backup fails the same way, and so does every other restic run the sandbox confines; the agent does not run restic outside it. Report this error to the panel's developers — it names what the sandbox kept from restic — and upgrade the panel once a release fixes it. The sandbox: %s", sb.Restic, sb.ResticError, c.Detail)
+	case sb.ResticVersion != "":
+		c.Detail += "; restic starts as a backup's restic would (" + sb.ResticVersion + ")"
+	}
+	return c
+}
+
+// resticSandboxState is the doctor's line on how restic runs: Landlock, the
+// view without symlinks, the private /etc.
+func resticSandboxState(sb *agent.SandboxInfo) apitypes.Check {
 	const name = "restic sandbox"
 	if sb.Landlock < 1 {
 		why := "no Landlock (" + sb.Error + ")"

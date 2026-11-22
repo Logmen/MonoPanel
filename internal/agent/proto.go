@@ -45,6 +45,17 @@ type SandboxInfo struct {
 	// PrivateEtcError says why not.
 	PrivateEtc      bool   `json:"private_etc,omitempty"`
 	PrivateEtcError string `json:"private_etc_error,omitempty"`
+	// Restic is the restic binary the agent ran in the sandbox a backup's
+	// restic gets, with restic version — as it started, and since whenever
+	// the binary changed: ResticVersion is what it said, ResticError
+	// restic's own error line and its exit status when it did not start
+	// there — and then every backup fails the same way, and every other run
+	// the sandbox confines. All three are empty where restic is not
+	// installed or runs without a sandbox, and while the first run of a
+	// binary takes longer than a ping waits for it.
+	Restic        string `json:"restic,omitempty"`
+	ResticVersion string `json:"restic_version,omitempty"`
+	ResticError   string `json:"restic_error,omitempty"`
 }
 
 // FileSpec is one file to write. Mode is a unix permission (0o644); Owner and

@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,15 +14,20 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/sys/unix"
 
+	"monopanel/internal/config"
+	"monopanel/internal/osprofile"
 	"monopanel/internal/sandbox"
 )
 
@@ -44,8 +50,23 @@ func TestMain(m *testing.M) {
 // follows no symlink, as restic's), then the paths of MP_FAKE_RESTIC_READ —
 // what restic opens when a directory it walks became a symlink meanwhile —
 // and writes the files of MP_FAKE_RESTIC_WRITE (its cache, its temporary
-// directory, the repository, and where it must not).
+// directory, the repository, and where it must not). Before all that it
+// starts as a restic of Red Hat's Go does (MP_FAKE_RESTIC_GOFIPS,
+// fakeRedHatGo), and restic version prints its line first.
 func fakeResticMain(args []string) int {
+	if d, err := time.ParseDuration(os.Getenv("MP_FAKE_RESTIC_SLEEP")); err == nil {
+		time.Sleep(d)
+	}
+	fips, ok := fakeRedHatGo()
+	if !ok {
+		return 1
+	}
+	if len(args) > 0 && args[0] == "version" {
+		fmt.Printf("restic 0.0.0-test compiled with %s on %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
+	}
+	if fips != "" {
+		fmt.Println(fips)
+	}
 	report := func(op, p string, err error) {
 		switch {
 		case err == nil:
@@ -102,6 +123,28 @@ func fakeResticMain(args []string) int {
 	}
 	n, _ := strconv.Atoi(os.Getenv("MP_FAKE_RESTIC_EXIT"))
 	return n
+}
+
+// fakeRedHatGo starts as a program built with Red Hat's Go does
+// (golang-fips, crypto/internal/fips140deps/hostfips): it reads the kernel's
+// FIPS switch, the file MP_FAKE_RESTIC_GOFIPS names, and says so in its line;
+// a switch that is not there is "off", and any other failure ends the
+// program with Red Hat's own words — the testbed's restic init said them.
+// ok is false then.
+func fakeRedHatGo() (string, bool) {
+	p := os.Getenv("MP_FAKE_RESTIC_GOFIPS")
+	if p == "" {
+		return "", true
+	}
+	data, err := os.ReadFile(p)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "fips " + p + ": none", true
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", p, err)
+		return "", false
+	}
+	return "fips " + p + ": " + strings.TrimSpace(string(data)), true
 }
 
 // caBundles are where Go's crypto/x509 looks for the CA certificates on
@@ -1029,4 +1072,609 @@ func TestResticLocalRepositoryIsRestics(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(outside, "repo")); err == nil {
 		t.Error("init made the repository through the API's symlink")
 	}
+}
+
+// fipsSwitchHere is the kernel's FIPS switch where this kernel has one and,
+// where it has none (built without CONFIG_CRYPTO_FIPS, as this workstation's
+// may be), a sysctl that stands in for it: the rules grant the stand-in in
+// the switch's place for the test — a single file of procfs, read-only,
+// which is what is tested.
+func fipsSwitchHere(t *testing.T) string {
+	t.Helper()
+	if _, err := os.Stat(fipsSwitch); err == nil {
+		return fipsSwitch
+	}
+	standIn := "/proc/sys/kernel/osrelease"
+	if _, err := os.Stat(standIn); err != nil {
+		t.Skipf("neither %s nor %s here", fipsSwitch, standIn)
+	}
+	t.Logf("this kernel has no %s (CONFIG_CRYPTO_FIPS): %s stands in for it", fipsSwitch, standIn)
+	withSystemReads(t, func(p string) string {
+		if p == fipsSwitch {
+			return standIn
+		}
+		return p
+	})
+	return standIn
+}
+
+// withSystemReads has resticSystemReads, and with them resticEtcReads and
+// resticOtherReads, as f maps their entries ("" leaves one out) until the
+// test ends or the returned function puts them back.
+func withSystemReads(t *testing.T, f func(string) string) (restore func()) {
+	t.Helper()
+	old, oldEtc, oldOther := resticSystemReads, resticEtcReads, resticOtherReads
+	var reads []string
+	for _, p := range old {
+		if q := f(p); q != "" {
+			reads = append(reads, q)
+		}
+	}
+	resticSystemReads = reads
+	resticEtcReads, resticOtherReads = splitEtc(reads)
+	restore = func() { resticSystemReads, resticEtcReads, resticOtherReads = old, oldEtc, oldOther }
+	t.Cleanup(restore)
+	return restore
+}
+
+// Of /proc restic's rules grant the kernel's FIPS switch alone, read-only —
+// Red Hat's Go reads it as every program it built starts and exits when it
+// cannot — and below /etc the FIPS provider's settings, which EL's libcrypto
+// loads in FIPS mode; nothing else of /proc, nothing of /proc/self, nor the
+// third-party providers of openssl.d. A kernel without the switch gets no
+// rule for it: Red Hat's Go takes the missing file for "off".
+func TestResticRulesGrantTheFIPSSwitchAlone(t *testing.T) {
+	s, bin := sandboxServer(t, 5)
+	home := filepath.Join(s.cfg.WWWRoot, "alex")
+	mkdirs(t, home)
+	const local = "/etc/pki/tls/fips_local.cnf"
+	if !slices.Contains(resticOtherReads, fipsSwitch) || !slices.Contains(resticEtcReads, local) {
+		t.Fatalf("the FIPS switch and fips_local.cnf: %q %q", resticOtherReads, resticEtcReads)
+	}
+	for _, p := range resticSystemReads {
+		if atOrBelow(p, "/proc") && p != fipsSwitch || atOrBelow(p, "/etc/pki/tls/openssl.d") {
+			t.Errorf("restic reads %s", p)
+		}
+	}
+	_, err := os.Stat(fipsSwitch)
+	haveSwitch := err == nil
+	localTarget, err := filepath.EvalSymlinks(local)
+	haveLocal := err == nil
+	repo := filepath.Join(t.TempDir(), "repo")
+	mkdirs(t, repo)
+	for _, private := range []bool{false, true} {
+		s.privateEtc = private
+		for _, args := range [][]string{
+			{"backup", "--json", "--tag", "monopanel", "--tag", "scope=user:alex", home},
+			{"restore", strings.Repeat("ab", 32), "--target", filepath.Join(RestoreDir, "1a2b3c4d"), "--include", home},
+			{"snapshots", "--json", "--tag", "monopanel"},
+			{"version"},
+		} {
+			acc, err := s.resticRules(bin, args, repo)
+			if err != nil {
+				t.Fatalf("%s: %v", args[0], err)
+			}
+			if slices.Contains(acc.ro, fipsSwitch) != haveSwitch {
+				t.Errorf("private /etc %v, %s: the switch, here %v, in %q", private, args[0], haveSwitch, acc.ro)
+			}
+			for _, p := range acc.ro {
+				if atOrBelow(p, "/proc") && p != fipsSwitch {
+					t.Errorf("private /etc %v, %s: %s granted", private, args[0], p)
+				}
+			}
+			for _, list := range [][]string{acc.rw, acc.rx, acc.etc, acc.etcBind, acc.noSymlinks} {
+				if i := slices.IndexFunc(list, func(p string) bool { return atOrBelow(p, "/proc") }); i >= 0 {
+					t.Errorf("private /etc %v, %s: %s granted beyond reading", private, args[0], list[i])
+				}
+			}
+			switch {
+			case private && slices.Contains(acc.etc, local) != haveLocal:
+				t.Errorf("%s: fips_local.cnf, here %v, in the private /etc %q", args[0], haveLocal, acc.etc)
+			case !private && haveLocal && !slices.ContainsFunc(acc.ro, func(p string) bool { return atOrBelow(localTarget, p) }):
+				// the link's target, which a rule of the crypto policies holds
+				t.Errorf("%s: fips_local.cnf (%s) out of reach: %q", args[0], localTarget, acc.ro)
+			}
+		}
+	}
+	// and so the command line of a run: the switch by --ro alone
+	s.privateEtc = false
+	c, err := s.confineRestic("", nil)(context.Background(), bin, []string{"version"}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.done()
+	argv := strings.Join(c.args, " ") + " "
+	if strings.Contains(argv, " --ro "+fipsSwitch+" ") != haveSwitch || strings.Contains(argv, " --rw /proc") || strings.Contains(argv, " --rx /proc") {
+		t.Errorf("the switch, here %v: %s", haveSwitch, argv)
+	}
+}
+
+// restic built with Red Hat's Go reads the kernel's FIPS switch as it starts
+// (fakeRedHatGo): in its sandbox it reads it, by the rule of the file and in
+// the private /etc too, whose mount namespace leaves /proc as it is, and goes
+// on — without the rule it ends right there, as every restic of the panel's
+// did on Alma and Rocky Linux before it. Where this kernel has no switch,
+// another sysctl stands in for it (fipsSwitchHere).
+func TestResticStartsWithRedHatsGo(t *testing.T) {
+	s, bin := sandboxServer(t, needLandlock(t))
+	sw := fipsSwitchHere(t)
+	value, err := os.ReadFile(sw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(s.cfg.WWWRoot, "alex")
+	repo := filepath.Join(t.TempDir(), "repo")
+	mkdirs(t, home, repo)
+	writeFileT(t, filepath.Join(home, "index.php"), "<?php")
+	call := withEnv(tc(modeTool, "restic", "backup", "--json", "--tag", "monopanel", "--tag", "scope=user:alex", home), "RESTIC_REPOSITORY="+repo, "RESTIC_PASSWORD=pw")
+	t.Setenv(fakeResticEnv, "1")
+	t.Setenv("MP_FAKE_RESTIC_GOFIPS", sw)
+	started := "fips " + sw + ": " + strings.TrimSpace(string(value))
+	backup := func() (string, int) {
+		t.Helper()
+		plan, err := s.planTool(&call)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer plan.close()
+		if plan.confine == nil {
+			t.Fatal("a backup runs in the sandbox")
+		}
+		var out bytes.Buffer
+		code, err := planRunner(context.Background(), plan, bin, "", &out)(plan.args, nil)
+		if err != nil {
+			t.Fatalf("restic: %v\n%s", err, out.String())
+		}
+		return out.String(), code
+	}
+	got, code := backup()
+	if code != 0 {
+		t.Fatalf("restic: exit %d\n%s", code, got)
+	}
+	wantLines(t, got, started, "read "+filepath.Join(home, "index.php")+": ok <?php")
+
+	// without the rule: what the testbed saw
+	restore := withSystemReads(t, func(p string) string {
+		if p == sw {
+			return ""
+		}
+		return p
+	})
+	got, code = backup()
+	if want := "error reading " + sw + ": open " + sw + ": permission denied"; code != 1 || !strings.Contains(got, want) || strings.Contains(got, "argv ") {
+		t.Fatalf("without the rule: exit %d, want 1 and %q:\n%s", code, want, got)
+	}
+	restore()
+
+	// in the private /etc
+	s.privateEtc = true
+	plan, err := s.planTool(&call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plan.close()
+	got, code = runConfined(t, plan, bin, userNS(t))
+	if code != 0 {
+		t.Fatalf("restic in the private /etc: exit %d\n%s", code, got)
+	}
+	wantLines(t, got, started, "read "+filepath.Join(home, "index.php")+": ok <?php")
+}
+
+// As the agent starts it runs the installed restic's restic version in the
+// sandbox a backup gets, and its ping says what came of it, for the doctor:
+// the version, or restic's own error line and exit status, which the agent's
+// log says as well. A ping tests again once the binary is another one or a
+// failure has stood long enough, and keeps what it found otherwise. A restic
+// that does not start in its sandbox still runs there, never outside it.
+// Nothing is said where restic is not installed or runs without a sandbox.
+func TestResticSelfTest(t *testing.T) {
+	s, bin := sandboxServer(t, needLandlock(t))
+	var logs bytes.Buffer
+	s.log = slog.New(slog.NewTextHandler(&logs, nil))
+	sw := fipsSwitchHere(t)
+	t.Setenv(fakeResticEnv, "1")
+	t.Setenv("MP_FAKE_RESTIC_GOFIPS", sw)
+	ctx := context.Background()
+	version := fmt.Sprintf("restic 0.0.0-test compiled with %s on %s/%s", runtime.Version(), runtime.GOOS, runtime.GOARCH)
+	r := s.selfTestRestic(ctx)
+	if r == nil || r.err != nil || r.version != version || r.bin != bin {
+		t.Fatalf("the self-test: %+v", r)
+	}
+	if l := logs.String(); !strings.Contains(l, "level=INFO") || !strings.Contains(l, `msg="restic starts in its sandbox"`) || !strings.Contains(l, version) {
+		t.Fatalf("log: %s", l)
+	}
+	p, err := s.ping(ctx, nil)
+	if err != nil || p.Sandbox.Restic != bin || p.Sandbox.ResticVersion != version || p.Sandbox.ResticError != "" {
+		t.Fatalf("ping %+v %v", p.Sandbox, err)
+	}
+	if b, _ := json.Marshal(p.Sandbox); !bytes.Contains(b, []byte(`"restic":"`+bin+`"`)) || !bytes.Contains(b, []byte(`"restic_version":"`+version+`"`)) || bytes.Contains(b, []byte("restic_error")) {
+		t.Fatalf("ping: %s", b)
+	}
+
+	// the same binary is not tested again: what would fail now does not run
+	t.Setenv("MP_FAKE_RESTIC_EXIT", "1")
+	logs.Reset()
+	if again := s.selfTestRestic(ctx); again != r || logs.Len() != 0 {
+		t.Fatalf("tested again: %+v\n%s", again, logs.String())
+	}
+	t.Setenv("MP_FAKE_RESTIC_EXIT", "")
+
+	// another binary is — a restic in /usr/local/bin in front of the
+	// distribution's, say —: here one whose sandbox keeps the switch from it
+	other := filepath.Join(filepath.Dir(bin), "restic.other")
+	if err := os.Symlink(bin, other); err != nil {
+		t.Fatal(err)
+	}
+	toolBinaries["restic"] = []string{other}
+	restore := withSystemReads(t, func(p string) string {
+		if p == sw {
+			return ""
+		}
+		return p
+	})
+	r = s.selfTestRestic(ctx)
+	wantErr := "error reading " + sw + ": open " + sw + ": permission denied (exit 1)"
+	if r == nil || r.err == nil || r.err.Error() != wantErr || r.version != "" || r.bin != other {
+		t.Fatalf("a restic that does not start in its sandbox: %+v, want %q", r, wantErr)
+	}
+	if l := logs.String(); !strings.Contains(l, "level=ERROR") || !strings.Contains(l, "restic does not start in its sandbox") || !strings.Contains(l, "upgrade the panel") || !strings.Contains(l, wantErr) {
+		t.Fatalf("log: %s", l)
+	}
+	if p, _ := s.ping(ctx, nil); p.Sandbox.Restic != other || p.Sandbox.ResticError != wantErr || p.Sandbox.ResticVersion != "" {
+		t.Fatalf("ping %+v", p.Sandbox)
+	}
+	// and it changes nothing else: a backup runs in the sandbox all the same,
+	// and fails as restic fails there
+	home := filepath.Join(s.cfg.WWWRoot, "alex")
+	mkdirs(t, home)
+	call := withEnv(tc(modeTool, "restic", "backup", "--json", "--tag", "monopanel", "--tag", "scope=user:alex", home), "RESTIC_REPOSITORY=s3:https://s3.example.com/b", "RESTIC_PASSWORD=pw")
+	plan, err := s.planTool(&call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plan.close()
+	if plan.confine == nil {
+		t.Fatal("a restic that failed its self-test runs outside the sandbox")
+	}
+	var out bytes.Buffer
+	if code, err := planRunner(ctx, plan, other, "", &out)(plan.args, nil); err != nil || code != 1 || !strings.Contains(out.String(), "error reading "+sw) {
+		t.Fatalf("the backup: %d %v\n%s", code, err, out.String())
+	}
+
+	// a failure stands, not said again, until it is resticRetestAfter old
+	logs.Reset()
+	if again := s.selfTestRestic(ctx); again != r || logs.Len() != 0 {
+		t.Fatalf("a fresh failure tested again: %+v\n%s", again, logs.String())
+	}
+	restore()
+	r.at = time.Now().Add(-resticRetestAfter - time.Minute)
+	if r = s.selfTestRestic(ctx); r == nil || r.err != nil || r.version != version || !strings.Contains(logs.String(), "restic starts in its sandbox") {
+		t.Fatalf("tested again: %+v\n%s", r, logs.String())
+	}
+
+	// no restic installed: nothing tested, nothing said
+	toolBinaries["restic"] = []string{filepath.Join(t.TempDir(), "restic")}
+	logs.Reset()
+	if r := s.selfTestRestic(ctx); r != nil || s.resticTest.Load() != nil || logs.Len() != 0 {
+		t.Fatalf("no restic: %+v %+v\n%s", r, s.resticTest.Load(), logs.String())
+	}
+	if p, _ := s.ping(ctx, nil); p.Sandbox.Restic != "" || p.Sandbox.ResticVersion != "" || p.Sandbox.ResticError != "" {
+		t.Fatalf("ping without restic %+v", p.Sandbox)
+	}
+	// nor without a sandbox, where restic runs as it is
+	toolBinaries["restic"] = []string{bin}
+	s.landlock, s.landlockErr = 0, unix.ENOSYS
+	if r := s.selfTestRestic(ctx); r != nil {
+		t.Fatalf("no sandbox: %+v", r)
+	}
+}
+
+// The self-test's plan is a backup's sandbox, the private /etc and its mount
+// namespace included where the agent may mount, and restic version — which
+// starts in there and reads the FIPS switch — gives its line; one that does
+// not finish in time is said to have not.
+func TestResticSelfTestPlan(t *testing.T) {
+	s, bin := sandboxServer(t, needLandlock(t))
+	sw := fipsSwitchHere(t)
+	t.Setenv(fakeResticEnv, "1")
+	t.Setenv("MP_FAKE_RESTIC_GOFIPS", sw)
+	s.privateEtc = true
+	plan := s.resticSelfTestPlan()
+	defer plan.close()
+	c, err := plan.confine(context.Background(), bin, plan.args, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if argv := strings.Join(c.args, " "); !strings.HasPrefix(argv, "sandbox-exec --etc ") || !strings.HasSuffix(argv, " -- "+bin+" version") || !slices.Equal(c.env, []string{"TMPDIR=" + s.resticTmp}) || !slices.Equal(plan.env, []string{"RESTIC_CACHE_DIR=" + s.resticCache}) {
+		t.Fatalf("the self-test's run: %s %q %q", argv, c.env, plan.env)
+	}
+	c.done()
+	got, code := runConfined(t, plan, bin, userNS(t))
+	version, err := resticSelfTestOutcome(context.Background(), code, nil, got)
+	if err != nil || !strings.HasPrefix(version, "restic 0.0.0-test compiled with ") {
+		t.Fatalf("restic version in the private /etc: %q %v\n%s", version, err, got)
+	}
+	value, _ := os.ReadFile(sw)
+	wantLines(t, got, "fips "+sw+": "+strings.TrimSpace(string(value)))
+
+	s.privateEtc = false
+	old := resticSelfTestTimeout
+	resticSelfTestTimeout = 500 * time.Millisecond
+	t.Cleanup(func() { resticSelfTestTimeout = old })
+	t.Setenv("MP_FAKE_RESTIC_SLEEP", "5s")
+	start := time.Now()
+	if _, err := s.runResticSelfTest(context.Background(), bin); err == nil || err.Error() != "restic version did not finish within 500ms" || time.Since(start) > 4*time.Second {
+		t.Fatalf("a restic that hangs: %v after %s", err, time.Since(start))
+	}
+}
+
+// What the self-test makes of restic's output: the first line said, cut
+// short, or what restic did not say.
+func TestResticSelfTestOutcome(t *testing.T) {
+	ctx := context.Background()
+	if v, err := resticSelfTestOutcome(ctx, 0, nil, "\n  restic 0.19.1 compiled with go1.26.4 (Red Hat 1.26.4-1.el9_8) on linux/amd64\n"); err != nil || v != "restic 0.19.1 compiled with go1.26.4 (Red Hat 1.26.4-1.el9_8) on linux/amd64" {
+		t.Errorf("a restic that starts: %q %v", v, err)
+	}
+	if _, err := resticSelfTestOutcome(ctx, 1, nil, "error reading /proc/sys/crypto/fips_enabled: open /proc/sys/crypto/fips_enabled: permission denied\n"); err == nil || err.Error() != "error reading /proc/sys/crypto/fips_enabled: open /proc/sys/crypto/fips_enabled: permission denied (exit 1)" {
+		t.Errorf("Red Hat's Go: %v", err)
+	}
+	if _, err := resticSelfTestOutcome(ctx, 2, nil, "panic: opensslcrypto: can't initialize OpenSSL libcrypto.so.3\n\ngoroutine 1 [running]:\nmain.main()\n"); err == nil || err.Error() != "panic: opensslcrypto: can't initialize OpenSSL libcrypto.so.3 (exit 2)" {
+		t.Errorf("a panic: %v", err)
+	}
+	if _, err := resticSelfTestOutcome(ctx, sandbox.ExitSetup, nil, ""); err == nil || err.Error() != "it said nothing (exit 125)" {
+		t.Errorf("nothing said: %v", err)
+	}
+	if _, err := resticSelfTestOutcome(ctx, 0, errors.New("fork/exec /proc/self/exe: permission denied"), ""); err == nil || !strings.Contains(err.Error(), "fork/exec") {
+		t.Errorf("not run: %v", err)
+	}
+	if l := firstLine("a"+strings.Repeat("é", 300), ""); len(l) > 403 || !strings.HasSuffix(l, "…") || !utf8.ValidString(l) {
+		t.Errorf("a long line: %d bytes %q", len(l), l)
+	}
+}
+
+// An upgrade renames a new restic over the old one: it is another binary,
+// and so is one written anew; the same file stays the same.
+func TestResticBinaryID(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "restic")
+	writeFileT(t, p, "one")
+	a, err := statBinary(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, err := statBinary(p); err != nil || b != a {
+		t.Fatalf("the same file: %v %v", b, err)
+	}
+	writeFileT(t, p+".new", "one")
+	if err := os.Rename(p+".new", p); err != nil {
+		t.Fatal(err)
+	}
+	b, err := statBinary(p)
+	if err != nil || b == a {
+		t.Fatalf("renamed over: %v %v", b, err)
+	}
+	writeFileT(t, p, "two!")
+	if c, err := statBinary(p); err != nil || c == b {
+		t.Fatalf("written anew: %v %v", c, err)
+	}
+	if _, err := statBinary(filepath.Join(dir, "missing")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("missing: %v", err)
+	}
+}
+
+// The agent tests restic in its sandbox as it starts — after the probes —,
+// and its log says what came of it. The API does not wait for that: the
+// agent listens while restic version still runs, as a restic that hangs
+// would until resticSelfTestTimeout.
+func TestAgentStartTestsRestic(t *testing.T) {
+	needLandlock(t)
+	me, err := user.Current()
+	if err != nil {
+		t.Skip(err)
+	}
+	grp, err := user.LookupGroupId(me.Gid)
+	if err != nil {
+		t.Skip(err)
+	}
+	run, err := os.MkdirTemp("", "mpsock") // a socket's path is capped near 100 bytes
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(run) })
+	cfg := config.Default()
+	cfg.RunDir, cfg.ServiceUser, cfg.ServiceGroup = run, me.Username, grp.Name
+	rel, _ := osprofile.ParseOSRelease(strings.NewReader(alma9))
+	p, _ := osprofile.FromRelease(rel)
+	var logs lockedBuffer
+	s := NewServer(cfg, p, slog.New(slog.NewTextHandler(&logs, nil)))
+	dir := t.TempDir()
+	s.resticCache, s.resticTmp = filepath.Join(dir, "cache"), filepath.Join(dir, "tmp")
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "restic")
+	if err := os.Symlink(self, bin); err != nil {
+		t.Fatal(err)
+	}
+	old := toolBinaries["restic"]
+	toolBinaries["restic"] = []string{bin}
+	t.Cleanup(func() { toolBinaries["restic"] = old })
+	t.Setenv(fakeResticEnv, "1")
+	// serve starts the agent and returns how long it took to listen and
+	// what stops it again, with how long that took
+	serve := func() (time.Duration, func() time.Duration) {
+		t.Helper()
+		os.Remove(cfg.AgentSocket())
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		start := time.Now()
+		go func() { done <- s.ListenAndServe(ctx) }()
+		var listening time.Duration
+		for deadline := time.Now().Add(10 * time.Second); listening == 0 && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+			if st, err := os.Lstat(cfg.AgentSocket()); err == nil && st.Mode()&os.ModeSocket != 0 {
+				listening = time.Since(start)
+			}
+		}
+		return listening, func() time.Duration {
+			start := time.Now()
+			cancel()
+			if err := <-done; err != nil {
+				t.Errorf("the agent: %v", err)
+			}
+			return time.Since(start)
+		}
+	}
+	const slow = 2 * time.Second
+	t.Setenv("MP_FAKE_RESTIC_SLEEP", slow.String())
+	listening, stop := serve()
+	// what the start's own run found, in the log once restic is done
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline) && !strings.Contains(logs.String(), `msg="restic starts in its sandbox"`); time.Sleep(10 * time.Millisecond) {
+	}
+	stop()
+	r := s.selfTestRestic(context.Background()) // as the start's run found
+	if listening == 0 || listening >= slow {
+		t.Fatalf("the agent listened after %s, with restic version taking %s:\n%s", listening, slow, logs.String())
+	}
+	if r == nil || r.err != nil || r.bin != bin || !strings.HasPrefix(r.version, "restic 0.0.0-test compiled with ") {
+		t.Fatalf("the agent started without testing restic: %+v\n%s", r, logs.String())
+	}
+	l := logs.String()
+	probes, tested := strings.Index(l, "restic runs in a Landlock sandbox, but"), strings.Index(l, `msg="restic starts in its sandbox"`)
+	if probes < 0 || tested < probes || strings.Count(l, `msg="restic starts in its sandbox"`) != 1 || !strings.Contains(l, `msg="agent listening"`) {
+		t.Fatalf("log: %s", l)
+	}
+
+	// an agent stopped while its restic hangs: it does not wait for restic,
+	// nor says restic failed — it ended restic
+	other := filepath.Join(dir, "restic.new")
+	if err := os.Symlink(self, other); err != nil {
+		t.Fatal(err)
+	}
+	toolBinaries["restic"] = []string{other}
+	t.Setenv("MP_FAKE_RESTIC_SLEEP", "10s")
+	logs.Reset()
+	if listening, stop = serve(); listening == 0 {
+		t.Fatalf("the agent does not listen:\n%s", logs.String())
+	}
+	time.Sleep(200 * time.Millisecond) // restic version is under way
+	if took := stop(); took > 5*time.Second || strings.Contains(logs.String(), "restic does not start") {
+		t.Fatalf("the agent stopped after %s:\n%s", took, logs.String())
+	}
+}
+
+// A ping that finds restic installed or upgraded since the last self-test,
+// or a failure old enough to be tested again, waits for the run no longer
+// than resticPingWait: a status page gives up on the agent after 5 s, and a
+// restic that hangs is found out only after resticSelfTestTimeout. It says
+// what the last run found of the binary installed now — the failure being
+// tested again, nothing for a binary not tested yet — and the run goes on:
+// its outcome is a later ping's.
+func TestPingDoesNotWaitForTheSelfTest(t *testing.T) {
+	s, bin := sandboxServer(t, needLandlock(t))
+	s.log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	sw := fipsSwitchHere(t)
+	t.Setenv(fakeResticEnv, "1")
+	t.Setenv("MP_FAKE_RESTIC_GOFIPS", sw)
+	old := resticPingWait
+	resticPingWait = 50 * time.Millisecond
+	t.Cleanup(func() { resticPingWait = old })
+	ctx := context.Background()
+	// a failure of this binary, old enough to be tested again
+	restore := withSystemReads(t, func(p string) string {
+		if p == sw {
+			return ""
+		}
+		return p
+	})
+	failed := s.selfTestRestic(ctx)
+	restore()
+	if failed == nil || failed.err == nil {
+		t.Fatalf("the failure: %+v", failed)
+	}
+	failed.at = time.Now().Add(-resticRetestAfter - time.Minute)
+
+	// restic version takes its time from here on
+	const slow = time.Second
+	t.Setenv("MP_FAKE_RESTIC_SLEEP", slow.String())
+	ping := func() (*SandboxInfo, time.Duration) {
+		t.Helper()
+		start := time.Now()
+		p, err := s.ping(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p.Sandbox, time.Since(start)
+	}
+	if sb, took := ping(); took >= slow || sb.Restic != bin || sb.ResticError != failed.err.Error() || sb.ResticVersion != "" {
+		t.Fatalf("a ping while the failure is tested again took %s: %+v", took, sb)
+	}
+	if r := s.selfTestRestic(ctx); r == nil || r == failed || r.err != nil {
+		t.Fatalf("the run the ping set off: %+v", r)
+	}
+	if sb, took := ping(); took >= slow || sb.Restic != bin || sb.ResticVersion == "" || sb.ResticError != "" {
+		t.Fatalf("the next ping took %s: %+v", took, sb)
+	}
+
+	// a binary not tested yet: nothing to say until its run is done
+	other := filepath.Join(filepath.Dir(bin), "restic.new")
+	if err := os.Symlink(bin, other); err != nil {
+		t.Fatal(err)
+	}
+	toolBinaries["restic"] = []string{other}
+	if sb, took := ping(); took >= slow || sb.Restic != "" || sb.ResticVersion != "" || sb.ResticError != "" {
+		t.Fatalf("a ping while a new binary is tested took %s: %+v", took, sb)
+	}
+	if r := s.selfTestRestic(ctx); r == nil || r.bin != other || r.err != nil {
+		t.Fatalf("the new binary's run: %+v", r)
+	}
+	if sb, _ := ping(); sb.Restic != other || sb.ResticVersion == "" || sb.ResticError != "" {
+		t.Fatalf("the ping after it: %+v", sb)
+	}
+}
+
+// A run its caller gives up on — the agent stopping while it tests restic
+// as it starts — ended restic; it did not find restic failing: nothing is
+// kept or said, and the next run tests restic anew.
+func TestResticSelfTestGivenUp(t *testing.T) {
+	s, bin := sandboxServer(t, needLandlock(t))
+	var logs bytes.Buffer
+	s.log = slog.New(slog.NewTextHandler(&logs, nil))
+	t.Setenv(fakeResticEnv, "1")
+	t.Setenv("MP_FAKE_RESTIC_SLEEP", "5s")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(200*time.Millisecond, cancel)
+	start := time.Now()
+	if r := s.selfTestRestic(ctx); r != nil || logs.Len() != 0 || time.Since(start) > 4*time.Second {
+		t.Fatalf("a run given up on, after %s: %+v\n%s", time.Since(start), r, logs.String())
+	}
+	t.Setenv("MP_FAKE_RESTIC_SLEEP", "")
+	if r := s.selfTestRestic(context.Background()); r == nil || r.err != nil || r.bin != bin || !strings.Contains(logs.String(), `msg="restic starts in its sandbox"`) {
+		t.Fatalf("the next run: %+v\n%s", r, logs.String())
+	}
+}
+
+// lockedBuffer is a buffer a goroutine writes while the test reads it.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+func (l *lockedBuffer) Reset() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.b.Reset()
 }

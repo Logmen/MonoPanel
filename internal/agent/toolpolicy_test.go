@@ -417,6 +417,8 @@ func TestToolPolicyRefusesTheRest(t *testing.T) {
 		{"restic dump", withEnv(tc(modeTool, "restic", "dump", "latest", "/etc/shadow"), repo...)},
 		{"restic masterkey", withEnv(tc(modeTool, "restic", "cat", "masterkey"), repo...)},
 		{"restic self-update", withEnv(tc(modeTool, "restic", "self-update"), repo...)},
+		// the agent's own test of restic's sandbox (selfTestRestic), never the API's
+		{"restic version", withEnv(tc(modeTool, "restic", "version"), repo...)},
 		{"restic password command env", withEnv(tc(modeTool, "restic", "init"), append(repo, "RESTIC_PASSWORD_COMMAND=sh -c id")...)},
 		{"restic from password command", withEnv(tc(modeTool, "restic", "init"), append(repo, "RESTIC_FROM_PASSWORD_COMMAND=sh")...)},
 		{"restic repository file", withEnv(tc(modeTool, "restic", "init"), "RESTIC_REPOSITORY_FILE=/etc/shadow", "RESTIC_PASSWORD=x")},

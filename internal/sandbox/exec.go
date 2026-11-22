@@ -31,7 +31,10 @@ const (
 type Rules struct {
 	// RO, RW and RX are absolute paths. sandbox-exec opens each without
 	// following a symlink in its last component and refuses one that is a
-	// symlink: the caller resolves the system's own links first.
+	// symlink: the caller resolves the system's own links first. The
+	// descriptor of a rule on procfs (the kernel's FIPS switch) the program
+	// inherits: it keeps the rule's file the one the path leads to
+	// (keepProcfs).
 	RO, RW, RX []string
 	// ROFiles and RWFiles are trees the caller opened itself, the way to
 	// them checked and pinned by the descriptor: sandbox-exec inherits them
@@ -337,7 +340,8 @@ func Main(args []string) int {
 // or takes its inherited descriptor, and adds what it grants. A symlink is
 // refused rather than resolved: a path the caller did not resolve itself is
 // not one to grant whatever it points at. An inherited descriptor is closed
-// once added, so that the program does not inherit it in turn.
+// once added, so that the program does not inherit it in turn — but for a
+// rule on procfs (keepProcfs).
 func addRule(rs *ruleset, r rule) error {
 	fd := r.fd
 	if fd < 0 {
@@ -347,7 +351,12 @@ func addRule(rs *ruleset, r rule) error {
 			return fmt.Errorf("--%s %s: %w", r.access, r.path, err)
 		}
 	}
-	defer unix.Close(fd) //nolint:errcheck // a descriptor only the rule needed
+	keep := false
+	defer func() {
+		if !keep {
+			unix.Close(fd) //nolint:errcheck // a descriptor only the rule needed
+		}
+	}()
 	var st unix.Stat_t
 	if err := unix.Fstat(fd, &st); err != nil {
 		return fmt.Errorf("--%s %s: %w", r.access, r, err)
@@ -358,5 +367,35 @@ func addRule(rs *ruleset, r rule) error {
 	if err := rs.add(fd, r.access.rights(st.Mode&unix.S_IFMT == unix.S_IFDIR, rs.handled)); err != nil {
 		return fmt.Errorf("--%s %s: %w", r.access, r, err)
 	}
+	var err error
+	if keep, err = keepProcfs(fd); err != nil {
+		return fmt.Errorf("--%s %s: %w", r.access, r, err)
+	}
 	return nil
+}
+
+// keepProcfs leaves the descriptor of a rule on procfs open into the program,
+// close-on-exec cleared, and tells whether it did. A rule holds the inode it
+// was made for, and procfs makes a new inode whenever it looks a name up anew
+// — a sysctl's (/proc/sys/crypto/fips_enabled) as any other —, which it does
+// once the dentry left the dentry cache: under memory pressure that may
+// happen between the rule and the program's open, and the file would then be
+// out of reach, a new one the rule does not know. Open, the descriptor holds
+// the dentry, and every lookup of the name meets the inode of the rule. It
+// grants nothing besides: an O_PATH descriptor reads nothing, and the file
+// reopened through it is the rule's file. A disk file system finds its inode
+// again by number (and the rule's reference keeps it in memory), sysfs too:
+// their descriptors are closed as before.
+func keepProcfs(fd int) (bool, error) {
+	var sfs unix.Statfs_t
+	if err := unix.Fstatfs(fd, &sfs); err != nil {
+		return false, err
+	}
+	if sfs.Type != unix.PROC_SUPER_MAGIC {
+		return false, nil
+	}
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, 0); err != nil {
+		return false, err
+	}
+	return true, nil
 }

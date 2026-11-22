@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -69,6 +70,13 @@ type Server struct {
 	// /etc in a private /etc of its own; privateEtcErr says why not.
 	privateEtc    bool
 	privateEtcErr error
+	// resticTest is what came of the installed restic's restic version in
+	// the sandbox a backup gets, as the agent started or since
+	// (selfTestRestic); resticTestMu orders the runs, and a ping that does
+	// not wait for one reads what the last one found without it
+	// (pingResticSelfTest).
+	resticTestMu sync.Mutex
+	resticTest   atomic.Pointer[resticSelfTest]
 	// sandboxExe is the binary sandbox-exec runs from: the agent's own,
 	// /proc/self/exe — the one running, even when an update replaced the
 	// file meanwhile.
@@ -181,6 +189,14 @@ func (s *Server) ping(ctx context.Context, _ *struct{}) (*PingResponse, error) {
 	if s.privateEtcErr != nil {
 		resp.Sandbox.PrivateEtcError = s.privateEtcErr.Error()
 	}
+	// a restic installed or upgraded since the last test is tested now — but
+	// not waited for longer than a status page waits for the agent
+	if t := s.pingResticSelfTest(ctx); t != nil {
+		resp.Sandbox.Restic, resp.Sandbox.ResticVersion = t.bin, t.version
+		if t.err != nil {
+			resp.Sandbox.ResticError = t.err.Error()
+		}
+	}
 	if c, ok := peercred.FromContext(ctx); ok {
 		resp.PeerUID = int(c.UID)
 	}
@@ -199,6 +215,20 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	s.prepareDirs(ctx)
 	s.probeNoSymfollow(ctx)
 	s.logSandbox()
+	// restic version in a backup's sandbox tells the doctor and the log
+	// whether restic starts there, and changes nothing the agent does: the
+	// API does not wait for it — a restic that hangs would hold the socket
+	// back for resticSelfTestTimeout. It ends with the agent.
+	tctx, stopTest := context.WithCancel(ctx)
+	tested := make(chan struct{})
+	go func() {
+		defer close(tested)
+		s.selfTestRestic(tctx)
+	}()
+	defer func() {
+		stopTest()
+		<-tested
+	}()
 	// What in-place restores an earlier agent was killed in the middle of
 	// left behind: listed now, before any restore can start, removed in
 	// the background — a staged home may take a while.
