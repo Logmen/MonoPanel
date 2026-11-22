@@ -242,6 +242,21 @@ func (s *Server) ensurePHPRepo(ctx context.Context, jc *jobs.Context) error {
 		}
 		res, err := s.agent.Pkg(ctx, "update-index")
 		if err != nil {
+			// The source just written is the likely cause (a key apt
+			// refuses, a repository that went away): left behind, it would
+			// fail every later update-index on the host, a mail or nginx
+			// install included. The next PHP install writes it again.
+			var srcs []string
+			for _, f := range files {
+				if strings.HasPrefix(f.Path, "/etc/apt/sources.list.d/") {
+					srcs = append(srcs, f.Path)
+				}
+			}
+			if _, rerr := s.agent.RemovePaths(context.WithoutCancel(ctx), &agent.RemovePathsRequest{Paths: srcs}); rerr != nil {
+				jc.Logf("cannot remove the repository source after the failed index update: %v", rerr)
+			} else {
+				jc.Logf("repository source %s removed again: apt could not read it", strings.Join(srcs, ", "))
+			}
 			return err
 		}
 		logTail(jc, res.Output, 2)

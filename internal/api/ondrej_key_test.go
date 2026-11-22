@@ -2,8 +2,11 @@ package api
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
+
+	"monopanel/internal/store"
 )
 
 const stubOndrejKeyPEM = "-----BEGIN PGP PUBLIC KEY BLOCK-----\nondrej 2024\n-----END PGP PUBLIC KEY BLOCK-----\n"
@@ -66,4 +69,27 @@ func TestRefreshOndrejKey(t *testing.T) {
 			t.Fatalf("Debian takes packages.sury.org: %d downloads", *n)
 		}
 	})
+}
+
+// A repository apt cannot read must not stay behind: every later index
+// update on the host would fail with it.
+func TestPHPRepoSourceGoesWhenAptCannotReadIt(t *testing.T) {
+	withOSRelease(t, "ID=ubuntu\nVERSION_ID=26.04\nVERSION_CODENAME=resolute\n")
+	prev := ppaHasRelease
+	ppaHasRelease = func(context.Context, string) (bool, error) { return true, nil }
+	t.Cleanup(func() { ppaHasRelease = prev })
+	stubOndrejKey(t)
+	f := newSiteFixture(t)
+	f.agent.Fail["/v1/pkg"] = "E: The repository 'https://ppa.launchpadcontent.net/ondrej/php/ubuntu resolute InRelease' is not signed."
+	var ref struct {
+		JobID int64 `json:"job_id"`
+	}
+	f.call(http.MethodPost, "/php/versions", map[string]any{"version": "8.3"}, http.StatusAccepted, &ref)
+	if job := f.waitJob(ref.JobID); job.Status != store.JobFailed {
+		t.Fatalf("the install must fail: %s %s", job.Status, job.Error)
+	}
+	removed := strings.Join(f.agent.Removed(), " ")
+	if !strings.Contains(removed, ondrejSource) {
+		t.Fatalf("the unreadable source must go again (removed: %s)", removed)
+	}
 }
