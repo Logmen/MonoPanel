@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 )
 
 // Roles.
@@ -139,7 +140,7 @@ func (d *DB) SetUserUnix(ctx context.Context, id int64, uid, gid int, home strin
 
 // SetUserStatus updates the status, whatever it is now: the removal's own
 // mark and the way back from its failure. Anything else that changes the
-// status goes through ActivateUser or UpdateUserProfile, which leave an
+// status goes through ActivateUser or UpdateUserChanges, which leave an
 // account being removed so.
 func (d *DB) SetUserStatus(ctx context.Context, id int64, status string) error {
 	res, err := d.sql.ExecContext(ctx, `UPDATE users SET status=?, updated_at=? WHERE id=?`, status, now(), id)
@@ -152,16 +153,32 @@ func (d *DB) SetUserStatus(ctx context.Context, id int64, status string) error {
 	return nil
 }
 
-// ActivateUser makes an account active once its unix side is made — unless
-// its removal is under way (ErrBeingRemoved): the removal is queued, and
-// what reads the account meanwhile (a restore into its home, an apply of
-// its sites, the log rotation) must find it being removed.
-func (d *DB) ActivateUser(ctx context.Context, id int64) error {
-	res, err := d.sql.ExecContext(ctx, `UPDATE users SET status=?, updated_at=? WHERE id=? AND status<>?`, UserActive, now(), id, UserDeleting)
+// ActivateUser makes an account active once its unix side is made: an
+// account still pending, and no other. A provision also runs for a change
+// of the shell, and a suspension — one asked for together with that change
+// included — is not its to lift. The status the account has afterwards is
+// returned. The removal's mark stays too (ErrBeingRemoved): the removal is
+// queued, and what reads the account meanwhile (a restore into its home, an
+// apply of its sites, the log rotation) must find it being removed. A gone
+// account is ErrNotFound.
+func (d *DB) ActivateUser(ctx context.Context, id int64) (string, error) {
+	res, err := d.sql.ExecContext(ctx, `UPDATE users SET status=?, updated_at=? WHERE id=? AND status=?`, UserActive, now(), id, UserPending)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return d.userWritten(ctx, res, id)
+	if n, _ := res.RowsAffected(); n > 0 {
+		return UserActive, nil
+	}
+	var status string
+	if err := d.sql.QueryRowContext(ctx, `SELECT status FROM users WHERE id=?`, id).Scan(&status); errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	} else if err != nil {
+		return "", err
+	}
+	if status == UserDeleting {
+		return status, ErrBeingRemoved
+	}
+	return status, nil
 }
 
 // userWritten tells why a write that leaves an account being removed alone
@@ -198,14 +215,42 @@ func (d *DB) DeleteUser(ctx context.Context, id int64) error {
 	return nil
 }
 
-// UpdateUserProfile writes email, shell, status and quota — not onto an
-// account being removed (ErrBeingRemoved): a change that read the account
-// before its removal was asked for would put the status it read back over
-// the mark. A gone account is ErrNotFound.
-func (d *DB) UpdateUserProfile(ctx context.Context, u *User) error {
-	res, err := d.sql.ExecContext(ctx, `UPDATE users SET email=?, shell=?, status=?, quota_mb=?, updated_at=? WHERE id=? AND status<>?`, nullStr(u.Email), boolInt(u.Shell), u.Status, nullIntPtr(u.QuotaMB), now(), u.ID, UserDeleting)
+// UserChanges are the fields of an account a change sets; a nil one is
+// left as it is.
+type UserChanges struct {
+	Email        *string
+	Shell        *bool
+	Status       *string
+	PasswordHash *string
+}
+
+// UpdateUserChanges writes the fields c sets and leaves every other column
+// as it is now: a request that read the account, changed one field and
+// wrote the whole profile back would put back what changed beside it
+// meanwhile — a suspension, the provision's activation, a shell switched by
+// another request. Nothing goes onto an account being removed
+// (ErrBeingRemoved), the password hash neither: a change refused for the
+// removal changed nothing. A gone account is ErrNotFound.
+func (d *DB) UpdateUserChanges(ctx context.Context, id int64, c UserChanges) error {
+	var set []string
+	var args []any
+	if c.Email != nil {
+		set, args = append(set, "email=?"), append(args, nullStr(*c.Email))
+	}
+	if c.Shell != nil {
+		set, args = append(set, "shell=?"), append(args, boolInt(*c.Shell))
+	}
+	if c.Status != nil {
+		set, args = append(set, "status=?"), append(args, *c.Status)
+	}
+	if c.PasswordHash != nil {
+		set, args = append(set, "password_hash=?"), append(args, *c.PasswordHash)
+	}
+	set = append(set, "updated_at=?")
+	args = append(args, now(), id, UserDeleting)
+	res, err := d.sql.ExecContext(ctx, `UPDATE users SET `+strings.Join(set, ", ")+` WHERE id=? AND status<>?`, args...)
 	if err != nil {
 		return err
 	}
-	return d.userWritten(ctx, res, u.ID)
+	return d.userWritten(ctx, res, id)
 }

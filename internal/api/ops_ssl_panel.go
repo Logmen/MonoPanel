@@ -210,8 +210,8 @@ func (s *Server) registerPanelTLS() {
 			// (UpdateSiteChanges says why).
 			was := site.Clone()
 			site.SSL = "auto"
-			if err := s.db.UpdateSiteChanges(ctx, was, site); err != nil {
-				return nil, siteChangeRefused(site, err)
+			if err := s.writeSiteChange(ctx, was, site); err != nil {
+				return nil, err
 			}
 		}
 		names := append([]string{site.Domain}, site.Aliases...)

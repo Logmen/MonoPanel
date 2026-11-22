@@ -79,6 +79,28 @@ func (s *Server) registerSiteNginx() {
 		if err != nil {
 			return nil, err
 		}
+		if err := s.siteStays(ctx, site); err != nil {
+			return nil, err
+		}
+		// The file is written under the site's lock, with the site read again
+		// under it: the removal of the site's configuration takes the lock
+		// (removeSiteConfig), and the removal's mark comes before it. One
+		// asked for since the read above is refused here; one asked for later
+		// waits and takes the file away with <domain>.d. Written after that,
+		// the file would outlive the site and be included by the next site of
+		// that domain.
+		if s.beforeChangeWrite != nil {
+			s.beforeChangeWrite()
+		}
+		defer s.lockSite(site.ID)()
+		if site, err = s.db.GetSite(ctx, site.ID); errors.Is(err, store.ErrNotFound) {
+			return nil, huma.Error404NotFound("site not found")
+		} else if err != nil {
+			return nil, err
+		}
+		if err := s.siteStays(ctx, site); err != nil {
+			return nil, err
+		}
 		cur, err := s.siteNginx(ctx, site)
 		if err != nil {
 			return nil, err

@@ -630,9 +630,11 @@ func (s *Server) jobBackupRestore(ctx context.Context, jc *jobs.Context) error {
 // a removal is between its look and its mark waits for the mark and is
 // refused; a removal that starts once a restore is queued finds it. Never
 // both — for the mark stays until the removal is over or failed: nothing
-// else puts a status over it (store.ActivateUser, UpdateUserProfile and
-// UpdateSiteChanges leave a row being removed as it is), and an account
-// without a unix user yet is looked at by its home all the same. The
+// else puts a status over it (store.ActivateUser, UpdateUserChanges and
+// UpdateSiteChanges leave a row being removed as it is), a removal broken
+// off by a shutdown keeps it for its run after the start (jobUserDelete,
+// siteFail), and an account without a unix user yet is looked at by its
+// home all the same. The
 // restore never waits on a site's lock, and restoreMu is never held across
 // restic: restic runs for hours, and a lock waited on holds a worker or a
 // request.

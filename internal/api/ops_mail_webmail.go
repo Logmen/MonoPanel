@@ -143,10 +143,19 @@ func (s *Server) jobWebmailInstall(ctx context.Context, jc *jobs.Context) error 
 	// is never missed: user.delete marks the account before it lists the
 	// account's sites, so a site made after that listing finds the account
 	// being removed here. The download stays outside: it takes minutes, and
-	// the lock holds back the site's own jobs.
+	// the lock holds back the site's own jobs. The look at the site's files
+	// (webmailSiteFree) is taken again under the lock too: a CMS install,
+	// which runs under the site's job key and not the webmail's, may have
+	// put a site of its own there since the first look, and holds the same
+	// lock while it does.
 	defer s.lockSite(site.ID)()
 	if err := s.webmailSiteStays(ctx, site.ID); err != nil {
 		return err
+	}
+	if c.Webmail != site.Domain {
+		if err := s.webmailSiteFree(ctx, owner, site, l); err != nil {
+			return err
+		}
 	}
 
 	jc.Progress(35, "unpacking")

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"monopanel/internal/apitypes"
+	"monopanel/internal/auth"
 	"monopanel/internal/jobs"
 	"monopanel/internal/store"
 )
@@ -538,28 +539,45 @@ func TestAccountRemovalMarkSurvivesAProvision(t *testing.T) {
 	}
 }
 
-// PATCH /users/alex — a password: bcrypt and an agent call between its read
-// and its write — read alex before DELETE /users/alex marked it: its write
-// does not put the status it read back over the mark, and it says the
-// account is being removed.
+// PATCH /users/alex — a password: bcrypt between its read and its write —
+// read alex before DELETE /users/alex marked it: its write does not put the
+// status it read back over the mark, and it says the account is being
+// removed. The refusal changed nothing: not the panel password, not the
+// unix one, not the account's sessions.
 func TestAccountRemovalMarkSurvivesAStaleProfileWrite(t *testing.T) {
 	f, _, _, _ := restoreFixture(t)
-	pw := newCallGate()
-	t.Cleanup(pw.open)
-	rm := f.removalHeld(func(p string, body []byte) {
-		if p == "/v1/user/password" && strings.Contains(string(body), `"login":"alex"`) {
-			pw.hit()
-		}
-	})
-	patched := make(chan sent, 1)
-	go f.sendBeside(patched, http.MethodPatch, "/users/alex", map[string]any{"password": "another-password-1"})
-	pw.wait(t, "the PATCH")
+	alex := f.alexWithPassword()
+	if err := f.db.CreateSession(f.ctx, &store.Session{ID: "alex-session", UserID: alex.ID, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	rm := f.removalHeld(nil)
+	deleted := make(chan sent, 1)
+	var once sync.Once
+	f.s.beforeChangeWrite = func() {
+		once.Do(func() { f.sendBeside(deleted, http.MethodDelete, "/users/alex?purge=true", nil) })
+	}
+	t.Cleanup(func() { f.s.beforeChangeWrite = nil })
+	n := len(f.agent.Calls())
+	if status, raw := f.do(http.MethodPatch, "/users/alex", map[string]any{"password": "another-password-1"}); status != http.StatusConflict || !strings.Contains(string(raw), "the account alex is being removed") {
+		t.Errorf("the PATCH: %d %s", status, raw)
+	}
+	d := answerOf(t, deleted)
 	var del apitypes.JobRef
-	f.call(http.MethodDelete, "/users/alex?purge=true", nil, http.StatusAccepted, &del)
+	if err := json.Unmarshal([]byte(d.body), &del); d.err != nil || d.status != http.StatusAccepted || err != nil {
+		t.Fatalf("DELETE /users/alex inside the PATCH: %d %v %s", d.status, d.err, d.body)
+	}
 	rm.wait(t, "the user.delete")
-	pw.open()
-	if a := answerOf(t, patched); a.err != nil || a.status != http.StatusConflict || !strings.Contains(a.body, "the account alex is being removed") {
-		t.Errorf("the PATCH: %d %s %v", a.status, a.body, a.err)
+	got, _ := f.db.GetUserByLogin(f.ctx, "alex")
+	if same, _ := auth.VerifyPassword("alex-password", got.PasswordHash); !same {
+		t.Error("the refused PATCH changed the panel password")
+	}
+	for _, c := range f.agent.Calls()[n:] {
+		if c.Path == "/v1/user/password" {
+			t.Errorf("the refused PATCH set the unix password: %s", c.Body)
+		}
+	}
+	if _, err := f.db.GetSession(f.ctx, "alex-session"); err != nil {
+		t.Errorf("the refused PATCH ended alex's session: %v", err)
 	}
 	f.keepsOut(t, "a PATCH /users/alex that read the account before the mark")
 	rm.open()

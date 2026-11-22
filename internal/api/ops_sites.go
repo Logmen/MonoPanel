@@ -82,10 +82,22 @@ type siteJobOutput struct {
 
 type sitePayload struct {
 	SiteID int64 `json:"site_id"`
-	Purge  bool  `json:"purge,omitempty"`
+	// Domain is the site's name when a site.delete was queued: a row by
+	// another name under SiteID is not the site asked for (siteGone).
+	Domain string `json:"domain,omitempty"`
+	Purge  bool   `json:"purge,omitempty"`
 	// LogsMoved marks the site.apply that switches an upgraded site to the
 	// root-owned log tree (moveSiteLogs); its log says so.
 	LogsMoved bool `json:"logs_moved,omitempty"`
+}
+
+// siteGone tells whether the site a job was queued for is gone: no row by
+// its id, or one by another name — SQLite gives the newest row's id to the
+// next row once that row is gone, and a site made meanwhile, another
+// account's maybe, may have it. A job queued without the name (an older
+// panel's) goes by the id alone.
+func siteGone(site *store.Site, err error, domain string) bool {
+	return errors.Is(err, store.ErrNotFound) || (err == nil && domain != "" && site.Domain != domain)
 }
 
 func (s *Server) loadSiteFor(ctx context.Context, domain string) (*store.Site, error) {
@@ -107,8 +119,8 @@ func (s *Server) loadSiteFor(ctx context.Context, domain string) (*store.Site, e
 // (site.delete) or its account's (user.delete, which removes the account's
 // sites itself): the removal is queued, what the change wrote or queued
 // would be taken away or skipped, and the answer would say it went in. A
-// removal asked for between the request's read and its write is caught by
-// the write (store.ErrBeingRemoved, siteChangeRefused).
+// removal of either asked for between the request's read and its write is
+// caught by the write (writeSiteChange).
 func (s *Server) siteStays(ctx context.Context, site *store.Site) error {
 	owner, err := s.db.GetUserByID(ctx, site.UserID)
 	if err != nil {
@@ -128,10 +140,28 @@ func siteOwnerStays(site *store.Site, owner *store.User) error {
 	return nil
 }
 
-// siteChangeRefused is the answer to a change of a site that did not go in
-// because the site's removal was asked for meanwhile (UpdateSiteChanges).
-func siteChangeRefused(site *store.Site, err error) error {
-	if errors.Is(err, store.ErrBeingRemoved) {
+// writeSiteChange writes what a request changed of a site, the fields that
+// differ from was (store.UpdateSiteChangesIfOwnerStays). A removal of the
+// site or of its account asked for since the request read them — after
+// siteStays let it through — is caught here, and nothing went in: the
+// answer says whose removal it is (409), or that the site is gone (404),
+// and the caller queues nothing.
+func (s *Server) writeSiteChange(ctx context.Context, was, site *store.Site) error {
+	if s.beforeChangeWrite != nil {
+		s.beforeChangeWrite()
+	}
+	err := s.db.UpdateSiteChangesIfOwnerStays(ctx, was, site)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return huma.Error404NotFound("site not found")
+	case errors.Is(err, store.ErrBeingRemoved):
+		if cur, err := s.db.GetSite(ctx, site.ID); err == nil {
+			if owner, err := s.db.GetUserByID(ctx, cur.UserID); err == nil {
+				if refused := siteOwnerStays(cur, owner); refused != nil {
+					return refused
+				}
+			}
+		}
 		return huma.Error409Conflict(fmt.Sprintf("site %s is being removed", site.Domain))
 	}
 	return err
@@ -569,8 +599,8 @@ func (s *Server) registerSites() {
 		if site.Status == store.SiteError {
 			site.Status = store.SitePending
 		}
-		if err := s.db.UpdateSiteChanges(ctx, was, site); err != nil {
-			return nil, siteChangeRefused(site, err)
+		if err := s.writeSiteChange(ctx, was, site); err != nil {
+			return nil, err
 		}
 		jobID, err := s.enqueueSiteApply(ctx, site, p.Login)
 		if err != nil {
@@ -623,8 +653,8 @@ func (s *Server) registerSites() {
 					site.Status = store.SitePending
 				}
 			}
-			if err := s.db.UpdateSiteChanges(ctx, was, site); err != nil {
-				return nil, siteChangeRefused(site, err)
+			if err := s.writeSiteChange(ctx, was, site); err != nil {
+				return nil, err
 			}
 			jobID, err := s.enqueueSiteApply(ctx, site, p.Login)
 			if err != nil {
@@ -659,7 +689,7 @@ func (s *Server) registerSites() {
 		}); err != nil {
 			return nil, err
 		}
-		job, err := s.jobs.Enqueue(ctx, "site.delete", sitePayload{SiteID: site.ID, Purge: in.Purge}, jobs.WithLockKey("site:"+site.Domain), jobs.WithRequestedBy(p.Login))
+		job, err := s.jobs.Enqueue(ctx, "site.delete", sitePayload{SiteID: site.ID, Domain: site.Domain, Purge: in.Purge}, jobs.WithLockKey("site:"+site.Domain), jobs.WithRequestedBy(p.Login))
 		if err != nil {
 			return nil, err
 		}
@@ -1404,9 +1434,10 @@ func (s *Server) jobSiteDelete(ctx context.Context, jc *jobs.Context) error {
 	// the first under the same key) — done then, with the files as that
 	// removal left them. A user.delete may also take the row between this
 	// job's removal of the configuration, which lets the site's lock go, and
-	// its DeleteSite below, which finds nothing left to delete then.
+	// its DeleteSite below, which finds nothing left to delete then. A site
+	// made since, under the id of the one gone, is not this one (siteGone).
 	site, err := s.db.GetSite(ctx, p.SiteID)
-	if errors.Is(err, store.ErrNotFound) {
+	if siteGone(site, err, p.Domain) {
 		jc.Progress(100, "the site is gone already: its files are as its removal left them")
 		return nil
 	}

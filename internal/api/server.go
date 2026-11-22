@@ -119,8 +119,9 @@ type Server struct {
 	// the removals under way and its queueing (enqueueRestore), the
 	// restore's job across that check as it starts (jobBackupRestore).
 	// Whichever comes second finds the other — the mark, which nothing but
-	// the removal itself takes away, or the restore queued or running — and
-	// is refused. Held for those database steps alone, never across restic
+	// the removal itself takes away (a removal broken off by a shutdown
+	// keeps it and runs again after the start), or the restore queued or
+	// running — and is refused. Held for those database steps alone, never across restic
 	// nor an agent call; no other lock here is taken under it, nor is it
 	// taken under one.
 	restoreMu sync.Mutex
@@ -163,6 +164,11 @@ type Server struct {
 	// (inPlaceRestoreInto), restoreMu held: the test moves a restore on
 	// between the reads, or asks for one before the removal's mark.
 	restoresRead func()
+	// beforeChangeWrite, set by a test, runs in a request that changes a
+	// site or an account between its read of the row and its write
+	// (writeSiteChange, PATCH /users, PUT /sites/{domain}/nginx): the test
+	// asks for a removal meanwhile.
+	beforeChangeWrite func()
 	// restartDelay is how long a restart of monopanel-api that a request
 	// asked for waits after the answer; tests need no wait.
 	restartDelay time.Duration

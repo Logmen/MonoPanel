@@ -80,15 +80,15 @@ func TestUserStatusOfAnAccountBeingRemoved(t *testing.T) {
 	if err := db.CreateUser(ctx, u); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.ActivateUser(ctx, u.ID); err != nil {
-		t.Fatal(err)
+	if status, err := db.ActivateUser(ctx, u.ID); err != nil || status != UserActive {
+		t.Fatalf("activated: %s %v", status, err)
 	}
 	read, _ := db.GetUserByID(ctx, u.ID)
 	if read.Status != UserActive {
 		t.Fatalf("activated: %s", read.Status)
 	}
-	read.Email, read.Status = "alex@example.com", UserSuspended
-	if err := db.UpdateUserProfile(ctx, read); err != nil {
+	email, suspended := "alex@example.com", UserSuspended
+	if err := db.UpdateUserChanges(ctx, u.ID, UserChanges{Email: &email, Status: &suspended}); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := db.GetUserByID(ctx, u.ID); got.Email != "alex@example.com" || got.Status != UserSuspended {
@@ -97,15 +97,18 @@ func TestUserStatusOfAnAccountBeingRemoved(t *testing.T) {
 	if err := db.SetUserStatus(ctx, u.ID, UserDeleting); err != nil {
 		t.Fatal(err)
 	}
-	read.Email, read.Status = "other@example.com", UserActive
-	if err := db.UpdateUserProfile(ctx, read); !errors.Is(err, ErrBeingRemoved) {
+	other, active, hash := "other@example.com", UserActive, "new-hash"
+	if err := db.UpdateUserChanges(ctx, u.ID, UserChanges{Email: &other, Status: &active, PasswordHash: &hash}); !errors.Is(err, ErrBeingRemoved) {
 		t.Fatalf("a profile written over the mark: %v", err)
 	}
-	if err := db.ActivateUser(ctx, u.ID); !errors.Is(err, ErrBeingRemoved) {
+	if err := db.UpdateUserChanges(ctx, u.ID, UserChanges{}); !errors.Is(err, ErrBeingRemoved) {
+		t.Fatalf("an empty change over the mark: %v", err)
+	}
+	if _, err := db.ActivateUser(ctx, u.ID); !errors.Is(err, ErrBeingRemoved) {
 		t.Fatalf("activated over the mark: %v", err)
 	}
-	if got, _ := db.GetUserByID(ctx, u.ID); got.Status != UserDeleting || got.Email != "alex@example.com" {
-		t.Fatalf("over the mark: %s %q", got.Status, got.Email)
+	if got, _ := db.GetUserByID(ctx, u.ID); got.Status != UserDeleting || got.Email != "alex@example.com" || got.PasswordHash == hash {
+		t.Fatalf("over the mark: %s %q, the password hash written %v", got.Status, got.Email, got.PasswordHash == hash)
 	}
 	if err := db.SetUserStatus(ctx, u.ID, UserSuspended); err != nil {
 		t.Fatal(err)
@@ -113,12 +116,84 @@ func TestUserStatusOfAnAccountBeingRemoved(t *testing.T) {
 	if got, _ := db.GetUserByID(ctx, u.ID); got.Status != UserSuspended {
 		t.Fatalf("after the removal failed: %s", got.Status)
 	}
-	read.ID = 999
-	if err := db.UpdateUserProfile(ctx, read); !errors.Is(err, ErrNotFound) {
+	if err := db.UpdateUserChanges(ctx, 999, UserChanges{Email: &other}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("the profile of a gone account: %v", err)
 	}
-	if err := db.ActivateUser(ctx, 999); !errors.Is(err, ErrNotFound) {
+	if _, err := db.ActivateUser(ctx, 999); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a gone account activated: %v", err)
+	}
+}
+
+// The end of a provision activates an account still pending and no other:
+// a suspension — asked for before the provision ran, or together with the
+// change of the shell it carries out — stays, and so does an active
+// account; the status afterwards is said.
+func TestActivateUserOnlyFromPending(t *testing.T) {
+	ctx := context.Background()
+	db := openTest(t)
+	for _, c := range []struct{ from, want string }{
+		{UserPending, UserActive},
+		{UserSuspended, UserSuspended},
+		{UserActive, UserActive},
+	} {
+		u := &User{Login: "u" + c.from, Status: c.from}
+		if err := db.CreateUser(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+		status, err := db.ActivateUser(ctx, u.ID)
+		got, _ := db.GetUserByID(ctx, u.ID)
+		if err != nil || status != c.want || got.Status != c.want {
+			t.Errorf("activate from %s: said %q %v, stored %s (want %s)", c.from, status, err, got.Status, c.want)
+		}
+	}
+}
+
+// A change of an account writes the fields it sets and nothing else: a
+// password change that read the account before a suspension does not put
+// the status back, and one that read it pending does not undo the
+// provision's activation; the e-mail, the shell and the quota read with it
+// are not written back either.
+func TestUpdateUserChangesWritesOnlyWhatItSets(t *testing.T) {
+	ctx := context.Background()
+	db := openTest(t)
+	quota := 500
+	u := &User{Login: "alex", Status: UserActive, Email: "alex@example.com", Shell: true, QuotaMB: &quota}
+	if err := db.CreateUser(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	// Meanwhile: the account is suspended, its e-mail, shell and quota change.
+	if _, err := db.sql.ExecContext(ctx, `UPDATE users SET status=?, email=?, shell=0, quota_mb=700 WHERE id=?`, UserSuspended, "new@example.com", u.ID); err != nil {
+		t.Fatal(err)
+	}
+	hash := "new-hash"
+	if err := db.UpdateUserChanges(ctx, u.ID, UserChanges{PasswordHash: &hash}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := db.GetUserByID(ctx, u.ID)
+	if got.PasswordHash != hash || got.Status != UserSuspended || got.Email != "new@example.com" || got.Shell || got.QuotaMB == nil || *got.QuotaMB != 700 {
+		t.Errorf("after a password change: hash %v, status %s, e-mail %q, shell %v, quota %v", got.PasswordHash == hash, got.Status, got.Email, got.Shell, got.QuotaMB)
+	}
+	// A pending account activated meanwhile stays active.
+	carol := &User{Login: "carol", Status: UserPending}
+	if err := db.CreateUser(ctx, carol); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ActivateUser(ctx, carol.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateUserChanges(ctx, carol.ID, UserChanges{PasswordHash: &hash}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.GetUserByID(ctx, carol.ID); got.Status != UserActive {
+		t.Errorf("the provision's activation undone: %s", got.Status)
+	}
+	// A status asked for goes in over any but the removal's mark.
+	active, shell := UserActive, true
+	if err := db.UpdateUserChanges(ctx, u.ID, UserChanges{Status: &active, Shell: &shell}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.GetUserByID(ctx, u.ID); got.Status != UserActive || !got.Shell || got.Email != "new@example.com" {
+		t.Errorf("a status and a shell asked for: %s %v %q", got.Status, got.Shell, got.Email)
 	}
 }
 

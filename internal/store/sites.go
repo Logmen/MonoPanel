@@ -256,6 +256,22 @@ func orEmpty(list []string) []string {
 // given meanwhile stays. A status asked for (a suspension, its end) goes in
 // over any other. A site gone meanwhile is ErrNotFound.
 func (d *DB) UpdateSiteChanges(ctx context.Context, was, s *Site) error {
+	return d.updateSiteChanges(ctx, was, s, false)
+}
+
+// UpdateSiteChangesIfOwnerStays is UpdateSiteChanges for a change a request
+// asks for: nothing goes in while the site's account is being removed
+// either (ErrBeingRemoved). The account's removal marks the account, not
+// its sites, and takes them with it: a change written meanwhile would be
+// answered as accepted and its apply queued for nothing. A job that records
+// what it made under the site's lock — a CMS install the account's removal
+// waits for — writes with UpdateSiteChanges: the removal comes after it and
+// takes what it made.
+func (d *DB) UpdateSiteChangesIfOwnerStays(ctx context.Context, was, s *Site) error {
+	return d.updateSiteChanges(ctx, was, s, true)
+}
+
+func (d *DB) updateSiteChanges(ctx context.Context, was, s *Site, ownerStays bool) error {
 	before := siteColumns(was)
 	var set []string
 	var args []any
@@ -270,7 +286,12 @@ func (d *DB) UpdateSiteChanges(ctx context.Context, was, s *Site) error {
 	}
 	set = append(set, "updated_at=?")
 	args = append(args, now(), s.ID, SiteDeleting)
-	res, err := d.sql.ExecContext(ctx, `UPDATE sites SET `+strings.Join(set, ", ")+` WHERE id=? AND status<>?`, args...)
+	where := `id=? AND status<>?`
+	if ownerStays {
+		where += ` AND NOT EXISTS (SELECT 1 FROM users WHERE users.id=sites.user_id AND users.status=?)`
+		args = append(args, UserDeleting)
+	}
+	res, err := d.sql.ExecContext(ctx, `UPDATE sites SET `+strings.Join(set, ", ")+` WHERE `+where, args...)
 	if err != nil {
 		return err
 	}

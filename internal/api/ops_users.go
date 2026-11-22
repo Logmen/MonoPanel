@@ -135,12 +135,19 @@ func (s *Server) registerUserUpdate() {
 		// the applies of its sites back in (restoreRefused,
 		// applySiteLocked), and a shell would queue a provision that makes
 		// the unix user again once the removal is over. A removal asked for
-		// after this read is caught by the write (UpdateUserProfile).
+		// after this read is caught by the write (UpdateUserChanges), which
+		// comes before everything else the change does — the unix password,
+		// the sessions, the provision: a refusal changed nothing.
 		if u.Status == store.UserDeleting {
 			return nil, accountBeingRemoved(u)
 		}
+		// Only what the request changes goes in (UpdateUserChanges): a
+		// suspension or the provision's activation made since this read
+		// stays.
+		var c store.UserChanges
 		if b.Email != "" {
 			u.Email = b.Email
+			c.Email = &u.Email
 		}
 		if b.Password != "" && p.UserID == u.ID && p.Via != "peercred" && u.PasswordHash != "" {
 			// Your own password needs the current one: whoever holds a stolen
@@ -162,18 +169,33 @@ func (s *Server) registerUserUpdate() {
 			if err != nil {
 				return nil, err
 			}
-			if err := s.db.SetUserPassword(ctx, u.ID, h); err != nil {
-				return nil, err
-			}
-			if u.UnixUID != nil {
-				if err := s.agent.SetUnixPassword(ctx, u.Login, b.Password); err != nil {
-					return nil, huma.Error502BadGateway(err.Error())
-				}
-			}
+			c.PasswordHash = &h
 		}
 		if b.Status != "" {
 			u.Status = b.Status
+			c.Status = &u.Status
 		}
+		// The shell goes in with the provision that switches the host to it:
+		// one equal to the shell read writes nothing, and queues nothing.
+		reprovision := false
+		if b.Shell != nil && *b.Shell != u.Shell {
+			u.Shell = *b.Shell
+			c.Shell = &u.Shell
+			reprovision = true
+		}
+		if s.beforeChangeWrite != nil {
+			s.beforeChangeWrite()
+		}
+		switch err := s.db.UpdateUserChanges(ctx, u.ID, c); {
+		case errors.Is(err, store.ErrBeingRemoved):
+			return nil, accountBeingRemoved(u)
+		case errors.Is(err, store.ErrNotFound):
+			return nil, huma.Error404NotFound("user not found")
+		case err != nil:
+			return nil, err
+		}
+		// The change is in: a removal asked for from here on came after it,
+		// and takes the account with what it changed.
 		// A new password or a suspension ends the account's browser sessions;
 		// whoever changes their own password keeps the session they did it from.
 		// API tokens stay: they are separate credentials, revoked explicitly.
@@ -188,19 +210,6 @@ func (s *Server) registerUserUpdate() {
 				s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "user.sessions.end", Target: u.Login, IP: requestInfo(ctx).IP, Details: map[string]any{"sessions": n}})
 			}
 		}
-		reprovision := false
-		if b.Shell != nil && *b.Shell != u.Shell {
-			u.Shell = *b.Shell
-			reprovision = true
-		}
-		switch err := s.db.UpdateUserProfile(ctx, u); {
-		case errors.Is(err, store.ErrBeingRemoved):
-			return nil, accountBeingRemoved(u)
-		case errors.Is(err, store.ErrNotFound):
-			return nil, huma.Error404NotFound("user not found")
-		case err != nil:
-			return nil, err
-		}
 		out := &createUserOutput{Status: http.StatusAccepted, Body: apitypes.UserWithJob{User: u}}
 		if reprovision && u.Role == store.RoleUser {
 			job, err := s.jobs.Enqueue(ctx, "user.provision", userProvisionPayload{UserID: u.ID, Login: u.Login, Shell: u.Shell}, jobs.WithLockKey("user:"+u.Login), jobs.WithRequestedBy(p.Login))
@@ -211,7 +220,26 @@ func (s *Server) registerUserUpdate() {
 		} else {
 			out.Status = http.StatusOK
 		}
-		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "user.update", Target: u.Login, IP: requestInfo(ctx).IP, Details: map[string]any{"shell": u.Shell, "status": u.Status, "password": b.Password != ""}})
+		details := map[string]any{"password": b.Password != ""}
+		if c.Shell != nil {
+			details["shell"] = *c.Shell
+		}
+		if c.Status != nil {
+			details["status"] = *c.Status
+		}
+		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "user.update", Target: u.Login, IP: requestInfo(ctx).IP, Details: details})
+		// The unix password last: whatever fails here, the rest of the change
+		// is in and is said to be.
+		if b.Password != "" && u.UnixUID != nil {
+			if err := s.agent.SetUnixPassword(ctx, u.Login, b.Password); err != nil {
+				return nil, huma.Error502BadGateway("the change is saved and the panel password set, but the SFTP/SSH password is not: " + err.Error())
+			}
+		}
+		// The account as stored: what went in together with what changed
+		// beside it — a suspension, the provision's activation.
+		if cur, err := s.db.GetUserByID(ctx, u.ID); err == nil {
+			out.Body.User = cur
+		}
 		return out, nil
 	})
 }
@@ -357,14 +385,16 @@ func accountBeingRemoved(u *store.User) error {
 // — the account's creation, a change of its shell — runs first, under the
 // same key, and would make a home for the removal to purge (and an in-place
 // restore to write into meanwhile); one queued after it would make the unix
-// user and the home again, for nobody.
+// user and the home again, for nobody. An account by another login under
+// the id is not the one the provision was queued for (jobUserDelete says
+// why): the provision would record this account's unix user on it.
 func (s *Server) jobUserProvision(ctx context.Context, jc *jobs.Context) error {
 	var p userProvisionPayload
 	if err := jc.Unmarshal(&p); err != nil {
 		return err
 	}
 	u, err := s.db.GetUserByID(ctx, p.UserID)
-	if errors.Is(err, store.ErrNotFound) {
+	if errors.Is(err, store.ErrNotFound) || (err == nil && p.Login != "" && u.Login != p.Login) {
 		jc.Progress(100, "the account is gone: nothing to provision")
 		return nil
 	}
@@ -449,15 +479,24 @@ func (s *Server) provisionUser(ctx context.Context, p userProvisionPayload, logf
 	}
 	progress(90, "saving")
 	// The unix identity goes in whatever the status: a removal asked for
-	// meanwhile needs it to remove the unix user this made. The account
-	// stays being removed, then (ActivateUser).
+	// meanwhile needs it to remove the unix user this made. Only an account
+	// still pending becomes active (ActivateUser): one being removed stays
+	// so, and a suspended one stays suspended — the provision of a change of
+	// its shell, or of its creation, does not lift the suspension. Nor does
+	// anything above: a suspension closes the panel to the account (its
+	// sign-in, sessions, tokens and the local socket all want an active
+	// account) and leaves its unix side — shell, password, sites, cron — as
+	// it is, and the shell set here is the one asked for.
 	if err := s.db.SetUserUnix(ctx, p.UserID, u.UID, u.GID, u.Home); err != nil {
 		return err
 	}
-	if err := s.db.ActivateUser(ctx, p.UserID); errors.Is(err, store.ErrBeingRemoved) {
+	switch status, err := s.db.ActivateUser(ctx, p.UserID); {
+	case errors.Is(err, store.ErrBeingRemoved):
 		logf("the account %s is being removed: it stays so, and its removal takes the unix user and the home", p.Login)
-	} else if err != nil {
+	case err != nil:
 		return err
+	case status == store.UserSuspended:
+		logf("the account %s is suspended: it stays so (mp user set %s --status active lifts the suspension)", p.Login, p.Login)
 	}
 	if err := s.applySiteLogrotate(ctx); err != nil {
 		logf("site log rotation not updated: %v", err)

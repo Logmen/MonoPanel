@@ -549,3 +549,403 @@ func TestWebmailStopsForARemovalAskedForDuringTheRun(t *testing.T) {
 		t.Errorf("the mail settings name the webmail %q", c.Webmail)
 	}
 }
+
+// The account's removal asked for while mp site set is between its read of
+// the site and its write — PATCH's check of the IPv6 address it sets — is
+// caught by the write as the site's own removal is: the account's removal
+// marks the account, not its sites. 409, nothing written, nothing queued
+// but the removal.
+func TestSiteChangeRefusedForAnAccountRemovalAskedForMeanwhile(t *testing.T) {
+	f := newSiteFixture(t)
+	site := f.createSite(map[string]any{"domain": "own.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	f.holdKey("user:alex") // the user.delete stays queued: the site stays
+	jobCount := func() int {
+		t.Helper()
+		list, err := f.db.ListJobs(f.ctx, 1000, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(list)
+	}
+	beside := make(chan sent, 1)
+	var once sync.Once
+	f.s.SetHostIPv6s(func() []string {
+		once.Do(func() { f.sendBeside(beside, http.MethodDelete, "/users/alex?purge=true", nil) })
+		return []string{"2001:db8::1"}
+	})
+	before := jobCount()
+	code, raw := f.do(http.MethodPatch, "/sites/own.example.com", map[string]any{"ipv6": "2001:db8::1", "client_max_body": "128m"})
+	if r := answerOf(t, beside); r.err != nil || r.status != http.StatusAccepted {
+		t.Fatalf("DELETE /users/alex beside: %d %v %s", r.status, r.err, r.body)
+	}
+	if code != http.StatusConflict || !strings.Contains(string(raw), "the account alex is being removed, and its site own.example.com with it") {
+		t.Errorf("mp site set while the removal of its account is asked for: %d %s", code, raw)
+	}
+	if n := jobCount() - before; n != 1 {
+		t.Errorf("%d jobs queued (want only the user.delete)", n)
+	}
+	if got, _ := f.db.GetSite(f.ctx, site.ID); got.ClientMaxBody != "64m" || got.IPv6 != "" {
+		t.Errorf("the change went onto the site of an account being removed: client_max_body %s, ipv6 %q", got.ClientMaxBody, got.IPv6)
+	}
+}
+
+// A removal of a site or of its account asked for between a request's read
+// of the site and its write is caught by the write, for every request that
+// changes the site — mp site set, apply, suspend, unsuspend, ordering its
+// certificate, a CMS install's preset: a 409 that names the removal, the
+// row as it was, nothing queued. A site gone meanwhile is a 404.
+func TestSiteChangeRefusedAtItsWrite(t *testing.T) {
+	f := cmsFixture(t, nil)
+	site := f.createSite(map[string]any{"domain": "late.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	alex, err := f.db.GetUserByLogin(f.ctx, "alex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobCount := func() int {
+		t.Helper()
+		list, err := f.db.ListJobs(f.ctx, 1000, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(list)
+	}
+	changes := []struct {
+		method, path string
+		body         any
+	}{
+		{http.MethodPatch, "/sites/late.example.com", map[string]any{"client_max_body": "128m"}},
+		{http.MethodPost, "/sites/late.example.com/apply", nil},
+		{http.MethodPost, "/sites/late.example.com/suspend", nil},
+		{http.MethodPost, "/sites/late.example.com/unsuspend", nil},
+		{http.MethodPost, "/sites/late.example.com/tls/issue", map[string]any{}},
+		{http.MethodPost, "/sites/late.example.com/cms", map[string]any{"cms": "wordpress"}},
+	}
+	for _, removal := range []struct {
+		name, want, status string
+		mark, unmark       func() error
+	}{
+		{"the site's removal", "site late.example.com is being removed", store.SiteDeleting,
+			func() error { return f.db.MarkSiteDeleting(f.ctx, site.ID) },
+			func() error { return f.db.SetSiteStatus(f.ctx, site.ID, store.SiteActive, "") }},
+		{"its account's removal", "the account alex is being removed, and its site late.example.com with it", store.SiteActive,
+			func() error { return f.db.SetUserStatus(f.ctx, alex.ID, store.UserDeleting) },
+			func() error { return f.db.SetUserStatus(f.ctx, alex.ID, store.UserActive) }},
+	} {
+		for _, c := range changes {
+			var marked atomic.Bool
+			f.s.beforeChangeWrite = func() {
+				if marked.CompareAndSwap(false, true) {
+					if err := removal.mark(); err != nil {
+						t.Error(err)
+					}
+				}
+			}
+			before := jobCount()
+			code, raw := f.do(c.method, c.path, c.body)
+			f.s.beforeChangeWrite = nil
+			if !marked.Load() {
+				t.Errorf("%s: %s %s did not reach its write: %d %s", removal.name, c.method, c.path, code, raw)
+			}
+			if code != http.StatusConflict || !strings.Contains(string(raw), removal.want) {
+				t.Errorf("%s asked for during %s %s: %d %s (want 409 %q)", removal.name, c.method, c.path, code, raw, removal.want)
+			}
+			if n := jobCount(); n != before {
+				t.Errorf("%s asked for during %s %s: %d jobs queued", removal.name, c.method, c.path, n-before)
+			}
+			if got, _ := f.db.GetSite(f.ctx, site.ID); got.Status != removal.status || got.ClientMaxBody != "64m" || got.SSL != "none" || got.Preset != "" {
+				t.Errorf("%s asked for during %s %s: the site changed: status %s, client_max_body %s, ssl %s, preset %q", removal.name, c.method, c.path, got.Status, got.ClientMaxBody, got.SSL, got.Preset)
+			}
+			if err := removal.unmark(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	// Gone meanwhile: the account's removal takes its sites' rows without
+	// marking them.
+	f.s.beforeChangeWrite = func() {
+		if err := f.db.DeleteSite(f.ctx, site.ID); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { f.s.beforeChangeWrite = nil })
+	if code, raw := f.do(http.MethodPatch, "/sites/late.example.com", map[string]any{"client_max_body": "128m"}); code != http.StatusNotFound || !strings.Contains(string(raw), "site not found") {
+		t.Errorf("a site gone during mp site set: %d %s (want 404)", code, raw)
+	}
+}
+
+// Custom nginx directives are a change of the site like any other: refused
+// (409) for a site being removed — here while site.delete --purge empties
+// its tree — and for one whose removal is asked for between the request's
+// read and its write, which the write under the site's lock sees. Written
+// after the removal took <domain>.d away, the file would outlive the site
+// and be included by the next site of that domain.
+func TestNginxCustomOfASiteBeingRemovedIsRefused(t *testing.T) {
+	f := newSiteFixture(t)
+	f.createSite(map[string]any{"domain": "n.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	custom := "/etc/nginx/monopanel/sites/n.example.com.d/custom.conf"
+	purge := newCallGate()
+	t.Cleanup(purge.open)
+	f.agent.SetBefore(func(p string, body []byte) {
+		if p == "/v1/paths/remove" && strings.Contains(string(body), `"/var/www/alex/data/www/n.example.com"`) {
+			purge.hit()
+		}
+	})
+	t.Cleanup(func() { f.agent.SetBefore(nil) })
+	var del apitypes.JobRef
+	f.call(http.MethodDelete, "/sites/n.example.com?purge=true", nil, http.StatusAccepted, &del)
+	purge.wait(t, "the purge of the site's tree")
+	// Refused at once: the removal holds the site's lock through its purge,
+	// and a request that waited for it would answer only once the site is
+	// gone.
+	bodies := []map[string]any{{"custom": "add_header X-Old-Site yes;\n"}, {"custom": ""}}
+	answers := make([]chan sent, len(bodies))
+	for i, body := range bodies {
+		answers[i] = make(chan sent, 1)
+		go f.sendBeside(answers[i], http.MethodPut, "/sites/n.example.com/nginx", body)
+	}
+	got := make([]sent, len(bodies))
+	for i, body := range bodies {
+		select {
+		case got[i] = <-answers[i]:
+		case <-time.After(5 * time.Second):
+			t.Errorf("PUT /sites/n.example.com/nginx %v while the site is being removed: no answer while the removal runs", body)
+		}
+	}
+	purge.open()
+	for i, body := range bodies {
+		if got[i].status == 0 {
+			got[i] = answerOf(t, answers[i])
+		}
+		if got[i].err != nil || got[i].status != http.StatusConflict || !strings.Contains(got[i].body, "site n.example.com is being removed") {
+			t.Errorf("PUT /sites/n.example.com/nginx %v while the site is being removed: %d %v %s (want 409)", body, got[i].status, got[i].err, got[i].body)
+		}
+	}
+	if j := f.waitJob(del.JobID); j.Status != store.JobDone {
+		t.Fatalf("site.delete: %s %s", j.Status, j.Error)
+	}
+	if _, ok := f.agent.File(custom); ok {
+		t.Errorf("after the removal: %s is left behind", custom)
+	}
+	f.agent.SetBefore(nil)
+	f.createSite(map[string]any{"domain": "n.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	if c, ok := f.agent.File(custom); ok && strings.Contains(c, "X-Old-Site") {
+		t.Errorf("the new site n.example.com has the removed site's custom directives: %q", strings.TrimSpace(c))
+	}
+
+	// The removal asked for after the read: DELETE /sites inside the
+	// request, its site.delete queued behind the site's job key.
+	release := f.holdKey("site:n.example.com")
+	deleted := make(chan sent, 1)
+	var once sync.Once
+	f.s.beforeChangeWrite = func() {
+		once.Do(func() { f.sendBeside(deleted, http.MethodDelete, "/sites/n.example.com?purge=true", nil) })
+	}
+	t.Cleanup(func() { f.s.beforeChangeWrite = nil })
+	code, raw := f.do(http.MethodPut, "/sites/n.example.com/nginx", map[string]any{"custom": "add_header X-Late yes;\n"})
+	d := answerOf(t, deleted)
+	if d.err != nil || d.status != http.StatusAccepted {
+		t.Fatalf("DELETE /sites/n.example.com inside the request: %d %v %s", d.status, d.err, d.body)
+	}
+	if code != http.StatusConflict || !strings.Contains(string(raw), "site n.example.com is being removed") {
+		t.Errorf("PUT /sites/n.example.com/nginx whose site's removal was asked for after its read: %d %s (want 409)", code, raw)
+	}
+	release()
+	var del2 apitypes.JobRef
+	_ = json.Unmarshal([]byte(d.body), &del2)
+	if j := f.waitJob(del2.JobID); j.Status != store.JobDone {
+		t.Fatalf("site.delete: %s %s", j.Status, j.Error)
+	}
+	if c, ok := f.agent.File(custom); ok && strings.Contains(c, "X-Late") {
+		t.Errorf("the directives sent during the removal outlived the site: %q", strings.TrimSpace(c))
+	}
+}
+
+// The site's removal asked for during a CMS install — after its look under
+// the site's lock, at wp-cli's "core version" — waits for the install under
+// the site's job key; the install's record does not go onto the site being
+// removed, and the job says so.
+func TestCMSRecordOfASiteRemovedDuringTheInstall(t *testing.T) {
+	f, site := wordpressFixture(t)
+	deleted := make(chan sent, 1)
+	var once sync.Once
+	f.agent.SetBefore(func(p string, body []byte) {
+		if p == "/v1/runas" && strings.Contains(string(body), `"core","version"`) {
+			once.Do(func() { f.sendBeside(deleted, http.MethodDelete, "/sites/wp.example.com", nil) })
+		}
+	})
+	t.Cleanup(func() { f.agent.SetBefore(nil) })
+	_, job := f.installCMS(t, site.Domain, map[string]any{"cms": "wordpress"})
+	if job.Status != store.JobFailed || job.Error != "site wp.example.com is being removed: WordPress is not recorded on it" {
+		t.Errorf("the install: %s %q", job.Status, job.Error)
+	}
+	d := answerOf(t, deleted)
+	var del apitypes.JobRef
+	if err := json.Unmarshal([]byte(d.body), &del); d.err != nil || d.status != http.StatusAccepted || err != nil {
+		t.Fatalf("DELETE /sites/wp.example.com during the install: %d %v %s", d.status, d.err, d.body)
+	}
+	if j := f.waitJob(del.JobID); j.Status != store.JobDone {
+		t.Fatalf("site.delete: %s %s", j.Status, j.Error)
+	}
+	if _, err := f.db.GetSite(f.ctx, site.ID); err == nil {
+		t.Error("the site outlived its removal")
+	}
+}
+
+// A CMS install queued while the site's job key is busy, whose site went
+// with its account before the install's turn came, stops before anything:
+// it says the site was removed meanwhile and makes nothing — not even the
+// preset's apply.
+func TestCMSInstallOfASiteRemovedWhileQueued(t *testing.T) {
+	f, site := wordpressFixture(t)
+	release := f.holdKey("site:wp.example.com")
+	var res apitypes.CMSInstallResult
+	f.call(http.MethodPost, "/sites/wp.example.com/cms", map[string]any{"cms": "wordpress"}, http.StatusAccepted, &res)
+	var del apitypes.JobRef
+	f.call(http.MethodDelete, "/users/alex?purge=true", nil, http.StatusAccepted, &del)
+	if j := f.waitJob(del.JobID); j.Status != store.JobDone {
+		t.Fatalf("user.delete: %s %s", j.Status, j.Error)
+	}
+	if _, err := f.db.GetSite(f.ctx, site.ID); err == nil {
+		t.Fatal("the site outlived its account")
+	}
+	n := len(f.agent.Calls())
+	release()
+	if j := f.waitJob(res.JobID); j.Status != store.JobFailed || j.Error != "the site was removed meanwhile: nothing was installed" {
+		t.Errorf("the install: %s %q", j.Status, j.Error)
+	}
+	for _, c := range f.agent.Calls()[n:] {
+		t.Errorf("the install of a site gone called the agent: %s %s", c.Path, c.Body)
+	}
+}
+
+// The same with a site of another account made meanwhile under the gone
+// site's id, which SQLite gives the next row: the install does not take it
+// for its own — no preset applied to it, nothing installed into it.
+func TestCMSInstallOfASiteWhoseIDWasGivenAgain(t *testing.T) {
+	f, site := wordpressFixture(t)
+	release := f.holdKey("site:wp.example.com")
+	var res apitypes.CMSInstallResult
+	f.call(http.MethodPost, "/sites/wp.example.com/cms", map[string]any{"cms": "wordpress"}, http.StatusAccepted, &res)
+	var del apitypes.JobRef
+	f.call(http.MethodDelete, "/users/alex?purge=true", nil, http.StatusAccepted, &del)
+	if j := f.waitJob(del.JobID); j.Status != store.JobDone {
+		t.Fatalf("user.delete: %s %s", j.Status, j.Error)
+	}
+	f.userWithPassword("bob", "bob-password", 1501)
+	fresh := f.createSite(map[string]any{"domain": "fresh.example.com", "user": "bob", "php_version": "8.4", "ssl": "none"})
+	if fresh.ID != site.ID {
+		t.Fatalf("fresh.example.com has id %d, wp.example.com had %d: the id was not given again", fresh.ID, site.ID)
+	}
+	n := len(f.agent.Calls())
+	release()
+	if j := f.waitJob(res.JobID); j.Status != store.JobFailed || j.Error != "the site was removed meanwhile: nothing was installed" {
+		t.Errorf("the install: %s %q", j.Status, j.Error)
+	}
+	for _, c := range f.agent.Calls()[n:] {
+		t.Errorf("the install of wp.example.com called the agent for bob's fresh.example.com: %s %s", c.Path, c.Body)
+	}
+	if got, _ := f.db.GetSite(f.ctx, fresh.ID); got.CMS != "" || got.Preset != "" {
+		t.Errorf("bob's fresh.example.com got the install: cms %q, preset %q", got.CMS, got.Preset)
+	}
+}
+
+// A site.delete with purge waiting under its site's job key behind a long
+// job of the site, whose site went with its account meanwhile, does not
+// take the site another account made since under the gone site's id: it
+// ends done, the site gone already.
+func TestQueuedSiteDeleteKeepsANewSiteWithTheSameID(t *testing.T) {
+	f := newSiteFixture(t)
+	old := f.createSite(map[string]any{"domain": "old.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	release := f.holdKey("site:old.example.com")
+	var del apitypes.JobRef
+	f.call(http.MethodDelete, "/sites/old.example.com?purge=true", nil, http.StatusAccepted, &del)
+	var udel apitypes.JobRef
+	f.call(http.MethodDelete, "/users/alex?purge=true", nil, http.StatusAccepted, &udel)
+	if j := f.waitJob(udel.JobID); j.Status != store.JobDone {
+		t.Fatalf("user.delete: %s %q", j.Status, j.Error)
+	}
+	f.userWithPassword("bob", "bob-password", 1501)
+	fresh := f.createSite(map[string]any{"domain": "new.example.com", "user": "bob", "php_version": "8.4", "ssl": "none"})
+	if fresh.ID != old.ID {
+		t.Fatalf("new.example.com has id %d, old.example.com had %d: the id was not given again", fresh.ID, old.ID)
+	}
+	n := len(f.agent.Calls())
+	release()
+	if j := f.waitJob(del.JobID); j.Status != store.JobDone || j.Message != "the site is gone already: its files are as its removal left them" {
+		t.Errorf("the queued site.delete of old.example.com: %s %q %q", j.Status, j.Error, j.Message)
+	}
+	for _, c := range f.agent.Calls()[n:] {
+		if strings.Contains(string(c.Body), "new.example.com") {
+			t.Errorf("the site.delete asked for old.example.com touched new.example.com: %s %s", c.Path, c.Body)
+		}
+	}
+	if _, err := f.db.GetSiteByDomain(f.ctx, "new.example.com"); err != nil {
+		t.Errorf("bob's new.example.com after the site.delete of old.example.com: %v", err)
+	}
+}
+
+// A webmail install and a CMS install asked for the same site at about the
+// same time: the webmail looks whether the site holds files of its own
+// before its download, and the CMS install, under the site's job key and
+// not the webmail's, may run in that window and put WordPress there. The
+// webmail looks again under the site's lock, which the CMS install holds
+// from its docroot to its record, and does not unpack Roundcube over it.
+func TestWebmailDoesNotUnpackOverACMSInstalledMeanwhile(t *testing.T) {
+	f, _, home := newWebmailFixture(t)
+	wordpressSources(t)
+	f.createSite(map[string]any{"domain": "shop.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	f.settle()
+	page := f.s.placeholderPages("shop.example.com")[0]
+	home.with(func(o *ownerSide) {
+		o.dirs["data/www/shop.example.com"] = []apitypes.FileEntry{{Name: placeholderName, Type: "file", Size: int64(len(page))}}
+		o.files["data/www/shop.example.com/"+placeholderName] = page
+	})
+	// The webmail run is held at its look into its database: past its look
+	// at the site, before the site's lock.
+	held, release := make(chan struct{}), make(chan struct{})
+	var once, opened sync.Once
+	open := func() { opened.Do(func() { close(release) }) }
+	f.agent.SetBefore(func(p string, body []byte) {
+		if p == "/v1/tool" && strings.Contains(string(body), "information_schema.tables WHERE table_schema") {
+			once.Do(func() {
+				close(held)
+				<-release
+			})
+		}
+	})
+	t.Cleanup(func() { open(); f.agent.SetBefore(nil) })
+	var ref apitypes.JobRef
+	f.call(http.MethodPost, "/mail/webmail", map[string]any{"domain": "shop.example.com", "user": "alex"}, http.StatusAccepted, &ref)
+	select {
+	case <-held:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the webmail run did not reach its database look")
+	}
+	_, cj := f.installCMS(t, "shop.example.com", map[string]any{"cms": "wordpress"})
+	if cj.Status != store.JobDone {
+		t.Fatalf("the CMS install: %s %q\n%s", cj.Status, cj.Error, cj.Log)
+	}
+	// What the install left in the site's root, as the owner lists it.
+	home.with(func(o *ownerSide) {
+		o.dirs["data/www/shop.example.com"] = []apitypes.FileEntry{
+			{Name: "index.php", Type: "file", Size: 405}, {Name: "wp-admin", Type: "dir"}, {Name: "wp-config.php", Type: "file", Size: 3200},
+		}
+	})
+	n := len(f.agent.Calls())
+	open()
+	wj := f.waitJob(ref.JobID)
+	unpacked := false
+	for _, c := range f.agent.Calls()[n:] {
+		if c.Path == "/v1/tool" && strings.Contains(string(c.Body), `"name":"tar"`) && strings.Contains(string(c.Body), "/var/www/alex/data/www/shop.example.com") {
+			unpacked = true
+		}
+	}
+	got, err := f.db.GetSiteByDomain(f.ctx, "shop.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unpacked || wj.Status != store.JobFailed || !strings.Contains(wj.Error, "site shop.example.com already holds files of its own") || got.Docroot == "public_html" || got.CMS != "wordpress" {
+		t.Errorf("the webmail over the WordPress just installed: unpacked %v, job %s %q, the site: cms %q, docroot %q", unpacked, wj.Status, wj.Error, got.CMS, got.Docroot)
+	}
+}

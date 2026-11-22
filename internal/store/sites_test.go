@@ -302,6 +302,71 @@ func TestUpdateSiteChanges(t *testing.T) {
 	}
 }
 
+// A change a request asks for goes in neither onto a site being removed nor
+// onto a site whose account is being removed (ErrBeingRemoved): the
+// account's removal marks the account alone. A job's write (UpdateSiteChanges)
+// still goes in for the account's removal, which waits for it and takes it.
+func TestUpdateSiteChangesIfOwnerStays(t *testing.T) {
+	ctx := context.Background()
+	db := openTest(t)
+	alex, bob := &User{Login: "alex"}, &User{Login: "bob"}
+	db.CreateUser(ctx, alex)
+	db.CreateUser(ctx, bob)
+	a := &Site{UserID: alex.ID, Domain: "a.example.com", PHPVersion: "8.4", ClientMaxBody: "64m", Status: SiteActive}
+	b := &Site{UserID: bob.ID, Domain: "b.example.com", PHPVersion: "8.4", ClientMaxBody: "64m", Status: SiteActive}
+	for _, s := range []*Site{a, b} {
+		if err := db.CreateSite(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read, _ := db.GetSite(ctx, a.ID)
+	was := read.Clone()
+	read.ClientMaxBody = "128m"
+	if err := db.SetUserStatus(ctx, alex.ID, UserDeleting); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateSiteChangesIfOwnerStays(ctx, was, read); !errors.Is(err, ErrBeingRemoved) {
+		t.Fatalf("a change onto the site of an account being removed: %v", err)
+	}
+	if got, _ := db.GetSite(ctx, a.ID); got.ClientMaxBody != "64m" {
+		t.Fatalf("written onto the site of an account being removed: %s", got.ClientMaxBody)
+	}
+	// Bob's site, the same change: in.
+	readB, _ := db.GetSite(ctx, b.ID)
+	wasB := readB.Clone()
+	readB.ClientMaxBody = "128m"
+	if err := db.UpdateSiteChangesIfOwnerStays(ctx, wasB, readB); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.GetSite(ctx, b.ID); got.ClientMaxBody != "128m" {
+		t.Fatalf("bob's site: %s", got.ClientMaxBody)
+	}
+	// The job's write goes in for the account's removal.
+	if err := db.UpdateSiteChanges(ctx, was, read); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.GetSite(ctx, a.ID); got.ClientMaxBody != "128m" {
+		t.Fatalf("the job's write: %s", got.ClientMaxBody)
+	}
+	// The site's own removal, and a site gone.
+	if err := db.SetUserStatus(ctx, alex.ID, UserActive); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.MarkSiteDeleting(ctx, b.ID); err != nil {
+		t.Fatal(err)
+	}
+	readB.ClientMaxBody = "256m"
+	if err := db.UpdateSiteChangesIfOwnerStays(ctx, wasB, readB); !errors.Is(err, ErrBeingRemoved) {
+		t.Fatalf("a change onto a site being removed: %v", err)
+	}
+	if err := db.DeleteSite(ctx, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateSiteChangesIfOwnerStays(ctx, was, read); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a site that is gone: %v", err)
+	}
+}
+
 // The removal's mark changes the status alone: what another request changed
 // after the removal read the site stays. A site marked already is marked
 // again; a site that is gone is ErrNotFound.

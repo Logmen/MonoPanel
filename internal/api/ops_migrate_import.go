@@ -619,12 +619,19 @@ func (s *Server) jobMigrateRun(ctx context.Context, jc *jobs.Context) error {
 	}
 	failed += mailFailed
 
-	// Not over a removal asked for during the move: it waits under the
-	// account's key and must find the account being removed (ActivateUser).
-	if err := s.db.ActivateUser(ctx, u.ID); errors.Is(err, store.ErrBeingRemoved) {
+	// The account came in pending and its provision above made it active,
+	// as for an account made here: a move that breaks off halfway leaves an
+	// account its administrator can take on from. This activates only one
+	// still pending (ActivateUser) and so changes nothing of what was asked
+	// for during the move: a suspension stays, and so does a removal, which
+	// waits under the account's key and must find the account being removed.
+	switch status, err := s.db.ActivateUser(ctx, u.ID); {
+	case errors.Is(err, store.ErrBeingRemoved):
 		jc.Logf("the account %s is being removed: it stays so, and its removal takes what moved", u.Login)
-	} else if err != nil {
+	case err != nil:
 		return err
+	case status == store.UserSuspended:
+		jc.Logf("the account %s was suspended during the move: it stays suspended", u.Login)
 	}
 	mailboxes := 0
 	for _, box := range b.Mailboxes {

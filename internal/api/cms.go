@@ -67,7 +67,10 @@ func cmsByID(id string) *cmsDef {
 // cmsPayload is the job's brief; the passwords travel encrypted, the job
 // table is not the place for them in the clear.
 type cmsPayload struct {
-	SiteID           int64  `json:"site_id"`
+	SiteID int64 `json:"site_id"`
+	// Domain is the site's name when the install was queued: a row by
+	// another name under SiteID is not the site asked for (siteGone).
+	Domain           string `json:"domain,omitempty"`
 	CMS              string `json:"cms"`
 	Title            string `json:"title"`
 	AdminLogin       string `json:"admin_login"`
@@ -218,14 +221,14 @@ func (s *Server) registerCMS() {
 		if err != nil {
 			return nil, err
 		}
-		payload := cmsPayload{SiteID: site.ID, CMS: def.ID, Title: title, AdminLogin: login, AdminEmail: email, AdminPasswordEnc: pwEnc, Edition: in.Body.Edition, Solution: in.Body.Solution, Database: dbName, DBPasswordEnc: dbEnc, Force: in.Body.Force, ReuseDatabase: reuse}
+		payload := cmsPayload{SiteID: site.ID, Domain: site.Domain, CMS: def.ID, Title: title, AdminLogin: login, AdminEmail: email, AdminPasswordEnc: pwEnc, Edition: in.Body.Edition, Solution: in.Body.Solution, Database: dbName, DBPasswordEnc: dbEnc, Force: in.Body.Force, ReuseDatabase: reuse}
 		if site.Preset != def.Preset {
 			// The preset alone: a change made to the site since it was read
 			// above stays (UpdateSiteChanges).
 			was := site.Clone()
 			site.Preset = def.Preset
-			if err := s.db.UpdateSiteChanges(ctx, was, site); err != nil {
-				return nil, siteChangeRefused(site, err)
+			if err := s.writeSiteChange(ctx, was, site); err != nil {
+				return nil, err
 			}
 			payload.ApplyPreset = true
 		}
@@ -291,11 +294,11 @@ func (s *Server) jobSiteCMS(ctx context.Context, jc *jobs.Context) error {
 	if err := json.Unmarshal(jc.Payload, &p); err != nil {
 		return err
 	}
-	site, err := s.db.GetSite(ctx, p.SiteID)
-	if err != nil {
-		return err
-	}
-	owner, err := s.db.GetUserByID(ctx, site.UserID)
+	// A first look, before the preset's apply: a site gone or being
+	// removed — its removal or its account's asked for while the install
+	// waited in the queue — gets nothing, the preset neither. The look under
+	// the site's lock below is the one that counts.
+	site, owner, err := s.cmsSiteStays(ctx, p.SiteID, p.Domain)
 	if err != nil {
 		return err
 	}
@@ -336,11 +339,13 @@ func (s *Server) jobSiteCMS(ctx context.Context, jc *jobs.Context) error {
 	// is past the sites). Unlike the webmail's, the download is inside: it
 	// streams straight into the unpack. The lock holds back only the jobs of
 	// other keys that touch the site — its account's removal, which has to
-	// wait, and the rare move of its address or its Apache; the site's own
-	// jobs wait for the install anyway, under its job lock. The preset's
-	// apply above takes the lock itself.
+	// wait, the webmail's work in its tree (the webmail looks again under
+	// the lock whether the site holds files of its own, so it is not
+	// unpacked over the CMS), and the rare move of its address or its
+	// Apache; the site's own jobs wait for the install anyway, under its job
+	// lock. The preset's apply above takes the lock itself.
 	defer s.lockSite(p.SiteID)()
-	if site, owner, err = s.cmsSiteStays(ctx, p.SiteID); err != nil {
+	if site, owner, err = s.cmsSiteStays(ctx, p.SiteID, p.Domain); err != nil {
 		return err
 	}
 	if l = s.layoutFor(site, owner); l.php == nil {
@@ -440,7 +445,8 @@ func (s *Server) jobSiteCMS(ctx context.Context, jc *jobs.Context) error {
 	site.CMS, site.CMSVersion, site.CMSAt, site.CMSDatabase = def.ID, version, time.Now().UTC().Format(time.RFC3339), p.Database
 	if err := s.db.UpdateSiteChanges(ctx, was, site); errors.Is(err, store.ErrBeingRemoved) {
 		// The site's removal, asked for during the install, waits for it
-		// under the site's job lock and takes what it made.
+		// under the site's job lock and takes its files with the site (with
+		// purge); the database stays the owner's, as for any site removal.
 		return fmt.Errorf("site %s is being removed: %s is not recorded on it", site.Domain, def.Name)
 	} else if err != nil {
 		return err
@@ -453,10 +459,11 @@ func (s *Server) jobSiteCMS(ctx context.Context, jc *jobs.Context) error {
 
 // cmsSiteStays reads the site of an install and its owner again, under the
 // site's lock (the caller holds it): a site or an account being removed, or
-// gone, stops the install before it changes anything of theirs.
-func (s *Server) cmsSiteStays(ctx context.Context, id int64) (*store.Site, *store.User, error) {
+// gone — a site by another name under its id included (siteGone) — stops
+// the install before it changes anything of theirs.
+func (s *Server) cmsSiteStays(ctx context.Context, id int64, domain string) (*store.Site, *store.User, error) {
 	site, err := s.db.GetSite(ctx, id)
-	if errors.Is(err, store.ErrNotFound) {
+	if siteGone(site, err, domain) {
 		return nil, nil, errors.New("the site was removed meanwhile: nothing was installed")
 	}
 	if err != nil {

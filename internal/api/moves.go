@@ -276,9 +276,11 @@ func (s *Server) siteLogsPending(ctx context.Context, id int64) bool {
 // the site: the removal of its configuration (user.delete for each of the
 // account's sites, removeSiteConfig), sites.move-ip (moveSiteIP) and the
 // webmail's work in its tree. So does a CMS install, from its docroot to
-// its record (jobSiteCMS), so that its account's removal waits for it. A
-// job waiting for it holds a worker: it is never held across a longer run
-// than that install's (a restore).
+// its record (jobSiteCMS), so that its account's removal waits for it, and
+// the one request that writes into the site's nginx directory itself, PUT
+// /sites/{domain}/nginx, for its write. A job waiting for it holds a worker
+// (that request, its answer): it is never held across a longer run than
+// that install's (a restore).
 func (s *Server) lockSite(id int64) func() {
 	m, _ := s.siteLocks.LoadOrStore(id, &sync.Mutex{})
 	mu := m.(*sync.Mutex)

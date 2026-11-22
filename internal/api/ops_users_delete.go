@@ -89,11 +89,30 @@ func (s *Server) jobUserDelete(ctx context.Context, jc *jobs.Context) error {
 	if err := jc.Unmarshal(&p); err != nil {
 		return err
 	}
+	// The account may be gone already: its removal asked for twice, while
+	// the first still waited behind another job of the account, runs after
+	// the first under the same key. Done then, as for a site removed twice.
+	// An account by another login under the row id is not this one: SQLite
+	// gives the id of the newest row to the next once that row is gone.
 	u, err := s.db.GetUserByID(ctx, p.UserID)
+	if errors.Is(err, store.ErrNotFound) || (err == nil && p.Login != "" && u.Login != p.Login) {
+		jc.Progress(100, "the account "+p.Login+" is gone already: nothing to remove")
+		return nil
+	}
 	if err != nil {
 		return err
 	}
+	// A failure suspends the account, which leaves its mark: the way back
+	// for an administrator. A shutdown is not a failure: the runner keeps
+	// the job running and queues it again at the next start, and until it
+	// is over the account must stay being removed — no in-place restore into
+	// its home beside the purge, no change of its sites, no log rotation
+	// that keeps a user the removal then takes (as siteFail for a site).
+	// The job's own time limit is a failure (context.DeadlineExceeded).
 	fail := func(err error) error {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return err
+		}
 		_ = s.db.SetUserStatus(context.WithoutCancel(ctx), u.ID, store.UserSuspended)
 		return err
 	}
