@@ -29,14 +29,28 @@ type RunAsUserResponse struct {
 	Stderr       string `json:"stderr,omitempty"`
 }
 
+// runAsUser runs monopanel fsop as one of the panel's clients, through the
+// helper that drops root for good (internal/api/ops_files.go and the CMS,
+// webmail and migration code). Only the panel's accounts: the helper keeps
+// the account's primary group, and a system user or an administrator's
+// account is not the API's to act as.
 func (s *Server) runAsUser(ctx context.Context, req *RunAsUserRequest) (*RunAsUserResponse, error) {
 	if !nameRe.MatchString(req.Login) || len(req.Args) == 0 {
 		return nil, &Error{Status: http.StatusBadRequest, Message: "login and args are required"}
 	}
-	u, err := lookupUser(req.Login)
-	if err != nil {
-		return nil, &Error{Status: http.StatusBadRequest, Message: "unknown user " + req.Login}
+	if !fsopCommands[req.Args[0]] {
+		return nil, notAllowed("fsop "+req.Args[0], "not a file operation the panel runs")
 	}
+	acct, err := s.panelAccount(req.Login)
+	if err != nil {
+		if errors.Is(err, errNoAccount) {
+			return nil, &Error{Status: http.StatusBadRequest, Message: "unknown user " + req.Login}
+		}
+		return nil, err
+	}
+	u := unixUser{}
+	u.uid, _ = strconv.Atoi(acct.Uid)
+	u.gid, _ = strconv.Atoi(acct.Gid)
 	if u.uid == 0 || u.gid == 0 {
 		return nil, &Error{Status: http.StatusForbidden, Message: "refusing to run as root"}
 	}

@@ -49,8 +49,6 @@ func runArgv(ctx context.Context, env []string, argv ...string) (string, error) 
 var (
 	nameRe = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 	unitRe = regexp.MustCompile(`^[A-Za-z0-9_.@:\\-]+$`)
-	pkgRe  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9+._:=~-]*$`)
-	rpmURL = regexp.MustCompile(`^https://[a-z0-9.-]+/[A-Za-z0-9._/-]+\.rpm$`)
 )
 
 func lookupUID(name string) (int, error) {

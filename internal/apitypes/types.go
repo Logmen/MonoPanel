@@ -460,7 +460,7 @@ type RestoreRequest struct {
 	Target   string   `json:"target" minLength:"1"`
 	Snapshot string   `json:"snapshot" minLength:"1"`
 	Include  []string `json:"include,omitempty" doc:"paths to restore (all when empty)"`
-	InPlace  bool     `json:"in_place,omitempty" doc:"restore to / (requires include); otherwise to <data>/restore/<snapshot>"`
+	InPlace  bool     `json:"in_place,omitempty" doc:"restore to / (requires include; the web root and the panel's configuration only); otherwise to /var/lib/monopanel-agent/restore/<snapshot>"`
 }
 
 // Snapshot is a restic snapshot.

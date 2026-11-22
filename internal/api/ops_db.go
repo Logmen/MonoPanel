@@ -5,9 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"path"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -25,7 +23,7 @@ import (
 )
 
 const (
-	perconaReleaseDeb = "https://repo.percona.com/apt/percona-release_latest.generic_all.deb"
+	perconaReleaseDeb = agent.PerconaReleaseDebURL
 	perconaReleaseRPM = "https://repo.percona.com/yum/percona-release-latest.noarch.rpm"
 	mysqlKeyURL       = "https://repo.mysql.com/RPM-GPG-KEY-mysql-2023"
 	settingDB         = "stack.db"
@@ -643,19 +641,10 @@ func (s *Server) installDB(ctx context.Context, jc *jobs.Context, engine string)
 	switch s.profile.Family() {
 	case osprofile.FamilyDebian:
 		if engine == store.EnginePercona {
-			deb, err := fetchBytes(ctx, perconaReleaseDeb)
-			if err != nil {
-				return fail(fmt.Errorf("download percona-release: %w", err))
-			}
-			dl := filepath.Join(s.cfg.DataDir, "downloads")
-			if err := os.MkdirAll(dl, 0o755); err != nil {
-				return fail(err)
-			}
-			local := filepath.Join(dl, "percona-release_latest.generic_all.deb")
-			if err := os.WriteFile(local, deb, 0o644); err != nil {
-				return fail(err)
-			}
-			if _, err := s.agent.Pkg(ctx, "install", local); err != nil {
+			// apt takes no URL: the agent downloads the package itself and
+			// installs nothing but that file (a .deb staged by this process
+			// would be installed as root on its word alone).
+			if _, err := s.agent.Pkg(ctx, "install", perconaReleaseDeb); err != nil {
 				return fail(err)
 			}
 			res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "percona-release", Args: []string{"setup", "ps-84-lts"}, TimeoutSeconds: 600})

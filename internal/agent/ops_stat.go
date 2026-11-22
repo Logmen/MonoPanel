@@ -8,10 +8,9 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/user"
+	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -112,42 +111,63 @@ func (s *Server) readFile(_ context.Context, req *ReadFileRequest) (*ReadFileRes
 	return resp, nil
 }
 
+// setUnixPassword sets the SFTP/SSH password of one of the panel's clients
+// (internal/api/ops_users.go) or carries its hash over in a migration
+// (ops_migrate_import.go). Only the panel's accounts: chpasswd for root, an
+// administrator's account or a system user would be a way in for the API.
 func (s *Server) setUnixPassword(ctx context.Context, req *SetUnixPasswordRequest) (*struct{}, error) {
 	if !nameRe.MatchString(req.Login) || req.Login == "root" {
 		return nil, &Error{Status: http.StatusBadRequest, Message: "invalid login"}
 	}
-	if len(req.Password) < 8 || strings.ContainsAny(req.Password, "\n:") {
+	if len(req.Password) < 8 || strings.ContainsAny(req.Password, "\n\r:\x00") {
 		return nil, &Error{Status: http.StatusBadRequest, Message: "password must be at least 8 characters without ':' or newlines"}
+	}
+	if _, err := s.panelAccount(req.Login); err != nil {
+		if errors.Is(err, errNoAccount) {
+			return nil, &Error{Status: http.StatusNotFound, Message: "no such user"}
+		}
+		return nil, err
+	}
+	bin := ""
+	for _, c := range []string{"/usr/sbin/chpasswd", "/sbin/chpasswd"} {
+		if st, err := os.Stat(c); err == nil && !st.IsDir() {
+			bin = c
+			break
+		}
+	}
+	if bin == "" {
+		return nil, &Error{Message: "chpasswd is not installed"}
 	}
 	args := []string{}
 	if req.Encrypted {
 		args = append(args, "-e")
 	}
-	res, err := s.tool(ctx, &ToolRequest{Name: "chpasswd", Args: args, Stdin: fmt.Sprintf("%s:%s\n", req.Login, req.Password), TimeoutSeconds: 30})
-	if err != nil {
-		return nil, err
-	}
-	if res.ExitCode != 0 {
-		return nil, &Error{Message: "chpasswd failed", Output: res.Output}
+	rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(rctx, bin, args...)
+	cmd.Stdin = strings.NewReader(fmt.Sprintf("%s:%s\n", req.Login, req.Password))
+	out := &tailBuffer{max: 64 * 1024}
+	cmd.Stdout, cmd.Stderr = out, out
+	cmd.WaitDelay = 5 * time.Second
+	code, err := exitCode(cmd.Run())
+	if err != nil || code != 0 {
+		return nil, &Error{Message: "chpasswd failed", Output: out.String()}
 	}
 	return &struct{}{}, nil
 }
 
 // unixShadow returns the password hash of a client account so a migration can
 // carry it to another server. Only accounts the panel itself creates qualify:
-// system users and root are never readable this way.
+// system users, root and the server's own users are never readable this way.
 func (s *Server) unixShadow(_ context.Context, req *UnixShadowRequest) (*UnixShadowResponse, error) {
 	if !nameRe.MatchString(req.Login) || req.Login == "root" {
 		return nil, &Error{Status: http.StatusBadRequest, Message: "invalid login"}
 	}
-	u, err := user.Lookup(req.Login)
-	if err != nil {
-		return nil, &Error{Status: http.StatusNotFound, Message: "no such user"}
-	}
-	uid, _ := strconv.Atoi(u.Uid)
-	root := filepath.Clean(s.cfg.WWWRoot)
-	if uid < 1000 || !strings.HasPrefix(filepath.Clean(u.HomeDir), root+"/") {
-		return nil, &Error{Status: http.StatusForbidden, Message: "only accounts of the panel can be exported"}
+	if _, err := s.panelAccount(req.Login); err != nil {
+		if errors.Is(err, errNoAccount) {
+			return nil, &Error{Status: http.StatusNotFound, Message: "no such user"}
+		}
+		return nil, err
 	}
 	f, err := os.Open("/etc/shadow")
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -252,20 +253,50 @@ func currentUserName(t *testing.T) string {
 
 func TestToolAllowList(t *testing.T) {
 	ctx := context.Background()
-	_, cl := testServer(t, t.TempDir())
+	s, cl := testServer(t, t.TempDir())
+	s.cfg.WWWRoot = t.TempDir()
+	home := filepath.Join(s.cfg.WWWRoot, "alex")
+	os.MkdirAll(home, 0o755)
 	if _, err := cl.Tool(ctx, &ToolRequest{Name: "bash", Args: []string{"-c", "id"}}); err == nil {
 		t.Fatal("bash must not be allowed")
 	}
-	res, err := cl.Tool(ctx, &ToolRequest{Name: "du", Args: []string{"-sh", t.TempDir()}})
+	// the shape the migration uses (ops_migrate.go duBytes)
+	res, err := cl.Tool(ctx, &ToolRequest{Name: "du", Args: []string{"-sb", home}})
 	if err != nil {
 		t.Skipf("du not available: %v", err)
 	}
 	if res.ExitCode != 0 || !strings.Contains(res.Output, "\t") {
 		t.Fatalf("du: %+v", res)
 	}
-	res, _ = cl.Tool(ctx, &ToolRequest{Name: "du", Args: []string{"/definitely/missing"}})
-	if res == nil || res.ExitCode == 0 {
-		t.Fatalf("exit code must be reported: %+v", res)
+	// du gets the directory the agent opened and measures it: a file of
+	// 4096 bytes in it counts
+	if err := os.WriteFile(filepath.Join(home, "f"), make([]byte, 4096), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := cl.Tool(ctx, &ToolRequest{Name: "du", Args: []string{"-sb", home}}); err != nil || len(strings.Fields(res.Output)) == 0 {
+		t.Fatalf("du: %+v %v", res, err)
+	} else if n, _ := strconv.Atoi(strings.Fields(res.Output)[0]); n < 4096 {
+		t.Fatalf("du measured %d bytes: %q", n, res.Output)
+	}
+	// a directory below it du cannot read: the exit status comes back
+	if os.Geteuid() != 0 {
+		locked := filepath.Join(home, "locked")
+		os.MkdirAll(filepath.Join(locked, "x"), 0o755)
+		os.Chmod(locked, 0)
+		t.Cleanup(func() { os.Chmod(locked, 0o755) })
+		res, _ = cl.Tool(ctx, &ToolRequest{Name: "du", Args: []string{"-sb", home}})
+		if res == nil || res.ExitCode == 0 {
+			t.Fatalf("exit code must be reported: %+v", res)
+		}
+	}
+	// a directory that is not there is not measured
+	var ae *Error
+	if _, err := cl.Tool(ctx, &ToolRequest{Name: "du", Args: []string{"-sb", filepath.Join(s.cfg.WWWRoot, "missing")}}); !errors.As(err, &ae) || ae.Status != http.StatusNotFound {
+		t.Fatalf("du of a missing directory: %v", err)
+	}
+	// any other shape is refused before anything runs
+	if _, err := cl.Tool(ctx, &ToolRequest{Name: "du", Args: []string{"-sh", "/root"}}); !errors.As(err, &ae) || ae.Status != http.StatusForbidden {
+		t.Fatalf("du of /root: %v", err)
 	}
 }
 
@@ -277,7 +308,7 @@ func TestChownModeGoesThroughTheFile(t *testing.T) {
 	www := t.TempDir()
 	s, cl := testServer(t, t.TempDir())
 	s.cfg.WWWRoot = www
-	me := currentUserName(t)
+	me := withMeAsClient(t, s)
 	logs := filepath.Join(www, "alex", "data", "logs")
 	os.MkdirAll(logs, 0o750)
 	log := filepath.Join(logs, "example.com.access.log")

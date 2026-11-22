@@ -168,7 +168,7 @@ func backupCmd() *cobra.Command {
 	snaps.Flags().StringVar(&snapTarget, "target", "", T("имя репозитория", "repository name"))
 	snaps.MarkFlagRequired("target")
 	var rreq apitypes.RestoreRequest
-	restore := &cobra.Command{Use: "restore <snapshot>", Short: T("восстановить снимок (по умолчанию в /var/lib/monopanel/restore/<snapshot>)", "restore a snapshot (into /var/lib/monopanel/restore/<snapshot> by default)"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	restore := &cobra.Command{Use: "restore <snapshot>", Short: T("восстановить снимок (по умолчанию в /var/lib/monopanel-agent/restore/<snapshot>)", "restore a snapshot (into /var/lib/monopanel-agent/restore/<snapshot> by default)"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
 			return err

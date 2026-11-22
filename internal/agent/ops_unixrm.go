@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"os/user"
@@ -12,21 +13,35 @@ import (
 	"time"
 )
 
-// removeUnixUser deletes a client account created by the panel. System
-// accounts (uid < 1000), root and the panel's own service user are refused.
+// removeUnixUser deletes a client account created by the panel
+// (internal/api/ops_users_delete.go). Only the panel's accounts — never
+// root, a system account, the panel's service user or one in a privileged
+// group — and the home only as a directory of the web root.
 func (s *Server) removeUnixUser(ctx context.Context, req *RemoveUnixUserRequest) (*RemoveUnixUserResponse, error) {
 	if !nameRe.MatchString(req.Login) || req.Login == "root" || req.Login == s.cfg.ServiceUser {
 		return nil, &Error{Status: http.StatusBadRequest, Message: "invalid login"}
 	}
+	root := filepath.Clean(s.cfg.WWWRoot)
+	if req.RemoveHome && (req.HomeUnder == "" || filepath.Clean(req.HomeUnder) != root) {
+		return nil, notAllowed("removing a home under "+req.HomeUnder, "homes are directories of "+root)
+	}
 	resp := &RemoveUnixUserResponse{}
 	home := filepath.Clean(req.Home)
-	if u, err := user.Lookup(req.Login); err == nil {
-		uid, _ := strconv.Atoi(u.Uid)
-		if uid < 1000 {
-			return nil, &Error{Status: http.StatusForbidden, Message: "refusing to remove a system account (uid " + u.Uid + ")"}
+	u, err := s.panelAccount(req.Login)
+	switch {
+	case errors.Is(err, errNoAccount):
+		// already gone: only its home may be left, <www_root>/<login>
+		if req.RemoveHome && req.Home != "" && home != filepath.Join(root, req.Login) {
+			return nil, notAllowed("removing "+req.Home+" for "+req.Login, "the home of an account that is gone is "+filepath.Join(root, req.Login))
 		}
+	case err != nil:
+		return nil, err
+	default:
+		uid, _ := strconv.Atoi(u.Uid)
 		if req.Home == "" {
 			home = filepath.Clean(u.HomeDir)
+		} else if req.RemoveHome && home != filepath.Clean(u.HomeDir) {
+			return nil, notAllowed("removing "+req.Home+" for "+req.Login, "it is not the account's home ("+u.HomeDir+")")
 		}
 		resp.Killed = killProcessesOf(uid)
 		// userdel without -r: the home is removed below, because userdel
@@ -41,9 +56,11 @@ func (s *Server) removeUnixUser(ctx context.Context, req *RemoveUnixUserRequest)
 		resp.Removed = true
 	}
 	if req.RemoveHome && home != "" && home != "." {
-		root := filepath.Clean(req.HomeUnder)
-		if req.HomeUnder == "" || home == root || !strings.HasPrefix(home, root+"/") {
-			return resp, &Error{Status: http.StatusForbidden, Message: "refusing to remove " + home + ": outside " + root}
+		// A directory of the web root itself: its entry is in a root-owned
+		// directory, so no account can swap it for a symlink meanwhile, and
+		// os.RemoveAll follows none below it.
+		if !filepath.IsAbs(home) || filepath.Dir(home) != root {
+			return resp, &Error{Status: http.StatusForbidden, Message: "refusing to remove " + home + ": not a directory of " + root}
 		}
 		if st, err := os.Lstat(home); err == nil {
 			if st.Mode()&os.ModeSymlink != 0 {

@@ -508,7 +508,11 @@ func (s *Server) jobBackupRestore(ctx context.Context, jc *jobs.Context) error {
 	if err != nil {
 		return err
 	}
-	target := filepath.Join(s.cfg.DataDir, "restore", p.Snapshot)
+	// Aside, a snapshot lands in a directory of the agent's, root's alone:
+	// restic writes as root, and in this process's data directory a symlink
+	// would carry the write anywhere. In place, the agent stages the restore
+	// and moves the result into place itself.
+	target := filepath.Join(agent.RestoreDir, p.Snapshot)
 	if p.InPlace {
 		target = "/"
 	}

@@ -46,6 +46,13 @@ func EnsureUnixUser(ctx context.Context, profile osprofile.Profile, req *EnsureU
 			return nil, &Error{Status: http.StatusBadRequest, Message: "invalid group name: " + g}
 		}
 	}
+	// Whoever calls, no account joins a group that is root by another name
+	// (the agent's RPC checks the full shape first, see checkEnsureUser).
+	for _, g := range append(append([]string{}, req.Groups...), req.PrimaryGroup) {
+		if privilegedGroups[g] {
+			return nil, &Error{Status: http.StatusForbidden, Message: "the group " + g + " is not allowed: it is a privileged group"}
+		}
+	}
 	created := false
 	u, err := user.Lookup(req.Login)
 	if err == nil && !req.System {
