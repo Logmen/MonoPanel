@@ -190,6 +190,15 @@ func openLogDir(logDir string, ids siteLogIDs, resp *SiteLogsResponse) (int, err
 				unix.Close(top) //nolint:errcheck // a directory opened for reading
 				return -1, &os.PathError{Op: "chown", Path: logDir, Err: err}
 			}
+			// Root's now, the old owner can set no ACL on it any more; the
+			// ones it set go: a default ACL would be inherited by sites/,
+			// made below right after, and by every log made there, readable
+			// then by whoever it names (postinstall.sh leaves such a
+			// directory to the agent for this).
+			if _, err := dropACLs(top, logDir); err != nil {
+				unix.Close(top) //nolint:errcheck // a directory opened for reading
+				return -1, err
+			}
 		}
 		if err := unix.Fchmod(top, mode); err != nil {
 			unix.Close(top) //nolint:errcheck // a directory opened for reading

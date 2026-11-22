@@ -36,25 +36,16 @@ install -d -m 0700 -o root -g root /var/lib/monopanel-agent /var/lib/monopanel-a
 # the sticky bit keeps it from renaming or removing root's entries — sites/
 # above all, whose logs nginx, Apache and php-fpm open as root. o+x: the
 # accounts and the nginx workers pass through to their logs in sites/<login>.
-# Up to 0.8.19 the directory was monopanel's; sites/ is made only when it is
-# missing, so that one somebody else made is not handed to root (the agent
-# refuses it then, with a message).
-install -d -m 1771 -o root -g monopanel /var/log/monopanel
-[ -e /var/log/monopanel/sites ] || [ -L /var/log/monopanel/sites ] || install -d -m 0711 -o root -g root /var/log/monopanel/sites
-systemctl daemon-reload >/dev/null 2>&1 || true
-systemctl enable monopanel-agent.service monopanel-api.socket monopanel-api.service >/dev/null 2>&1 || true
-# The panel's HTTPS port belongs to monopanel-api.socket: PID 1 keeps it bound
-# while the API restarts, so no local account can take it in between. Its
-# address follows web.listen in config.yaml (before mp setup there is none,
-# and the unit's own 8443 stands). Never fatal: without the socket the API
-# listens on the port itself. moved: the address in the drop-in changed, which
-# a socket that is listening does not follow by itself.
-dropin=/etc/systemd/system/monopanel-api.socket.d/listen.conf
-moved=0
-if [ -f /etc/monopanel/config.yaml ]; then
-	before=$(cat "$dropin" 2>/dev/null || true)
-	/usr/bin/monopanel api-socket-sync || echo "warning: monopanel-api.socket did not follow web.listen; run mp setup" >&2
-	[ "$(cat "$dropin" 2>/dev/null || true)" = "$before" ] || moved=1
+# sites/ is made only when it is missing, so that one somebody else made is
+# not handed to root (the agent takes it over and clears it at its start).
+# Up to 0.8.19 the directory was monopanel's. One that is somebody else's is
+# left to the agent, which takes it over at its start through the open
+# directory — owner, ACLs, then mode — before it makes or trusts sites/
+# (openLogDir): install -d changes owner and mode only, and a default ACL its
+# old owner left on it would reach sites/ and every log made there.
+if [ "$(stat -c %u /var/log/monopanel 2>/dev/null || echo 0)" = "0" ]; then
+	install -d -m 1771 -o root -g monopanel /var/log/monopanel
+	[ -e /var/log/monopanel/sites ] || [ -L /var/log/monopanel/sites ] || install -d -m 0711 -o root -g root /var/log/monopanel/sites
 fi
 
 # On an upgrade the panel is already running the old binary: restart it, or the
@@ -63,11 +54,54 @@ fi
 upgrade=0
 [ -n "${2:-}" ] && upgrade=1
 [ "${1:-}" = "2" ] && upgrade=1
+# reinstall=1: the package comes back after a removal, which disabled and
+# stopped the panel and left this mark (preremove.sh). dpkg names the removed
+# version then, as it names the replaced one on an upgrade.
+removed=/var/lib/monopanel-agent/package-removed
+reinstall=0
+[ -e "$removed" ] && reinstall=1
+
+# mp setup up to 0.8.19 copied the panel's units into /etc/systemd/system on
+# every host it set up, and a downgrade below 0.8.20 keeps Apache's template
+# there (preremove.sh): such a copy overrides the package's unit for good,
+# and what a release changes in it never arrives. The copies that are
+# provably the panel's own and no newer than the package's units go; units
+# that run take the package's at their restart below. Never fatal.
+/usr/bin/monopanel prune-unit-copies || echo "warning: monopanel prune-unit-copies failed; copies of the panel's units in /etc/systemd/system may still override the package's" >&2
+systemctl daemon-reload >/dev/null 2>&1 || true
+
+# A fresh install enables the panel, which mp setup starts, and so does an
+# install after a removal: the removal turned the units off, not the
+# administrator. An upgrade leaves enabled and disabled units as the
+# administrator left them — with one exception, the socket of the panel's
+# port the first time round: it came with 0.8.20, and the drop-in it gets
+# below is not there yet. It follows the API then, enabled only with it.
+dropin=/etc/systemd/system/monopanel-api.socket.d/listen.conf
+if [ "$upgrade" = "0" ] || [ "$reinstall" = "1" ]; then
+	systemctl enable monopanel-agent.service monopanel-api.socket monopanel-api.service >/dev/null 2>&1 || true
+elif [ ! -e "$dropin" ] && systemctl -q is-enabled monopanel-api.service 2>/dev/null; then
+	systemctl enable monopanel-api.socket >/dev/null 2>&1 || true
+fi
+rm -f "$removed" 2>/dev/null || true
+
+# The panel's HTTPS port belongs to monopanel-api.socket: PID 1 keeps it bound
+# while the API restarts, so no local account can take it in between. Its
+# address follows web.listen in config.yaml (before mp setup there is none,
+# and the unit's own 8443 stands). Never fatal: without the socket the API
+# listens on the port itself. moved: the address in the drop-in changed, which
+# a socket that is listening does not follow by itself.
+moved=0
+if [ -f /etc/monopanel/config.yaml ]; then
+	before=$(cat "$dropin" 2>/dev/null || true)
+	/usr/bin/monopanel api-socket-sync || echo "warning: monopanel-api.socket did not follow web.listen; run mp setup" >&2
+	[ "$(cat "$dropin" 2>/dev/null || true)" = "$before" ] || moved=1
+fi
+
 if [ "$upgrade" = "1" ]; then
 	if [ "$moved" = "0" ] && systemctl -q is-active monopanel-api.socket; then
 		# The socket holds the port through the upgrade; the API restarts on it.
 		systemctl try-restart monopanel-agent.service monopanel-api.service >/dev/null 2>&1 || true
-	else
+	elif systemctl -q is-active monopanel-api.service; then
 		# Up to 0.8.19 the API listened on the port itself, and the old one
 		# still does; or the socket's address moved, which a socket that is
 		# listening does not follow. The socket can bind the port only once no
@@ -75,15 +109,18 @@ if [ "$upgrade" = "1" ]; then
 		# service runs. So the socket restarts in one go with the API: systemd
 		# orders it after the old API's exit and before the new one's start,
 		# and the port is never free for as long as a separate stop of the API
-		# and start of the socket would leave it. An API that is not running
-		# stays so, with its socket listening.
-		if systemctl -q is-active monopanel-api.service; then
-			systemctl restart monopanel-agent.service monopanel-api.socket monopanel-api.service >/dev/null 2>&1 || true
-		else
-			systemctl restart monopanel-api.socket >/dev/null 2>&1 || true
-			systemctl try-restart monopanel-agent.service >/dev/null 2>&1 || true
-		fi
+		# and start of the socket would leave it.
+		systemctl restart monopanel-agent.service monopanel-api.socket monopanel-api.service >/dev/null 2>&1 || true
+	else
+		# The API is not running: the administrator stopped it, or it failed.
+		# It stays down, and so does a socket that was not listening — started
+		# now, it would start the API at the first connection to the port.
+		# One that listens (on an address that moved) restarts to follow it.
+		systemctl try-restart monopanel-api.socket monopanel-agent.service >/dev/null 2>&1 || true
 	fi
+fi
+# After a removal nothing of the panel runs: mp setup starts it.
+if [ "$upgrade" = "1" ] && [ "$reinstall" = "0" ]; then
 	echo "MonoPanel updated."
 else
 	echo "MonoPanel installed. Run: mp setup"

@@ -689,6 +689,33 @@ func TestAPISocketSyncCommand(t *testing.T) {
 	}
 }
 
+// monopanel prune-unit-copies, for the package's postinstall: as root only,
+// it names each copy it removed, and an error is the command's (the script
+// goes on regardless).
+func TestPruneUnitCopiesCommand(t *testing.T) {
+	euid, prune := geteuid, pruneUnitCopies
+	t.Cleanup(func() { geteuid, pruneUnitCopies = euid, prune })
+	calls := 0
+	var fail error
+	pruneUnitCopies = func(context.Context) ([]string, error) {
+		calls++
+		return []string{"/etc/systemd/system/monopanel-agent.service", "/etc/systemd/system/monopanel-api.service"}, fail
+	}
+	geteuid = func() int { return 1000 }
+	if _, err := mp(t, "", "prune-unit-copies"); exitCode(err) != 4 || calls != 0 {
+		t.Fatalf("not root: %v, %d calls", err, calls)
+	}
+	geteuid = func() int { return 0 }
+	out, err := mp(t, "", "prune-unit-copies")
+	if err != nil || calls != 1 || strings.Count(out, "removed /etc/systemd/system/monopanel-") != 2 {
+		t.Fatalf("%v %q, %d calls", err, out, calls)
+	}
+	fail = errors.New("daemon-reload: no systemd")
+	if out, err := mp(t, "", "prune-unit-copies"); err == nil || !strings.Contains(err.Error(), "no systemd") || !strings.Contains(out, "monopanel-api.service") {
+		t.Fatalf("a failed reload: %v %q", err, out)
+	}
+}
+
 // api-socket-sync --probe answers the API unit's drop-in before each start:
 // 0 for any user, whatever config.yaml is, and nothing done. A binary that
 // does not know it — 0.8.19 knows no api-socket-sync at all — fails, and

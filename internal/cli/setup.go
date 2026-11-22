@@ -60,8 +60,33 @@ The command can be run again: what exists is left alone, what is missing is crea
 	c.Flags().StringVar(&opts.AdminLogin, "admin-login", "admin", T("логин администратора", "administrator login"))
 	c.Flags().StringVar(&opts.AdminPassword, "admin-password", "", T("пароль администратора (иначе генерируется)", "administrator password (generated if omitted)"))
 	c.Flags().BoolVar(&passwordStdin, "password-stdin", false, T("прочитать пароль администратора из stdin", "read the administrator password from stdin"))
-	c.Flags().BoolVar(&opts.InstallUnits, "install-units", false, T("перезаписать systemd-units даже если они существуют", "overwrite the systemd units even if they exist"))
+	c.Flags().BoolVar(&opts.InstallUnits, "install-units", false, T("перезаписать systemd-units в /etc/systemd/system, даже если они есть (кроме тех, что ставит пакет)", "overwrite the systemd units in /etc/systemd/system even if they exist (but those the package installs)"))
 	c.Flags().StringVar(&opts.BinaryPath, "binary", "", T("путь к бинарнику для units (по умолчанию текущий)", "path to the binary for the units (default: the current one)"))
 	c.Flags().BoolVar(&noStart, "no-start", false, T("не запускать сервисы", "do not start the services"))
 	return c
+}
+
+// pruneUnitCopies removes the panel's own copies of the package's units
+// from /etc/systemd/system; tests replace it.
+var pruneUnitCopies = setup.PruneUnitCopies
+
+// pruneUnitCopiesCmd is monopanel prune-unit-copies, for the package's
+// postinstall: mp setup up to 0.8.19 copied the panel's units into
+// /etc/systemd/system on every host it set up, and a downgrade below 0.8.20
+// keeps Apache's template there (preremove.sh). Such a copy overrides the
+// package's unit for good; the upgrade removes the ones that are provably
+// the panel's own and no newer than the package's (setup.PruneUnitCopies),
+// so the package's units, and what later releases change in them, apply.
+func pruneUnitCopiesCmd() *cobra.Command {
+	return &cobra.Command{Use: "prune-unit-copies", Short: T("удалить копии юнитов пакета, которые панель оставила в /etc/systemd/system (для скриптов пакета)", "remove the copies of the package's units the panel left in /etc/systemd/system (for the package scripts)"), Hidden: true, Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if geteuid() != 0 {
+				return &exitError{code: 4, msg: T("prune-unit-copies выполняется только от root", "prune-unit-copies must run as root")}
+			}
+			removed, err := pruneUnitCopies(cmd.Context())
+			for _, p := range removed {
+				fmt.Printf(T("удалён %s — копия юнита пакета; действует юнит пакета\n", "removed %s, a copy of the package's unit: the package's unit applies\n"), p)
+			}
+			return err
+		}}
 }

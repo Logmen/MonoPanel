@@ -550,6 +550,22 @@ func Downgrade(current, candidate string) bool {
 	return describeDistance(current) > describeDistance(candidate)
 }
 
+// Predates reports whether version comes from before release: an earlier
+// release, a prerelease of one, or a build made after one (Normalize counts
+// "0.8.19-5-gabc1234" as 0.8.19, whatever its commits hold). The
+// prereleases of release itself do not predate it, and an unparsable
+// version predates nothing.
+func Predates(version, release string) bool {
+	v, r := Normalize(version), Normalize(release)
+	if !semver.IsValid(v) || !semver.IsValid(r) {
+		return false
+	}
+	base := func(s string) string {
+		return strings.TrimSuffix(strings.TrimSuffix(s, semver.Build(s)), semver.Prerelease(s))
+	}
+	return semver.Compare(base(v), base(r)) < 0
+}
+
 var describeDistanceRe = regexp.MustCompile(`-(\d+)-g[0-9a-f]{6,}$`)
 
 // describeDistance is how many commits a git describe version lies after its

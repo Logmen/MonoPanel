@@ -2,6 +2,7 @@ package setup
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -83,6 +84,7 @@ func TestDBFilesMustBePlain(t *testing.T) {
 // from the binary alone and one from the package behave the same.
 func TestUnitsAreThePackages(t *testing.T) {
 	for file, want := range map[string]string{
+		"monopanel-agent.service":   fmt.Sprintf(agentUnit, "/usr/bin/monopanel"),
 		"monopanel-api.service":     fmt.Sprintf(apiUnit, "/usr/bin/monopanel"),
 		"monopanel-api.socket":      apiSocketUnit,
 		"monopanel-apache@.service": apacheUnit,
@@ -132,12 +134,14 @@ func TestUnitsAreThePackages(t *testing.T) {
 // The units go in when they are missing, or all of them with
 // --install-units; a unit the administrator has is left alone. The
 // socket's drop-in follows web.listen and is not written again unchanged.
+// This is an install without the package: packaged holds none of its units.
 func TestInstallUnitsWritesTheSocket(t *testing.T) {
 	ctx := context.Background()
 	dir := filepath.Join(t.TempDir(), "system")
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	packaged := t.TempDir()
 	mine := "[Service]\nExecStart=/opt/monopanel api\n"
 	if err := os.WriteFile(filepath.Join(dir, apiService), []byte(mine), 0o644); err != nil {
 		t.Fatal(err)
@@ -146,10 +150,21 @@ func TestInstallUnitsWritesTheSocket(t *testing.T) {
 	reload := func(context.Context) error { reloads++; return nil }
 	cfg := config.Default()
 	cfg.Web.Listen = "203.0.113.5:9443"
+	install := func(force bool) unitsResult {
+		t.Helper()
+		res, err := installUnits(ctx, dir, packaged, cfg, "/usr/bin/monopanel", force, reload)
+		if err != nil || len(res.Removed)+len(res.Shadowing) > 0 || res.PruneErr != nil {
+			t.Fatalf("without the package nothing is a copy of its units: %+v %v", res, err)
+		}
+		return res
+	}
 
-	wrote, moved, socketErr, err := installUnits(ctx, dir, cfg, "/usr/bin/monopanel", false, reload)
-	if err != nil || socketErr != nil || !slices.Equal(wrote, []string{agentService, apiSocket, apacheUnitName}) || !moved || reloads != 2 {
-		t.Fatalf("first: %v %v %v %v, %d reloads", wrote, moved, socketErr, err, reloads)
+	res := install(false)
+	if res.SocketErr != nil || !slices.Equal(res.Wrote, []string{agentService, apiSocket, apacheUnitName}) || !res.Moved || reloads != 2 {
+		t.Fatalf("first: %+v, %d reloads", res, reloads)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, agentService)); string(b) != fmt.Sprintf(agentUnit, "/usr/bin/monopanel") {
+		t.Fatalf("the agent's unit:\n%s", b)
 	}
 	if b, _ := os.ReadFile(filepath.Join(dir, apiSocket)); string(b) != apiSocketUnit {
 		t.Fatalf("the socket unit:\n%s", b)
@@ -164,13 +179,11 @@ func TestInstallUnitsWritesTheSocket(t *testing.T) {
 		t.Fatalf("the API's drop-in:\n%s", b)
 	}
 
-	wrote, moved, socketErr, err = installUnits(ctx, dir, cfg, "/usr/bin/monopanel", false, reload)
-	if err != nil || socketErr != nil || len(wrote) != 0 || moved || reloads != 2 {
-		t.Fatalf("again: %v %v %v %v, %d reloads", wrote, moved, socketErr, err, reloads)
+	if res := install(false); res.SocketErr != nil || len(res.Wrote) != 0 || res.Moved || reloads != 2 {
+		t.Fatalf("again: %+v, %d reloads", res, reloads)
 	}
-	wrote, _, socketErr, err = installUnits(ctx, dir, cfg, "/usr/bin/monopanel", true, reload)
-	if err != nil || socketErr != nil || !slices.Equal(wrote, []string{agentService, apiSocket, apiService, apacheUnitName}) {
-		t.Fatalf("--install-units: %v %v %v", wrote, socketErr, err)
+	if res := install(true); res.SocketErr != nil || !slices.Equal(res.Wrote, []string{agentService, apiSocket, apiService, apacheUnitName}) {
+		t.Fatalf("--install-units: %+v", res)
 	}
 	if b, _ := os.ReadFile(filepath.Join(dir, apiService)); string(b) != fmt.Sprintf(apiUnit, "/usr/bin/monopanel") {
 		t.Fatalf("--install-units kept the old unit:\n%s", b)
@@ -178,11 +191,250 @@ func TestInstallUnitsWritesTheSocket(t *testing.T) {
 	// A web.listen the socket cannot take is no failure of mp setup — the
 	// API listens on it itself then — and leaves the drop-in as it was.
 	cfg.Web.Listen = "8443"
-	if _, moved, socketErr, err := installUnits(ctx, dir, cfg, "/usr/bin/monopanel", false, reload); err != nil || moved || socketErr == nil || !strings.Contains(socketErr.Error(), apiSocket) {
-		t.Fatalf("a web.listen the socket cannot take: moved=%v %v %v", moved, socketErr, err)
+	if res := install(false); res.Moved || res.SocketErr == nil || !strings.Contains(res.SocketErr.Error(), apiSocket) {
+		t.Fatalf("a web.listen the socket cannot take: %+v", res)
 	}
 	if b, _ := os.ReadFile(filepath.Join(dir, "monopanel-api.socket.d", "listen.conf")); !strings.HasSuffix(string(b), "\nListenStream=203.0.113.5:9443\n") {
 		t.Fatalf("the drop-in after a refused web.listen:\n%s", b)
+	}
+}
+
+// packageUnits puts the package's units into a directory of their own, as
+// it installs them in /usr/lib/systemd/system, and returns it.
+func packageUnits(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, u := range panelUnits() {
+		b, err := os.ReadFile(filepath.Join("..", "..", "packaging", "systemd", u.name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, u.name), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// writeFiles writes name → content into dir; a content starting with "->"
+// makes a symlink to the rest.
+func writeFiles(t *testing.T, dir string, files map[string]string) {
+	t.Helper()
+	for name, content := range files {
+		p := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if target, ok := strings.CutPrefix(content, "->"); ok {
+			if err := os.Symlink(target, p); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// On a package install mp setup writes no unit into /etc/systemd/system:
+// the package's apply, and a copy there would override them for good. The
+// copies earlier releases of mp setup left there go — the units enabled
+// through them stay enabled, now through the package's — and the socket
+// still gets its drop-ins. A setup for a binary of its own (--binary) needs
+// the units that run it; the socket and Apache's template are the package's
+// all the same.
+func TestInstallUnitsOnAPackageInstall(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	packaged := packageUnits(t)
+	const bin = "/usr/bin/monopanel"
+	writeFiles(t, dir, map[string]string{
+		// mp setup of 0.8.12 and of 0.8.19, enabled.
+		agentService: unitText(agentUnit060, bin),
+		apiService:   unitText(apiUnit060, bin),
+		"multi-user.target.wants/" + agentService: "->" + filepath.Join(dir, agentService),
+		"multi-user.target.wants/" + apiService:   "->" + filepath.Join(dir, apiService),
+	})
+	reloads := 0
+	reload := func(context.Context) error { reloads++; return nil }
+	cfg := config.Default()
+	cfg.Web.Listen = "203.0.113.5:9443"
+
+	res, err := installUnits(ctx, dir, packaged, cfg, bin, false, reload)
+	if err != nil || res.PruneErr != nil || res.SocketErr != nil || len(res.Wrote) != 0 || len(res.Shadowing) != 0 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if want := []string{filepath.Join(dir, agentService), filepath.Join(dir, apiService)}; !slices.Equal(res.Removed, want) {
+		t.Fatalf("removed %v, want %v", res.Removed, want)
+	}
+	for _, u := range panelUnits() {
+		if _, err := os.Lstat(filepath.Join(dir, u.name)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s in the unit directory: %v", u.name, err)
+		}
+	}
+	for _, u := range []string{agentService, apiService} {
+		if target, _ := os.Readlink(filepath.Join(dir, "multi-user.target.wants", u)); target != filepath.Join(packaged, u) {
+			t.Errorf("%s is enabled through %q", u, target)
+		}
+	}
+	if reloads != 2 || !res.Moved {
+		t.Errorf("%d reloads, moved %v", reloads, res.Moved)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "monopanel-api.service.d", "socket.conf")); !strings.Contains(string(b), "\nWants=monopanel-api.socket\n") {
+		t.Fatalf("the API's drop-in:\n%s", b)
+	}
+	if res, err := installUnits(ctx, dir, packaged, cfg, bin, true, reload); err != nil || len(res.Wrote)+len(res.Removed) != 0 || reloads != 2 {
+		t.Fatalf("--install-units on a package install: %+v %v, %d reloads", res, err, reloads)
+	}
+
+	res, err = installUnits(ctx, dir, packaged, cfg, "/opt/monopanel/bin/monopanel", false, reload)
+	if err != nil || !slices.Equal(res.Wrote, []string{agentService, apiService}) || len(res.Removed)+len(res.Shadowing) != 0 {
+		t.Fatalf("--binary of its own: %+v %v", res, err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, apiService)); string(b) != fmt.Sprintf(apiUnit, "/opt/monopanel/bin/monopanel") {
+		t.Fatalf("the API's unit for its own binary:\n%s", b)
+	}
+	// Back on the package's binary, that unit runs another binary: it stays,
+	// and so does the warning that it overrides the package's.
+	if res, err := installUnits(ctx, dir, packaged, cfg, bin, false, reload); err != nil || len(res.Removed) != 0 || !slices.Equal(res.Shadowing, []string{filepath.Join(dir, agentService), filepath.Join(dir, apiService)}) {
+		t.Fatalf("units of another binary: %+v %v", res, err)
+	}
+}
+
+// A copy goes only when it is provably the panel's own — a text a release
+// wrote, for the package's binary — and no newer than the package's unit;
+// enabling symlinks follow it to the package's unit. The administrator's
+// own unit, a mask, a copy an alias leads to, one newer than the package's
+// or one of a unit the package lacks all stay.
+func TestPruneUnitCopies(t *testing.T) {
+	const bin = "/usr/bin/monopanel"
+	t.Run("the panel's own copies", func(t *testing.T) {
+		dir, packaged := t.TempDir(), packageUnits(t)
+		writeFiles(t, dir, map[string]string{
+			agentService:   unitText(agentUnit0813, bin),
+			apiService:     unitText(apiUnit, bin),
+			apiSocket:      apiSocketUnit,
+			apacheUnitName: apacheUnit,
+			// An instance enabled through the template's copy, relative and
+			// absolute, and a link to something else.
+			"multi-user.target.wants/monopanel-apache@alex.service": "->../" + apacheUnitName,
+			"multi-user.target.wants/monopanel-apache@kate.service": "->" + filepath.Join(dir, apacheUnitName),
+			"sockets.target.wants/" + apiSocket:                     "->" + filepath.Join(dir, apiSocket),
+			"multi-user.target.wants/nginx.service":                 "->/usr/lib/systemd/system/nginx.service",
+		})
+		res, err := pruneUnitCopies(dir, packaged, bin)
+		if err != nil || len(res.Removed) != 4 || len(res.Shadowing) != 0 {
+			t.Fatalf("%+v %v", res, err)
+		}
+		for link, want := range map[string]string{
+			"multi-user.target.wants/monopanel-apache@alex.service": filepath.Join(packaged, apacheUnitName),
+			"multi-user.target.wants/monopanel-apache@kate.service": filepath.Join(packaged, apacheUnitName),
+			"sockets.target.wants/" + apiSocket:                     filepath.Join(packaged, apiSocket),
+			"multi-user.target.wants/nginx.service":                 "/usr/lib/systemd/system/nginx.service",
+		} {
+			if got, _ := os.Readlink(filepath.Join(dir, link)); got != want {
+				t.Errorf("%s -> %q, want %q", link, got, want)
+			}
+		}
+		if left, _ := filepath.Glob(filepath.Join(dir, "*", ".*")); len(left) != 0 {
+			t.Errorf("left behind: %v", left)
+		}
+	})
+	t.Run("what stays", func(t *testing.T) {
+		dir, packaged := t.TempDir(), packageUnits(t)
+		// The package of 0.8.19 had no socket nor template, and its API unit
+		// knew no socket: a copy of 0.8.20's is newer than that.
+		if err := os.Remove(filepath.Join(packaged, apacheUnitName)); err != nil {
+			t.Fatal(err)
+		}
+		writeFiles(t, packaged, map[string]string{apiService: unitText(apiUnit060, bin)})
+		if err := os.Remove(filepath.Join(packaged, apiSocket)); err != nil {
+			t.Fatal(err)
+		}
+		edited := strings.Replace(unitText(agentUnit0813, bin), "RestartSec=2\n", "RestartSec=2\nLimitNOFILE=65536\n", 1)
+		writeFiles(t, dir, map[string]string{
+			agentService:   edited,
+			apiService:     unitText(apiUnit, bin),
+			apiSocket:      "->/dev/null",
+			apacheUnitName: apacheUnit,
+		})
+		res, err := pruneUnitCopies(dir, packaged, bin)
+		if err != nil || len(res.Removed) != 0 || !slices.Equal(res.Shadowing, []string{filepath.Join(dir, agentService), filepath.Join(dir, apiService)}) {
+			t.Fatalf("%+v %v", res, err)
+		}
+		for _, u := range []string{agentService, apiService, apiSocket, apacheUnitName} {
+			if _, err := os.Lstat(filepath.Join(dir, u)); err != nil {
+				t.Errorf("%s: %v", u, err)
+			}
+		}
+	})
+	t.Run("an alias", func(t *testing.T) {
+		dir, packaged := t.TempDir(), packageUnits(t)
+		writeFiles(t, dir, map[string]string{
+			agentService:               unitText(agentUnit, bin),
+			"monopanel-agent2.service": "->" + agentService,
+		})
+		if res, err := pruneUnitCopies(dir, packaged, bin); err != nil || len(res.Removed) != 0 || !slices.Equal(res.Shadowing, []string{filepath.Join(dir, agentService)}) {
+			t.Fatalf("%+v %v", res, err)
+		}
+	})
+	t.Run("copies of another binary", func(t *testing.T) {
+		dir, packaged := t.TempDir(), packageUnits(t)
+		writeFiles(t, dir, map[string]string{
+			agentService: unitText(agentUnit, "/usr/local/bin/monopanel"),
+			apiSocket:    apiSocketUnit,
+		})
+		// mp setup for that binary keeps the units that run it.
+		res, err := pruneUnitCopies(dir, packaged, "/usr/local/bin/monopanel")
+		if err != nil || !slices.Equal(res.Removed, []string{filepath.Join(dir, apiSocket)}) || len(res.Shadowing) != 0 {
+			t.Fatalf("%+v %v", res, err)
+		}
+		if res, err := pruneUnitCopies(dir, packaged, bin); err != nil || len(res.Removed) != 0 || !slices.Equal(res.Shadowing, []string{filepath.Join(dir, agentService)}) {
+			t.Fatalf("for the package's binary: %+v %v", res, err)
+		}
+	})
+}
+
+// The texts of the panel's units a release once wrote must stay known, or
+// their copies would override the package's units for good: each is pinned
+// here, the released ones as their tags have them. A unit that changes gets
+// a generation of its own in unitHistory, its former text and pin staying,
+// and today's text a new pin.
+func TestUnitHistoryKeepsEveryRelease(t *testing.T) {
+	for text, want := range map[string]string{
+		// mp setup's and the package's agent of v0.6.0–v0.8.12, mp setup's
+		// agent of v0.8.13–v0.8.19, the API of v0.6.0–v0.8.19.
+		agentUnit060:  "b02f29ffd2207e85276ec0938c4ad91ebf9363c0f05c5b02cfdd49a5c4a57932",
+		agentUnit0813: "fa18d69b25dc64fbad5f2a0375872a93fff33685d60415a12c45668f7ec19f1b",
+		apiUnit060:    "4b0ed539f9bc58d840a714a41fae8e9d4836efbdfcdc9d4ff9955a82f246c9fb",
+		// Apache's template of 0.8.20's development builds before the
+		// graceful stop.
+		apacheUnit0820dev: "97c3eb3afd46cf9d19510bb23855109a5b39c55acb30ef07e6c54679d5d34c6a",
+		// Today's.
+		agentUnit:     "aeb2f5ff2d581607817621619827db69378dd86b687601ebf61c1585f96370ee",
+		apiUnit:       "5c8adbb9b753b48608dad24d0b3b9ed56e43eaef0147c9502be75e63728902a7",
+		apiSocketUnit: "23112e254d6b8d747d276d2ed14cdb1e9c359203f27af9f1a1df793e1e4b5002",
+		apacheUnit:    "ccb74e2eb45271adfa66b1db8adc7e0f25238f0d49cbbc0478f952e0999f2c00",
+	} {
+		if got := fmt.Sprintf("%x", sha256.Sum256([]byte(text))); got != want {
+			t.Errorf("a unit's text changed (sha256 %s, pinned %s): keep the former one in unitHistory and pin the new one\n%s", got, want, text)
+		}
+	}
+	for _, u := range panelUnits() {
+		gens := unitHistory()[u.name]
+		if len(gens) == 0 || !slices.Contains(gens[len(gens)-1], u.text) {
+			t.Errorf("%s: today's text is not in the last generation of unitHistory", u.name)
+		}
+		seen := map[string]int{}
+		for i, g := range gens {
+			for _, text := range g {
+				if j, ok := seen[text]; ok {
+					t.Errorf("%s: one text in generations %d and %d", u.name, j, i)
+				}
+				seen[text] = i
+			}
+		}
 	}
 }
 
@@ -223,71 +475,6 @@ func TestStartPanelOrder(t *testing.T) {
 	r = &recordedUnits{failSocket: true}
 	if err := startPanel(ctx, r, true, warn); err != nil || r.calls[len(r.calls)-1] != "start "+apiService || len(warned) != 1 {
 		t.Fatalf("socket failing: %v %v %v", r.calls, err, warned)
-	}
-}
-
-// The package's scripts as text: the socket is enabled with the services
-// and follows web.listen, never failing the install. On an upgrade a socket
-// that listens keeps the port while the services restart; one that does not
-// (a panel of 0.8.19 or older listens on the port itself) or whose address
-// moved restarts in the same systemctl call as a running API — systemd
-// orders it between the old API's exit and the new one's start — and never
-// after a stop of the API of its own, which would leave the port free for as
-// long as two systemctl calls take. Removal takes the socket too.
-func TestPackageScriptsOrderTheSocket(t *testing.T) {
-	b, err := os.ReadFile(filepath.Join("..", "..", "packaging", "scripts", "postinstall.sh"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	post := string(b)
-	at := func(s string) int {
-		t.Helper()
-		i := strings.Index(post, s)
-		if i < 0 {
-			t.Fatalf("postinstall.sh lacks %q", s)
-		}
-		return i
-	}
-	enable := at("systemctl enable monopanel-agent.service monopanel-api.socket monopanel-api.service")
-	before := at(`before=$(cat "$dropin" 2>/dev/null || true)`)
-	sync := at("/usr/bin/monopanel api-socket-sync ||")
-	moved := at(`[ "$(cat "$dropin" 2>/dev/null || true)" = "$before" ] || moved=1`)
-	upgrade := at(`if [ "$upgrade" = "1" ]; then`)
-	keep := at(`if [ "$moved" = "0" ] && systemctl -q is-active monopanel-api.socket; then`)
-	tryRestart := at("systemctl try-restart monopanel-agent.service monopanel-api.service")
-	running := at("if systemctl -q is-active monopanel-api.service; then")
-	together := at("systemctl restart monopanel-agent.service monopanel-api.socket monopanel-api.service >/dev/null 2>&1 || true")
-	alone := at("systemctl restart monopanel-api.socket >/dev/null 2>&1 || true")
-	agent := at("systemctl try-restart monopanel-agent.service >/dev/null 2>&1 || true")
-	if !(enable < before && before < sync && sync < moved && moved < upgrade && upgrade < keep && keep < tryRestart && tryRestart < running && running < together && together < alone && alone < agent) {
-		t.Errorf("postinstall.sh: enable %d, drop-in before %d, sync %d, moved %d, upgrade %d, keep %d, try-restart %d, API running %d, socket with the API %d, socket alone %d, agent %d",
-			enable, before, sync, moved, upgrade, keep, tryRestart, running, together, alone, agent)
-	}
-	var acts []string
-	for _, line := range strings.Split(post, "\n") {
-		if line = strings.TrimSpace(line); strings.Contains(line, "systemctl") && strings.Contains(line, "monopanel-api.socket") {
-			acts = append(acts, line)
-		}
-	}
-	if want := []string{
-		"systemctl enable monopanel-agent.service monopanel-api.socket monopanel-api.service >/dev/null 2>&1 || true",
-		`if [ "$moved" = "0" ] && systemctl -q is-active monopanel-api.socket; then`,
-		"systemctl restart monopanel-agent.service monopanel-api.socket monopanel-api.service >/dev/null 2>&1 || true",
-		"systemctl restart monopanel-api.socket >/dev/null 2>&1 || true",
-	}; !slices.Equal(acts, want) {
-		t.Errorf("postinstall.sh acts on the socket outside the branch that restarts it with the API:\n%s", strings.Join(acts, "\n"))
-	}
-	for _, gap := range []string{"systemctl stop monopanel-api.service", "systemctl start monopanel-api.socket", "systemctl stop monopanel-api.socket"} {
-		if strings.Contains(post, gap) {
-			t.Errorf("postinstall.sh runs %q: the port is free between that and the next call", gap)
-		}
-	}
-	b, err = os.ReadFile(filepath.Join("..", "..", "packaging", "scripts", "preremove.sh"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(b), "systemctl disable --now monopanel-api.socket monopanel-api.service monopanel-agent.service") {
-		t.Error("preremove.sh leaves the socket listening")
 	}
 }
 

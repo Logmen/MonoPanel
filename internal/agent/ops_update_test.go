@@ -278,3 +278,49 @@ func TestInstallPanelRefusesTheTagUnderADescribeBuild(t *testing.T) {
 		t.Fatalf("0.9.1 over 0.9.1-4-gabc1234: %v", err)
 	}
 }
+
+// The refusal of a downgrade invites nobody to install the older package
+// casually: it says what going back loses — below 0.8.20 also what that
+// release changed on the host — and where the way back is described, the
+// page the package's preremove names when it is taken all the same.
+func TestDowngradeRefusalPointsToTheWayBack(t *testing.T) {
+	s, _ := releaseServer(t)
+	buildinfo.Version = "0.8.20"
+	req := InstallPanelRequest{Version: "0.8.19", Package: filepath.Join(s.cfg.DownloadsDir(), updater.AssetName("deb", runtime.GOARCH, "0.8.19"))}
+	_, _, _, err := s.stageRelease(&req)
+	var e *Error
+	if !errors.As(err, &e) || e.Status != http.StatusForbidden || e.Message != downgradeRefusal("0.8.19", "0.8.20") {
+		t.Fatalf("0.8.19 over 0.8.20: %v", err)
+	}
+	for _, c := range []struct {
+		to, from string
+		layout   bool
+	}{
+		{"0.8.19", "0.8.20", true},
+		{"0.8.19", "0.8.19-5-gabc1234", true},
+		{"0.8.12", "0.8.23", true},
+		{"0.8.21", "0.8.22", false},
+		{"0.8.20-rc.1", "0.8.20", false},
+	} {
+		msg := downgradeRefusal(c.to, c.from)
+		for _, want := range []string{"installing " + c.to + " over " + c.from + " is a downgrade", "brings back what later ones fixed", downgradeDoc} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("%s over %s: %q lacks %q", c.to, c.from, msg, want)
+			}
+		}
+		if strings.Contains(msg, "by hand as root") {
+			t.Errorf("%s over %s: %q", c.to, c.from, msg)
+		}
+		if got := strings.Contains(msg, "older than 0.8.20") && strings.Contains(msg, "Apache mode") && strings.Contains(msg, "env file") && strings.Contains(msg, "site logs"); got != c.layout {
+			t.Errorf("%s over %s: what 0.8.20 changed told %v: %q", c.to, c.from, got, msg)
+		}
+	}
+	pre, err := os.ReadFile(filepath.Join("..", "..", "packaging", "scripts", "preremove.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	title, url, ok := strings.Cut(strings.TrimSuffix(downgradeDoc, ")"), " in the documentation (")
+	if !ok || !strings.Contains(string(pre), strings.Trim(title, `"`)) || !strings.Contains(string(pre), url) {
+		t.Errorf("preremove.sh points elsewhere than %s", downgradeDoc)
+	}
+}

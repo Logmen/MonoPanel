@@ -70,6 +70,12 @@ Type=simple
 ExecStart=%s agent
 Restart=on-failure
 RestartSec=2
+# The agent runs as root on purpose: it installs packages, makes unix users,
+# writes /etc and reloads services. What it never needs is fenced off here.
+# Homes under /home and /root stay read-only (clients live in /var/www),
+# kernel modules, tunables, cgroups, the clock and the host name are out of
+# reach, and /tmp is its own. ProtectSystem= and a capability set are not
+# possible: apt/dnf write everywhere and package scripts need every capability.
 ProtectHome=read-only
 ProtectKernelModules=yes
 ProtectKernelTunables=yes
@@ -198,9 +204,8 @@ CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL CAP_CH
 WantedBy=multi-user.target
 `
 
-// The panel's units and where mp setup writes them.
+// The panel's units (panelUnits).
 const (
-	systemUnitDir  = "/etc/systemd/system"
 	agentService   = "monopanel-agent.service"
 	apiService     = "monopanel-api.service"
 	apiSocket      = "monopanel-api.socket"
@@ -408,18 +413,28 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 		return nil, err
 	}
 	defer sd.Close()
-	wrote, moved, socketErr, err := installUnits(ctx, systemUnitDir, cfg, binary, opts.InstallUnits, sd.DaemonReload)
-	if len(wrote) > 0 {
-		step("systemd units: %s (%s)", strings.Join(wrote, ", "), binary)
+	units, err := installUnits(ctx, systemUnitDir, packageUnitDir, cfg, binary, opts.InstallUnits, sd.DaemonReload)
+	for _, p := range units.Removed {
+		step(T("systemd: удалён %s — копия юнита пакета, которую сделала панель; действует юнит пакета", "systemd: removed %s, a copy of the package's unit the panel made: the package's unit applies"), p)
+	}
+	if len(units.Wrote) > 0 {
+		step("systemd units: %s (%s)", strings.Join(units.Wrote, ", "), binary)
+	}
+	for _, p := range units.Shadowing {
+		step(T("предупреждение: %s заменяет юнит пакета, и его обновления с пакетом сюда не доходят; если он не нужен, удалите его и запустите mp setup ещё раз",
+			"warning: %s overrides the package's unit, and the package's updates of it do not reach this host; unless you keep it on purpose, remove it and run mp setup again"), p)
+	}
+	if units.PruneErr != nil {
+		step(T("предупреждение: копии юнитов в %s: %v", "warning: copies of units in %s: %v"), systemUnitDir, units.PruneErr)
 	}
 	if err != nil {
 		return nil, err
 	}
-	if socketErr != nil {
+	if units.SocketErr != nil {
 		step(T("предупреждение: %v; monopanel-api будет слушать web.listen сам, и пока он перезапускается, порт свободен: исправьте web.listen и запустите mp setup ещё раз",
-			"warning: %v; monopanel-api will listen on web.listen itself, and the port is free while it restarts: fix web.listen and run mp setup again"), socketErr)
+			"warning: %v; monopanel-api will listen on web.listen itself, and the port is free while it restarts: fix web.listen and run mp setup again"), units.SocketErr)
 	}
-	if moved {
+	if units.Moved {
 		step(T("%s: адрес из web.listen (%s)", "%s: the address of web.listen (%s)"), apiSocket, cfg.Web.Listen)
 	}
 	if ip := agent.ForeignListenIP(cfg.Web.Listen); ip != nil {
@@ -441,7 +456,7 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 	}
 	if opts.Start {
 		step("%s", T("запуск сервисов", "starting the services"))
-		fresh := slices.Contains(wrote, apiSocket) || moved
+		fresh := slices.Contains(units.Wrote, apiSocket) || units.Moved
 		if !fresh {
 			st, err := sd.Status(ctx, apiSocket)
 			fresh = err != nil || agent.APISocketStale(st, modTime(agent.APISocketDropIn(cfg)))
@@ -487,46 +502,67 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 	return res, nil
 }
 
-// installUnits writes the panel's units into dir (writeUnits) and gives the
-// socket of the panel's port the address of web.listen
-// (agent.APISocketSync), reloading systemd when anything changed. moved says
-// that the socket's address changed on disk. A socket that cannot follow
-// web.listen (a name that does not resolve now) is socketErr, not err: the
-// API listens on web.listen itself then, stopping a socket in its way, as
-// it does when the agent or the package's script could not move the socket.
-func installUnits(ctx context.Context, dir string, cfg config.Config, binary string, force bool, reload func(context.Context) error) (wrote []string, moved bool, socketErr, err error) {
-	if wrote, err = writeUnits(dir, binary, force); err != nil {
-		return wrote, false, nil, err
+// unitsResult is what installUnits did.
+type unitsResult struct {
+	// Wrote are the units written into the unit directory (writeUnits).
+	Wrote []string
+	// Removed are the panel's own copies of the package's units removed
+	// there, Shadowing the files there that override a unit of the package
+	// all the same (pruneUnitCopies), PruneErr what kept a copy from going.
+	Removed, Shadowing []string
+	PruneErr           error
+	// Moved says that the socket's address changed on disk, SocketErr that
+	// the socket cannot follow web.listen.
+	Moved     bool
+	SocketErr error
+}
+
+// installUnits gives systemd the panel's units in dir: the panel's own
+// copies of the units the package ships in packaged go (pruneUnitCopies),
+// the units it does not ship are written (writeUnits), and the socket of the
+// panel's port gets the address of web.listen (agent.APISocketSync);
+// systemd is reloaded when anything changed. A copy that cannot go is
+// PruneErr, and a socket that cannot follow web.listen (a name that does not
+// resolve now) SocketErr, not err: the API listens on web.listen itself
+// then, stopping a socket in its way, as it does when the agent or the
+// package's script could not move the socket.
+func installUnits(ctx context.Context, dir, packaged string, cfg config.Config, binary string, force bool, reload func(context.Context) error) (unitsResult, error) {
+	var res unitsResult
+	pruned, perr := pruneUnitCopies(dir, packaged, binary)
+	res.Removed, res.Shadowing, res.PruneErr = pruned.Removed, pruned.Shadowing, perr
+	var err error
+	if res.Wrote, err = writeUnits(dir, packaged, binary, force); err != nil {
+		return res, err
 	}
-	if len(wrote) > 0 {
+	if len(res.Wrote)+len(res.Removed) > 0 {
 		if err := reload(ctx); err != nil {
-			return wrote, false, nil, err
+			return res, err
 		}
 	}
 	// The API unit's drop-in probes the binary the units run.
-	if moved, socketErr = (agent.APISocketSync{UnitDir: dir, Reload: reload, Binary: binary}).Sync(ctx, cfg); socketErr != nil {
-		socketErr = fmt.Errorf("%s: %w", apiSocket, socketErr)
+	if res.Moved, res.SocketErr = (agent.APISocketSync{UnitDir: dir, Reload: reload, Binary: binary}).Sync(ctx, cfg); res.SocketErr != nil {
+		res.SocketErr = fmt.Errorf("%s: %w", apiSocket, res.SocketErr)
 	}
-	return wrote, moved, socketErr, nil
+	return res, nil
 }
 
-// writeUnits writes the panel's units into dir (/etc/systemd/system) as mp
-// setup makes them: the ones that are missing, every one with force
-// (--install-units). It returns the names it wrote.
-func writeUnits(dir, binary string, force bool) ([]string, error) {
+// writeUnits writes into dir (/etc/systemd/system) the panel's units the
+// package does not ship in packaged for binary (packagedFor): on an install
+// without the package all four, those that are missing or, with force
+// (--install-units), every one. A unit the package ships is never written
+// there, force or not: the copy would override the package's unit for good.
+// It returns the names it wrote.
+func writeUnits(dir, packaged, binary string, force bool) ([]string, error) {
 	var wrote []string
-	for _, u := range []struct{ name, content string }{
-		{agentService, fmt.Sprintf(agentUnit, binary)},
-		{apiSocket, apiSocketUnit},
-		{apiService, fmt.Sprintf(apiUnit, binary)},
-		// A template: the API enables its instances, mp setup none.
-		{apacheUnitName, apacheUnit},
-	} {
+	for _, u := range panelUnits() {
+		if packagedFor(packaged, u, binary) {
+			continue
+		}
 		path := filepath.Join(dir, u.name)
 		if _, err := os.Stat(path); !force && !errors.Is(err, os.ErrNotExist) {
 			continue
 		}
-		if err := os.WriteFile(path, []byte(u.content), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(unitText(u.text, binary)), 0o644); err != nil {
 			return wrote, err
 		}
 		wrote = append(wrote, u.name)

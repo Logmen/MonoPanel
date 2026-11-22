@@ -82,6 +82,39 @@ func TestDowngrade(t *testing.T) {
 	}
 }
 
+// Predates tells the versions from before a release: earlier releases,
+// their prereleases and the builds made after them. The release's own
+// prereleases and builds do not predate it.
+func TestPredates(t *testing.T) {
+	for _, c := range []struct {
+		version string
+		want    bool
+	}{
+		{"0.8.19", true},
+		{"v0.8.19", true},
+		{"0.7.9", true},
+		{"0.8.19-dirty", true},
+		{"0.8.19-5-gabc1234", true}, // built on 0.8.19, whatever its commits hold
+		{"0.8.19-rc.1", true},
+		{"0.8.20", false},
+		{"0.8.20-rc.1", false}, // the release's own prerelease
+		{"0.8.20-3-gabc1234", false},
+		{"0.8.20+rebuild", false},
+		{"0.8.21", false},
+		{"1.0.0", false},
+		{"dev", false}, // nobody knows
+		{"", false},
+		{"latest", false},
+	} {
+		if got := Predates(c.version, "0.8.20"); got != c.want {
+			t.Errorf("Predates(%q, 0.8.20) = %v, want %v", c.version, got, c.want)
+		}
+	}
+	if Predates("0.8.19", "not a version") {
+		t.Error("a version predates something unparsable")
+	}
+}
+
 func TestAssetNames(t *testing.T) {
 	if got := AssetName("deb", "amd64", "v0.6.0"); got != "monopanel_0.6.0_amd64.deb" {
 		t.Errorf("deb name: %s", got)

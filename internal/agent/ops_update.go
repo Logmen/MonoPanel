@@ -93,7 +93,7 @@ func (s *Server) stageRelease(req *InstallPanelRequest) (staged, sum string, sig
 	// An older release would bring back what later ones fixed, the agent's
 	// own checks included: the API alone does not get to go back.
 	if updater.Downgrade(buildinfo.Version, req.Version) {
-		return "", "", false, &Error{Status: http.StatusForbidden, Message: fmt.Sprintf("installing %s over %s is a downgrade, which the panel does not do: install the older package by hand as root", req.Version, buildinfo.Version)}
+		return "", "", false, &Error{Status: http.StatusForbidden, Message: downgradeRefusal(req.Version, buildinfo.Version)}
 	}
 	if !sha256Re.MatchString(req.SHA256) {
 		return "", "", false, &Error{Status: http.StatusBadRequest, Message: "the package digest is not a SHA-256"}
@@ -118,6 +118,30 @@ func (s *Server) stageRelease(req *InstallPanelRequest) (staged, sum string, sig
 		return "", "", false, err
 	}
 	return staged, want, signed, nil
+}
+
+// layoutRelease is the release that changed the host in ways no earlier one
+// can run: sites in Apache mode on their accounts' own Apaches, which the
+// earlier ones render for the shared one, retired by then; apps whose env
+// file mp app-exec reads, a command the binaries before it lack; the site
+// logs in the log tree, which the logrotate and fail2ban configuration of
+// the earlier ones do not watch. Going back below it takes the steps the
+// documentation lists, which the package's preremove prints too.
+const layoutRelease = "0.8.20"
+
+// downgradeDoc is where the documentation describes going back.
+const downgradeDoc = `"Going back to an older version" in the documentation (https://monopanel.app/en/docs/update/)`
+
+// downgradeRefusal is why installing version to over from is refused, and
+// where the way back is described for whoever has to take it. It does not
+// suggest installing the older package by hand: below layoutRelease that
+// leaves sites and apps down until they are applied again.
+func downgradeRefusal(to, from string) string {
+	msg := fmt.Sprintf("installing %s over %s is a downgrade, which the panel does not do: an older release brings back what later ones fixed", to, from)
+	if updater.Predates(to, layoutRelease) {
+		msg += fmt.Sprintf(", and one older than %s cannot run what %s changed on this host: a site in Apache mode breaks once the older panel applies it, an app with an env file at its next start, and nothing rotates or watches the site logs, until Apache, the sites and the apps are applied again by hand", layoutRelease, layoutRelease)
+	}
+	return msg + "; should going back be unavoidable, read " + downgradeDoc + " before installing an older package as root"
 }
 
 // stagePackage copies the package pkg (in the downloads directory) into the
