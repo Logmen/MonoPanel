@@ -26,7 +26,6 @@ const (
 	settingFirewall = "firewall.enabled"
 	settingFail2ban = "stack.fail2ban"
 	nftRulesPath    = "/etc/nftables.d/monopanel.nft"
-	nftUnitPath     = "/etc/systemd/system/monopanel-firewall.service"
 	nftUnit         = "monopanel-firewall.service"
 )
 
@@ -202,8 +201,10 @@ func (s *Server) applyFirewall(ctx context.Context, extraPorts ...int) (*apitype
 	}
 	if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: []agent.FileSpec{
 		{Path: nftRulesPath, Content: text, Mode: 0o644},
-		{Path: nftUnitPath, Content: firewallUnit, Mode: 0o644},
 	}, Origin: "firewall"}); err != nil {
+		return nil, err
+	}
+	if _, err := s.agent.ApplyUnit(ctx, &agent.ApplyUnitRequest{Name: nftUnit, Content: firewallUnit, Origin: "firewall"}); err != nil {
 		return nil, err
 	}
 	check, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "nft", Args: []string{"-c", "-f", nftRulesPath}})

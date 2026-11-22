@@ -176,7 +176,9 @@ func (a *Agent) Handler() http.Handler {
 	r.Post("/v1/panel/install", handle(a.installPanel))
 	r.Post("/v1/chown", handle(a.chown))
 	r.Post("/v1/user/shadow", handle(a.unixShadow))
-	r.Post("/v1/stream/out", notInDemo)
+	r.Post("/v1/units/apply", handle(a.applyUnit))
+	r.Post("/v1/units/remove", handle(a.removeUnit))
+	r.Post("/v1/stream/out", a.streamOut)
 	r.Post("/v1/stream/in", notInDemo)
 	return r
 }
@@ -186,6 +188,22 @@ const ErrNotInDemo = "not available in the demo"
 
 func notInDemo(w http.ResponseWriter, _ *http.Request) {
 	writeErr(w, &agent.Error{Status: http.StatusForbidden, Message: ErrNotInDemo})
+}
+
+// streamOut pretends the one stream the panel's own jobs read, the dump of
+// a database for a backup; the migration's streams are not in the demo.
+func (a *Agent) streamOut(w http.ResponseWriter, r *http.Request) {
+	var req agent.StreamRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, &agent.Error{Status: http.StatusBadRequest, Message: "bad request: " + err.Error()})
+		return
+	}
+	if req.Name != "mysqldump" {
+		notInDemo(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	_, _ = w.Write([]byte("-- MySQL dump 10.13  Distrib 8.4.11-11\n"))
 }
 
 func handle[Req, Resp any](fn func(context.Context, *Req) (*Resp, error)) http.HandlerFunc {
@@ -394,6 +412,56 @@ func (a *Agent) write(p, content string, mode uint32) (bool, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.put(p, content, mode), nil
+}
+
+// unitDir is where the pretend server keeps the panel's units.
+const unitDir = "/etc/systemd/system"
+
+// unitHost checks units with the real agent's rules (agent.CheckUnit),
+// against the pretend server's own accounts and the layouts of the release
+// it pretends to be.
+func (a *Agent) unitHost() *agent.UnitHost {
+	p := Profile()
+	h := &agent.UnitHost{
+		WWWRoot:      a.cfg.WWWRoot,
+		NginxService: p.Web().NginxService,
+		Sphinx:       osprofile.Sphinx(p),
+		Account: func(login string) (*agent.UnitAccount, error) {
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			u, ok := a.st.Users[login]
+			if !ok || u.UID < 1000 {
+				return nil, errors.New("not a panel account")
+			}
+			return &agent.UnitAccount{Login: login, Home: u.Home, Group: login}, nil
+		},
+	}
+	for _, l := range osprofile.ValkeyCandidates(p) {
+		h.ValkeyBinaries = append(h.ValkeyBinaries, l.Binary)
+	}
+	return h
+}
+
+func (a *Agent) applyUnit(_ context.Context, req *agent.ApplyUnitRequest) (*agent.ApplyUnitResponse, error) {
+	if err := agent.CheckUnit(req.Name, []byte(req.Content), a.unitHost()); err != nil {
+		return nil, &agent.Error{Status: http.StatusForbidden, Message: "unit " + req.Name + " is not allowed: " + err.Error()}
+	}
+	p := path.Join(unitDir, req.Name)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return &agent.ApplyUnitResponse{Path: p, Changed: a.put(p, req.Content, 0o644)}, nil
+}
+
+func (a *Agent) removeUnit(_ context.Context, req *agent.RemoveUnitRequest) (*agent.RemoveUnitResponse, error) {
+	if err := agent.CheckUnitName(req.Name, a.unitHost()); err != nil {
+		return nil, &agent.Error{Status: http.StatusForbidden, Message: "unit " + req.Name + " is not allowed: " + err.Error()}
+	}
+	p := path.Join(unitDir, req.Name)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, ok := a.st.Files[p]
+	delete(a.st.Files, p)
+	return &agent.RemoveUnitResponse{Path: p, Removed: ok}, nil
 }
 
 func (a *Agent) ensureGroup(_ context.Context, req *agent.EnsureGroupRequest) (*agent.EnsureGroupResponse, error) {

@@ -6,7 +6,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -381,14 +383,7 @@ func (s *Server) installNginx(ctx context.Context, jc *jobs.Context) error {
 	if _, err := s.agent.EnsureUnixUser(ctx, &agent.EnsureUnixUserRequest{Login: web.NginxUser, System: true, Groups: []string{s.cfg.WebGroup}}); err != nil {
 		return err
 	}
-	if _, err := s.agent.EnsureDirs(ctx, &agent.EnsureDirsRequest{Dirs: []agent.DirSpec{
-		{Path: "/var/lib/monopanel/acme", Mode: 0o755, Owner: s.cfg.ServiceUser, Group: s.cfg.ServiceGroup},
-		{Path: "/var/lib/monopanel/acme/webroot", Mode: 0o755, Owner: s.cfg.ServiceUser, Group: s.cfg.ServiceGroup},
-		// Each level is named: the API (service user) manages the challenge
-		// files and must own the whole path, not just the leaf.
-		{Path: "/var/lib/monopanel/acme/webroot/.well-known", Mode: 0o755, Owner: s.cfg.ServiceUser, Group: s.cfg.ServiceGroup},
-		{Path: "/var/lib/monopanel/acme/webroot/.well-known/acme-challenge", Mode: 0o755, Owner: s.cfg.ServiceUser, Group: s.cfg.ServiceGroup},
-	}}); err != nil {
+	if err := s.ensureACMEWebroot(); err != nil {
 		return err
 	}
 
@@ -618,4 +613,29 @@ func (s *Server) refreshDefaultServers(ctx context.Context) {
 	if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Validate: [][]string{web.NginxCheckArgv}, Reload: []string{web.NginxService}, Restore: []string{"/run/nginx.pid"}, Origin: "stack:nginx"}); err != nil {
 		s.log.Warn("default servers", "err", err)
 	}
+}
+
+// ensureACMEWebroot makes the ACME directory and the webroot nginx serves
+// the HTTP-01 challenges from, every level 0755: the nginx workers, another
+// user, pass through to read the tokens. They lie below the panel's data
+// directory, which is the API's own, so the API makes them itself — the
+// agent writes nothing there (a root write below a directory the API owns
+// could be steered by it).
+func (s *Server) ensureACMEWebroot() error {
+	web := s.acme.Webroot
+	for _, d := range []string{s.acme.Dir, web, filepath.Join(web, ".well-known"), filepath.Join(web, ".well-known", "acme-challenge")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return fmt.Errorf("ACME webroot: %w", err)
+		}
+		st, err := os.Stat(d)
+		if err != nil {
+			return fmt.Errorf("ACME webroot: %w", err)
+		}
+		if st.Mode().Perm() != 0o755 {
+			if err := os.Chmod(d, 0o755); err != nil {
+				return fmt.Errorf("ACME webroot %s: %w (mp setup gives the data directory back to %s)", d, err, s.cfg.ServiceUser)
+			}
+		}
+	}
+	return nil
 }

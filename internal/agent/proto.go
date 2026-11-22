@@ -407,6 +407,35 @@ type PanelConfigResponse struct {
 	Changed []string `json:"changed"`
 }
 
+// ApplyUnitRequest writes one of the panel's systemd units, or the drop-in
+// it keeps for a system service: Name is the file below /etc/systemd/system
+// ("monopanel-app-alex-bot.service", "nginx.service.d/monopanel.conf"). The
+// agent accepts only the units the panel writes, in the form it writes them
+// (see ops_units.go). daemon-reload is the caller's, through /v1/service.
+type ApplyUnitRequest struct {
+	Name    string `json:"name"`
+	Content string `json:"content"`
+	// Origin is recorded in the log (e.g. "app:monopanel-app-alex-bot.service").
+	Origin string `json:"origin,omitempty"`
+}
+
+// ApplyUnitResponse names the file and tells whether its content changed.
+type ApplyUnitResponse struct {
+	Path    string `json:"path"`
+	Changed bool   `json:"changed"`
+}
+
+// RemoveUnitRequest deletes one of the panel's units by name.
+type RemoveUnitRequest struct {
+	Name string `json:"name"`
+}
+
+// RemoveUnitResponse tells whether there was a file to remove.
+type RemoveUnitResponse struct {
+	Path    string `json:"path"`
+	Removed bool   `json:"removed"`
+}
+
 // ListDirRequest lists the names in a directory. Only a few configuration
 // directories may be listed: this is for reading the panel's own domain
 // (which PHP modules exist), not a file browser.

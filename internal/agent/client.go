@@ -217,6 +217,19 @@ func (c *Client) SetPanelConfig(ctx context.Context, req *PanelConfigRequest) (*
 	return &r, c.call(ctx, "/v1/panel/config", req, &r)
 }
 
+// ApplyUnit writes one of the panel's systemd units (/etc/systemd/system is
+// not on the write allow-list of ApplyConfigSet). The caller reloads systemd.
+func (c *Client) ApplyUnit(ctx context.Context, req *ApplyUnitRequest) (*ApplyUnitResponse, error) {
+	var r ApplyUnitResponse
+	return &r, c.call(ctx, "/v1/units/apply", req, &r)
+}
+
+// RemoveUnit deletes one of the panel's systemd units.
+func (c *Client) RemoveUnit(ctx context.Context, req *RemoveUnitRequest) (*RemoveUnitResponse, error) {
+	var r RemoveUnitResponse
+	return &r, c.call(ctx, "/v1/units/remove", req, &r)
+}
+
 // ListDir lists an allow-listed configuration directory.
 func (c *Client) ListDir(ctx context.Context, path string) (*ListDirResponse, error) {
 	var r ListDirResponse

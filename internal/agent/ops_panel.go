@@ -5,11 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 
 	"monopanel/internal/config"
 )
@@ -66,24 +64,26 @@ func (s *Server) setPanelConfig(ctx context.Context, req *PanelConfigRequest) (*
 
 	s.panelMu.Lock()
 	defer s.panelMu.Unlock()
-	var old []byte
-	existed := false
-	mode, uid, gid := os.FileMode(0o640), -1, -1
-	st, err := os.Lstat(path)
+	// The file's directory is walked to like every root write: /etc/monopanel
+	// is root's, and a symlink nobody but root made is not followed. Where
+	// the file lives is the administrator's choice (--config), not the API's,
+	// so root's symlinks are followed all the way.
+	dir, err := walkDir("/", filepath.Dir(path), walkOpts{trust: s.trust(), follow: followAll, uid: -1, gid: -1})
+	if err != nil {
+		return nil, walkErr("open the directory of "+path, err)
+	}
+	defer dir.close()
+	name := filepath.Base(path)
+	mode, uid, gid := uint32(0o640), -1, -1
+	old, st, existed, err := readFileAt(dir.fd, name)
 	switch {
-	case err == nil:
-		if !st.Mode().IsRegular() {
-			return nil, &Error{Status: http.StatusConflict, Message: path + " is not a regular file (a symlink?): the agent does not replace it; change it by hand"}
-		}
-		if old, err = os.ReadFile(path); err != nil {
-			return nil, &Error{Message: "read " + path, Output: err.Error()}
-		}
-		existed = true
-		mode = st.Mode().Perm()
-		if sys, ok := st.Sys().(*syscall.Stat_t); ok {
-			uid, gid = int(sys.Uid), int(sys.Gid)
-		}
-	case errors.Is(err, os.ErrNotExist):
+	case errors.Is(err, errNotPlainFile):
+		return nil, &Error{Status: http.StatusConflict, Message: path + " is not a regular file (a symlink?): the agent does not replace it; change it by hand"}
+	case err != nil:
+		return nil, &Error{Message: "read " + path, Output: err.Error()}
+	case existed:
+		mode, uid, gid = st.Mode&0o7777, int(st.Uid), int(st.Gid)
+	default:
 		// mp setup makes the file; without it the panel runs on the defaults.
 		// A new one gets what setup gives it, root:<service group> 0640 —
 		// root-only, the API could not read its own configuration and would
@@ -93,8 +93,6 @@ func (s *Server) setPanelConfig(ctx context.Context, req *PanelConfigRequest) (*
 			return nil, &Error{Status: http.StatusConflict, Message: path + " does not exist and the group " + s.cfg.ServiceGroup + " is missing: run mp setup"}
 		}
 		gid = g
-	default:
-		return nil, &Error{Message: "stat " + path, Output: err.Error()}
 	}
 
 	out, changed, err := config.EditPanelKeys(old, req.Set)
@@ -108,11 +106,13 @@ func (s *Server) setPanelConfig(ctx context.Context, req *PanelConfigRequest) (*
 	if len(changed) == 0 {
 		return resp, nil
 	}
-	if err := atomicWrite(path, out, mode, uid, gid); err != nil {
+	if err := writeFileAt(dir.fd, dir.resolved, name, out, mode, uid, gid); err != nil {
 		return nil, &Error{Message: "write " + path, Output: err.Error()}
 	}
 	if existed {
-		(&fileTx{history: s.cfg.ConfHistoryDir(), entries: []fileEntry{{path: path, existed: true, oldContent: old}}}).commitHistory()
+		if err := s.history().store(path, old); err != nil {
+			s.log.Warn("configuration history", "path", path, "err", err)
+		}
 	}
 	s.restorecon(ctx, path)
 	s.log.Info("panel configuration changed", "file", path, "keys", changed)

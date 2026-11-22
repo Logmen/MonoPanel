@@ -24,6 +24,7 @@ import (
 
 	"monopanel/internal/agent"
 	"monopanel/internal/config"
+	"monopanel/internal/osprofile"
 	"monopanel/internal/systemd"
 )
 
@@ -94,8 +95,56 @@ type Agent struct {
 	// went through them: перенос аккаунта — это два потока, и тест должен
 	// видеть, что они были и куда шли.
 	streams []Stream
+	// UnitHost is what the fake checks units against with the real agent's
+	// rules (agent.CheckUnit): by default every valid login is a panel
+	// account with its home in /var/www, and the layouts are the
+	// distributions' own. A unit the real agent would refuse fails here too.
+	UnitHost *agent.UnitHost
 
 	srv *httptest.Server
+}
+
+// unitDir is where the fake keeps the units it was given, as the real agent
+// writes them.
+const unitDir = "/etc/systemd/system"
+
+// refused names what the real agent never writes, removes or makes for the
+// API through config/apply, paths/remove or dirs/ensure: systemd's trees (the
+// units go through /v1/units/*), the API's own data directory (it writes
+// there itself) and the agent's own directory. The fake refuses them too, so
+// that a call site still using them fails its test.
+func refused(p string) bool {
+	p = filepath.Clean(p)
+	for _, t := range []string{"/etc/systemd", "/run/systemd", "/usr/lib/systemd", "/lib/systemd", config.Default().DataDir, config.DefaultAgentStateDir} {
+		if p == t || strings.HasPrefix(p, t+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func refusal(p string) *agent.Error {
+	return &agent.Error{Status: http.StatusForbidden, Message: "path not allowed: " + p}
+}
+
+// DefaultUnitHost answers the unit checks for a test host: any login is a
+// panel account (home /var/www/<login>, primary group of the same name), the
+// Sphinx unit is EL's, nginx is nginx.service.
+func DefaultUnitHost() *agent.UnitHost {
+	rel, _ := osprofile.ParseOSRelease(strings.NewReader("ID=almalinux\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=9.6\n"))
+	el, err := osprofile.FromRelease(rel)
+	h := &agent.UnitHost{
+		WWWRoot:        config.Default().WWWRoot,
+		NginxService:   "nginx.service",
+		ValkeyBinaries: []string{"/usr/bin/valkey-server", "/usr/bin/redis-server"},
+		Account: func(login string) (*agent.UnitAccount, error) {
+			return &agent.UnitAccount{Login: login, Home: filepath.Join(config.Default().WWWRoot, login), Group: login}, nil
+		},
+	}
+	if err == nil {
+		h.Sphinx = osprofile.Sphinx(el)
+	}
+	return h
 }
 
 // Start launches a fake agent on a unix socket inside a temporary directory
@@ -121,6 +170,7 @@ func Start(t *testing.T) *Agent {
 		StreamOutput: map[string]string{},
 		DirEntries:   map[string][]string{},
 		Shadow:       map[string]string{},
+		UnitHost:     DefaultUnitHost(),
 	}
 	ln, err := net.Listen("unix", a.Socket)
 	if err != nil {
@@ -231,6 +281,11 @@ func (a *Agent) respond(path string, body []byte) any {
 	case "/v1/config/apply":
 		var req agent.ApplyConfigSetRequest
 		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		for _, f := range req.Files {
+			if refused(f.Path) {
+				return refusal(f.Path)
+			}
+		}
 		written := make([]string, 0, len(req.Files))
 		for _, f := range req.Files {
 			a.files[f.Path] = f
@@ -246,6 +301,31 @@ func (a *Agent) respond(path string, body []byte) any {
 			a.units[u] = "restart"
 		}
 		return agent.ApplyConfigSetResponse{Written: written, Validated: len(req.Validate), Reloaded: req.Reload}
+
+	case "/v1/units/apply":
+		// Checked with the real agent's rules, kept where the real agent
+		// writes it: tests read units back with File.
+		var req agent.ApplyUnitRequest
+		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		if err := agent.CheckUnit(req.Name, []byte(req.Content), a.UnitHost); err != nil {
+			return &agent.Error{Status: http.StatusForbidden, Message: "unit " + req.Name + " is not allowed: " + err.Error()}
+		}
+		p := filepath.Join(unitDir, req.Name)
+		old, had := a.files[p]
+		a.files[p] = agent.FileSpec{Path: p, Content: req.Content, Mode: 0o644, Owner: "root", Group: "root"}
+		return agent.ApplyUnitResponse{Path: p, Changed: !had || old.Content != req.Content}
+
+	case "/v1/units/remove":
+		var req agent.RemoveUnitRequest
+		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		if err := agent.CheckUnitName(req.Name, a.UnitHost); err != nil {
+			return &agent.Error{Status: http.StatusForbidden, Message: "unit " + req.Name + " is not allowed: " + err.Error()}
+		}
+		p := filepath.Join(unitDir, req.Name)
+		a.removed = append(a.removed, p)
+		_, had := a.files[p]
+		delete(a.files, p)
+		return agent.RemoveUnitResponse{Path: p, Removed: had}
 
 	case "/v1/file/ensure":
 		var req agent.EnsureFileRequest
@@ -282,6 +362,11 @@ func (a *Agent) respond(path string, body []byte) any {
 	case "/v1/dirs/ensure":
 		var req agent.EnsureDirsRequest
 		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		for _, d := range req.Dirs {
+			if refused(d.Path) {
+				return refusal(d.Path)
+			}
+		}
 		created := make([]string, 0, len(req.Dirs))
 		for _, d := range req.Dirs {
 			a.dirs = append(a.dirs, d.Path)
@@ -292,6 +377,11 @@ func (a *Agent) respond(path string, body []byte) any {
 	case "/v1/paths/remove":
 		var req agent.RemovePathsRequest
 		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		for _, p := range req.Paths {
+			if refused(p) {
+				return refusal(p)
+			}
+		}
 		a.removed = append(a.removed, req.Paths...)
 		// A real agent reports only what existed, and the panel acts on that
 		// (a removed pool means the old php-fpm has to be reloaded). The fake

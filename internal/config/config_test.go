@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -51,5 +52,27 @@ func TestSaveRoundTrip(t *testing.T) {
 	back.Agent.ExtraWritePrefixes = []string{"/opt/custom/"}
 	if n := len(back.WritePrefixes()); n != len(DefaultAllowedWritePrefixes)+1 {
 		t.Fatalf("extras not appended: %d", n)
+	}
+}
+
+// The configuration history is root's, in the agent's own directory, not
+// below the data directory the API owns; the write allow-list holds neither
+// systemd's unit directory nor that data directory.
+func TestAgentStateAndAllowList(t *testing.T) {
+	cfg := Default()
+	if cfg.AgentStateDir() != "/var/lib/monopanel-agent" || cfg.ConfHistoryDir() != "/var/lib/monopanel-agent/confhistory" {
+		t.Fatalf("defaults: %s %s", cfg.AgentStateDir(), cfg.ConfHistoryDir())
+	}
+	if cfg.LegacyConfHistoryDir() != "/var/lib/monopanel/confhistory" {
+		t.Fatalf("legacy: %s", cfg.LegacyConfHistoryDir())
+	}
+	cfg.Agent.StateDir = "/srv/agent"
+	if cfg.ConfHistoryDir() != "/srv/agent/confhistory" {
+		t.Fatalf("override: %s", cfg.ConfHistoryDir())
+	}
+	for _, pre := range DefaultAllowedWritePrefixes {
+		if strings.HasPrefix(pre, "/etc/systemd") || strings.HasPrefix(pre, "/var/lib/monopanel/") || pre == "/var/lib/monopanel" {
+			t.Errorf("on the allow-list: %s", pre)
+		}
 	}
 }

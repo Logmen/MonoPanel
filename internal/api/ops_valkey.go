@@ -143,7 +143,7 @@ func (s *Server) applyValkey(ctx context.Context, v *store.ValkeyInstance, l *os
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: []agent.FileSpec{{Path: path.Join(unitDir, unit), Content: text, Mode: 0o644}}, Origin: "valkey:" + unit}); err != nil {
+	if _, err := s.agent.ApplyUnit(ctx, &agent.ApplyUnitRequest{Name: unit, Content: text, Origin: "valkey:" + unit}); err != nil {
 		return nil, err
 	}
 	if _, err := s.agent.Service(ctx, "", "daemon-reload"); err != nil {
@@ -170,7 +170,10 @@ func (s *Server) removeValkey(ctx context.Context, v *store.ValkeyInstance) erro
 	unit := v.Unit()
 	s.agent.Service(ctx, unit, "stop")    //nolint:errcheck // may not be running
 	s.agent.Service(ctx, unit, "disable") //nolint:errcheck // may not be enabled
-	if _, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: []string{path.Join(unitDir, unit), path.Join(valkeyStateDir, v.Name())}, Recursive: true}); err != nil {
+	if _, err := s.agent.RemoveUnit(ctx, &agent.RemoveUnitRequest{Name: unit}); err != nil {
+		return err
+	}
+	if _, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: []string{path.Join(valkeyStateDir, v.Name())}, Recursive: true}); err != nil {
 		return err
 	}
 	_, err := s.agent.Service(ctx, "", "daemon-reload")

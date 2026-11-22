@@ -6,15 +6,16 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"monopanel/internal/agent/confcheck"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
+	"monopanel/internal/agent/confcheck"
 	"monopanel/internal/config"
 	"monopanel/internal/systemd"
 )
@@ -94,8 +95,11 @@ func protectedErr(p string) *Error {
 	return &Error{Status: http.StatusForbidden, Message: "path not allowed: " + p + " is, or holds, config.yaml or the secret key; root changes them (mp config set --local, mp update trust), the panel's own settings go through PUT /system/config"}
 }
 
+// pathAllowed reports whether p is on the write allow-list, is neither
+// config.yaml nor the secret key, and lies in none of the trees only root
+// manages (rootTrees: an extra prefix in config.yaml does not open them).
 func (s *Server) pathAllowed(p string) bool {
-	if s.protected(p) {
+	if s.protected(p) || s.inRootTree(p) {
 		return false
 	}
 	for _, pre := range s.cfg.WritePrefixes() {
@@ -110,15 +114,70 @@ func (s *Server) pathAllowed(p string) bool {
 	return false
 }
 
+// trust is the rule set for root's walks below the write allow-list.
+func (s *Server) trust() *dirTrust {
+	return &dirTrust{rootUID: s.rootUID, serviceUser: s.cfg.ServiceUser, strict: true}
+}
+
+// fileOwners are who may own what config/apply writes besides root: the
+// DKIM keys are opendkim's (0600, opendkim alone reads them), the dovecot
+// users file is root:dovecot 0640. Handing a configuration of a root daemon
+// to anyone else would let them change it without the agent's checks.
+var fileOwners = []struct{ below, owner, group string }{
+	{"/etc/opendkim/keys/", "opendkim", "opendkim"},
+	{"/etc/dovecot/", "", "dovecot"},
+}
+
+// checkFileSpec refuses an owner, a group or a mode config/apply must not
+// give a file: someone besides root (or the daemon the file is for) as its
+// owner or group, a mode that lets group or others write it, or a set-id or
+// sticky bit.
+func checkFileSpec(f *FileSpec) error {
+	if f.Mode&^0o777 != 0 || f.Mode&0o022 != 0 {
+		return fmt.Errorf("mode %#o of %s is not allowed: a file the agent writes is never writable by group or others and carries no set-id bit", f.Mode, f.Path)
+	}
+	owner := f.Owner == "" || f.Owner == "root"
+	group := f.Group == "" || f.Group == "root"
+	for _, o := range fileOwners {
+		if strings.HasPrefix(f.Path, o.below) {
+			owner = owner || (o.owner != "" && f.Owner == o.owner)
+			group = group || f.Group == o.group
+		}
+	}
+	if !owner {
+		return fmt.Errorf("owner %q of %s is not allowed: files the agent writes there are root's", f.Owner, f.Path)
+	}
+	if !group {
+		return fmt.Errorf("group %q of %s is not allowed: files the agent writes there are root's", f.Group, f.Path)
+	}
+	return nil
+}
+
+// walkErr turns the refusals of a walk into a 403 and the rest into a 500.
+func walkErr(what string, err error) *Error {
+	if errors.Is(err, errUntrusted) || errors.Is(err, errSymlinkInPath) || errors.Is(err, errNotPlainFile) {
+		return &Error{Status: http.StatusForbidden, Message: what + ": " + err.Error()}
+	}
+	var ae *Error
+	if errors.As(err, &ae) {
+		return ae
+	}
+	return &Error{Message: what, Output: err.Error()}
+}
+
 func (s *Server) applyConfigSet(ctx context.Context, req *ApplyConfigSetRequest) (*ApplyConfigSetResponse, error) {
 	if len(req.Files) == 0 && len(req.Reload) == 0 && len(req.Restart) == 0 && len(req.Validate) == 0 {
 		return nil, &Error{Status: http.StatusBadRequest, Message: "empty config set"}
 	}
+	contents := make([][]byte, len(req.Files))
 	for i := range req.Files {
 		f := &req.Files[i]
 		f.Path = filepath.Clean(f.Path)
 		if s.protected(f.Path) {
 			return nil, protectedErr(f.Path)
+		}
+		if s.inRootTree(f.Path) {
+			return nil, rootTreeErr(f.Path)
 		}
 		if !filepath.IsAbs(f.Path) || !s.pathAllowed(f.Path) {
 			return nil, &Error{Status: http.StatusForbidden, Message: "path not allowed: " + f.Path}
@@ -126,17 +185,20 @@ func (s *Server) applyConfigSet(ctx context.Context, req *ApplyConfigSetRequest)
 		if f.Mode == 0 {
 			f.Mode = 0o644
 		}
-		content := []byte(f.Content)
+		if err := checkFileSpec(f); err != nil {
+			return nil, &Error{Status: http.StatusForbidden, Message: err.Error()}
+		}
+		contents[i] = []byte(f.Content)
 		if f.ContentBase64 != "" {
 			b, err := base64.StdEncoding.DecodeString(f.ContentBase64)
 			if err != nil {
 				return nil, &Error{Status: http.StatusBadRequest, Message: "content_base64 of " + f.Path + ": " + err.Error()}
 			}
-			content = b
+			contents[i] = b
 		}
 		// Configurations of daemons that run as root must not carry what
 		// would run code or write files as root for their author.
-		if err := confcheck.Check(f.Path, content); err != nil {
+		if err := confcheck.Check(f.Path, contents[i]); err != nil {
 			return nil, &Error{Status: http.StatusForbidden, Message: f.Path + ": " + err.Error()}
 		}
 	}
@@ -148,13 +210,14 @@ func (s *Server) applyConfigSet(ctx context.Context, req *ApplyConfigSetRequest)
 			return nil, &Error{Status: http.StatusForbidden, Message: err.Error()}
 		}
 	}
-	tx := &fileTx{history: s.cfg.ConfHistoryDir()}
+	tx := s.newFileTx()
+	defer tx.close()
 	resp := &ApplyConfigSetResponse{Written: []string{}, Unchanged: []string{}, Reloaded: []string{}}
-	for _, f := range req.Files {
-		changed, err := tx.write(f)
+	for i, f := range req.Files {
+		changed, err := tx.write(f, contents[i], s.managedDepth(f.Path))
 		if err != nil {
 			tx.rollback()
-			return nil, &Error{Message: "write " + f.Path, Output: err.Error()}
+			return nil, walkErr("write "+f.Path, err)
 		}
 		if changed {
 			resp.Written = append(resp.Written, f.Path)
@@ -199,39 +262,60 @@ func (s *Server) applyConfigSet(ctx context.Context, req *ApplyConfigSetRequest)
 	return resp, nil
 }
 
+// fileEntry is a file the transaction replaced, with what to put back.
 type fileEntry struct {
 	path       string
+	dir        *walked // the file's directory, open until the transaction ends
+	name       string
 	existed    bool
 	oldContent []byte
-	oldMode    os.FileMode
+	oldMode    uint32
 	oldUID     int
 	oldGID     int
 }
 
+// fileTx writes a set of files and can put every one back. Each file is
+// reached through its directory opened without following an untrusted
+// symlink (walkDir), and the directory stays open for the rollback: what
+// was checked once is what gets restored.
 type fileTx struct {
-	history string
+	s       *Server
 	entries []fileEntry
+	dirs    []*walked
 }
 
-func (t *fileTx) write(f FileSpec) (bool, error) {
-	e := fileEntry{path: f.Path, oldUID: -1, oldGID: -1}
-	st, err := os.Lstat(f.Path)
-	switch {
-	case err == nil:
-		if !st.Mode().IsRegular() {
-			return false, errors.New("refusing to replace a non-regular file (symlink or directory)")
-		}
-		e.existed = true
-		e.oldMode = st.Mode().Perm()
-		if sys, ok := st.Sys().(*syscall.Stat_t); ok {
-			e.oldUID, e.oldGID = int(sys.Uid), int(sys.Gid)
-		}
-		if e.oldContent, err = os.ReadFile(f.Path); err != nil {
-			return false, err
-		}
-	case !errors.Is(err, os.ErrNotExist):
+func (s *Server) newFileTx() *fileTx { return &fileTx{s: s} }
+
+// write replaces f.Path with content unless it already holds exactly that
+// with the same mode and owner; it reports whether it wrote. follow is how
+// many leading components may be root's symlinks (managedDepth).
+func (t *fileTx) write(f FileSpec, content []byte, follow int) (bool, error) {
+	w, err := walkDir("/", filepath.Dir(f.Path), walkOpts{trust: t.s.trust(), follow: follow, create: true, mode: 0o755, uid: -1, gid: -1})
+	if err != nil {
 		return false, err
 	}
+	t.dirs = append(t.dirs, w)
+	name := filepath.Base(f.Path)
+	// The directory may lie behind a symlink root made (EL's /var/mail):
+	// the checks hold for where the file really goes as well.
+	if real := filepath.Join(w.resolved, name); real != f.Path {
+		if t.s.protected(real) {
+			return false, protectedErr(real)
+		}
+		if t.s.inRootTree(real) {
+			return false, rootTreeErr(real)
+		}
+	}
+	old, st, existed, err := readFileAt(w.fd, name)
+	if errors.Is(err, errNotPlainFile) {
+		return false, fmt.Errorf("%w: refusing to replace a non-regular file (symlink or directory) %s", errNotPlainFile, f.Path)
+	}
+	if err != nil {
+		return false, err
+	}
+	// Permission bits only, as before: the agent makes no set-id file, not
+	// even when it puts one back.
+	e := fileEntry{path: f.Path, dir: w, name: name, existed: existed, oldContent: old, oldMode: st.Mode & 0o777, oldUID: int(st.Uid), oldGID: int(st.Gid)}
 	uid, gid := -1, -1
 	if f.Owner != "" {
 		if uid, err = lookupUID(f.Owner); err != nil {
@@ -243,100 +327,131 @@ func (t *fileTx) write(f FileSpec) (bool, error) {
 			return false, fmt.Errorf("group %q: %w", f.Group, err)
 		}
 	}
-	content := []byte(f.Content)
-	if f.ContentBase64 != "" {
-		if content, err = base64.StdEncoding.DecodeString(f.ContentBase64); err != nil {
-			return false, fmt.Errorf("content_base64: %w", err)
-		}
-	}
-	mode := os.FileMode(f.Mode) & os.ModePerm
-	if e.existed && bytes.Equal(e.oldContent, content) && e.oldMode == mode &&
-		(uid == -1 || uid == e.oldUID) && (gid == -1 || gid == e.oldGID) {
+	mode := f.Mode & 0o777
+	if existed && bytes.Equal(old, content) && st.Mode&0o777 == mode &&
+		(uid == -1 || uid == int(st.Uid)) && (gid == -1 || gid == int(st.Gid)) {
 		return false, nil
 	}
-	if err := os.MkdirAll(filepath.Dir(f.Path), 0o755); err != nil {
-		return false, err
-	}
-	if err := atomicWrite(f.Path, content, mode, uid, gid); err != nil {
+	if err := writeFileAt(w.fd, w.resolved, name, content, mode, uid, gid); err != nil {
 		return false, err
 	}
 	t.entries = append(t.entries, e)
 	return true, nil
 }
 
-func atomicWrite(path string, data []byte, mode os.FileMode, uid, gid int) (err error) {
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".mp-*")
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			tmp.Close()
-			os.Remove(tmp.Name())
-		}
-	}()
-	if _, err = tmp.Write(data); err != nil {
-		return err
-	}
-	if err = tmp.Chmod(mode); err != nil {
-		return err
-	}
-	if uid >= 0 || gid >= 0 {
-		if err = tmp.Chown(uid, gid); err != nil {
-			return err
-		}
-	}
-	if err = tmp.Sync(); err != nil {
-		return err
-	}
-	if err = tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
-}
-
+// rollback puts back every file written so far, newest first.
 func (t *fileTx) rollback() {
 	for i := len(t.entries) - 1; i >= 0; i-- {
 		e := t.entries[i]
 		if e.existed {
-			_ = atomicWrite(e.path, e.oldContent, e.oldMode, e.oldUID, e.oldGID)
+			_ = writeFileAt(e.dir.fd, e.dir.resolved, e.name, e.oldContent, e.oldMode, e.oldUID, e.oldGID)
 		} else {
-			_ = os.Remove(e.path)
+			_ = unix.Unlinkat(e.dir.fd, e.name, 0)
 		}
 	}
 	t.entries = nil
 }
 
+// close releases the directories the transaction opened.
+func (t *fileTx) close() {
+	for _, w := range t.dirs {
+		w.close()
+	}
+	t.dirs = nil
+}
+
 // commitHistory stores the previous version of every replaced file.
 func (t *fileTx) commitHistory() {
-	if t.history == "" {
-		return
-	}
-	stamp := time.Now().UTC().Format("20060102T150405.000Z")
+	h := t.s.history()
 	for _, e := range t.entries {
-		if !e.existed {
-			continue
+		if e.existed {
+			if err := h.store(e.path, e.oldContent); err != nil {
+				t.s.log.Warn("configuration history", "path", e.path, "err", err)
+			}
 		}
-		dir := filepath.Join(t.history, strings.TrimPrefix(e.path, "/"))
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			continue
-		}
-		_ = os.WriteFile(filepath.Join(dir, stamp), e.oldContent, 0o600)
-		pruneHistory(dir)
 	}
 }
 
-func pruneHistory(dir string) {
-	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) <= historyKeep {
+// confHistory keeps the previous versions of the files the agent replaces,
+// <dir>/<path>/<stamp>, the newest historyKeep of each. The directory is
+// root's (config.ConfHistoryDir, in the agent's own directory, 0700), made
+// and written through directories opened without following a symlink.
+type confHistory struct {
+	dir   string
+	trust *dirTrust
+	now   func() time.Time
+}
+
+func (s *Server) history() *confHistory {
+	return &confHistory{dir: s.cfg.ConfHistoryDir(), trust: s.trust(), now: time.Now}
+}
+
+// store saves old as the newest version of p.
+func (h *confHistory) store(p string, old []byte) error {
+	if h.dir == "" {
+		return nil
+	}
+	// Root's symlinks only on the way to the history itself: inside it the
+	// agent makes directories and files, never a link.
+	w, err := walkDir("/", filepath.Join(h.dir, strings.TrimPrefix(filepath.Clean(p), "/")), walkOpts{trust: h.trust, follow: len(pathParts(filepath.Clean(h.dir))), create: true, mode: 0o700, uid: -1, gid: -1})
+	if err != nil {
+		return err
+	}
+	defer w.close()
+	stamp := h.now().UTC().Format("20060102T150405.000Z")
+	var fd int
+	for i := 0; ; i++ {
+		name := stamp
+		if i > 0 {
+			name = fmt.Sprintf("%s-%d", stamp, i)
+		}
+		fd, err = unix.Openat(w.fd, name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+		if !errors.Is(err, unix.EEXIST) || i >= 100 {
+			break
+		}
+	}
+	if err != nil {
+		return &os.PathError{Op: "create", Path: w.resolved, Err: err}
+	}
+	f := os.NewFile(uintptr(fd), w.resolved)
+	if _, err := f.Write(old); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	pruneHistory(w.fd)
+	return nil
+}
+
+// pruneHistory removes all but the newest historyKeep versions in the
+// directory dir (the stamps sort by time). The listing comes from the
+// directory opened anew: btrfs lists through an open directory only what it
+// held when it was opened, and the newest version came after.
+func pruneHistory(dir int) {
+	fd, err := unix.Openat(dir, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
 		return
 	}
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		names = append(names, e.Name())
+	f := os.NewFile(uintptr(fd), "history")
+	names, err := f.Readdirnames(-1)
+	f.Close()
+	if err != nil {
+		return
 	}
-	sort.Strings(names)
-	for _, n := range names[:len(names)-historyKeep] {
-		_ = os.Remove(filepath.Join(dir, n))
+	var versions []string
+	for _, n := range names {
+		var st unix.Stat_t
+		if unix.Fstatat(dir, n, &st, unix.AT_SYMLINK_NOFOLLOW) == nil && st.Mode&unix.S_IFMT == unix.S_IFREG {
+			versions = append(versions, n)
+		}
+	}
+	if len(versions) <= historyKeep {
+		return
+	}
+	sort.Strings(versions)
+	for _, n := range versions[:len(versions)-historyKeep] {
+		_ = unix.Unlinkat(dir, n, 0)
 	}
 }

@@ -21,9 +21,9 @@ import (
 )
 
 // App services: one systemd unit per app, running under the owner's unix
-// account. The panel writes /etc/systemd/system/monopanel-app-<login>-<name>.service.
-
-const unitDir = "/etc/systemd/system"
+// account. The panel writes /etc/systemd/system/monopanel-app-<login>-<name>.service
+// through the agent's /v1/units/apply, which takes only the units the panel
+// writes (and runs this one as a panel account, nothing else).
 
 var (
 	appNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
@@ -224,15 +224,22 @@ func (s *Server) writeApp(ctx context.Context, a *store.App) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	files := []agent.FileSpec{{Path: path.Join(unitDir, unit), Content: text, Mode: 0o644}}
+	changed := false
+	// The environment file first: the unit names it.
 	if len(a.Env) > 0 {
-		files = append(files, agent.FileSpec{Path: appEnvPath(unit), Content: appEnvFile(a.Env), Mode: 0o600, Owner: "root", Group: "root"})
+		res, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: []agent.FileSpec{
+			{Path: appEnvPath(unit), Content: appEnvFile(a.Env), Mode: 0o600, Owner: "root", Group: "root"},
+		}, Origin: "app:" + unit})
+		if err != nil {
+			return false, err
+		}
+		changed = res != nil && len(res.Written) > 0
 	}
-	res, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Origin: "app:" + unit})
+	res, err := s.agent.ApplyUnit(ctx, &agent.ApplyUnitRequest{Name: unit, Content: text, Origin: "app:" + unit})
 	if err != nil {
-		return false, err
+		return changed, err
 	}
-	changed := res != nil && len(res.Written) > 0
+	changed = changed || res != nil && res.Changed
 	if len(a.Env) == 0 {
 		rm, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: []string{appEnvPath(unit)}})
 		if err != nil {
@@ -275,7 +282,10 @@ func (s *Server) removeApp(ctx context.Context, a *store.App) error {
 	unit := a.Unit()
 	s.agent.Service(ctx, unit, "stop")    //nolint:errcheck // may not be running
 	s.agent.Service(ctx, unit, "disable") //nolint:errcheck // may not be enabled
-	if _, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: []string{path.Join(unitDir, unit), appEnvPath(unit)}}); err != nil {
+	if _, err := s.agent.RemoveUnit(ctx, &agent.RemoveUnitRequest{Name: unit}); err != nil {
+		return err
+	}
+	if _, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: []string{appEnvPath(unit)}}); err != nil {
 		return err
 	}
 	_, err := s.agent.Service(ctx, "", "daemon-reload")

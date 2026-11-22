@@ -27,10 +27,16 @@ import (
 //
 // The agent goes down the tree through opened directories without following
 // a symlink, refuses a directory anyone but root may write to, and changes
-// owners and modes through the opened files. <log_dir> itself belongs to the
-// API's service user, who could put a directory of its own in the place of
-// sites: the owner check is what stops that.
+// owners and modes through the opened files.
+//
+// <log_dir> itself is root:<service group> 1771: the API writes its own
+// files there (the audit log), and the sticky bit keeps it from renaming or
+// removing root's — sites above all, which it could otherwise move away and
+// replace with a tree of its own for nginx to open as root. Up to 0.8.19 the
+// directory was the service user's; the agent takes it over (at its start
+// and before it works in the tree), the package and mp setup make it so.
 const (
+	logDirMode         = 0o1771
 	siteLogsMode       = 0o711
 	siteLogsLoginMode  = 0o751
 	siteLogServerMode  = 0o640
@@ -54,6 +60,33 @@ var (
 type siteLogIDs struct {
 	rootUID, rootGID int
 	uid, gid         int
+	// serviceGID is the service group, which shares the log directory with
+	// root (-1: keep the group it has).
+	serviceGID int
+	// takeOver gives a log directory that is not root's to root: the agent
+	// does, as root; an unprivileged run (the tests) cannot.
+	takeOver bool
+}
+
+// logDirFix is what the log directory itself needs, given its stat: a
+// directory someone else owns goes to root and the service group, 1771 (when
+// ids.takeOver); root's keeps its mode, gains x for others (the accounts and
+// the nginx workers pass through on their way to their logs) and, when
+// group or others may write to it, the sticky bit, so that nobody but root
+// renames root's entries.
+func logDirFix(st *unix.Stat_t, ids siteLogIDs) (uid, gid int, mode uint32, change bool) {
+	if int(st.Uid) != ids.rootUID && ids.takeOver {
+		gid = ids.serviceGID
+		if gid < 0 {
+			gid = int(st.Gid)
+		}
+		return ids.rootUID, gid, logDirMode, true
+	}
+	mode = st.Mode&0o7777 | 0o001
+	if mode&0o022 != 0 {
+		mode |= unix.S_ISVTX
+	}
+	return -1, -1, mode, mode != st.Mode&0o7777
 }
 
 // accountWritesLog tells the logs the account's own PHP workers write: the
@@ -78,7 +111,8 @@ func (s *Server) ensureSiteLogs(ctx context.Context, req *SiteLogsRequest) (*Sit
 	if u.uid < uidMin() {
 		return nil, &Error{Status: http.StatusForbidden, Message: fmt.Sprintf("refusing the system account %s (uid %d)", req.Login, u.uid)}
 	}
-	resp, err := ensureSiteLogTree(filepath.Clean(s.cfg.LogDir), req.Login, siteLogIDs{rootUID: 0, rootGID: 0, uid: u.uid, gid: u.gid}, req.Files)
+	ids := siteLogIDs{rootUID: 0, rootGID: 0, uid: u.uid, gid: u.gid, serviceGID: s.serviceGID(), takeOver: os.Geteuid() == 0}
+	resp, err := ensureSiteLogTree(filepath.Clean(s.cfg.LogDir), req.Login, ids, req.Files)
 	// What was made gets the label the policy expects (httpd_log_t), not the
 	// var_log_t it inherits under /var/log; even when a later step failed.
 	s.restorecon(ctx, resp.Created...)
@@ -100,24 +134,7 @@ func (s *Server) ensureSiteLogs(ctx context.Context, req *SiteLogsRequest) (*Sit
 func ensureSiteLogTree(logDir, login string, ids siteLogIDs, files []string) (*SiteLogsResponse, error) {
 	sitesPath := filepath.Join(logDir, "sites")
 	resp := &SiteLogsResponse{Dir: filepath.Join(sitesPath, login), Created: []string{}}
-	top, err := unix.Open(logDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return resp, &os.PathError{Op: "open", Path: logDir, Err: err}
-	}
-	defer unix.Close(top) //nolint:errcheck // a directory opened for reading
-	// The accounts and the nginx workers pass through the panel's own log
-	// directory (0750 up to 0.8.19) on their way to their logs.
-	var st unix.Stat_t
-	if err := unix.Fstat(top, &st); err != nil {
-		return resp, &os.PathError{Op: "stat", Path: logDir, Err: err}
-	}
-	if st.Mode&0o001 == 0 {
-		if err := unix.Fchmod(top, st.Mode&0o7777|0o001); err != nil {
-			return resp, &os.PathError{Op: "chmod", Path: logDir, Err: err}
-		}
-		resp.Changed++
-	}
-	sites, err := siteLogDir(top, sitesPath, ids.rootUID, ids.rootGID, siteLogsMode, resp)
+	sites, err := openSiteLogRoot(logDir, ids, resp)
 	if err != nil {
 		return resp, err
 	}
@@ -137,6 +154,72 @@ func ensureSiteLogTree(logDir, login string, ids siteLogIDs, files []string) (*S
 		}
 	}
 	return resp, nil
+}
+
+// openSiteLogRoot gives <logDir> root as its owner and the mode that keeps
+// root's entries root's, then opens <logDir>/sites (making it when it is
+// missing) and checks it is root's alone.
+func openSiteLogRoot(logDir string, ids siteLogIDs, resp *SiteLogsResponse) (int, error) {
+	top, err := unix.Open(logDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return -1, &os.PathError{Op: "open", Path: logDir, Err: err}
+	}
+	defer unix.Close(top) //nolint:errcheck // a directory opened for reading
+	var st unix.Stat_t
+	if err := unix.Fstat(top, &st); err != nil {
+		return -1, &os.PathError{Op: "stat", Path: logDir, Err: err}
+	}
+	// The service user's, as mp setup made it up to 0.8.19: root takes it
+	// over before it trusts anything below it — sites/ is checked right
+	// after, so what the old owner left in its place is refused.
+	if uid, gid, mode, change := logDirFix(&st, ids); change {
+		if uid >= 0 || gid >= 0 {
+			if err := unix.Fchown(top, uid, gid); err != nil {
+				return -1, &os.PathError{Op: "chown", Path: logDir, Err: err}
+			}
+		}
+		if err := unix.Fchmod(top, mode); err != nil {
+			return -1, &os.PathError{Op: "chmod", Path: logDir, Err: err}
+		}
+		resp.Changed++
+	}
+	return siteLogDir(top, filepath.Join(logDir, "sites"), ids.rootUID, ids.rootGID, siteLogsMode, resp)
+}
+
+// PrepareLogDir makes the panel's log directory root:<service group> 1771 —
+// taking it over from the service user, whose it was up to 0.8.19 — and
+// sites/ in it root:root 0711, refusing a sites/ that is not root's alone
+// (what the old owner may have left there). mp setup's; the agent does the
+// same at its start. The directory is made when it is missing.
+func PrepareLogDir(logDir, serviceGroup string) error {
+	logDir = filepath.Clean(logDir)
+	gid, err := lookupGID(serviceGroup)
+	if err != nil {
+		gid = -1
+	}
+	if _, err := os.Lstat(logDir); errors.Is(err, os.ErrNotExist) {
+		d := DirSpec{Path: logDir, Mode: logDirMode, Owner: "root"}
+		if gid >= 0 {
+			d.Group = serviceGroup
+		}
+		if _, _, err := ensureDirAt(d, &dirTrust{rootUID: os.Geteuid(), strict: true}, followAll); err != nil {
+			return err
+		}
+	}
+	sites, err := openSiteLogRoot(logDir, siteLogIDs{rootUID: os.Geteuid(), rootGID: os.Getegid(), serviceGID: gid, takeOver: os.Geteuid() == 0}, &SiteLogsResponse{})
+	if err != nil {
+		return err
+	}
+	return unix.Close(sites)
+}
+
+// serviceGID is the gid of the service group, -1 when it is missing.
+func (s *Server) serviceGID() int {
+	gid, err := lookupGID(s.cfg.ServiceGroup)
+	if err != nil {
+		return -1
+	}
+	return gid
 }
 
 // siteLogDir opens the directory p, an entry of the directory parent, never

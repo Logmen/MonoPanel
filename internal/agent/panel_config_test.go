@@ -59,6 +59,7 @@ func panelConfigFixture(t *testing.T) (root, cfgPath string, cfg config.Config) 
 	c.TemplatesDir = filepath.Join(etc, "templates")
 	c.SecretKeyFile = filepath.Join(etc, "secret.key")
 	c.DataDir = filepath.Join(root, "data")
+	c.Agent.StateDir = filepath.Join(root, "agent")
 	c.ServiceGroup = grp.Name
 	c.Agent.ExtraWritePrefixes = []string{root + "/"}
 	c.Web.Hostname = "panel.example.com"

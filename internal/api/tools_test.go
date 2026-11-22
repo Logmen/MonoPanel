@@ -306,14 +306,16 @@ func TestSphinxInstallOnEL(t *testing.T) {
 	if job := f.stackJob(t, http.MethodDelete, "/stack/sphinx", nil); job.Status != store.JobDone {
 		t.Fatalf("remove: %s %s", job.Status, job.Error)
 	}
-	removed := false
+	binaries, unitGone := false, false
 	for _, c := range f.agent.Calls() {
-		if c.Path == "/v1/paths/remove" && strings.Contains(string(c.Body), "/opt/monopanel/sphinx") && strings.Contains(string(c.Body), "monopanel-sphinx.service") {
-			removed = true
-		}
+		binaries = binaries || c.Path == "/v1/paths/remove" && strings.Contains(string(c.Body), "/opt/monopanel/sphinx")
+		unitGone = unitGone || c.Path == "/v1/units/remove" && strings.Contains(string(c.Body), `"monopanel-sphinx.service"`)
 	}
-	if !removed {
-		t.Fatal("binaries and unit were not removed")
+	if !binaries || !unitGone {
+		t.Fatalf("binaries removed %v, unit removed %v", binaries, unitGone)
+	}
+	if _, ok := f.agent.File("/etc/systemd/system/monopanel-sphinx.service"); ok {
+		t.Fatal("the unit is still there")
 	}
 	// The index files go too: a stale index would dictate the schema of the next install.
 	if gone := strings.Join(f.agent.Removed(), " "); !strings.Contains(gone, "/var/lib/sphinx/bitrix.meta") || !strings.Contains(gone, "/var/lib/sphinx/bitrix.binlog.0000") {

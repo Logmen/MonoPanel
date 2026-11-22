@@ -56,7 +56,14 @@ type Web struct {
 type Agent struct {
 	Socket             string   `yaml:"socket"`
 	ExtraWritePrefixes []string `yaml:"extra_write_prefixes,omitempty"`
+	// StateDir is the agent's own directory (root 0700), where it keeps the
+	// configuration history: none of it is the API's to read or rearrange.
+	// Empty means DefaultAgentStateDir.
+	StateDir string `yaml:"state_dir,omitempty"`
 }
+
+// DefaultAgentStateDir is the agent's own directory when the file names none.
+const DefaultAgentStateDir = "/var/lib/monopanel-agent"
 
 // Update configures panel self-updates. Only the trust anchor lives here: a
 // package that replaces the panel binary runs as root, so the key that vouches
@@ -88,6 +95,13 @@ type Log struct {
 // DefaultAllowedWritePrefixes lists where the agent may write files on behalf
 // of the API process. A prefix ending in "/" matches a directory tree; any
 // other entry must match the path exactly.
+//
+// Two trees are not here on purpose. /etc/systemd/system: a unit or a drop-in
+// runs whatever it says as root, so the panel's units go through the agent's
+// typed /v1/units/* calls, which accept only the units the panel writes. And
+// the panel's data directory (/var/lib/monopanel): it belongs to the API's
+// service user, who makes what it needs there itself — a root write below a
+// directory the API owns could be redirected by it.
 var DefaultAllowedWritePrefixes = []string{
 	"/etc/monopanel/",
 	"/etc/nginx/nginx.conf",
@@ -130,13 +144,11 @@ var DefaultAllowedWritePrefixes = []string{
 	"/etc/logrotate.d/",
 	"/etc/fail2ban/jail.d/",
 	"/etc/fail2ban/filter.d/",
-	"/etc/systemd/system/",
 	"/etc/ssh/sshd_config.d/",
 	"/etc/tmpfiles.d/",
 	"/etc/sysusers.d/",
 	"/etc/sysctl.d/90-monopanel.conf", // nginx may bind an IPv6 address the host does not have yet
-	"/var/lib/monopanel/",
-	"/var/lib/monopanel-valkey/", // snapshots of the per-account Valkey instances, removed with them
+	"/var/lib/monopanel-valkey/",      // snapshots of the per-account Valkey instances, removed with them
 	"/usr/share/keyrings/",
 }
 
@@ -264,8 +276,23 @@ func (c Config) DownloadsDir() string { return filepath.Join(c.DataDir, "downloa
 // UpdatesDir holds the state of the last self-update and the binary it replaced.
 func (c Config) UpdatesDir() string { return filepath.Join(c.DataDir, "updates") }
 
+// AgentStateDir is the agent's own directory (agent.state_dir).
+func (c Config) AgentStateDir() string {
+	if c.Agent.StateDir != "" {
+		return c.Agent.StateDir
+	}
+	return DefaultAgentStateDir
+}
+
 // ConfHistoryDir stores previous versions of generated configuration files.
-func (c Config) ConfHistoryDir() string { return filepath.Join(c.DataDir, "confhistory") }
+// It is root's (in the agent's own directory, not below the data directory
+// the API owns): the agent writes and prunes it as root, and a directory the
+// API could rename or swap for a symlink would steer those writes.
+func (c Config) ConfHistoryDir() string { return filepath.Join(c.AgentStateDir(), "confhistory") }
+
+// LegacyConfHistoryDir is where the history lived up to 0.8.19, below the
+// data directory; it stays there, root's, and nothing writes to it any more.
+func (c Config) LegacyConfHistoryDir() string { return filepath.Join(c.DataDir, "confhistory") }
 
 // Save writes the configuration as YAML.
 func (c Config) Save(path string) error {

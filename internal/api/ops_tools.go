@@ -193,7 +193,11 @@ func (s *Server) installSphinx(ctx context.Context, jc *jobs.Context) error {
 		if err != nil {
 			return err
 		}
-		files = append(files, agent.FileSpec{Path: sx.UnitFile, Content: unit, Mode: 0o644})
+		// The unit first and systemd told, so that the restart below starts
+		// the daemon the unit describes now.
+		if _, err := s.agent.ApplyUnit(ctx, &agent.ApplyUnitRequest{Name: path.Base(sx.UnitFile), Content: unit, Origin: "sphinx"}); err != nil {
+			return err
+		}
 		s.agent.Service(ctx, "", "daemon-reload") //nolint:errcheck // a stale unit fails the restart below anyway
 	}
 	if _, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Restart: []string{sx.Service}, Force: true, Origin: "sphinx"}); err != nil {
@@ -546,7 +550,10 @@ func (s *Server) jobStackRemove(ctx context.Context, jc *jobs.Context) error {
 		s.agent.Service(ctx, sx.Service, "disable") //nolint:errcheck // gone with the package anyway
 		if sx.Engine == "sphinx3" {
 			jc.Progress(50, "removing the binaries and the unit")
-			if _, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: []string{sx.UnitFile, sx.InstallDir}, Recursive: true}); err != nil {
+			if _, err := s.agent.RemoveUnit(ctx, &agent.RemoveUnitRequest{Name: path.Base(sx.UnitFile)}); err != nil {
+				return err
+			}
+			if _, err := s.agent.RemovePaths(ctx, &agent.RemovePathsRequest{Paths: []string{sx.InstallDir}, Recursive: true}); err != nil {
 				return err
 			}
 			s.agent.Service(ctx, "", "daemon-reload") //nolint:errcheck // best effort

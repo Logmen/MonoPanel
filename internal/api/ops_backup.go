@@ -423,10 +423,11 @@ func (s *Server) jobBackupRun(ctx context.Context, jc *jobs.Context) error {
 	if err := os.MkdirAll(tmp, 0o750); err != nil {
 		return fail(err)
 	}
-	cleanup := []string{tmp}
-	defer func() {
-		s.agent.RemovePaths(context.WithoutCancel(ctx), &agent.RemovePathsRequest{Paths: cleanup, Recursive: true}) //nolint:errcheck // cleanup: the caller already reports the real error
-	}()
+	// The staging directory is the API's own and so is everything in it —
+	// the dumps come through the agent's stream into files the API makes —
+	// so it goes the same way: the agent writes and removes nothing below
+	// the API's data directory.
+	defer os.RemoveAll(tmp) //nolint:errcheck // cleanup: the caller already reports the real error
 	jc.Progress(15, "database dumps")
 	inst, instErr := s.db.GetDBInstance(ctx)
 	if len(dbs) > 0 && (instErr != nil || inst.Status != store.DBReady) {
@@ -435,12 +436,8 @@ func (s *Server) jobBackupRun(ctx context.Context, jc *jobs.Context) error {
 	}
 	for _, name := range dbs {
 		out := filepath.Join(tmp, name+".sql")
-		res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "mysqldump", Args: []string{"--protocol=socket", "--single-transaction", "--routines", "--triggers", "--events", "--databases", name}, OutputFile: out, TimeoutSeconds: 3600})
-		if err != nil {
+		if err := s.dumpDatabase(ctx, name, out); err != nil {
 			return fail(err)
-		}
-		if res.ExitCode != 0 {
-			return fail(fmt.Errorf("mysqldump %s: %s", name, strings.TrimSpace(res.Output)))
 		}
 		paths = append(paths, out)
 		jc.Logf("dumped %s", name)
@@ -530,6 +527,25 @@ func (s *Server) jobBackupRestore(ctx context.Context, jc *jobs.Context) error {
 	}
 	logTail(jc, res.Output, 3)
 	jc.Progress(100, "restored to "+target)
+	return nil
+}
+
+// dumpDatabase writes the dump of a database into out, a file of the API's
+// own: mysqldump runs as root through the agent's stream, and its output
+// arrives here instead of being written by root into the API's directory.
+func (s *Server) dumpDatabase(ctx context.Context, name, out string) (err error) {
+	f, err := os.OpenFile(out, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}()
+	if err := s.agent.StreamOut(ctx, &agent.StreamRequest{Name: "mysqldump", Args: []string{"--protocol=socket", "--single-transaction", "--routines", "--triggers", "--events", "--databases", name}, TimeoutSeconds: 3600}, f); err != nil {
+		return fmt.Errorf("mysqldump %s: %w", name, err)
+	}
 	return nil
 }
 

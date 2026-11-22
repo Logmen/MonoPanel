@@ -23,6 +23,7 @@ func testServer(t *testing.T, allowed string) (*Server, *Client) {
 	t.Helper()
 	cfg := config.Default()
 	cfg.DataDir = filepath.Join(t.TempDir(), "data")
+	cfg.Agent.StateDir = filepath.Join(t.TempDir(), "agent")
 	cfg.Agent.ExtraWritePrefixes = []string{allowed + "/"}
 	rel, _ := osprofile.ParseOSRelease(strings.NewReader("ID=debian\nVERSION_ID=13\n"))
 	p, _ := osprofile.FromRelease(rel)
@@ -146,12 +147,16 @@ func TestPathAllowed(t *testing.T) {
 	cfg := config.Default()
 	s := &Server{cfg: cfg}
 	for p, want := range map[string]bool{
-		"/etc/nginx/nginx.conf":                    true,
-		"/etc/nginx/monopanel/sites/a.conf":        true,
-		"/etc/nginx/conf.d/custom.conf":            false,
-		"/etc/passwd":                              false,
-		"/etc/monopanel/../shadow":                 false,
-		"/var/lib/monopanel/certs/x/fullchain.pem": true,
+		"/etc/nginx/nginx.conf":             true,
+		"/etc/nginx/monopanel/sites/a.conf": true,
+		"/etc/nginx/conf.d/custom.conf":     false,
+		"/etc/passwd":                       false,
+		"/etc/monopanel/../shadow":          false,
+		// The API's own data directory: it writes there itself.
+		"/var/lib/monopanel/certs/x/fullchain.pem": false,
+		// Units go through /v1/units/*, never config/apply.
+		"/etc/systemd/system/monopanel-app-alex-bot.service": false,
+		"/etc/systemd/system/nginx.service.d/monopanel.conf": false,
 		// The panel's templates and SELinux module, but not its trust anchor
 		// and not the key of its secrets.
 		"/etc/monopanel/templates/nginx/site.conf.tmpl": true,

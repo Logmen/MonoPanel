@@ -39,8 +39,10 @@ RestartSec=5s
 `
 )
 
-func (s *Server) nginxDropInPath() string {
-	return unitDir + "/" + s.profile.Web().NginxService + ".d/monopanel.conf"
+// nginxDropInName is the drop-in's name below /etc/systemd/system, the way the
+// agent's /v1/units/apply takes it.
+func (s *Server) nginxDropInName() string {
+	return s.profile.Web().NginxService + ".d/monopanel.conf"
 }
 
 // ensureNginxBoot writes the sysctl and the drop-in; systemd and the kernel
@@ -48,16 +50,21 @@ func (s *Server) nginxDropInPath() string {
 func (s *Server) ensureNginxBoot(ctx context.Context) error {
 	res, err := s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: []agent.FileSpec{
 		{Path: nginxSysctlPath, Content: nginxSysctl, Mode: 0o644},
-		{Path: s.nginxDropInPath(), Content: nginxDropIn, Mode: 0o644},
 	}, Origin: "stack:nginx-boot"})
 	if err != nil {
 		return err
 	}
+	unit, err := s.agent.ApplyUnit(ctx, &agent.ApplyUnitRequest{Name: s.nginxDropInName(), Content: nginxDropIn, Origin: "stack:nginx-boot"})
+	if err != nil {
+		return err
+	}
+	if unit.Changed {
+		if _, err := s.agent.Service(ctx, "", "daemon-reload"); err != nil {
+			return err
+		}
+	}
 	if len(res.Written) == 0 {
 		return nil
-	}
-	if _, err := s.agent.Service(ctx, "", "daemon-reload"); err != nil {
-		return err
 	}
 	// systemd-sysctl applies /etc/sysctl.d; the agent itself may not write
 	// /proc/sys (ProtectKernelTunables).

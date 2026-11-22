@@ -13,9 +13,13 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"monopanel/internal/agent"
 	"monopanel/internal/api"
@@ -154,9 +158,14 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 		{Path: cfg.TemplatesDir, Mode: 0o750, Owner: "root", Group: cfg.ServiceGroup},
 		{Path: cfg.DataDir, Mode: 0o751, Owner: cfg.ServiceUser, Group: cfg.ServiceGroup}, // o+x: nginx must traverse to acme/webroot
 		{Path: filepath.Join(cfg.DataDir, "tls"), Mode: 0o700, Owner: cfg.ServiceUser, Group: cfg.ServiceGroup},
+		// The agent's own, the configuration history in it: root's alone,
+		// out of the data directory the API owns.
+		{Path: cfg.AgentStateDir(), Mode: 0o700, Owner: "root", Group: "root"},
 		{Path: cfg.ConfHistoryDir(), Mode: 0o700, Owner: "root", Group: "root"},
-		{Path: cfg.LogDir, Mode: 0o751, Owner: cfg.ServiceUser, Group: cfg.ServiceGroup}, // o+x: the accounts and nginx pass to their site logs in sites/
-		{Path: cfg.RunDir, Mode: 0o771, Owner: "root", Group: cfg.ServiceGroup},
+		// The API makes its socket here; the sticky bit keeps it from
+		// renaming root's entries (the agent's socket, php/ with the pools'
+		// sockets the php-fpm masters make as root).
+		{Path: cfg.RunDir, Mode: 0o1771, Owner: "root", Group: cfg.ServiceGroup},
 		{Path: cfg.WWWRoot, Mode: 0o711, Owner: "root", Group: "root"},
 	}
 	for _, d := range dirs {
@@ -164,7 +173,12 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 			return nil, err
 		}
 	}
-	if err := os.WriteFile("/etc/tmpfiles.d/monopanel.conf", []byte(fmt.Sprintf("d %s 0771 root %s -\n", cfg.RunDir, cfg.ServiceGroup)), 0o644); err != nil {
+	// root:<service group> 1771 and sites/ root's: the API writes its audit
+	// log there, but cannot rename sites/, whose logs nginx opens as root.
+	if err := agent.PrepareLogDir(cfg.LogDir, cfg.ServiceGroup); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile("/etc/tmpfiles.d/monopanel.conf", []byte(fmt.Sprintf("d %s 1771 root %s -\n", cfg.RunDir, cfg.ServiceGroup)), 0o644); err != nil {
 		return nil, err
 	}
 
@@ -210,7 +224,7 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 	}
 
 	certPath, keyPath := cfg.TLSCertPath(), cfg.TLSKeyPath()
-	created, err := api.EnsureSelfSigned(certPath, keyPath, api.LocalNames(cfg.Web.Hostname))
+	created, err := ensureSelfSigned(cfg, certPath, keyPath, api.LocalNames(cfg.Web.Hostname))
 	if err != nil {
 		return nil, err
 	}
@@ -225,6 +239,9 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 	res.Fingerprint, _ = api.CertFingerprint(certPath)
 
 	step(T("база данных: %s", "database: %s"), cfg.DBPath())
+	if err := checkDBFiles(cfg.DBPath()); err != nil {
+		return nil, err
+	}
 	db, err := store.Open(ctx, cfg.DBPath())
 	if err != nil {
 		return nil, err
@@ -279,7 +296,7 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 	}
 	db.Audit(ctx, store.AuditEntry{Actor: "root", Action: "setup", Target: login})
 	db.Close() //nolint:errcheck // cleanup
-	if err := chownTree(cfg.DataDir, cfg.ServiceUser, cfg.ServiceGroup, cfg.ConfHistoryDir()); err != nil {
+	if err := chownTree(cfg.DataDir, cfg.ServiceUser, cfg.ServiceGroup, cfg.LegacyConfHistoryDir()); err != nil {
 		return nil, err
 	}
 
@@ -379,20 +396,159 @@ func chownName(path, owner, group string, mode os.FileMode) error {
 	return err
 }
 
+// chownTree hands the data directory back to the service user after setup
+// made files there as root. The tree is the API's, so it goes down through
+// directories opened without following a symlink and changes each entry
+// itself (fchownat with AT_SYMLINK_NOFOLLOW): a link planted there, or a
+// directory swapped for one meanwhile, cannot turn it into a chown of
+// /etc/shadow. It leaves alone the configuration history of 0.8.19 and
+// older (skip), every other root-owned directory closed to group and others
+// (that is what the history looks like, wherever it was moved), and a file
+// with a second name (a hard link may be another file of the system).
 func chownTree(root, owner, group, skip string) error {
-	return filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if skip != "" && (p == skip || strings.HasPrefix(p, skip+"/")) {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		_, err = agent.EnsureDirOwner(p, owner, group)
+	uid, err := lookupID(owner, false)
+	if err != nil {
 		return err
-	})
+	}
+	gid, err := lookupID(group, true)
+	if err != nil {
+		return err
+	}
+	fd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return &os.PathError{Op: "open", Path: root, Err: err}
+	}
+	if err := unix.Fchown(fd, uid, gid); err != nil {
+		unix.Close(fd) //nolint:errcheck // a directory opened for reading
+		return &os.PathError{Op: "chown", Path: root, Err: err}
+	}
+	return chownDir(fd, root, uid, gid, filepath.Clean(skip))
+}
+
+// chownDir gives what the directory fd (which it closes) holds to uid:gid.
+func chownDir(fd int, dir string, uid, gid int, skip string) error {
+	f := os.NewFile(uintptr(fd), dir)
+	defer f.Close()
+	names, err := f.Readdirnames(-1)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		p := filepath.Join(dir, name)
+		if p == skip {
+			continue
+		}
+		var st unix.Stat_t
+		if err := unix.Fstatat(fd, name, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			continue // vanished meanwhile
+		}
+		switch st.Mode & unix.S_IFMT {
+		case unix.S_IFDIR:
+			if st.Uid == 0 && st.Mode&0o077 == 0 {
+				continue
+			}
+		case unix.S_IFREG:
+			if st.Nlink > 1 && int(st.Uid) != uid {
+				continue
+			}
+		}
+		if err := unix.Fchownat(fd, name, uid, gid, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			return &os.PathError{Op: "chown", Path: p, Err: err}
+		}
+		if st.Mode&unix.S_IFMT == unix.S_IFDIR {
+			sub, err := unix.Openat(fd, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+			if err != nil {
+				continue // swapped for something else meanwhile: not followed
+			}
+			if err := chownDir(sub, p, uid, gid, skip); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// ensureSelfSigned makes the panel's self-signed certificate when there is
+// none. Its default place is the data directory, which the API owns: a
+// symlink it left there under the name of the key would carry root's write
+// anywhere (the API cannot change what is written, but it could choose
+// where — over /etc/shadow). So there the pair is made in a directory of
+// root's own and moved in with agent.InstallFile, which replaces such a
+// symlink instead of writing through it, and only plain files count as
+// present. A place the administrator chose elsewhere (web.tls_cert) is
+// theirs, and so is a symlink there: Let's Encrypt's live/ files are links.
+func ensureSelfSigned(cfg config.Config, certPath, keyPath string, names []string) (bool, error) {
+	if !below(cfg.DataDir, certPath) && !below(cfg.DataDir, keyPath) {
+		return api.EnsureSelfSigned(certPath, keyPath, names)
+	}
+	haveCert, certErr := agent.PlainFile(certPath)
+	haveKey, keyErr := agent.PlainFile(keyPath)
+	if haveCert && haveKey && certErr == nil && keyErr == nil {
+		return false, nil
+	}
+	tmp, err := os.MkdirTemp("", "mp-setup-tls-")
+	if err != nil {
+		return false, err
+	}
+	defer os.RemoveAll(tmp)
+	tmpCert, tmpKey := filepath.Join(tmp, "panel.crt"), filepath.Join(tmp, "panel.key")
+	if _, err := api.EnsureSelfSigned(tmpCert, tmpKey, names); err != nil {
+		return false, err
+	}
+	for _, f := range []struct {
+		from, to string
+		mode     os.FileMode
+	}{{tmpKey, keyPath, 0o600}, {tmpCert, certPath, 0o644}} {
+		b, err := os.ReadFile(f.from)
+		if err != nil {
+			return false, err
+		}
+		if err := agent.InstallFile(f.to, b, f.mode); err != nil {
+			return false, fmt.Errorf("%s: %w", f.to, err)
+		}
+	}
+	return true, nil
+}
+
+// checkDBFiles refuses to open the panel's database as root when its file or
+// a journal SQLite keeps next to it is anything but a plain file: they lie in
+// the API's directory, SQLite opens them by name, and a symlink the API left
+// there would have root write a database anywhere.
+func checkDBFiles(db string) error {
+	for _, p := range []string{db, db + "-wal", db + "-shm", db + "-journal"} {
+		if _, err := agent.PlainFile(p); err != nil {
+			return fmt.Errorf("%s: %w; mp setup opens the database as root and does not go through it — remove it (or put the plain file back) and run mp setup again", p, err)
+		}
+	}
+	return nil
+}
+
+// below reports whether p lies in dir.
+func below(dir, p string) bool {
+	dir, p = filepath.Clean(dir), filepath.Clean(p)
+	return strings.HasPrefix(p, dir+"/")
+}
+
+// lookupID resolves a user (or, with group, a group) name; "" leaves it.
+func lookupID(name string, group bool) (int, error) {
+	if name == "" {
+		return -1, nil
+	}
+	var id string
+	if group {
+		g, err := user.LookupGroup(name)
+		if err != nil {
+			return -1, err
+		}
+		id = g.Gid
+	} else {
+		u, err := user.Lookup(name)
+		if err != nil {
+			return -1, err
+		}
+		id = u.Uid
+	}
+	return strconv.Atoi(id)
 }
 
 // openFirewalld lets the panel port through a running firewalld — some EL
