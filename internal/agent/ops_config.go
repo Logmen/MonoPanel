@@ -248,6 +248,9 @@ func (s *Server) applyConfigSet(ctx context.Context, req *ApplyConfigSetRequest)
 		}
 	}
 	for _, argv := range req.Validate {
+		if err := s.prepareValidator(argv); err != nil {
+			s.log.Warn("config validation: cannot prepare the check", "validator", argv[0], "err", err)
+		}
 		out, err := runArgv(ctx, nil, argv...)
 		if err != nil {
 			tx.rollback()

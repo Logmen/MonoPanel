@@ -812,6 +812,9 @@ func (s *Server) removePaths(ctx context.Context, req *RemovePathsRequest) (*Rem
 		}
 	}
 	for _, argv := range req.Validate {
+		if err := s.prepareValidator(argv); err != nil {
+			s.log.Warn("validation after removal: cannot prepare the check", "validator", argv[0], "err", err)
+		}
 		if out, err := runArgv(ctx, nil, argv...); err != nil {
 			return nil, &Error{Status: http.StatusUnprocessableEntity, Message: "validation failed after removal: " + strings.Join(argv, " "), Output: out}
 		}

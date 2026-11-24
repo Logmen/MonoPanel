@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -80,5 +82,49 @@ func TestValidatorAllowed(t *testing.T) {
 	}
 	if err := el.validatorAllowed([]string{"/usr/sbin/apache2ctl", "-t"}); err == nil {
 		t.Error("the check of the shared Apache passed on EL")
+	}
+}
+
+// sshd -t needs its privilege separation directory, which a socket-activated
+// ssh (Ubuntu 24.04) has only while it serves a connection: the agent makes
+// it as ssh.service would on Debian and Ubuntu, and leaves EL, every other
+// check and an existing directory alone.
+func TestPrepareValidatorMakesSshdRunDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sshd")
+	old := sshdRunDir
+	sshdRunDir = dir
+	t.Cleanup(func() { sshdRunDir = old })
+
+	deb := policyServer(t, debian13)
+	if err := policyServer(t, alma9).prepareValidator([]string{"/usr/sbin/sshd", "-t"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+		t.Fatalf("EL made %s: %v", dir, err)
+	}
+	if err := deb.prepareValidator([]string{"/usr/sbin/nginx", "-t", "-q"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+		t.Fatalf("another check made %s: %v", dir, err)
+	}
+	if err := deb.prepareValidator([]string{"/usr/sbin/sshd", "-t"}); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o755 {
+		t.Fatalf("sshd -t: %s = %v, %v; want a 0755 directory", dir, fi, err)
+	}
+	if err := deb.prepareValidator([]string{"/usr/sbin/sshd", "-t"}); err != nil {
+		t.Fatalf("an existing directory: %v", err)
+	}
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := deb.prepareValidator([]string{"/usr/sbin/sshd", "-t"}); err == nil {
+		t.Fatal("a symlink in place of the directory was accepted")
 	}
 }

@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"errors"
+	"io/fs"
+	"os"
 	"strings"
 
 	"monopanel/internal/agent/confcheck"
@@ -40,6 +43,37 @@ func (s *Server) panelValidators() [][]string {
 		out = append(out, confcheck.ApacheSharedCheck())
 	}
 	return append(out, extraValidators...)
+}
+
+// sshdRunDir is sshd's privilege separation directory. ssh.service makes it
+// (RuntimeDirectory=sshd) and removes it when it stops; where ssh is socket
+// activated (Ubuntu 24.04 and later) it is there only while a connection is
+// being served, and sshd -t refuses without it ("Missing privilege
+// separation directory"). A variable for the tests.
+var sshdRunDir = "/run/sshd"
+
+// prepareValidator readies the host for a check before it runs: on Debian
+// and Ubuntu sshd -t gets its privilege separation directory as ssh.service
+// would make it (root, 0755), so the check judges the configuration, not
+// whether ssh happens to be running. EL's sshd uses /usr/share/empty.sshd,
+// which the package ships.
+func (s *Server) prepareValidator(argv []string) error {
+	if s.profile == nil || s.profile.Family() != osprofile.FamilyDebian || !equalArgs(argv, []string{"/usr/sbin/sshd", "-t"}) {
+		return nil
+	}
+	fi, err := os.Lstat(sshdRunDir)
+	switch {
+	case err == nil && fi.IsDir():
+		return nil
+	case err == nil:
+		return errors.New(sshdRunDir + " is not a directory")
+	case !errors.Is(err, fs.ErrNotExist):
+		return err
+	}
+	if err := os.Mkdir(sshdRunDir, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	return nil
 }
 
 // extraValidators are checks tests add (true and false); nothing in the
