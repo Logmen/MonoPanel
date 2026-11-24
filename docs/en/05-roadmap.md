@@ -267,6 +267,7 @@ This is the project log by stage and date: what is done, what is verified and wh
 - [x] The panel's session cookie does not reach phpMyAdmin's or the webmail's PHP on their ports.
 - [x] Roundcube webmail checked on all 11 OSes: its port opens in the panel's nftables, a new name or kind of certificate of the mail server reconfigures it, the port answers only once its site's pool is ready; `mp doctor` has the mail service lines, `mail` and `webmail`.
 - [x] `sshd -t` on Ubuntu 24.04+ with socket-activated ssh: the agent makes `/run/sshd` before the check (the `mp user add` job failed although the account was made).
+- [ ] firewalld (EL) closes the phpMyAdmin or webmail port after they are removed or moved — today the port stays open (nothing listens behind it): `firewall-cmd --permanent --remove-port=2083/tcp && firewall-cmd --reload`. The panel's nftables closes it.
 
 ### What 0.9.0 leaves for the next release
 - [ ] DKIM switched on after a mail install without it gets the install's steps (the keys directory, postfix in the `opendkim` group, opendkim enabled) — today it takes `mp mail install` again ([06 §12](06-mail.md#12-limitations)).
