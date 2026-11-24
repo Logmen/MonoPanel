@@ -163,6 +163,22 @@ func (s *Server) Serve(ctx context.Context, l *Listeners) error {
 		return nil
 	})
 	g.Go(func() error {
+		// phpMyAdmin's temporary accounts end with their sessions: a
+		// sign-out is picked up within ten minutes.
+		t := time.NewTicker(10 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-gctx.Done():
+				return nil
+			case <-t.C:
+				if s.refreshed.Load() {
+					s.pmaSweep(gctx)
+				}
+			}
+		}
+	})
+	g.Go(func() error {
 		t := time.NewTicker(time.Hour)
 		defer t.Stop()
 		for {
@@ -173,6 +189,9 @@ func (s *Server) Serve(ctx context.Context, l *Listeners) error {
 				s.db.DeleteExpiredSessions(context.Background()) //nolint:errcheck // best effort; the caller reports the real failure
 				s.scheduledBackups(gctx)
 				s.retryMoves(gctx)
+				// An expired certificate of the mail name has no event of
+				// its own.
+				s.webmailFollowsCertificate(gctx)
 			}
 		}
 	})
@@ -274,6 +293,8 @@ func (s *Server) startupRefresh(ctx context.Context) {
 	}
 	s.refreshDefaultServers(ctx)
 	s.refreshDBConfig(ctx)
+	// Once: the pattern grants of older databases name them literally.
+	s.refreshLiteralGrants(ctx)
 	s.refreshPHPCLIInis(ctx)
 	s.refreshIdlePHPPools(ctx)
 	s.refreshSiteLogrotate(ctx)
@@ -298,7 +319,12 @@ func (s *Server) startupRefresh(ctx context.Context) {
 	// A host whose mail server an older panel set up gets the mail policy:
 	// its unit, its file, main.cf with it before opendkim (mail.apply).
 	s.moveMailPolicy(ctx)
+	// Once on EL: smtpd reads the mail server's self-signed certificate.
+	s.refreshSELinuxMailTLS(ctx)
 	s.refreshRepoSchemes(ctx)
+	// phpMyAdmin's expired temporary accounts, and the move to the pinned
+	// release.
+	s.refreshPHPMyAdmin(ctx)
 	// Last: it may wait on packages.sury.org and two index updates.
 	s.switchPHPRepoToSury(ctx)
 	s.refreshed.Store(true)

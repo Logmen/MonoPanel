@@ -452,6 +452,7 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 	if f, _ := s.db.GetSetting(actx, settingFirewall); f == "yes" {
 		units = append(units, nftUnit)
 	}
+	units = append(units, mailUnits(s.loadMailConfig(actx))...)
 	for _, u := range units {
 		st, err := s.agent.Service(actx, u, "status")
 		switch {
@@ -589,6 +590,10 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 	if c := s.mailPolicyCheck(actx); c != nil {
 		add(*c)
 	}
+	for _, c := range s.mailDoctorChecks(actx) {
+		add(c)
+	}
+	add(s.pmaCheck(actx))
 	add(s.kernelModulesCheck(container))
 	if h := s.cfg.Web.Hostname; h != "" {
 		addrs, err := s.lookup(actx, h)

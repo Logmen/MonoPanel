@@ -28,6 +28,7 @@ import (
 	"monopanel/internal/config"
 	"monopanel/internal/mailpolicy"
 	"monopanel/internal/osprofile"
+	"monopanel/internal/phpmyadmin"
 	"monopanel/internal/systemd"
 )
 
@@ -82,12 +83,22 @@ type Agent struct {
 	busy      map[string]bool
 	shares    map[string]string
 	tools     []agent.ToolRequest
+	pma       []agent.PhpMyAdminRequest
 	runas     []agent.RunAsUserRequest
 	panel     []agent.PanelConfigRequest
 	// siteLogs are the site logs the panel had the agent prepare, by login;
 	// siteLogsGone the logins whose log directory it removed.
 	siteLogs     map[string]map[string]bool
 	siteLogsGone []string
+
+	// PMALogouts are the sign-out marks of phpMyAdmin's temporary accounts
+	// the next /v1/phpmyadmin sweep answers (and takes away).
+	PMALogouts []string
+	// PMAOldTickets are the tickets (file names) the next sweep finds past
+	// their time, nobody having signed in with them: it removes those still
+	// there and answers their paths, as the agent does twice a ticket's
+	// life after it was written.
+	PMAOldTickets []string
 
 	// Fail makes the endpoint at the given path answer with an error; the
 	// message is returned to the panel as the agent's failure output.
@@ -863,6 +874,42 @@ func (a *Agent) respond(path string, body []byte) any {
 		}
 		return agent.RunAsUserResponse{}
 
+	case "/v1/phpmyadmin":
+		// The agent's checks of the request; the files and tickets go
+		// where the agent puts them (internal/phpmyadmin), with its owners.
+		var req agent.PhpMyAdminRequest
+		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		if err := agent.CheckPhpMyAdminRequest(&req); err != nil {
+			var ae *agent.Error
+			if errors.As(err, &ae) {
+				return ae
+			}
+			return &agent.Error{Status: http.StatusBadRequest, Message: err.Error()}
+		}
+		a.pma = append(a.pma, req)
+		resp := agent.PhpMyAdminResponse{}
+		switch req.Action {
+		case "files":
+			tree := phpmyadmin.Tree(req.Version)
+			a.files[tree+"/"+phpmyadmin.ConfigFile] = agent.FileSpec{Path: tree + "/" + phpmyadmin.ConfigFile, Content: req.Config, Mode: 0o640, Owner: "root", Group: phpmyadmin.User}
+			a.files[tree+"/"+phpmyadmin.SignonScript] = agent.FileSpec{Path: tree + "/" + phpmyadmin.SignonScript, Content: req.Signon, Mode: 0o644, Owner: "root", Group: "root"}
+			resp.Written = []string{tree + "/" + phpmyadmin.ConfigFile, tree + "/" + phpmyadmin.SignonScript}
+		case "ticket":
+			p := phpmyadmin.TicketDir() + "/" + req.Name
+			a.files[p] = agent.FileSpec{Path: p, Content: req.Content, Mode: 0o400, Owner: phpmyadmin.User, Group: phpmyadmin.User}
+			resp.Written = []string{p}
+		case "sweep":
+			resp.Logouts, a.PMALogouts = a.PMALogouts, nil
+			for _, n := range a.PMAOldTickets {
+				if p := phpmyadmin.TicketDir() + "/" + n; a.hasFile(p) {
+					delete(a.files, p)
+					resp.Removed = append(resp.Removed, p)
+				}
+			}
+			a.PMAOldTickets = nil
+		}
+		return resp
+
 	case "/v1/tool":
 		var req agent.ToolRequest
 		json.Unmarshal(body, &req) //nolint:errcheck // test double
@@ -1242,6 +1289,13 @@ func (a *Agent) SiteLogsRemoved() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]string{}, a.siteLogsGone...)
+}
+
+// PhpMyAdmin returns the /v1/phpmyadmin requests in the order they came.
+func (a *Agent) PhpMyAdmin() []agent.PhpMyAdminRequest {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]agent.PhpMyAdminRequest{}, a.pma...)
 }
 
 // Tools returns the recorded tool invocations.

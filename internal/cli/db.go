@@ -150,7 +150,7 @@ func dbCmd() *cobra.Command {
 		return nil
 	}}
 	engine.AddCommand(tune)
-	c.AddCommand(engine, create, list, rm, passwd, dbConfigCmd())
+	c.AddCommand(engine, create, list, rm, passwd, dbConfigCmd(), dbPMACmd())
 	return c
 }
 
@@ -220,4 +220,86 @@ func dbConfigCmd() *cobra.Command {
 	}}
 	c.AddCommand(set, unset)
 	return c
+}
+
+// dbPMACmd is the panel's phpMyAdmin: on its own port with the panel's name
+// and certificate, a login form for the databases' users and a one-time
+// sign-in into one database (mp db phpmyadmin open).
+func dbPMACmd() *cobra.Command {
+	c := &cobra.Command{Use: "phpmyadmin", Short: T("phpMyAdmin на своём порту панели: вход пользователем базы или одноразовой ссылкой", "phpMyAdmin on a port of the panel: sign in as a database user or with a one-time link"), RunE: func(cmd *cobra.Command, _ []string) error {
+		return pmaStatus(cmd)
+	}}
+	status := &cobra.Command{Use: "status", Short: T("состояние phpMyAdmin: версия, порт, адрес", "phpMyAdmin's state: release, port, address"), RunE: func(cmd *cobra.Command, _ []string) error {
+		return pmaStatus(cmd)
+	}}
+	var req apitypes.PhpMyAdminInstallRequest
+	install := &cobra.Command{Use: "install", Short: T("поставить phpMyAdmin (или перенести на другой порт или версию PHP)", "install phpMyAdmin (or move it to another port or PHP branch)"), RunE: func(cmd *cobra.Command, _ []string) error {
+		cl, err := newClient()
+		if err != nil {
+			return err
+		}
+		res, err := cl.InstallPhpMyAdmin(cmd.Context(), req)
+		if err != nil {
+			return err
+		}
+		return followJob(cmd, cl, res.JobID)
+	}}
+	install.Flags().IntVar(&req.Port, "port", 0, T("порт на имени и сертификате панели (по умолчанию прежний, для новой установки 2083)", "port on the panel's name and certificate (by default the current one, 2083 for a new install)"))
+	install.Flags().StringVar(&req.PHPVersion, "php", "", T("версия PHP его пула (по умолчанию самая новая из подходящих)", "PHP branch of its pool (by default the newest one it runs on)"))
+	remove := &cobra.Command{Use: "remove", Short: T("убрать phpMyAdmin: временные учётки, пул, порт и файлы", "remove phpMyAdmin: its temporary accounts, pool, port and files"), RunE: func(cmd *cobra.Command, _ []string) error {
+		cl, err := newClient()
+		if err != nil {
+			return err
+		}
+		res, err := cl.RemovePhpMyAdmin(cmd.Context())
+		if err != nil {
+			return err
+		}
+		return followJob(cmd, cl, res.JobID)
+	}}
+	open := &cobra.Command{Use: "open <name>", Short: T("одноразовая ссылка: открыть базу в phpMyAdmin сразу с входом (временная учётка только на эту базу)", "one-time link: open the database in phpMyAdmin signed in (a temporary account on this database only)"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		cl, err := newClient()
+		if err != nil {
+			return err
+		}
+		res, err := cl.DatabasePhpMyAdmin(cmd.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		if g.json {
+			return printJSON(res)
+		}
+		fmt.Println(res.URL)
+		fmt.Fprintf(os.Stderr, T("ссылка работает один раз и минуту; временная учётка %s действует до %s или до выхода\n", "the link works once, within a minute; the temporary account %s lasts until %s or until you sign out\n"), res.User, res.Expires.Local().Format("2006-01-02 15:04"))
+		return nil
+	}}
+	c.AddCommand(status, install, remove, open)
+	return c
+}
+
+func pmaStatus(cmd *cobra.Command) error {
+	cl, err := newClient()
+	if err != nil {
+		return err
+	}
+	st, err := cl.PhpMyAdmin(cmd.Context())
+	if err != nil {
+		return err
+	}
+	if g.json {
+		return printJSON(st)
+	}
+	if !st.Installed {
+		fmt.Printf(T("phpMyAdmin не установлен: mp db phpmyadmin install (версия %s)\n", "phpMyAdmin is not installed: mp db phpmyadmin install (release %s)\n"), st.Pinned)
+		return nil
+	}
+	fmt.Printf(T("phpMyAdmin %s · %s · PHP %s\n", "phpMyAdmin %s · %s · PHP %s\n"), st.Version, st.URL, st.PHPVersion)
+	if st.Version != st.Pinned {
+		fmt.Printf(T("панель ставит %s: mp db phpmyadmin install\n", "this panel installs %s: mp db phpmyadmin install\n"), st.Pinned)
+	}
+	if st.Sessions > 0 {
+		fmt.Printf(T("временных учёток кнопки «открыть»: %d\n", "temporary accounts of the open button: %d\n"), st.Sessions)
+	}
+	fmt.Println(T("вход: имя и пароль пользователя базы, или mp db phpmyadmin open <база>", "sign in: a database user's name and password, or mp db phpmyadmin open <database>"))
+	return nil
 }

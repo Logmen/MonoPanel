@@ -534,6 +534,32 @@ func (c *Client) DatabasePassword(ctx context.Context, name, password string) (*
 	return &out, c.do(ctx, http.MethodPost, "/databases/"+name+"/password", apitypes.PasswordRequest{Password: password}, &out)
 }
 
+// PhpMyAdmin reports the panel's phpMyAdmin.
+func (c *Client) PhpMyAdmin(ctx context.Context) (*apitypes.PhpMyAdminStatus, error) {
+	var out apitypes.PhpMyAdminStatus
+	return &out, c.do(ctx, http.MethodGet, "/db/phpmyadmin", nil, &out)
+}
+
+// InstallPhpMyAdmin installs phpMyAdmin or moves it to another port or
+// PHP branch (a job).
+func (c *Client) InstallPhpMyAdmin(ctx context.Context, req apitypes.PhpMyAdminInstallRequest) (*apitypes.JobRef, error) {
+	var out apitypes.JobRef
+	return &out, c.do(ctx, http.MethodPost, "/db/phpmyadmin", req, &out)
+}
+
+// RemovePhpMyAdmin removes phpMyAdmin (a job).
+func (c *Client) RemovePhpMyAdmin(ctx context.Context) (*apitypes.JobRef, error) {
+	var out apitypes.JobRef
+	return &out, c.do(ctx, http.MethodDelete, "/db/phpmyadmin", nil, &out)
+}
+
+// DatabasePhpMyAdmin asks for a one-time address that opens the database
+// in phpMyAdmin, signed in.
+func (c *Client) DatabasePhpMyAdmin(ctx context.Context, name string) (*apitypes.PhpMyAdminSignon, error) {
+	var out apitypes.PhpMyAdminSignon
+	return &out, c.do(ctx, http.MethodPost, "/databases/"+name+"/phpmyadmin", nil, &out)
+}
+
 // AllCronJobs lists the cron jobs of every user (admin).
 func (c *Client) AllCronJobs(ctx context.Context) ([]*store.CronJob, error) {
 	var out []*store.CronJob

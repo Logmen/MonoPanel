@@ -107,3 +107,25 @@ func TestDatabaseOfAnotherAccountIsNotTakenOver(t *testing.T) {
 		t.Fatalf("the owner re-keying its database: %+v", again)
 	}
 }
+
+// A database's own account is granted on that database literally: in a
+// database-level GRANT _ is a wildcard, and the login "my" with the
+// database "ql" (my_ql) would open `mysql` itself, the account becoming
+// MySQL's root after its next restart (review R1, P1).
+func TestDatabaseGrantIsLiteral(t *testing.T) {
+	f := newSiteFixture(t)
+	f.installDB()
+	f.userWithPassword("my", "my-password-1", 1502)
+	f.loginAs("my", "my-password-1")
+	f.agent.Reset()
+	f.call(http.MethodPost, "/databases", map[string]any{"name": "ql"}, http.StatusCreated, nil)
+	var sql string
+	for _, tool := range f.agent.Tools() {
+		if tool.Name == "mysql" {
+			sql += tool.Stdin
+		}
+	}
+	if !strings.Contains(sql, "GRANT ALL PRIVILEGES ON `my\\_ql`.* TO 'my_ql'@'localhost';") || strings.Contains(sql, "ON `my_ql`") {
+		t.Fatalf("the grant is a pattern (it matches `mysql`):\n%s", sql)
+	}
+}

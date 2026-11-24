@@ -289,7 +289,7 @@ func (s *Server) jobWebmailInstall(ctx context.Context, jc *jobs.Context) error 
 	// from, too — takes the site out of them under the same lock
 	// (forgetWebmail).
 	c, err = s.changeMailConfig(ctx, func(cur *mailConfig) {
-		cur.Webmail, cur.WebmailVersion = site.Domain, roundcubeVersion
+		cur.Webmail, cur.WebmailVersion, cur.WebmailServer = site.Domain, roundcubeVersion, host
 		if p.Port != 0 {
 			cur.WebmailPort = p.Port
 		}
@@ -299,18 +299,21 @@ func (s *Server) jobWebmailInstall(ctx context.Context, jc *jobs.Context) error 
 	}
 	// Under the site's own lock key, site:<domain>, as every job of the site
 	// takes it: another apply or the delete of the site waits for this one.
-	applyJob, err := s.enqueueSiteApply(ctx, site, jc.RequestedBy)
+	// The server block on the webmail's port passes PHP to the socket of the
+	// site's pool, which that apply makes: the apply itself queues mail.apply
+	// once it is through (MailAfter). Queued beside it, mail.apply could
+	// write the block first, and the port answered 404 or 502 until the
+	// site's apply finished (minutes, on a host whose packages were slow).
+	applyJob, err := s.jobs.Enqueue(ctx, "site.apply", sitePayload{SiteID: site.ID, MailAfter: c.WebmailPort != 0}, jobs.WithLockKey("site:"+site.Domain), jobs.WithRequestedBy(jc.RequestedBy))
 	if err != nil {
 		return err
 	}
-	jc.Logf("the site is applied by job #%d; once it finishes, the webmail opens at https://%s/", applyJob, site.Domain)
+	jc.Logf("the site is applied by job #%d; once it finishes, the webmail opens at https://%s/", applyJob.ID, site.Domain)
 	if c.WebmailPort != 0 {
-		// Серверный блок на порту ссылается на сокет пула, который создаст
-		// задача сайта, — поэтому он пишется после неё.
-		if _, err := s.jobs.Enqueue(ctx, "mail.apply", struct{}{}, jobs.WithLockKey("mail"), jobs.WithRequestedBy(jc.RequestedBy)); err != nil {
-			return err
-		}
-		jc.Logf("and at https://%s:%d/, with the mail server's name and certificate: no separate DNS record is needed", c.Hostname, c.WebmailPort)
+		// The settings name the webmail only now, and the panel's firewall
+		// opens its port only while they do.
+		s.firewallFollowsMail(ctx, jc.Logf)
+		jc.Logf("and then at https://%s:%d/, with the mail server's name and certificate: no separate DNS record is needed", c.Hostname, c.WebmailPort)
 	}
 	jc.Progress(100, "Roundcube "+roundcubeVersion+" installed")
 	return nil
@@ -971,7 +974,7 @@ func (s *Server) mysqlSignsIn(ctx context.Context, user, password string) (bool,
 // webmailAccount applies the planned account change with the grant, and
 // records the account next to the database for the owner's list.
 func (s *Server) webmailAccount(ctx context.Context, owner *store.User, db *webmailDB) error {
-	sql := db.account + fmt.Sprintf("GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'localhost';\nFLUSH PRIVILEGES;\n", db.name, db.name)
+	sql := db.account + fmt.Sprintf("GRANT ALL PRIVILEGES ON %s.* TO '%s'@'localhost';\nFLUSH PRIVILEGES;\n", grantDB(db.name), db.name)
 	if _, err := s.mysqlExec(ctx, sql); err != nil {
 		return err
 	}
@@ -1019,4 +1022,134 @@ func firstMailDomain(ctx context.Context, s *Server) string {
 		return ""
 	}
 	return domains[0].Name
+}
+
+// webmailFollowsHostname queues the webmail job after the mail server's name
+// changed. config.inc.php names the server Roundcube signs in to — IMAP, SMTP
+// and ManageSieve over TLS, the certificate checked against that name, or
+// localhost unchecked while the name has a self-signed one — and only the
+// webmail job writes it. Left as it was, the webmail refused every login
+// from the change on ("Unable to negotiate TLS" in its log): the daemons
+// present the new name's certificate. The job runs as a reinstall over the
+// webmail's site, for its owner, and keeps what the webmail stores.
+// since is when the caller saved the new name: a run queued from then on
+// reads it when it starts, so no second one is queued.
+func (s *Server) webmailFollowsHostname(ctx context.Context, c mailConfig, requestedBy string, since time.Time) error {
+	if s.webmailJobSince(ctx, since) {
+		return nil
+	}
+	return s.rerunWebmail(ctx, c, requestedBy, "the mail server's name changed")
+}
+
+// rerunWebmail queues the webmail job over the webmail's site, for its
+// owner, under the mail lock: the documented reinstall, which keeps the
+// database, its password, the DES key and the plugins. A run that is queued
+// already reads the settings when it starts, so a second one is not queued.
+func (s *Server) rerunWebmail(ctx context.Context, c mailConfig, requestedBy, why string) error {
+	if s.webmailJobPending(ctx, false) {
+		return nil
+	}
+	site, err := s.db.GetSiteByDomain(ctx, c.Webmail)
+	if errors.Is(err, store.ErrNotFound) {
+		// Its removal took it; the next mail change takes it out of the settings.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	owner, err := s.db.GetUserByID(ctx, site.UserID)
+	if err != nil {
+		return err
+	}
+	job, err := s.jobs.Enqueue(ctx, "mail.webmail", webmailPayload{Domain: site.Domain, User: owner.Login}, jobs.WithLockKey("mail"), jobs.WithRequestedBy(requestedBy))
+	if err != nil {
+		return err
+	}
+	s.log.Info("mail: "+why+", the webmail is set up for it again", "hostname", c.Hostname, "site", site.Domain, "job", job.ID)
+	return nil
+}
+
+// webmailJobPending tells whether a webmail job is queued, or with running
+// also whether one runs.
+func (s *Server) webmailJobPending(ctx context.Context, running bool) bool {
+	list, err := s.db.ListJobsFiltered(ctx, store.JobFilter{Type: "mail.webmail", Limit: 20})
+	if err != nil {
+		return false
+	}
+	for _, j := range list {
+		if j.Status == store.JobQueued || (running && j.Status == store.JobRunning) {
+			return true
+		}
+	}
+	return false
+}
+
+// webmailJobSince tells whether a webmail job queued at or after since is
+// queued or runs: it read, or reads, the settings as they were then.
+func (s *Server) webmailJobSince(ctx context.Context, since time.Time) bool {
+	list, err := s.db.ListJobsFiltered(ctx, store.JobFilter{Type: "mail.webmail", Limit: 20})
+	if err != nil {
+		return false
+	}
+	for _, j := range list {
+		if (j.Status == store.JobQueued || j.Status == store.JobRunning) && !time.Time(j.CreatedAt).Before(since) {
+			return true
+		}
+	}
+	return false
+}
+
+// webmailServer is the server config.inc.php names for the mail settings as
+// they are now: the mail server's name, its certificate checked, while the
+// name has one of the CA's or one an administrator imported; localhost
+// unchecked while it has the self-signed fallback (an expired or removed
+// certificate counts as none).
+func (s *Server) webmailServer(ctx context.Context, c mailConfig) string {
+	if _, _, kind, _ := s.mailTLS(ctx, c); kind == store.CertKindACME || kind == store.CertKindCustom {
+		return c.Hostname
+	}
+	return "localhost"
+}
+
+// webmailFollowsCertificate queues the webmail job when the certificate of
+// the mail server's name changed kind since the webmail was set up — an
+// ACME certificate issued for a name that had the self-signed one, or one
+// that expired or went: config.inc.php names the server and checks its
+// certificate, or names localhost and does not, and only the webmail job
+// writes it. Left as it was, the webmail refused every login (a checked
+// self-signed certificate) or checked nothing it could. It runs after every
+// mail configuration (applyMailConfig: a certificate issued for the name,
+// mp mail apply, the settings) and once an hour (an expiry has no event of
+// its own). Only a real change queues the job, and none while one is queued
+// or runs: that run records what it wrote. A webmail an older panel set up
+// has no record: the state as it is now is taken for what it wrote.
+func (s *Server) webmailFollowsCertificate(ctx context.Context) {
+	c := s.loadMailConfig(ctx)
+	if !c.Installed || c.Webmail == "" || c.Hostname == "" {
+		return
+	}
+	want := s.webmailServer(ctx, c)
+	if c.WebmailServer == want {
+		return
+	}
+	if c.WebmailServer == "" {
+		if _, err := s.changeMailConfig(ctx, func(cur *mailConfig) {
+			if cur.Webmail == c.Webmail && cur.WebmailServer == "" {
+				cur.WebmailServer = want
+			}
+		}); err != nil {
+			s.log.Warn("mail: cannot record the server the webmail signs in to", "err", err)
+		}
+		return
+	}
+	if s.webmailJobPending(ctx, true) {
+		return
+	}
+	why := "the mail server's certificate is the self-signed one now"
+	if want != "localhost" {
+		why = "the mail server's name has a certificate now"
+	}
+	if err := s.rerunWebmail(ctx, c, "system", why); err != nil {
+		s.log.Warn("mail: the webmail was not set up for the mail server's certificate; mp mail webmail "+c.Webmail+" does it", "err", err)
+	}
 }

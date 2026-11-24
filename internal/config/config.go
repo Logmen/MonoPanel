@@ -152,6 +152,8 @@ var DefaultAllowedWritePrefixes = []string{
 	"/etc/sysusers.d/",
 	"/etc/sysctl.d/90-monopanel.conf", // nginx may bind an IPv6 address the host does not have yet
 	"/var/lib/monopanel-valkey/",      // snapshots of the per-account Valkey instances, removed with them
+	"/var/lib/monopanel-pma/",         // phpMyAdmin's sessions and temporary files, its pool user's (internal/phpmyadmin)
+	"/run/monopanel-pma/",             // phpMyAdmin's sign-in tickets and sign-out marks
 	"/usr/share/keyrings/",
 }
 

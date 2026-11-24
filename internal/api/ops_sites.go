@@ -89,6 +89,11 @@ type sitePayload struct {
 	// LogsMoved marks the site.apply that switches an upgraded site to the
 	// root-owned log tree (moveSiteLogs); its log says so.
 	LogsMoved bool `json:"logs_moved,omitempty"`
+	// MailAfter marks the apply of the webmail's site the webmail job
+	// queues: once the site is applied — its pool's socket is there —
+	// mail.apply writes the webmail's server block on its port, which
+	// passes PHP to that socket.
+	MailAfter bool `json:"mail_after,omitempty"`
 }
 
 // siteGone tells whether the site a job was queued for is gone: no row by
@@ -882,6 +887,15 @@ func (s *Server) jobSiteApply(ctx context.Context, jc *jobs.Context) error {
 		return err
 	}
 	err := s.applySite(ctx, jc, p)
+	if p.MailAfter && !errors.Is(err, errSiteGone) {
+		// Also after a failed apply: the block follows the mail settings,
+		// and the next apply of the site brings the socket.
+		if j, qerr := s.jobs.Enqueue(context.WithoutCancel(ctx), "mail.apply", struct{}{}, jobs.WithLockKey("mail"), jobs.WithRequestedBy(jc.RequestedBy)); qerr != nil {
+			jc.Logf("warning: the webmail's port is not set up: %v; mp mail apply does it", qerr)
+		} else {
+			jc.Logf("the webmail's port is set up by job #%d", j.ID)
+		}
+	}
 	if errors.Is(err, errSiteGone) {
 		// Queued before the site went — by the webmail, the shared folders,
 		// sites.move-ip or a change of the site — and run after its

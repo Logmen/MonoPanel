@@ -13,6 +13,7 @@ import (
 
 	"monopanel/internal/agent/confcheck"
 	"monopanel/internal/osprofile"
+	"monopanel/internal/phpmyadmin"
 )
 
 // EnsureDir creates one directory with mode (special bits included) and
@@ -260,6 +261,10 @@ func (s *Server) dirOwners() []struct{ dir, owner, group string } {
 		{"/var/mail/monopanel", "vmail", "vmail"},
 		{"/etc/opendkim/keys", "", "opendkim"},
 		{"/var/log/mysql", "mysql", "mysql"},
+		// phpMyAdmin's sessions, temporary files, tickets and sign-out
+		// marks are its pool user's (ops_phpmyadmin.go).
+		{phpmyadmin.StateDir, phpmyadmin.User, phpmyadmin.User},
+		{phpmyadmin.RunDir, phpmyadmin.User, phpmyadmin.User},
 	}
 	if s.profile != nil {
 		sx := osprofile.Sphinx(s.profile)

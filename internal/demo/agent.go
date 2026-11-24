@@ -194,6 +194,15 @@ func (a *Agent) Handler() http.Handler {
 	r.Post("/v1/mailpolicy/probe", handle(func(context.Context, *struct{}) (*agent.MailPolicyProbeResponse, error) {
 		return &agent.MailPolicyProbeResponse{OK: true, Listener: mailpolicy.SocketPath, Configured: true}, nil
 	}))
+	// phpMyAdmin's files and tickets: its install is refused at the door
+	// (it downloads the release), so only the sweep of an install that is
+	// not there comes here, and it finds nothing.
+	r.Post("/v1/phpmyadmin", handle(func(_ context.Context, req *agent.PhpMyAdminRequest) (*agent.PhpMyAdminResponse, error) {
+		if err := agent.CheckPhpMyAdminRequest(req); err != nil {
+			return nil, err
+		}
+		return &agent.PhpMyAdminResponse{}, nil
+	}))
 	r.Post("/v1/stream/out", a.streamOut)
 	r.Post("/v1/stream/in", notInDemo)
 	return r

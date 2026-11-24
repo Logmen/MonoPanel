@@ -72,7 +72,7 @@ func adminOnly(path string) bool {
 	case "user add", "user list", "user rm", "user totp-reset", "user share add", "user share entry", "user share rm",
 		"site move-ip", "site suspend", "site unsuspend", "site tls",
 		"mail install", "mail apply", "mail settings", "mail webmail",
-		"db engine tune", "db config", "db config set", "db config unset",
+		"db engine tune", "db config", "db config set", "db config unset", "db phpmyadmin install", "db phpmyadmin remove",
 		"doctor", "selinux", "logs":
 		return true
 	}

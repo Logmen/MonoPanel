@@ -121,7 +121,9 @@ func TestMailInstallSavesWhatItDecides(t *testing.T) {
 		},
 		{
 			name: "a repair with a webmail", stored: &withWebmail, webmailSite: true, payload: map[string]any{"hostname": "mail.example.com"},
-			want: withWebmail,
+			// The webmail of an older panel gets the record of the server
+			// its configuration names (webmailFollowsCertificate).
+			want: func() mailConfig { c := withWebmail; c.WebmailServer = "mail.example.com"; return c }(),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

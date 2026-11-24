@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"monopanel/internal/mailpolicy"
+	"monopanel/internal/phpmyadmin"
 	"monopanel/internal/sysinfo"
 )
 
@@ -32,9 +33,9 @@ func (s *Server) ensureGroup(ctx context.Context, req *EnsureGroupRequest) (*Ens
 		return nil, &Error{Status: http.StatusBadRequest, Message: "invalid group name"}
 	}
 	switch req.Name {
-	case s.cfg.WebGroup, s.cfg.CLIGroup, sftpGroup, mailUser, mailpolicy.User:
+	case s.cfg.WebGroup, s.cfg.CLIGroup, sftpGroup, mailUser, mailpolicy.User, phpmyadmin.User:
 	default:
-		return nil, notAllowed("the group "+req.Name, "the panel makes only "+s.cfg.WebGroup+", "+s.cfg.CLIGroup+", "+sftpGroup+", "+mailUser+" and "+mailpolicy.User)
+		return nil, notAllowed("the group "+req.Name, "the panel makes only "+s.cfg.WebGroup+", "+s.cfg.CLIGroup+", "+sftpGroup+", "+mailUser+", "+mailpolicy.User+" and "+phpmyadmin.User)
 	}
 	return EnsureGroup(ctx, req)
 }

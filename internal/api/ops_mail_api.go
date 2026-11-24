@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -194,8 +195,10 @@ func (s *Server) registerMail() {
 				}
 			}
 		}
+		renamed, since := false, time.Now()
 		c, err := s.changeMailConfig(ctx, func(cur *mailConfig) {
 			if hostname != "" {
+				renamed = cur.Hostname != hostname
 				cur.Hostname = hostname
 			}
 			if b.MaxSizeMB > 0 {
@@ -226,6 +229,11 @@ func (s *Server) registerMail() {
 			}
 			if enabled, err := s.db.GetSetting(ctx, settingFirewall); err == nil && enabled == "yes" {
 				s.applyFirewall(ctx) //nolint:errcheck // порты — не повод отказать в сохранении настроек
+			}
+			if renamed && c.Webmail != "" {
+				if err := s.webmailFollowsHostname(ctx, c, p.Login, since); err != nil {
+					return nil, huma.Error502BadGateway("the mail server's name changed, but the webmail was not set up for it: " + err.Error() + "; mp mail webmail " + c.Webmail + " does it")
+				}
 			}
 		}
 		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "mail.settings", Target: c.Hostname, IP: requestInfo(ctx).IP})

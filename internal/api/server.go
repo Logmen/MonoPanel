@@ -104,6 +104,14 @@ type Server struct {
 	// for short steps only, never across the webmail job's work in the
 	// site's tree nor an install.
 	webmailMu sync.Mutex
+	// pmaMu orders the changes of the list of phpMyAdmin's temporary
+	// accounts (ops_phpmyadmin.go).
+	pmaMu sync.Mutex
+	// pmaGate is held for reading by a press of phpMyAdmin's button, from
+	// its check that phpMyAdmin is installed to its account made; the
+	// sweep, the removal's first step and the drop of a deleted database's
+	// accounts hold it alone, so that they see every account a press makes.
+	pmaGate sync.RWMutex
 	// mailRenderMu lets one mail render run at a time (applyMailConfig),
 	// from its read of the settings and the mail data to its last write: a
 	// render that read them before a change and wrote after the change's
@@ -344,6 +352,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 		s.registerUpdate()
 		s.registerPanelConfig()
 		s.registerMail()
+		s.registerPHPMyAdmin()
 		s.registerMigrateSource()
 		s.registerMigrateImport()
 	})
@@ -371,6 +380,8 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	s.jobs.Register("mail.install", s.jobMailInstall)
 	s.jobs.Register("mail.apply", s.jobMailApply)
 	s.jobs.Register("mail.webmail", s.jobWebmailInstall)
+	s.jobs.Register("phpmyadmin.install", s.jobPMAInstall)
+	s.jobs.Register("phpmyadmin.remove", s.jobPMARemove)
 	s.jobs.Register("migrate.run", s.withMailPolicy(s.jobMigrateRun))
 	// A backup, a restore and a migration may run for hours (jobLimits).
 	for typ, d := range jobLimits {

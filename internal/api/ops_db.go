@@ -206,8 +206,8 @@ func (s *Server) createDatabase(ctx context.Context, inst *store.DBInstance, own
 	sql := fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;\n"+
 		"CREATE USER IF NOT EXISTS '%s'@'localhost' IDENTIFIED WITH %s BY '%s';\n"+
 		"ALTER USER '%s'@'localhost' IDENTIFIED WITH %s BY '%s';\n"+
-		"GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'localhost';\nFLUSH PRIVILEGES;\n",
-		full, full, plugin, sqlEscaper.Replace(password), full, plugin, sqlEscaper.Replace(password), full, full)
+		"GRANT ALL PRIVILEGES ON %s.* TO '%s'@'localhost';\nFLUSH PRIVILEGES;\n",
+		full, full, plugin, sqlEscaper.Replace(password), full, plugin, sqlEscaper.Replace(password), grantDB(full), full)
 	if _, err := s.mysqlExec(ctx, sql); err != nil {
 		return nil, "", huma.Error502BadGateway(err.Error())
 	}
@@ -376,6 +376,7 @@ func (s *Server) registerDB() {
 		if err := s.db.DeleteDatabase(ctx, db.ID); err != nil {
 			return nil, err
 		}
+		s.pmaDropDatabases(ctx, db.Name)
 		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "db.delete", Target: db.Name, IP: requestInfo(ctx).IP})
 		return nil, nil
 	})

@@ -169,6 +169,7 @@ func (s *Server) jobUserDelete(ctx context.Context, jc *jobs.Context) error {
 		if err := s.db.DeleteDatabase(ctx, db.ID); err != nil {
 			return fail(err)
 		}
+		s.pmaDropDatabases(ctx, db.Name)
 		jc.Logf("database %s dropped", db.Name)
 	}
 

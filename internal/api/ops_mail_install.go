@@ -286,8 +286,10 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 	// stays (changeMailConfig). A name the request gave is the install's;
 	// without one, a name set meanwhile stays.
 	found := c
+	renamed, since := false, time.Now()
 	c, err = s.changeMailConfig(ctx, func(cur *mailConfig) {
 		if p.Hostname != "" || cur.Hostname == "" {
+			renamed = cur.Installed && cur.Hostname != found.Hostname
 			cur.Hostname = found.Hostname
 		}
 		if p.POP3 != nil {
@@ -302,6 +304,16 @@ func (s *Server) jobMailInstall(ctx context.Context, jc *jobs.Context) error {
 	})
 	if err != nil {
 		return err
+	}
+	// An install again under another name: the webmail follows it, as
+	// after mp mail settings --hostname (webmailFollowsHostname); its job
+	// waits for this one, under the same lock.
+	if renamed && c.Webmail != "" {
+		if err := s.webmailFollowsHostname(ctx, c, jc.RequestedBy, since); err != nil {
+			jc.Logf("warning: the webmail was not set up for the new name: %v; mp mail webmail %s does it", err, c.Webmail)
+		} else {
+			jc.Logf("the webmail on %s is set up for the new name by a job of its own", c.Webmail)
+		}
 	}
 	s.orderMailCertificate(ctx, jc, c)
 
@@ -588,5 +600,75 @@ func (s *Server) selinuxMailPolicy(ctx context.Context, jc *jobs.Context) error 
 		return fmt.Errorf("restorecon: %w", err)
 	}
 	jc.Logf("selinux: %s is labelled cert_t so that postfix reads the certificate", certs)
+	if err := s.selinuxMailTLS(ctx); err != nil {
+		return err
+	}
+	jc.Logf("selinux: the self-signed pair %s is labelled cert_t", filepath.Join(s.cfg.DataDir, "mail", "tls.{crt,key}"))
 	return nil
+}
+
+// selinuxMailTLSSpec is the file context of the mail server's self-signed
+// pair (mailTLS): <data>/mail is var_lib_t, which smtpd (postfix_smtpd_t)
+// may not read — STARTTLS said "TLS not available due to local problem" and
+// the webmail could not send on EL while the mail name had no certificate.
+// The two files alone become cert_t; the rest of the directory stays.
+func (s *Server) selinuxMailTLSSpec() string {
+	return filepath.Join(s.cfg.DataDir, "mail") + `/tls\.(crt|key)`
+}
+
+// selinuxMailTLS adds the file context of the self-signed pair and labels
+// the pair if it is there.
+func (s *Server) selinuxMailTLS(ctx context.Context) error {
+	if err := s.selinuxFileContext(ctx, s.selinuxMailTLSSpec(), "cert_t"); err != nil {
+		return err
+	}
+	return s.restoreconMailTLS(ctx)
+}
+
+// restoreconMailTLS labels the self-signed pair as the policy says (-i: a
+// file not made yet is no error).
+func (s *Server) restoreconMailTLS(ctx context.Context) error {
+	dir := filepath.Join(s.cfg.DataDir, "mail")
+	res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "restorecon", Args: []string{"-F", "-i", filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key")}})
+	if err != nil {
+		return fmt.Errorf("restorecon: %w", err)
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("restorecon: %s", strings.TrimSpace(res.Output))
+	}
+	return nil
+}
+
+// relabelMailTLS labels a self-signed pair mailTLS has just made; a failure
+// is logged (the next start's refresh, or mp mail apply, labels it again).
+func (s *Server) relabelMailTLS(ctx context.Context) {
+	if s.profile.MAC() != "selinux" {
+		return
+	}
+	if err := s.restoreconMailTLS(ctx); err != nil {
+		s.log.Warn("mail: the self-signed certificate keeps the label of its directory, smtpd may not read it", "err", err)
+	}
+}
+
+// settingSELinuxMailTLS records that a host whose mail server an older
+// panel set up has the file context of the self-signed pair.
+const settingSELinuxMailTLS = "selinux.mail_tls"
+
+// refreshSELinuxMailTLS gives, once, an EL host whose mail server an older
+// panel installed the file context of the self-signed pair and labels it
+// (selinuxMailTLS): a fresh install does it in selinuxMailPolicy. A failure
+// leaves the flag unset, and the next start tries again.
+func (s *Server) refreshSELinuxMailTLS(ctx context.Context) {
+	if s.profile.MAC() != "selinux" || !s.loadMailConfig(ctx).Installed {
+		return
+	}
+	if v, _ := s.db.GetSetting(ctx, settingSELinuxMailTLS); v != "" {
+		return
+	}
+	if err := s.selinuxMailTLS(ctx); err != nil {
+		s.log.Warn("selinux: the mail server's self-signed certificate is not labelled cert_t yet; the next start tries again", "err", err)
+		return
+	}
+	s.db.SetSetting(ctx, settingSELinuxMailTLS, "1") //nolint:errcheck // retried at the next start
+	s.log.Info("selinux: the mail server's self-signed certificate is labelled cert_t (smtpd reads it)")
 }

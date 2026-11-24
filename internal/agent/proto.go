@@ -636,3 +636,35 @@ type MailPolicyProbeResponse struct {
 	Configured  bool   `json:"configured"`
 	ConfigError string `json:"config_error,omitempty"`
 }
+
+// PhpMyAdminRequest is /v1/phpmyadmin: the panel's phpMyAdmin
+// (internal/phpmyadmin) at its fixed places, which no generic call writes
+// with these owners.
+//
+//   - "files": the panel's two files in the tree of Version, which must be
+//     there, root's (dirs/ensure, the tar extraction): Config as
+//     config.inc.php, root:<pool user> 0640, Signon as the sign-in script,
+//     root's 0644;
+//   - "ticket": a one-time ticket Name (the sha256 of its token) with
+//     Content, the pool user's 0400 in the ticket directory;
+//   - "sweep": tickets past their life and stray entries go; the sign-out
+//     marks of temporary accounts are answered (Logouts) and go;
+//   - "prune": the trees of other releases than Version go.
+type PhpMyAdminRequest struct {
+	Action  string `json:"action"`
+	Version string `json:"version,omitempty"`
+	Config  string `json:"config,omitempty"`
+	Signon  string `json:"signon,omitempty"`
+	Name    string `json:"name,omitempty"`
+	Content string `json:"content,omitempty"`
+}
+
+// PhpMyAdminResponse answers /v1/phpmyadmin.
+type PhpMyAdminResponse struct {
+	// Written are the files "files" changed.
+	Written []string `json:"written,omitempty"`
+	// Logouts are the temporary accounts whose sessions signed out.
+	Logouts []string `json:"logouts,omitempty"`
+	// Removed are the tickets, marks or trees that went.
+	Removed []string `json:"removed,omitempty"`
+}

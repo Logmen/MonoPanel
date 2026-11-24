@@ -426,6 +426,7 @@ var refusals = []refusal{
 	{http.MethodPost, regexp.MustCompile(`^/api/v1/(sites/[^/]+/tls/issue|certificates(/[0-9]+/renew)?|ssl/panel/issue)$`), "Let's Encrypt needs a real domain and internet access"},
 	{http.MethodPost, regexp.MustCompile(`^/api/v1/migrate/(plan|run)$`), "a move needs a source server"},
 	{http.MethodPost, regexp.MustCompile(`^/api/v1/mail/webmail$`), "Roundcube is downloaded from its vendor, and the demo has no internet access"},
+	{http.MethodPost, regexp.MustCompile(`^/api/v1/db/phpmyadmin$`), "phpMyAdmin is downloaded from its vendor, and the demo has no internet access"},
 	{http.MethodDelete, regexp.MustCompile(`^/api/v1/users/` + AdminLogin + `$`), "the demo's own administrator stays"},
 }
 

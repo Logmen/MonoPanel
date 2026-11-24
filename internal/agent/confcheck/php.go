@@ -5,6 +5,8 @@ import (
 	"path"
 	"regexp"
 	"strings"
+
+	"monopanel/internal/phpmyadmin"
 )
 
 // PHP. The php-fpm master runs as root: it loads every extension of its
@@ -559,6 +561,12 @@ func (c *checker) fpmPool(e iniEntry) error {
 	}
 	switch e.base {
 	case "user":
+		// phpMyAdmin's pool runs as its own system user, under its own
+		// name: no other pool runs as that user, and that pool as nobody
+		// else (pmaPoolUser).
+		if v == phpmyadmin.User || strings.EqualFold(e.section, phpmyadmin.Pool) {
+			return pmaPoolUser(what, e.section, v)
+		}
 		if err := c.panelAccount(v); err != nil {
 			return notAllowed(fmt.Sprintf("%s = %s", what, v), "a pool runs as an account of the panel: %v", err)
 		}
@@ -617,4 +625,15 @@ func (c *checker) fpmListen(what, v string) error {
 		return nil
 	}
 	return notAllowed(fmt.Sprintf("%s = %s", what, v), "the root master removes what is at the path and creates the socket; it is a *.sock right in %s", c.l.phpRunDir())
+}
+
+// pmaPoolUser allows phpMyAdmin's pool (internal/phpmyadmin) its system
+// user: the pool [monopanel-phpmyadmin] runs as monopanel-pma, and no other
+// pool does. That user owns nothing of the accounts' and no directory a
+// root daemon writes into; its PHP reaches MySQL as whoever signs in.
+func pmaPoolUser(what, section, user string) error {
+	if section == phpmyadmin.Pool && user == phpmyadmin.User {
+		return nil
+	}
+	return notAllowed(fmt.Sprintf("%s = %s", what, user), "only the pool [%s] runs as %s, and it runs as nobody else", phpmyadmin.Pool, phpmyadmin.User)
 }

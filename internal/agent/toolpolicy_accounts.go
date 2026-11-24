@@ -12,6 +12,7 @@ import (
 
 	"monopanel/internal/mailpolicy"
 	"monopanel/internal/osprofile"
+	"monopanel/internal/phpmyadmin"
 )
 
 // sftpGroup holds the SFTP-only clients (internal/api/ops_users.go uses the
@@ -131,7 +132,7 @@ func (s *Server) checkPanelAccount(u *user.User) error {
 // (checkApacheUserLeaves).
 func (s *Server) systemLogins() map[string]bool {
 	web := s.profile.Web()
-	out := map[string]bool{mailUser: true, "postfix": true, mailpolicy.User: true}
+	out := map[string]bool{mailUser: true, "postfix": true, mailpolicy.User: true, phpmyadmin.User: true}
 	for _, l := range []string{web.NginxUser, web.ApacheUser, osprofile.Sphinx(s.profile).User} {
 		if l != "" {
 			out[l] = true
@@ -187,7 +188,7 @@ func (s *Server) checkEnsureUser(req *EnsureUnixUserRequest) error {
 func (s *Server) checkEnsureSystemUser(req *EnsureUnixUserRequest, existing *user.User) error {
 	login := req.Login
 	if !s.systemLogins()[login] {
-		return notAllowed("the system account "+login, "the panel manages only the web servers' users, postfix, vmail and the Sphinx user")
+		return notAllowed("the system account "+login, "the panel manages only the web servers' users, postfix, vmail, the Sphinx user and its own (the mail policy's, phpMyAdmin's)")
 	}
 	web := s.profile.Web()
 	if login == web.ApacheUser {

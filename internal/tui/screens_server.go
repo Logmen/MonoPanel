@@ -293,10 +293,11 @@ func openDatabases(m *model, a *area) screen {
 		{path: "db create", key: "a"},
 		{path: "db passwd", key: "p", args: n},
 		{path: "db rm", key: "d", args: n},
+		{path: "db phpmyadmin open", key: "o", args: n},
 		{path: "db list", quick: true},
 		{path: "db engine", quick: true},
 	}
-	s.links = []link{{key: "e", label: T("сервер БД", "server"), open: dbEngineScreen}, {key: "c", label: T("параметры", "settings"), admin: true, open: dbConfigScreen}, allLink(a)}
+	s.links = []link{{key: "e", label: T("сервер БД", "server"), open: dbEngineScreen}, {key: "c", label: T("параметры", "settings"), admin: true, open: dbConfigScreen}, {key: "m", label: "phpMyAdmin", open: pmaScreen}, allLink(a)}
 	s.empty = T("баз нет — a: создать", "no databases — a: create one")
 	return s
 }
@@ -330,6 +331,40 @@ func dbEngineScreen(m *model) screen {
 		}}, key: "t"},
 		{label: T("Параметры сервера", "Server settings"), key: "c", admin: true, open: dbConfigScreen},
 		{act: &act{path: "db engine", quick: true}},
+	}
+	return h
+}
+
+// pmaScreen is the panel's phpMyAdmin: its state, the install (or a move
+// to another port or PHP branch) and the removal; a database opens in it
+// from the list of databases (o).
+func pmaScreen(m *model) screen {
+	h := &hubScreen{screenBase: screenBase{title: "phpMyAdmin"}}
+	h.fetch = func(ctx context.Context, cl *client.Client) (*result, error) {
+		st, err := cl.PhpMyAdmin(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !st.Installed {
+			return &result{info: []string{styleWarn.Render(fmt.Sprintf(T("phpMyAdmin не установлен (версия %s): i — поставить", "phpMyAdmin is not installed (release %s): i — install it"), st.Pinned))},
+				vals: map[string]string{"installed": "false"}}, nil
+		}
+		info := []string{
+			fmt.Sprintf("phpMyAdmin %s · %s · PHP %s", st.Version, st.URL, st.PHPVersion),
+			styleMuted.Render(T("Вход: имя и пароль пользователя базы; или в списке баз o — открыть базу сразу с входом.", "Sign in: a database user's name and password; or o in the list of databases opens one signed in.")),
+		}
+		if st.Version != st.Pinned {
+			info = append(info, styleWarn.Render(fmt.Sprintf(T("панель ставит %s: i — обновить", "this panel installs %s: i — upgrade"), st.Pinned)))
+		}
+		if st.Sessions > 0 {
+			info = append(info, fmt.Sprintf(T("временных учёток кнопки «открыть»: %d", "temporary accounts of the open button: %d"), st.Sessions))
+		}
+		return &result{info: info, vals: map[string]string{"installed": "true", "port": strconv.Itoa(st.Port), "php": st.PHPVersion}}, nil
+	}
+	h.entries = []entry{
+		{act: &act{path: "db phpmyadmin install"}, key: "i"},
+		{act: &act{path: "db phpmyadmin remove"}, key: "d", when: func(v map[string]string) bool { return v["installed"] == "true" }},
+		{act: &act{path: "db phpmyadmin status", quick: true}},
 	}
 	return h
 }

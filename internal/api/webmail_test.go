@@ -1025,6 +1025,120 @@ func TestWebmailGoesWithItsSite(t *testing.T) {
 	}
 }
 
+// With the panel's firewall on, the webmail installed on its port is reachable
+// from outside: the firewall opens the port as the job names the webmail in
+// the mail settings, and closes it again when the webmail's site goes. The
+// testbed found it closed: mp mail webmail --port answered on the host
+// itself only, until the next change of the mail settings.
+func TestWebmailPortFollowsTheFirewall(t *testing.T) {
+	f, _, home := newWebmailFixture(t)
+	if code, detail := fwCall(f, http.MethodPost, "/firewall/enable", nil); code != 200 {
+		t.Fatalf("enable: %d %q", code, detail)
+	}
+	open := func() bool {
+		t.Helper()
+		text, ok := f.agent.File(nftRulesPath)
+		if !ok {
+			t.Fatal("no nft rules written")
+		}
+		return strings.Contains(text, " 2097,") || strings.Contains(text, " 2097 }")
+	}
+	if open() {
+		t.Fatal("port 2097 is open before the webmail is on it")
+	}
+	installedWebmail(t, f, home, map[string]any{"port": 2097})
+	if !open() {
+		text, _ := f.agent.File(nftRulesPath)
+		t.Fatalf("the webmail's port 2097 is not open in the firewall:\n%s", text)
+	}
+	f.deleteSite("webmail.example.com")
+	if open() {
+		text, _ := f.agent.File(nftRulesPath)
+		t.Fatalf("the port of the removed webmail stays open:\n%s", text)
+	}
+}
+
+// A new name for the mail server sets the webmail up for it: config.inc.php
+// named the old one, with its certificate checked, and from the change on
+// every login failed ("Unable to negotiate TLS" — the testbed). The settings
+// queue the webmail job, which keeps what the webmail stores.
+func TestWebmailFollowsTheMailHostname(t *testing.T) {
+	f, _, home := newWebmailFixture(t)
+	const file = "/var/www/alex/data/www/webmail.example.com/config/config.inc.php"
+	conf := installedWebmail(t, f, home, map[string]any{"port": 2096})
+	if !strings.Contains(conf, "'tls://mail.example.com:143'") {
+		t.Fatalf("the webmail does not sign in to mail.example.com:\n%s", conf)
+	}
+	f.call(http.MethodPut, "/mail/settings", map[string]any{"hostname": "mx.example.com"}, http.StatusOK, nil)
+	f.settle()
+	again, _ := f.agent.File(file)
+	// mx.example.com has no certificate of its own: the self-signed fallback.
+	if !strings.Contains(again, "'tls://localhost:143'") || strings.Contains(again, "mail.example.com:143") || !strings.Contains(again, "'mx.example.com Webmail'") {
+		t.Fatalf("config.inc.php after the new name:\n%s", again)
+	}
+	if desKey := func(s string) string { return regexp.MustCompile(`des_key'\] = '[^']+'`).FindString(s) }; desKey(again) == "" || desKey(again) != desKey(conf) {
+		t.Error("the DES key did not stay")
+	}
+	f.call(http.MethodPut, "/mail/settings", map[string]any{"hostname": "mx.example.com", "max_size_mb": 30}, http.StatusOK, nil)
+	f.settle()
+	jobs, _ := f.db.ListJobs(f.ctx, 500, "")
+	runs := 0
+	for _, j := range jobs {
+		if j.Type == "mail.webmail" {
+			runs++
+		}
+	}
+	if runs != 2 {
+		t.Errorf("mail.webmail ran %d times: once to install, once for the new name, not for a change that keeps the name", runs)
+	}
+	// mp mail install again, under the first name: the webmail follows too.
+	var ref apitypes.JobRef
+	f.call(http.MethodPost, "/mail/install", map[string]any{"hostname": "mail.example.com"}, http.StatusAccepted, &ref)
+	if job := f.waitJob(ref.JobID); job.Status != store.JobDone {
+		t.Fatalf("mail install again: %s %s", job.Status, job.Error)
+	}
+	f.settle()
+	if back, _ := f.agent.File(file); !strings.Contains(back, "'tls://mail.example.com:143'") {
+		t.Fatalf("config.inc.php after mp mail install under the first name:\n%s", back)
+	}
+}
+
+// The doctor speaks of the mail server and its webmail: the services, the
+// ports and the certificate ("mail"), the webmail's site, its Roundcube and
+// its port ("webmail"). It used to have the mail policy's line alone, and a
+// webmail whose port did not answer showed nowhere but in mp mail status.
+func TestDoctorMailAndWebmailLines(t *testing.T) {
+	f, _, home := newWebmailFixture(t)
+	installedWebmail(t, f, home, map[string]any{"port": 2096})
+	lines := func() map[string]apitypes.Check {
+		t.Helper()
+		var doc apitypes.Doctor
+		f.call(http.MethodGet, "/system/doctor", nil, http.StatusOK, &doc)
+		out := map[string]apitypes.Check{}
+		for _, c := range doc.Checks {
+			out[c.Name] = c
+		}
+		return out
+	}
+	got := lines()
+	for _, name := range []string{"service postfix.service", "service dovecot.service", "service opendkim.service", "mail", "webmail"} {
+		if got[name].Status != "ok" {
+			t.Errorf("%s: %+v", name, got[name])
+		}
+	}
+	if d := got["webmail"].Detail; !strings.Contains(d, "Roundcube "+roundcubeVersion) || !strings.Contains(d, "https://mail.example.com:2096/") {
+		t.Errorf("webmail: %q", d)
+	}
+	f.s.SetPortProbe(func(port int, _ bool) (bool, string) { return port != 2096, "220 mail.example.com ESMTP" })
+	if c := lines()["webmail"]; c.Status != "fail" || !strings.Contains(c.Detail, "https://mail.example.com:2096/ does not answer") {
+		t.Errorf("webmail with its port closed: %+v", c)
+	}
+	f.s.SetPortProbe(func(port int, _ bool) (bool, string) { return port != 587, "220 mail.example.com ESMTP" })
+	if c := lines()["mail"]; c.Status != "fail" || !strings.Contains(c.Detail, "587") {
+		t.Errorf("mail with 587 closed: %+v", c)
+	}
+}
+
 // An older panel removed the webmail's site and left the mail settings
 // naming it: every mail change then failed on the webmail port. mail.apply
 // now takes the site out of the settings and the block off the port. A site

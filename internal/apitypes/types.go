@@ -1205,3 +1205,36 @@ type TemplateList struct {
 	Dir       string         `json:"dir" doc:"templates_dir"`
 	Templates []TemplateInfo `json:"templates"`
 }
+
+// PhpMyAdminStatus is the panel's phpMyAdmin: whether it is installed, the
+// release, the port and the address it answers at.
+type PhpMyAdminStatus struct {
+	Installed bool `json:"installed"`
+	// Version is the installed release, Pinned the one this panel installs
+	// (an install or the next start moves to it).
+	Version    string `json:"version,omitempty"`
+	Pinned     string `json:"pinned"`
+	Port       int    `json:"port,omitempty"`
+	URL        string `json:"url,omitempty"`
+	PHPVersion string `json:"php_version,omitempty"`
+	// Sessions counts the temporary accounts of the panel's button still
+	// alive (administrators only).
+	Sessions int `json:"sessions,omitempty"`
+}
+
+// PhpMyAdminInstallRequest installs phpMyAdmin, or moves it to another
+// port or PHP branch.
+type PhpMyAdminInstallRequest struct {
+	// Port 0 keeps the current port (2083 for a new install).
+	Port       int    `json:"port,omitempty" minimum:"0" maximum:"65535" doc:"Port of phpMyAdmin on the panel's name and certificate; 0 keeps the current one (2083 at first)"`
+	PHPVersion string `json:"php_version,omitempty" doc:"PHP branch of its pool; by default the newest installed one it runs on"`
+}
+
+// PhpMyAdminSignon is the panel's button: a one-time address that signs
+// in to phpMyAdmin at once, into one database.
+type PhpMyAdminSignon struct {
+	URL      string    `json:"url" doc:"Open within a minute; it works once"`
+	Database string    `json:"database"`
+	User     string    `json:"user" doc:"The temporary MySQL account, granted on this database only"`
+	Expires  time.Time `json:"expires" doc:"When the temporary account goes, unless its session signs out first"`
+}

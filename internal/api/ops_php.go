@@ -121,6 +121,9 @@ func (s *Server) registerPHP() {
 		if n, _ := s.db.CountSitesByPHP(ctx, in.Version); n > 0 {
 			return nil, huma.Error409Conflict(fmt.Sprintf("%d site(s) still use PHP %s", n, in.Version))
 		}
+		if st := s.pmaState(ctx); st.installed() && st.PHP == in.Version {
+			return nil, huma.Error409Conflict(fmt.Sprintf("phpMyAdmin runs on PHP %s: move it to another branch first (mp db phpmyadmin install --php <version>) or remove it", in.Version))
+		}
 		s.db.SetPHPStatus(ctx, in.Version, store.PHPRemoving, "") //nolint:errcheck // best effort; the caller reports the real failure
 		job, err := s.jobs.Enqueue(ctx, "php.remove", phpPayload{Version: in.Version}, jobs.WithLockKey("php"), jobs.WithRequestedBy(p.Login))
 		if err != nil {

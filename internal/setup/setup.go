@@ -30,6 +30,7 @@ import (
 	"monopanel/internal/i18n"
 	"monopanel/internal/mailpolicy"
 	"monopanel/internal/osprofile"
+	"monopanel/internal/phpmyadmin"
 	"monopanel/internal/store"
 	"monopanel/internal/systemd"
 )
@@ -404,6 +405,13 @@ func Run(ctx context.Context, opts Options, out io.Writer) (*Result, error) {
 		return nil, err
 	}
 	if _, err := agent.EnsureUnixUser(ctx, profile, &agent.EnsureUnixUserRequest{Login: mailpolicy.User, System: true, PrimaryGroup: mailpolicy.User, Home: "/", Comment: "MonoPanel mail policy"}); err != nil {
+		return nil, err
+	}
+	// phpMyAdmin's pool user, the same way (internal/phpmyadmin).
+	if _, err := agent.EnsureGroup(ctx, &agent.EnsureGroupRequest{Name: phpmyadmin.User, System: true}); err != nil {
+		return nil, err
+	}
+	if _, err := agent.EnsureUnixUser(ctx, profile, &agent.EnsureUnixUserRequest{Login: phpmyadmin.User, System: true, PrimaryGroup: phpmyadmin.User, Home: "/", Comment: "MonoPanel phpMyAdmin"}); err != nil {
 		return nil, err
 	}
 

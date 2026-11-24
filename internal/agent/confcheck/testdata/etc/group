@@ -8,6 +8,7 @@ postfix:x:113:
 debian-spamd:x:120:
 opendkim:x:121:postfix
 vmail:x:990:
+monopanel-pma:x:985:
 monopanel-sftp:x:993:alex
 monopanel-cli:x:994:monopanel,shop
 monopanel-web:x:995:nginx,www-data

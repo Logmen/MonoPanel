@@ -26,6 +26,30 @@
   const fail = (e: unknown) => { error = e instanceof ApiError ? e.text : String(e); notify(error, 'err'); };
   async function load() {
     try { engine = await api('/db/engine'); dbs = await api('/databases'); if (admin) users = ((await api('/users')) as any[]).filter((u) => u.role === 'user'); } catch (e: any) { error = e.text || String(e); }
+    try { pma = await api('/db/phpmyadmin'); if (pma && !pmaForm.touched) pmaForm = { port: pma.port || 2083, php_version: '', touched: false }; } catch { pma = null; }
+    if (admin && pmaPHP === null) { try { pmaPHP = ((await api('/php/versions')) as any).installed.filter((v: any) => v.status === 'installed'); } catch { pmaPHP = []; } }
+  }
+  // phpMyAdmin панели: свой порт с именем и сертификатом панели. Кнопка в строке
+  // базы просит одноразовую ссылку (временная учётка только на эту базу); окно
+  // открывается до запроса, иначе браузер примет его за всплывающее.
+  let pma = $state<any>(null);
+  let pmaPHP = $state<any[] | null>(null);
+  let pmaForm = $state({ port: 2083, php_version: '', touched: false });
+  async function pmaInstall(e: Event) {
+    e.preventDefault(); error = '';
+    const body: Record<string, unknown> = { port: Number(pmaForm.port) || 0 };
+    if (pmaForm.php_version) body.php_version = pmaForm.php_version;
+    try { const r: any = await api('/db/phpmyadmin', { method: 'POST', json: body }); job = r.job_id; pmaForm.touched = false; } catch (e) { fail(e); }
+  }
+  async function pmaRemove() { error = ''; try { const r: any = await api('/db/phpmyadmin', { method: 'DELETE' }); job = r.job_id; } catch (e) { fail(e); } }
+  const askPMARemove = (): Ask => ({ title: t('databases.pmaRemoveTitle'), note: t('databases.pmaRemoveNote'), action: t('databases.pmaRemove'), run: pmaRemove });
+  async function pmaOpen(name: string) {
+    error = '';
+    const w = window.open('about:blank', '_blank');
+    try {
+      const r: any = await api(`/databases/${name}/phpmyadmin`, { method: 'POST' });
+      if (w) { w.opener = null; w.location.href = r.url; } else window.location.href = r.url;
+    } catch (e) { w?.close(); fail(e); }
   }
   onMount(load);
   // Счётчик баз у сервера общий; аккаунту показываем число своих — тех, что в таблице.
@@ -123,10 +147,34 @@
     <!-- Сравнение — строкой под именем базы, а не своей колонкой: с ней кнопки строки уезжали за край таблицы уже на 1024px. -->
     <table class="tbl"><thead><tr><th>{t('databases.colDatabase')}</th><th>{t('databases.owner')}</th><th>{t('databases.accounts')}</th><th>{t('databases.size')}</th><th></th></tr></thead>
       <tbody>
-        {#each dbs as d, i (d.id)}<tr class="rise" style="--i:{i}"><td data-label={t('databases.colDatabase')}><div class="min-w-0"><div class="font-mono font-medium">{d.name}</div>{#if d.collation}<div class="font-mono text-xs text-muted" title={[t('databases.collation') + ': ' + d.collation, d.charset].filter(Boolean).join(' · ')}>{d.collation}</div>{/if}</div></td><td data-label={t('databases.owner')}>{d.login}</td><td data-label={t('databases.accounts')} class="font-mono text-xs text-muted">{(d.users ?? []).map((u: any) => u.name + '@' + u.host + ' (' + u.auth_plugin + ')').join(', ')}</td><td data-label={t('databases.size')} class="tabular-nums">{bytes(d.size_bytes)}</td><td data-label=""><div class="row-actions"><button class="btn btn-sm" onclick={() => (pwd = { name: d.name, value: '' })}><Icon name="key" size={13} /> {t('databases.passwordBtn')}</button><button class="btn btn-danger btn-sm" title={t('common.delete')} aria-label={t('common.delete')} onclick={() => (del = d)}><Icon name="trash" size={13} /></button></div></td></tr>{/each}
+        {#each dbs as d, i (d.id)}<tr class="rise" style="--i:{i}"><td data-label={t('databases.colDatabase')}><div class="min-w-0"><div class="font-mono font-medium">{d.name}</div>{#if d.collation}<div class="font-mono text-xs text-muted" title={[t('databases.collation') + ': ' + d.collation, d.charset].filter(Boolean).join(' · ')}>{d.collation}</div>{/if}</div></td><td data-label={t('databases.owner')}>{d.login}</td><td data-label={t('databases.accounts')} class="font-mono text-xs text-muted">{(d.users ?? []).map((u: any) => u.name + '@' + u.host + ' (' + u.auth_plugin + ')').join(', ')}</td><td data-label={t('databases.size')} class="tabular-nums">{bytes(d.size_bytes)}</td><td data-label=""><div class="row-actions">{#if pma?.installed}<button class="btn btn-sm" title={t('databases.pmaOpenTitle')} onclick={() => pmaOpen(d.name)}><Icon name="external" size={13} /> {t('databases.pmaOpen')}</button>{/if}<button class="btn btn-sm" onclick={() => (pwd = { name: d.name, value: '' })}><Icon name="key" size={13} /> {t('databases.passwordBtn')}</button><button class="btn btn-danger btn-sm" title={t('common.delete')} aria-label={t('common.delete')} onclick={() => (del = d)}><Icon name="trash" size={13} /></button></div></td></tr>{/each}
         {#if !dbs.length}<Empty text={t('databases.empty')} cols={5} />{/if}
       </tbody></table>
   </div>
+  {#if admin && pma}
+    <div class="card mt-4 rise" style="--i:1">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="min-w-0">
+          <div class="font-medium text-sm">{t('databases.pmaTitle')}</div>
+          {#if pma.installed}
+            <a class="text-sm text-accent-ink hover:underline inline-flex items-center gap-1 break-all mt-1" href={pma.url} target="_blank" rel="noopener">{pma.url.replace('https://', '').replace(/\/$/, '')} <Icon name="external" size={12} /></a>
+            <div class="text-xs text-muted mt-1">{t('databases.pmaState', { version: pma.version, php: pma.php_version })}{#if pma.sessions}{' · '}{t('databases.pmaSessions', { n: pma.sessions })}{/if}{#if pma.version !== pma.pinned}{' · '}<span class="text-warn">{t('databases.pmaUpgrade', { version: pma.pinned })}</span>{/if}</div>
+          {:else}
+            <div class="text-sm text-muted mt-1">{t('databases.pmaNotInstalled', { version: pma.pinned })}</div>
+          {/if}
+          <p class="text-xs text-muted mt-1">{t('databases.pmaHint')}</p>
+        </div>
+        {#if pma.installed}<button class="btn btn-danger btn-sm shrink-0" onclick={() => (ask = askPMARemove())}><Icon name="trash" size={13} /> {t('databases.pmaRemove')}</button>{/if}
+      </div>
+      <form class="flex flex-wrap items-end gap-2 mt-3" onsubmit={pmaInstall}>
+        <label class="flex items-center gap-1.5 text-xs text-muted">{t('databases.pmaPort')} <input class="input text-sm w-24" type="number" min="1024" max="65535" bind:value={pmaForm.port} oninput={() => (pmaForm.touched = true)} /></label>
+        <label class="flex items-center gap-1.5 text-xs text-muted">{t('databases.pmaPHP')} <select class="input text-sm" bind:value={pmaForm.php_version} onchange={() => (pmaForm.touched = true)}><option value="">{t('databases.pmaPHPAuto')}</option>{#each pmaPHP ?? [] as v}<option value={v.version}>PHP {v.version}</option>{/each}</select></label>
+        <button class="btn btn-primary btn-sm">{pma.installed ? t('databases.pmaApply') : t('databases.pmaInstall')}</button>
+      </form>
+    </div>
+  {:else if pma?.installed}
+    <p class="text-xs text-muted mt-3">{t('databases.pmaUserHint')} <a class="text-accent-ink hover:underline" href={pma.url} target="_blank" rel="noopener">{pma.url}</a></p>
+  {/if}
   {#if admin && cfg}
     <div class="card p-0 overflow-hidden mt-4 rise" style="--i:1">
       <div class="px-4 py-3 border-b border-line flex flex-wrap items-start justify-between gap-3">

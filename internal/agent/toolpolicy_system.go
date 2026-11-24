@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"monopanel/internal/osprofile"
+	"monopanel/internal/phpmyadmin"
 )
 
 // planCrontab: a client's crontab is replaced from stdin (internal/api/
@@ -265,6 +266,14 @@ func (s *Server) selinuxContexts() map[string]string {
 		filepath.Clean(s.cfg.RunDir) + "(/.*)?":                 "httpd_var_run_t",
 		filepath.Clean(s.cfg.WWWRoot) + `/[^/]+/\.ssh(/.*)?`:    "ssh_home_t",
 		filepath.Clean(s.cfg.WWWRoot) + "/[^/]+/data/www(/.*)?": "httpd_sys_content_t",
+		// phpMyAdmin (ops_phpmyadmin.go): its code nginx and its pool
+		// read, its sessions and temporary files, its tickets.
+		phpmyadmin.Root + "(/.*)?":     "httpd_sys_content_t",
+		phpmyadmin.StateDir + "(/.*)?": "httpd_sys_rw_content_t",
+		phpmyadmin.RunDir + "(/.*)?":   "httpd_var_run_t",
+		// The mail server's self-signed pair (ops_mail.go mailTLS): the two
+		// files alone, the rest of <data>/mail stays var_lib_t.
+		filepath.Join(s.cfg.DataDir, "mail") + `/tls\.(crt|key)`: "cert_t",
 	}
 	out := make(map[string]string, 2*len(m))
 	for spec, label := range m {
@@ -348,9 +357,12 @@ func (s *Server) planRestorecon(c *toolCall) (*toolPlan, error) {
 	if i == len(a) {
 		return nil, refuseArgs("restorecon", a, "no path")
 	}
-	// the hosting tree, the site logs, the mail certificates, the mail store
-	// after a migration (ops_migrate_import.go relabel)
-	roots := []string{s.cfg.WWWRoot, s.cfg.RunDir, s.cfg.LogDir, filepath.Join(s.cfg.DataDir, "certs"), "/etc/nginx", "/var/log/nginx", mailStore}
+	// the hosting tree, the site logs, the mail certificates and the mail
+	// server's self-signed pair, the mail store after a migration
+	// (ops_migrate_import.go relabel)
+	roots := []string{s.cfg.WWWRoot, s.cfg.RunDir, s.cfg.LogDir, filepath.Join(s.cfg.DataDir, "certs"), "/etc/nginx", "/var/log/nginx", mailStore,
+		filepath.Join(s.cfg.DataDir, "mail", "tls.crt"), filepath.Join(s.cfg.DataDir, "mail", "tls.key"),
+		phpmyadmin.Root, phpmyadmin.StateDir, phpmyadmin.RunDir}
 	for _, p := range a[i:] {
 		ok := false
 		for _, r := range roots {

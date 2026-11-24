@@ -14,5 +14,10 @@ func init() {
 		op("db-config-get", cli("db config"), web(page)),
 		op("db-config-set", cli("db config set", "db config unset"), web(page),
 			field("settings", arg("key=value", "key"))),
+		op("phpmyadmin-status", cli("db phpmyadmin status", "db phpmyadmin"), web(page)),
+		op("phpmyadmin-install", cli("db phpmyadmin install"), web(page),
+			field("php_version", flag("php"))),
+		op("phpmyadmin-remove", cli("db phpmyadmin remove"), web(page)),
+		op("databases-phpmyadmin", cli("db phpmyadmin open"), web(page)),
 	)
 }

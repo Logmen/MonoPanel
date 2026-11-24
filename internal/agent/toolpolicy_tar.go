@@ -13,6 +13,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"monopanel/internal/osprofile"
+	"monopanel/internal/phpmyadmin"
 )
 
 var (
@@ -80,6 +81,7 @@ func (s *Server) planTarCreate(c *toolCall) (*toolPlan, error) {
 //
 //	-xzf <data_dir>/downloads/<roundcube>.tar.gz -C <site> --strip-components=1 --no-same-owner   (/v1/tool, ops_mail_webmail.go)
 //	-xzf - -C <sphinx install dir> --strip-components=1 --no-same-owner                         (ops_tools.go)
+//	-xzf <data_dir>/downloads/<phpMyAdmin>.tar.gz -C <phpmyadmin root>/<version> --strip-components=1 --no-same-owner (ops_phpmyadmin.go)
 //	-xzf - | -xf - -C <docroot> --no-same-owner --warning=no-timestamp [--strip-components=N] [member…]  (cms.go)
 //	--extract --file - --directory <home or mail domain> --no-same-owner --warning=no-timestamp (ops_migrate_import.go)
 //
@@ -161,9 +163,12 @@ func (s *Server) planTarExtract(c *toolCall) (*toolPlan, error) {
 		root = mailStore
 	case sphinx != "" && dest == sphinx:
 		root = sphinx
+	case filepath.Dir(dest) == pmaRoot && phpmyadmin.VersionRe.MatchString(filepath.Base(dest)):
+		// a phpMyAdmin release into its own tree (ops_phpmyadmin.go)
+		root = pmaRoot
 	}
 	if root == "" {
-		return nil, notAllowed("extracting into "+dest, "the panel unpacks into the accounts' homes, the mail store and Sphinx's directory")
+		return nil, notAllowed("extracting into "+dest, "the panel unpacks into the accounts' homes, the mail store, Sphinx's directory and a release's tree of phpMyAdmin")
 	}
 	plan := &toolPlan{}
 	var src *os.File

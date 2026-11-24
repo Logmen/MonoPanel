@@ -263,7 +263,7 @@ This is the project log by stage and date: what is done, what is verified and wh
 
 ### What 0.9.0 leaves for the next release
 - [ ] DKIM switched on after a mail install without it gets the install's steps (the keys directory, postfix in the `opendkim` group, opendkim enabled) — today it takes `mp mail install` again ([06 §12](06-mail.md#12-limitations)).
-- [ ] EL: a self-signed mail certificate labelled so that postfix reads it — today STARTTLS on 587 does not work without a certificate for the mail host name.
+- [x] EL: the self-signed mail certificate is labelled `cert_t`, which postfix reads: STARTTLS on 587 and sending from the webmail work without a certificate for the mail host name too (0.9.1, [06 §12](06-mail.md#12-limitations)).
 - [ ] A suspension closes SFTP/SSH too (a `Match User` block in the panel's sshd drop-in), not the panel alone.
 - [ ] Forwarding: SRS for mail the panel's aliases and `~/.forward` send on to outside addresses (mail from outside with an envelope of a domain of this server passes SPF through it today); a sieve redirect of mail from another account's domain sent on as the forwarding mailbox instead of refused (today it is refused, and the refusal returns to the forwarding mailbox).
 - [ ] Account removal: the other writes of an account being removed — mail domains and mailboxes, cron, apps, Valkey, shared folders, tokens, databases — refused with 409 too (today only `PATCH /users` and the site changes are); `site.fix` beside a removal.

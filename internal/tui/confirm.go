@@ -43,6 +43,9 @@ func webNote(path, arg0 string) (string, bool) {
 	case "db config set", "db config unset":
 		return T("Чтобы применить параметры, MySQL перезапустится: несколько секунд сайты не смогут обратиться к базам. Если с новыми значениями сервер не запустится, вернутся прежние.",
 			"MySQL restarts to apply them: for a few seconds the sites cannot reach their databases. If it does not start with the new values, the previous ones come back."), true
+	case "db phpmyadmin remove":
+		return T("phpMyAdmin уйдёт целиком: его порт закроется, пул и файлы удалятся, временные учётки кнопки «открыть» пропадут, а все вошедшие выйдут. Базы и их пользователи не затрагиваются.",
+			"phpMyAdmin goes altogether: its port closes, its pool and files are removed, the temporary accounts of the open button are dropped and everybody signed in is signed out. The databases and their users stay."), true
 	case "db engine tune":
 		return T("Значения панели пересчитаются по памяти этого хоста (заданные вами останутся), MySQL перезапустится: несколько секунд сайты не смогут обратиться к базам.",
 			"The panel's values are recalculated for this host's memory (the ones you set stay) and MySQL restarts: for a few seconds the sites cannot reach their databases."), true

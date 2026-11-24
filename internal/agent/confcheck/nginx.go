@@ -5,6 +5,8 @@ import (
 	"path"
 	"regexp"
 	"strings"
+
+	"monopanel/internal/phpmyadmin"
 )
 
 // nginx: the master process runs as root. It loads modules, opens the log
@@ -340,12 +342,12 @@ var httpMethodRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`)
 func (c *checker) nginxFastCGIPass(what string, args []string) error {
 	if len(args) == 1 {
 		if v, ok := strings.CutPrefix(args[0], "unix:"); ok && plainPathRe.MatchString(v) {
-			if p, ok := absPath(v); ok && p == v && directChild(p, c.l.phpRunDir()) && panelSocketRe.MatchString(path.Base(p)) {
+			if p, ok := absPath(v); ok && p == v && directChild(p, c.l.phpRunDir()) && (panelSocketRe.MatchString(path.Base(p)) || path.Base(p) == phpmyadmin.Socket) {
 				return nil
 			}
 		}
 	}
-	return notAllowed(fmt.Sprintf("%s %s", what, strings.Join(args, " ")), "nginx hands the requests to the panel's pools alone: unix:%s/<domain>.sock, where a site's PHP runs as the site's account", c.l.phpRunDir())
+	return notAllowed(fmt.Sprintf("%s %s", what, strings.Join(args, " ")), "nginx hands the requests to the panel's pools alone: unix:%s/<domain>.sock, where a site's PHP runs as the site's account, or phpMyAdmin's", c.l.phpRunDir())
 }
 
 // nginxDefaultD is EL's directory of the distributions' locations for the

@@ -183,6 +183,10 @@ func (s *Server) applyFirewall(ctx context.Context, extraPorts ...int) (*apitype
 	for _, p := range firewallMailPorts(s.loadMailConfig(ctx)) {
 		base[p] = true
 	}
+	// phpMyAdmin's port, while it is installed (ops_phpmyadmin.go).
+	if p := s.pmaPortOpen(ctx); p > 0 {
+		base[p] = true
+	}
 	ports := make([]string, 0, len(base))
 	for p := range base {
 		ports = append(ports, strconv.Itoa(p))

@@ -347,6 +347,7 @@ func never(p string) bool {
 		"/etc/modprobe.d", "/etc/modules-load.d", "/etc/udev", "/etc/polkit-1", "/etc/apt/apt.conf.d", "/etc/apt/trusted.gpg.d",
 		"/etc/dnf", "/etc/yum", "/etc/pki/rpm-gpg", "/usr/share/keyrings", "/opt/monopanel", "/var/log/mysql", "/var/lib/sphinxsearch",
 		"/var/lib/sphinx", "/var/log/sphinx", "/var/log/sphinxsearch", "/var/mail/monopanel", "/var/lib/monopanel", "/var/lib/monopanel-valkey",
+		"/var/lib/monopanel-pma", "/run/monopanel-pma",
 	} {
 		if p == d || under(p, d) {
 			return true

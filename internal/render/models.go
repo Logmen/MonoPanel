@@ -399,3 +399,29 @@ type Webmail struct {
 	Socket            string
 	ClientMaxBodySize string
 }
+
+// PhpMyAdmin feeds the templates of phpmyadmin/: the nginx server block on
+// its port, its php-fpm pool, config.inc.php and the panel's sign-in script.
+type PhpMyAdmin struct {
+	// nginx
+	Port       int
+	ServerName string
+	CertPath   string
+	KeyPath    string
+	Docroot    string
+	Socket     string // the pool's socket
+	// the pool
+	Name             string
+	User             string
+	ListenGroup      string
+	Tree             string
+	StateDir         string
+	RunDir           string
+	DisableFunctions string
+	// config.inc.php
+	Secret      string // blowfish_secret, 64 hex digits
+	MySQLSocket string
+	// the sign-in script
+	TicketDir string
+	LogoutDir string
+}

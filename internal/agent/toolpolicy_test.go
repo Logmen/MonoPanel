@@ -284,6 +284,7 @@ func TestToolPolicyAcceptsThePanelsCallsEL(t *testing.T) {
 		{"relabel mail", tc(modeTool, "restorecon", "-F", "-R", mailStore+"/example.com")},
 		{"relabel file", tc(modeTool, "restorecon", "-F", home+"/data/www/x/index.php")},
 		{"relabel certs", tc(modeTool, "restorecon", "-RF", certs)},
+		{"relabel mail pair", tc(modeTool, "restorecon", "-F", "-i", filepath.Join(s.cfg.DataDir, "mail", "tls.crt"), filepath.Join(s.cfg.DataDir, "mail", "tls.key"))},
 		{"semodule", tc(modeTool, "semodule", "-i", "/etc/monopanel/selinux/monopanel.cil")},
 		{"port", tc(modeTool, "semanage", "port", "-a", "-t", "http_port_t", "-p", "tcp", "2096")},
 		{"port modify", tc(modeTool, "semanage", "port", "-m", "-t", "http_port_t", "-p", "tcp", "8443")},
@@ -305,6 +306,8 @@ func TestToolPolicyAcceptsThePanelsCallsEL(t *testing.T) {
 		"/run/monopanel-valkey(/.*)?":           "redis_var_run_t",
 		"/var/run/monopanel-valkey(/.*)?":       "redis_var_run_t",
 		"/var/lib/monopanel-valkey/[^/]+(/.*)?": "redis_var_lib_t",
+		// the mail server's self-signed pair alone
+		filepath.Join(s.cfg.DataDir, "mail") + `/tls\.(crt|key)`: "cert_t",
 	} {
 		cases = append(cases,
 			policyCase{"fcontext " + spec, tc(modeTool, "semanage", "fcontext", "-a", "-t", label, spec)},
@@ -566,6 +569,10 @@ func TestToolPolicyRefusesSELinuxAndDnfShapesEL(t *testing.T) {
 		{"restorecon list", tc(modeTool, "restorecon", "-f", "/tmp/list")},
 		{"restorecon output", tc(modeTool, "restorecon", "-o", "/etc/cron.d/x", "-R", s.cfg.WWWRoot)},
 		{"restorecon none", tc(modeTool, "restorecon", "-R")},
+		// <data>/mail beyond the self-signed pair: the DKIM keys, the rest
+		{"restorecon mail dir", tc(modeTool, "restorecon", "-RF", filepath.Join(s.cfg.DataDir, "mail"))},
+		{"restorecon data dir", tc(modeTool, "restorecon", "-RF", s.cfg.DataDir)},
+		{"fcontext mail dir", tc(modeTool, "semanage", "fcontext", "-a", "-t", "cert_t", filepath.Join(s.cfg.DataDir, "mail")+"(/.*)?")},
 		{"restorecon unclean", tc(modeTool, "restorecon", "-R", s.cfg.WWWRoot+"/../../etc")},
 		{"ausearch input", tc(modeTool, "ausearch", "-if", "/etc/shadow")},
 		{"ausearch extra", tc(modeTool, "ausearch", "-m", "AVC", "-ts", "today", "--raw", "-if", "/etc/shadow")},

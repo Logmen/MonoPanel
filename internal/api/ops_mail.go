@@ -80,8 +80,12 @@ type mailConfig struct {
 	Webmail        string   `json:"webmail,omitempty"`
 	WebmailPort    int      `json:"webmail_port,omitempty"`
 	WebmailVersion string   `json:"webmail_version,omitempty"`
-	PostfixVersion string   `json:"postfix_version,omitempty"`
-	DovecotVersion string   `json:"dovecot_version,omitempty"`
+	// WebmailServer is the server the webmail's config.inc.php names, as
+	// the webmail job wrote it: the mail server's name (its certificate
+	// checked) or localhost (webmailFollowsCertificate).
+	WebmailServer  string `json:"webmail_server,omitempty"`
+	PostfixVersion string `json:"postfix_version,omitempty"`
+	DovecotVersion string `json:"dovecot_version,omitempty"`
 	// MapType is the postfix lookup table type: hash, or lmdb where postfix
 	// is built without Berkeley DB (EL 10).
 	MapType string `json:"map_type,omitempty"`
@@ -147,9 +151,15 @@ func (s *Server) mailTLS(ctx context.Context, c mailConfig) (certPath, keyPath, 
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return "", "", "none", nil
 	}
-	if _, err := EnsureSelfSigned(cp, kp, []string{c.Hostname}); err != nil {
+	created, err := EnsureSelfSigned(cp, kp, []string{c.Hostname})
+	if err != nil {
 		s.log.Warn("mail: self-signed certificate", "err", err)
 		return "", "", "none", nil
+	}
+	if created {
+		// A new pair takes the directory's var_lib_t, which smtpd may not
+		// read (selinuxMailPolicy): back to cert_t.
+		s.relabelMailTLS(ctx)
 	}
 	return cp, kp, store.CertKindSelfSigned, nil
 }
@@ -550,7 +560,12 @@ func (s *Server) applyMailConfig(ctx context.Context, logf func(string, ...any),
 	}
 	logf("mail: %d files written, %d unchanged, TLS: %s", len(apply.Written)+len(data.Written), len(apply.Unchanged)+len(data.Unchanged), kind)
 	s.mailPolicyInPlace(ctx)
-	return s.applyWebmailPort(ctx, logf, c, certPath, keyPath)
+	if err := s.applyWebmailPort(ctx, logf, c, certPath, keyPath); err != nil {
+		return err
+	}
+	// The daemons present the certificate of now: the webmail follows it.
+	s.webmailFollowsCertificate(ctx)
+	return nil
 }
 
 // webmailConfPath is the nginx server block that publishes the webmail on a
@@ -699,7 +714,28 @@ func (s *Server) forgetWebmail(ctx context.Context, logf func(string, ...any), d
 	// A mail change of the API itself has no job log to say it in.
 	s.log.Info("mail: the webmail's site is gone, and the mail settings no longer name it", "site", domain)
 	logf("%s held the webmail: the mail settings no longer name it, and nothing serves the webmail now (mp mail webmail <domain> installs it again)", domain)
+	// Its port leaves the panel's firewall with it.
+	if c.WebmailPort > 0 {
+		s.firewallFollowsMail(ctx, logf)
+	}
 	return nil
+}
+
+// firewallFollowsMail reloads the panel's firewall, where it is on, after a
+// change of what the mail settings publish outside the settings themselves
+// (which reload it in their own handler): the webmail job that puts the
+// webmail on its port and the removal of the webmail's site. The firewall
+// opens the webmail's port only while the settings name a webmail
+// (firewallMailPorts); without the reload a webmail installed with --port
+// answered on the host itself, and nowhere else, until the next change of
+// the mail settings or the firewall, and a removed one's port stayed open.
+func (s *Server) firewallFollowsMail(ctx context.Context, logf func(string, ...any)) {
+	if v, _ := s.db.GetSetting(ctx, settingFirewall); v != "yes" {
+		return
+	}
+	if _, err := s.applyFirewall(context.WithoutCancel(ctx)); err != nil {
+		logf("warning: the firewall was not reloaded: %v; mp firewall apply loads it again", err)
+	}
 }
 
 // mailMilters are postfix's milters: the panel's mail policy first, with a

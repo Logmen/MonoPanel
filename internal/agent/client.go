@@ -390,3 +390,10 @@ func (c *Client) MailPolicyProbe(ctx context.Context) (*MailPolicyProbeResponse,
 	var resp MailPolicyProbeResponse
 	return &resp, c.call(ctx, "/v1/mailpolicy/probe", struct{}{}, &resp)
 }
+
+// PhpMyAdmin writes the panel's phpMyAdmin files and tickets, and sweeps
+// them (PhpMyAdminRequest).
+func (c *Client) PhpMyAdmin(ctx context.Context, req *PhpMyAdminRequest) (*PhpMyAdminResponse, error) {
+	var resp PhpMyAdminResponse
+	return &resp, c.call(ctx, "/v1/phpmyadmin", req, &resp)
+}
