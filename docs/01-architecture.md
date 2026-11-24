@@ -134,7 +134,7 @@
 | Python (FastAPI) | Скорость разработки | Интерпретатор на хосте: конфликты версий на одиннадцати релизах ОС, venv, медленный старт CLI | нет |
 | PHP / Node.js | Знакомы веб-разработчикам | Рантайм на хосте; плохо подходят для системного демона с root-операциями | нет |
 
-Библиотеки: `go-chi/chi` (роутер), `danielgtaylor/huma/v2` (OpenAPI 3.1 из типов, валидация), `modernc.org/sqlite`, `coreos/go-systemd/v22` (D-Bus), `go-acme/lego/v4` (ACME), `x/crypto/argon2`, `pquerna/otp` (TOTP), `boombuler/barcode` (QR-код в терминале для `mp totp setup`), `spf13/cobra`, `charm.land/bubbletea/v2` + `lipgloss/v2`, `miekg/dns`, `log/slog`, `goccy/go-yaml`, `goreleaser/nfpm` (deb/rpm, отдельный инструмент). Планируется: `go-webauthn/webauthn`, `google/nftables` (сейчас nftables управляется через файл правил и `nft`), `yookoala/gofast` (FastCGI-клиент для phpMyAdmin через панель).
+Библиотеки: `go-chi/chi` (роутер), `danielgtaylor/huma/v2` (OpenAPI 3.1 из типов, валидация), `modernc.org/sqlite`, `coreos/go-systemd/v22` (D-Bus), `go-acme/lego/v4` (ACME), `x/crypto/argon2`, `pquerna/otp` (TOTP), `boombuler/barcode` (QR-код в терминале для `mp totp setup`), `spf13/cobra`, `charm.land/bubbletea/v2` + `lipgloss/v2`, `miekg/dns`, `log/slog`, `goccy/go-yaml`, `goreleaser/nfpm` (deb/rpm, отдельный инструмент). Планируется: `go-webauthn/webauthn`, `google/nftables` (сейчас nftables управляется через файл правил и `nft`).
 
 ### 4.2 Фронтенд
 

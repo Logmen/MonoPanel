@@ -19,7 +19,7 @@ This is the project log by stage and date: what is done, what is verified and wh
 - [x] PHP 5.6–8.5 via Sury/Remi (`mp php`), several versions side by side.
 - [x] Sites in modes A (nginx → php-fpm), B (nginx → Apache → php-fpm) and proxy; per-site php_value; ACL; placeholder page; automatic certificate.
 - [x] Apache 2.4 as a component (Debian/Ubuntu). EL — not verified.
-- [x] Databases: Percona/MySQL 8.4 with `auth_socket`, databases and users, legacy authentication for PHP < 7.4. phpMyAdmin — not done.
+- [x] Databases: Percona/MySQL 8.4 with `auth_socket`, databases and users, legacy authentication for PHP < 7.4. phpMyAdmin — done (0.9.1).
 - [x] Cron, firewall (nftables) + fail2ban, restic backups, metrics, logs, `mp doctor`, DNS-01, TUI parity, web UI (SvelteKit), ru.
 - [ ] The full test matrix in CI on eleven OSes (needs a self-hosted runner with VMs).
 
@@ -260,6 +260,13 @@ This is the project log by stage and date: what is done, what is verified and wh
 
 ### Mail policy (2026-11-22)
 - [x] No account sends mail as another account's domain: the milter `monopanel-mailpolicy` (the same binary, a user of its own without privileges, a socket systemd holds) answers postfix before opendkim and refuses a message whose envelope or From is in another account's domain (550 5.7.1); it checks mailboxes on 587/465, sendmail by the sender's uid and SMTP from the server's addresses by the socket's uid; while the policy does not answer, mail waits (`default_action=tempfail`). Before 0.9.0 such a message left, and opendkim signed it with the other domain's key. On EL `monopanel-mailguard` closes the milter ports 8890 and 8891 to everyone but root and postfix. Sieve redirects leave with the forwarding mailbox as envelope sender, vacation replies with the mailbox; a mail domain cannot be taken as a site or an alias of another account; opendkim's `TrustedHosts` are the server's addresses only. The `mail policy` line of `mp doctor`; on a downgrade below 0.9.0 the package's script takes the policy out of `main.cf` ([06 §11](06-mail.md#11-mail-policy)).
+
+### phpMyAdmin and the webmail (0.9.1, 2026-11-24)
+- [x] phpMyAdmin 5.2.3 (pinned by sha256) on a port of its own (2083) with the panel's name and certificate, in a php-fpm pool of its own as `monopanel-pma`; the tree is root's. Sign in with the form (a database user with its password; root cannot) or the panel's button: a temporary account `mp.pma.<hex>` on that database only for 8 hours, a one-time ticket for 60 seconds on tmpfs, at most three sessions per database and user, the accounts go with the database, the account and phpMyAdmin itself. `mp db phpmyadmin`, the card and buttons of the Databases page, a TUI screen, the `phpmyadmin` line of `mp doctor`.
+- [x] Database users are granted their database by the literal name (`_` and `%` escaped); older grants are rewritten once at start.
+- [x] The panel's session cookie does not reach phpMyAdmin's or the webmail's PHP on their ports.
+- [x] Roundcube webmail checked on all 11 OSes: its port opens in the panel's nftables, a new name or kind of certificate of the mail server reconfigures it, the port answers only once its site's pool is ready; `mp doctor` has the mail service lines, `mail` and `webmail`.
+- [x] `sshd -t` on Ubuntu 24.04+ with socket-activated ssh: the agent makes `/run/sshd` before the check (the `mp user add` job failed although the account was made).
 
 ### What 0.9.0 leaves for the next release
 - [ ] DKIM switched on after a mail install without it gets the install's steps (the keys directory, postfix in the `opendkim` group, opendkim enabled) — today it takes `mp mail install` again ([06 §12](06-mail.md#12-limitations)).

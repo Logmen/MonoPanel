@@ -142,11 +142,13 @@ Under each heading are that area's `mp` commands.
 
 ### Databases
 
-`mp stack install percona|mysql`, `mp db create|list|passwd|rm`, `mp db engine [tune]`, `mp db config [set|unset]`
+`mp stack install percona|mysql`, `mp db create|list|passwd|rm`, `mp db engine [tune]`, `mp db config [set|unset]`, `mp db phpmyadmin install [--port 2083] [--php 8.4]|remove|status`, `mp db phpmyadmin open <database>`
 
 - Percona Server or MySQL 8.4 LTS; root over `auth_socket` (on EL the panel moves it off the package's temporary password itself), settings sized to the available RAM.
 - Server settings are changed in the panel: a value takes the panel's place in `zz-monopanel.cnf`, `mysqld --validate-config` runs before the restart, and if the server fails to start the previous settings come back by themselves.
 - Databases are named `<login>_<name>`, generated passwords satisfy `validate_password`; `mysql_native_password` is enabled only for PHP < 7.4.
+- A database user is granted its database by the literal name (`_` and `%` escaped): before 0.9.1 the name served as a pattern, and a database like `my_ql` opened the system `mysql` too. 0.9.1 rewrites the grants of older databases once, at its first start.
+- phpMyAdmin 5.2.3 on a port of its own (2083 by default) with the panel's name and certificate, in a PHP pool of its own as the system user `monopanel-pma`. Sign in with a database user's name and password; the "phpMyAdmin" button of a database (or `mp db phpmyadmin open`) signs in at once — as a temporary MySQL account on that database only, for 8 hours or until you sign out (at most three such sessions per database and user; deleting the database or the account ends them). MySQL's root never signs in there (`auth_socket`), and the panel's session cookie never reaches phpMyAdmin's PHP.
 
 ### Valkey per account
 
@@ -173,9 +175,9 @@ Under each heading are that area's `mp` commands.
 - postfix + dovecot + opendkim: domains, mailboxes (passwords and quotas in the panel, Maildir owned by `vmail`), aliases and catch-all, IMAP/POP3/submission on the panel's certificate, DKIM signing, sieve filters.
 - Send-only domains: the provider receives the domain's mail, this server signs with DKIM and sends the sites' mail. A lenient domain (`--lenient`) also accepts mail from badly configured senders.
 - `mp mail domain dns` prints the required MX, SPF, DKIM, DMARC and PTR records and checks them against public resolvers.
-- Roundcube webmail installs as a regular panel site or on a port of the mail host (`--port 2096` — no DNS record and no second certificate).
+- Roundcube webmail installs as a regular panel site or on a port of the mail host (`--port 2096` — no DNS record and no second certificate). The port opens in the panel's firewall by itself, and a new name or certificate of the mail server reconfigures the webmail by itself; `mp doctor` checks it in its `webmail` line.
 - Mail policy: an account does not send mail as another account's domain. Postfix asks the panel's milter (`monopanel-mailpolicy`) about every message before opendkim signs it: a message whose envelope sender or header From is in a domain of another account (its mail domain, site or site alias, subdomains included) is refused with "550 5.7.1 <domain>: this server does not send mail as a domain of another account" — whether a mailbox sends it over 587/465, a program through sendmail, or over SMTP to this server. Domains the panel does not have are free. While the policy is down, mail waits rather than leaving unchecked; `mp doctor` has a `mail policy` line. Limit: inbound mail that an alias or a `~/.forward` sends on to an outside address leaves with its original envelope (no SRS yet). More in [docs/en/06 §11](docs/en/06-mail.md#11-mail-policy).
-- DKIM switched on after the mail server was installed without it, and the self-signed mail certificate on EL, take a step by hand in 0.9.0 — [docs/en/06 §12](docs/en/06-mail.md#12-limitations).
+- DKIM switched on after the mail server was installed without it takes a step by hand — [docs/en/06 §12](docs/en/06-mail.md#12-limitations).
 - More in [docs/en/06-mail.md](docs/en/06-mail.md).
 
 ### Backups
@@ -314,7 +316,7 @@ Under each heading are that area's `mp` commands.
 
 ### Not there yet
 
-Own PHP builds (Sury/Remi are used instead), apache mode on EL, phpMyAdmin, disk
+Own PHP builds (Sury/Remi are used instead), apache mode on EL, disk
 quotas, per-site cgroup limits, a DNS server, a WAF, several servers from one panel,
 an apt/yum repository (packages ship as releases and the panel installs them itself).
 Mail runs on all eleven OSes with dovecot 2.3 and 2.4 (Debian 13, Ubuntu 26.04 get a
@@ -814,9 +816,8 @@ Known limitations of 0.9.0, which the next release lifts
   on, run `mp mail install` again.
 - EL: while the mail server's host name has no valid certificate, postfix cannot read
   the panel's self-signed stand-in (`/var/lib/monopanel/mail/tls.crt`) under SELinux,
-  and STARTTLS on 587 answers "TLS not available". Issue a certificate for that name
-  (`mp ssl issue <mail host name>` or the SSL page): the mail server moves to it by
-  itself.
+  and STARTTLS on 587 answers "TLS not available". Lifted in 0.9.1: the files get the
+  `cert_t` label at its first start.
 - A sieve redirect (a Roundcube filter) of a message whose sender is a domain of another
   account on this server is refused by the mail policy: the refusal, with the message in
   it, returns to the forwarding mailbox. Forwarding by the panel's aliases is not

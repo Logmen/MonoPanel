@@ -147,6 +147,28 @@ it gets fixed.
   are in another account's domain, forwarded by a panel alias or an account's
   `~/.forward` to an outside address, leaves this server with its envelope
   unchanged (SPF passes) — until SRS.
+- **phpMyAdmin → the rest of the host.** phpMyAdmin runs in a php-fpm pool of its
+  own as the system user monopanel-pma (no login, no group of the panel's), with
+  open_basedir on its code (root's, read-only to it), its state
+  (/var/lib/monopanel-pma) and its tickets (/run/monopanel-pma), exec functions off.
+  Its PHP reaches MySQL over the socket as whoever signs in — a database user with
+  that user's own password, or a temporary account (mp.pma.<random>) the panel makes
+  for the button, granted on one database by its literal name (_ and % escaped),
+  alive for 8 hours at most, at most three per user and database, and dropped when
+  the database or its account is deleted or phpMyAdmin is removed; MySQL's root
+  (auth_socket) cannot sign in there. The panel never learns the database users'
+  passwords. A ticket is readable by the pool user alone, works once within 60
+  seconds and is kept out of nginx's access log. Browsers send cookies regardless of
+  the port, so the panel's session cookie (mp_session) also reaches
+  https://<panel>:<phpMyAdmin port>/ — and the webmail's port when the mail server's
+  name is the panel's; nginx hands the PHP behind both ports the Cookie header
+  without it (other cookies pass, and a request carrying it twice gets no cookie at
+  all), so neither phpMyAdmin's pool nor the account's pool the webmail runs in sees
+  panel sessions. An account reading phpMyAdmin's configuration, sessions or
+  tickets, a temporary account with grants beyond its database or outliving its
+  expiry, its database or its removal, the pool reaching another account's files, or
+  the panel's session cookie reaching PHP on phpMyAdmin's or the webmail's port is
+  in scope.
 - **Authentication.** Session handling (a password change ends the account's
   other browser sessions, a suspension all of them), Bearer tokens, TOTP (setting
   it up anew takes switching it off with the password first), the login rate

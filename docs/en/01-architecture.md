@@ -134,7 +134,7 @@ As of October 2026 (MonoPanel 0.9.0). Component versions are given as of that da
 | Python (FastAPI) | Development speed | An interpreter on the host: version conflicts across 9 OS releases, venv, slow CLI start-up | no |
 | PHP / Node.js | Familiar to web developers | A runtime on the host, a poor fit for a system daemon with root operations | no |
 
-Libraries: `go-chi/chi` (router), `danielgtaylor/huma/v2` (OpenAPI 3.1 from types, validation), `modernc.org/sqlite`, `coreos/go-systemd/v22` (D-Bus), `go-acme/lego/v4` (ACME), `x/crypto/argon2`, `pquerna/otp` (TOTP), `boombuler/barcode` (the QR code in the terminal for `mp totp setup`), `spf13/cobra`, `charm.land/bubbletea/v2` + `lipgloss/v2`, `miekg/dns`, `log/slog`, `goccy/go-yaml`, `goreleaser/nfpm` (deb/rpm, a separate tool). Planned: `go-webauthn/webauthn`, `google/nftables` (nftables is currently managed through a rules file and `nft`), `yookoala/gofast` (a FastCGI client for phpMyAdmin through the panel).
+Libraries: `go-chi/chi` (router), `danielgtaylor/huma/v2` (OpenAPI 3.1 from types, validation), `modernc.org/sqlite`, `coreos/go-systemd/v22` (D-Bus), `go-acme/lego/v4` (ACME), `x/crypto/argon2`, `pquerna/otp` (TOTP), `boombuler/barcode` (the QR code in the terminal for `mp totp setup`), `spf13/cobra`, `charm.land/bubbletea/v2` + `lipgloss/v2`, `miekg/dns`, `log/slog`, `goccy/go-yaml`, `goreleaser/nfpm` (deb/rpm, a separate tool). Planned: `go-webauthn/webauthn`, `google/nftables` (nftables is currently managed through a rules file and `nft`).
 
 ### 4.2 Frontend
 

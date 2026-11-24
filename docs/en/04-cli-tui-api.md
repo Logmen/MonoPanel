@@ -112,6 +112,12 @@ mp db list | passwd <name> [--password …|--password-stdin] | rm <name>
 mp db engine                         # the database server; tune — recalculate its settings for the available memory
 mp db engine tune
 mp db config [set key=value … | unset key …]   # MySQL server settings; if it fails to start, the previous ones come back
+mp db phpmyadmin [status]                         # phpMyAdmin's release, port and address
+mp db phpmyadmin install [--port N] [--php V]     # install, or move to another port/PHP branch (2083 by default, the newest suitable PHP 7.4–8.5)
+mp db phpmyadmin remove                           # remove: temporary accounts, pool, port, files
+mp db phpmyadmin open <name>                      # one-time link (one minute, once): opens the database signed in, as a temporary account mp.pma.… on it alone; a fourth open of the same database ends the oldest session
+# TUI: Databases → o opens the database in phpMyAdmin, m the phpMyAdmin screen (i install/move, d remove).
+# API: GET/POST/DELETE /api/v1/db/phpmyadmin, POST /api/v1/databases/{name}/phpmyadmin.
 
 mp ssl list | show <id|name> | rm <id|name>
 mp ssl renew <id|name> | --all

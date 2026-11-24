@@ -164,6 +164,14 @@ settings: the panel's values, sized for the host's memory, and the ones set by h
 `mp db config`; saving restarts MySQL after checking the configuration, and "Retune for
 this host" recalculates the panel's values.
 
+Below, an administrator finds phpMyAdmin: whether it is installed, its address (a port of its own, 2083 by default,
+with the panel's name and certificate), its release and PHP branch; it is installed, moved to another port or PHP
+branch and removed here. Once it is installed, every database gets a "phpMyAdmin" button: it opens the database in a
+new tab signed in — as a temporary MySQL account on that database only, for 8 hours or until you sign out; the link
+works once, within a minute. A user keeps at most three such sessions per database (a fourth press ends the
+oldest); deleting the database or the account ends them at once. The ordinary phpMyAdmin login takes a database
+user's name and password.
+
 ## Mail
 
 ![Mail: services, ports, webmail and domains](img/mail.webp)

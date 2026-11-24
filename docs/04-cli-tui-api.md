@@ -111,6 +111,12 @@ mp db list | passwd <name> [--password …|--password-stdin] | rm <name>
 mp db engine                         # сервер СУБД; tune — пересчитать настройки под память
 mp db engine tune
 mp db config [set key=value … | unset key …]   # параметры сервера MySQL; при неудачном запуске вернутся прежние
+mp db phpmyadmin [status]                         # версия, порт, адрес phpMyAdmin
+mp db phpmyadmin install [--port N] [--php V]     # поставить или перенести на другой порт/ветку PHP (по умолчанию 2083, новейшая подходящая PHP 7.4–8.5)
+mp db phpmyadmin remove                           # убрать: временные учётки, пул, порт, файлы
+mp db phpmyadmin open <name>                      # одноразовая ссылка (минута, один раз): база открывается с входом, временная учётка mp.pma.… только на неё; четвёртое открытие той же базы закрывает самый старый сеанс
+# TUI: «Базы данных» → o — открыть базу в phpMyAdmin, m — экран phpMyAdmin (i — установить/перенести, d — удалить).
+# API: GET/POST/DELETE /api/v1/db/phpmyadmin, POST /api/v1/databases/{name}/phpmyadmin.
 
 mp ssl list | show <id|имя> | rm <id|имя>
 mp ssl renew <id|имя> | --all

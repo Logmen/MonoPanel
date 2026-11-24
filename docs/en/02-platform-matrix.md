@@ -24,7 +24,7 @@ Minimum requirements: 1 vCPU / 1 GB RAM / 10 GB disk (panel + nginx + one PHP ve
 | PHP (stage 2, planned) | own repository | own repository | A build farm, layout `/opt/monopanel/php/<X.Y>`, the same on every OS |
 | MySQL 8.4 LTS | MySQL APT repo (`mysql-apt-config`) | MySQL Yum repo (`mysql84-community-release-el9` / `-el10`) | Community Server 8.4.x |
 | Percona Server 8.4 LTS | `percona-release setup ps-84-lts` | `percona-release setup ps-84-lts` | + Percona XtraBackup 8.4, Percona Toolkit |
-| phpMyAdmin (planned) | own package from the upstream tarball | own package | Distribution versions lag behind |
+| phpMyAdmin 5.2.3 | the upstream tarball (sha256 pinned in the panel) | the same | Distribution versions lag behind |
 | restic | distribution | EPEL | Backups: deduplication, encryption, local/SFTP/S3/B2/REST |
 | fail2ban | distribution | EPEL | + the panel's filters |
 | Valkey | distribution: `valkey-server` (Debian 13, Ubuntu 24.04/26.04; Debian 12 — backports), otherwise `redis-server` (Ubuntu 22.04 — 6.0, Debian 12 without backports — 7.0) | AppStream: `valkey` (8.0) | Instances per account, the package's shared instance is switched off, see §9 |
@@ -110,7 +110,7 @@ Common to both (implemented in the `DBEngine` provider):
 - **Legacy PHP**: in 8.4 the `mysql_native_password` plugin is disabled by default (removed in 9.0). PHP < 7.4 (mysqlnd) does not support `caching_sha2_password`. When there are sites on PHP ≤ 7.3, the panel sets `mysql_native_password=ON` and `authentication_policy=mysql_native_password,,` and creates the users of those sites `IDENTIFIED WITH mysql_native_password`; all others get `caching_sha2_password`. The plugin alone is not enough: without `authentication_policy` the server offers `caching_sha2_password` in the handshake, and the mysqlnd of PHP 5.6/7.0 drops the connection before the method is switched — even for an account with `mysql_native_password`. After a panel update the configuration of such servers is re-rendered when the API starts (MySQL restarts only if the file changed). The `db_users.auth_plugin` field stores the choice.
 - Backups: `mysqldump --single-transaction --routines --triggers --events` per database. `mysqlsh util.dumpSchemas` (parallel, faster on large volumes) and physical XtraBackup 8.4 copies of the whole server (Percona) are planned.
 - Updates within 8.4.x: `mp stack upgrade db`, by name only and not in the daily upgrade, as the server's restart is downtime for the sites; the configuration is checked with `mysqld --validate-config` before the upgrade and before the restart. The upgrade to 9.x is not automated (a separate procedure that checks legacy authentication and users).
-- phpMyAdmin (planned): SSO from the panel (signon auth), a separate FPM pool `monopanel-pma` on the newest installed PHP, served by the panel through a FastCGI client at `https://host:8443/pma/` — independent of the system nginx.
+- phpMyAdmin (0.9.1): a port of its own (2083 by default) with the panel's name and certificate, a separate FPM pool `monopanel-phpmyadmin` as `monopanel-pma` on the newest suitable PHP branch (7.4–8.5); sign in with the form as a database user or with the panel's button (signon, a temporary MySQL account on that database only) — [09](09-web-ui.md#databases).
 
 ## 5. OS Profile — OS differences in one place
 

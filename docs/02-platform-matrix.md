@@ -24,7 +24,7 @@
 | PHP (этап 2, планируется) | собственный репозиторий | собственный репозиторий | Сборочная ферма, раскладка `/opt/monopanel/php/<X.Y>`, одинаковая на всех ОС |
 | MySQL 8.4 LTS | MySQL APT repo (`mysql-apt-config`) | MySQL Yum repo (`mysql84-community-release-el9` / `-el10`) | Community Server 8.4.x |
 | Percona Server 8.4 LTS | `percona-release setup ps-84-lts` | `percona-release setup ps-84-lts` | + Percona XtraBackup 8.4, Percona Toolkit |
-| phpMyAdmin (планируется) | собственный пакет из upstream-tarball | собственный пакет | Дистрибутивные версии отстают |
+| phpMyAdmin 5.2.3 | upstream-tarball (sha256 закреплён в панели) | то же | Дистрибутивные версии отстают |
 | restic | дистрибутив | EPEL | Бэкапы: дедупликация, шифрование, local/SFTP/S3/B2/REST |
 | fail2ban | дистрибутив | EPEL | + фильтры панели |
 | Valkey | дистрибутив: `valkey-server` (Debian 13, Ubuntu 24.04/26.04; Debian 12 — backports), иначе `redis-server` (Ubuntu 22.04 — 6.0, Debian 12 без backports — 7.0) | AppStream: `valkey` (8.0) | Экземпляры на аккаунт, общий экземпляр пакета выключен, см. §9 |
@@ -110,7 +110,7 @@ systemd: monopanel-php-fpm@8.4.service
 - **Старые версии PHP**: в 8.4 плагин `mysql_native_password` выключен по умолчанию (удалён в 9.0). PHP < 7.4 (mysqlnd) не поддерживает `caching_sha2_password`. При наличии сайтов на PHP ≤ 7.3 панель включает `mysql_native_password=ON` и `authentication_policy=mysql_native_password,,` и создаёт пользователей таких сайтов с `IDENTIFIED WITH mysql_native_password`; остальные — `caching_sha2_password`. Одного плагина мало: без `authentication_policy` сервер в рукопожатии предлагает `caching_sha2_password`, и mysqlnd PHP 5.6/7.0 рвёт соединение ещё до смены метода — даже у аккаунта с `mysql_native_password`. После обновления панели конфиг таких серверов перерисовывается при старте API (MySQL перезапускается, только если файл изменился). Поле `db_users.auth_plugin` хранит выбор.
 - Бэкапы: дампы `mysqldump --single-transaction --routines --triggers --events` по базам. `mysqlsh util.dumpSchemas` (параллельно, быстрее на больших объёмах) и физические копии XtraBackup 8.4 всего сервера (Percona) — планируются.
 - Обновления в пределах 8.4.x — `mp stack upgrade db`, только по имени и не в ежедневном обновлении: перезапуск сервера — простой сайтов; конфигурация проверяется `mysqld --validate-config` до обновления и перед перезапуском. Переход на 9.x не автоматизируется (отдельная процедура с проверкой старой аутентификации и пользователей).
-- phpMyAdmin (планируется): вход из панели без пароля (signon-auth), отдельный пул FPM `monopanel-pma` на новейшей установленной ветке PHP, отдаётся панелью через FastCGI-клиент по адресу `https://host:8443/pma/` — не зависит от системного nginx.
+- phpMyAdmin (0.9.1): свой порт (по умолчанию 2083) с именем и сертификатом панели, отдельный пул FPM `monopanel-phpmyadmin` от `monopanel-pma` на новейшей подходящей ветке PHP (7.4–8.5); вход формой пользователем базы или кнопкой из панели (signon, временная учётка MySQL только на эту базу) — [09](09-web-ui.md#базы-данных).
 
 ## 5. OS Profile — различия ОС в одном месте
 
