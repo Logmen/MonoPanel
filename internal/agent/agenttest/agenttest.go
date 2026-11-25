@@ -83,6 +83,7 @@ type Agent struct {
 	busy      map[string]bool
 	shares    map[string]string
 	tools     []agent.ToolRequest
+	sets      []agent.ApplyConfigSetRequest
 	pma       []agent.PhpMyAdminRequest
 	runas     []agent.RunAsUserRequest
 	panel     []agent.PanelConfigRequest
@@ -472,6 +473,7 @@ func (a *Agent) respond(path string, body []byte) any {
 	case "/v1/config/apply":
 		var req agent.ApplyConfigSetRequest
 		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		a.sets = append(a.sets, req)
 		// Like the agent: the units to reload or restart pass the service
 		// policy before anything is written.
 		if err := agent.CheckReloads(req.Reload, req.Restart); err != nil {
@@ -1296,6 +1298,13 @@ func (a *Agent) PhpMyAdmin() []agent.PhpMyAdminRequest {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]agent.PhpMyAdminRequest{}, a.pma...)
+}
+
+// ConfigSets are the configuration sets applied so far, in order.
+func (a *Agent) ConfigSets() []agent.ApplyConfigSetRequest {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]agent.ApplyConfigSetRequest{}, a.sets...)
 }
 
 // Tools returns the recorded tool invocations.

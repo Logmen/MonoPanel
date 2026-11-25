@@ -17,7 +17,7 @@ func TestDefaultServersRefuseUnknownNamesOn443(t *testing.T) {
 	f := newSiteFixture(t)
 	f.s.SetHostIPs(func() []string { return []string{"203.0.113.10"} })
 	f.s.SetHostIPv6s(func() []string { return []string{"2001:db8::10"} })
-	files, err := f.s.nginxGlobalFiles(f.ctx)
+	files, _, err := f.s.nginxGlobalFiles(f.ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,5 +88,104 @@ func TestDefaultServersRefuseUnknownNamesOn443(t *testing.T) {
 	}
 	if len(defaults) != 4 || len(reuse) != 2 {
 		t.Errorf("default_server %v, reuseport %v", defaults, reuse)
+	}
+}
+
+// quicSites are the HTTP/3 sites of the QUIC tests: a certificate each,
+// HTTP/3 on, alex's.
+func quicSites(t *testing.T, f *siteFixture, domains ...string) {
+	t.Helper()
+	f.s.SetHostIPs(func() []string { return []string{"203.0.113.10"} })
+	for _, d := range domains {
+		cert, key := testCert(t, d)
+		f.call(http.MethodPost, "/certificates/import", map[string]any{"certificate": cert, "private_key": key}, http.StatusCreated, nil)
+		f.createSite(map[string]any{"domain": d, "user": "alex", "php_version": "8.4", "ssl": "auto", "ip": "203.0.113.10", "http3": true})
+	}
+}
+
+func (f *siteFixture) defaultQuic() bool {
+	conf, _ := f.agent.File("/etc/nginx/monopanel/http.d/ip-203.0.113.10.conf")
+	return strings.Contains(conf, "quic reuseport")
+}
+
+func (f *siteFixture) siteJob(method, path string, body any) {
+	f.t.Helper()
+	var out struct {
+		JobID int64 `json:"job_id"`
+	}
+	f.call(method, path, body, http.StatusAccepted, &out)
+	if job := f.waitJob(out.JobID); job.Status != "done" {
+		f.t.Fatalf("%s %s: %s %s", method, path, job.Status, job.Error)
+	}
+}
+
+// The default servers let the QUIC sockets go once the last site stops
+// serving HTTP/3 — turned off, or the site removed — not only at the API's
+// next start; while another still serves it they stay.
+func TestDefaultServersReleaseQUICWithTheLastHTTP3Site(t *testing.T) {
+	f := newSiteFixture(t)
+	quicSites(t, f, "a.example.com", "b.example.com")
+	if !f.defaultQuic() {
+		t.Fatal("no QUIC socket with two HTTP/3 sites")
+	}
+	f.siteJob(http.MethodPatch, "/sites/a.example.com", map[string]any{"http3": false})
+	if !f.defaultQuic() {
+		t.Error("the QUIC socket went while b still serves HTTP/3")
+	}
+	f.siteJob(http.MethodPatch, "/sites/b.example.com", map[string]any{"http3": false})
+	if f.defaultQuic() {
+		t.Error("the QUIC socket stays with no site on HTTP/3")
+	}
+	// On again, then the site removed.
+	f.siteJob(http.MethodPatch, "/sites/b.example.com", map[string]any{"http3": true})
+	if !f.defaultQuic() {
+		t.Fatal("no QUIC socket after HTTP/3 on again")
+	}
+	f.siteJob(http.MethodDelete, "/sites/b.example.com", nil)
+	if f.defaultQuic() {
+		t.Error("the QUIC socket stays after the last HTTP/3 site was removed")
+	}
+}
+
+// The account's removal takes its HTTP/3 sites' QUIC sockets along.
+func TestDefaultServersReleaseQUICWithTheAccount(t *testing.T) {
+	f := newSiteFixture(t)
+	quicSites(t, f, "a.example.com")
+	if !f.defaultQuic() {
+		t.Fatal("no QUIC socket")
+	}
+	f.siteJob(http.MethodDelete, "/users/alex", nil)
+	if f.defaultQuic() {
+		t.Error("the QUIC socket stays after the account went")
+	}
+}
+
+// A suspended HTTP/3 site serves no QUIC (its stub listens on TCP), so it
+// holds neither the sockets nor the firewall's port; an apply that changes
+// nothing writes no default servers, so nginx -t does not run for them.
+func TestDefaultServersQUICFollowsWhatNginxServes(t *testing.T) {
+	f := newSiteFixture(t)
+	quicSites(t, f, "a.example.com")
+	sets := func() int {
+		n := 0
+		for _, s := range f.agent.ConfigSets() {
+			if s.Origin == "stack:nginx" {
+				n++
+			}
+		}
+		return n
+	}
+	before := sets()
+	f.siteJob(http.MethodPost, "/sites/a.example.com/apply", nil)
+	if sets() != before {
+		t.Error("an apply with nothing to change wrote the default servers")
+	}
+	f.siteJob(http.MethodPost, "/sites/a.example.com/suspend", nil)
+	if f.defaultQuic() || f.s.anySiteHTTP3(f.ctx) {
+		t.Error("a suspended site keeps the QUIC socket")
+	}
+	f.siteJob(http.MethodPost, "/sites/a.example.com/unsuspend", nil)
+	if !f.defaultQuic() {
+		t.Error("no QUIC socket after the site came back")
 	}
 }

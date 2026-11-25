@@ -66,8 +66,11 @@ type Server struct {
 	started time.Time
 	limiter *loginLimiter
 	tls     *certHolder
-	acme    *acme.Manager
-	secrets *secrets.Box
+	// defaultQuic is what the default servers nginx has were last written
+	// with: 1 with the QUIC sockets, 0 without, -1 not known (syncHTTP3).
+	defaultQuic atomic.Int32
+	acme        *acme.Manager
+	secrets     *secrets.Box
 	// Readiness waits after a reload: systemd returns before php-fpm opens the
 	// pool socket and nginx drains its old workers. Zero skips the wait, which
 	// is what tests with a fake agent want.
@@ -285,6 +288,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	s.hostIPs = localIPv4s
 	s.hostIPv6s = localIPv6s
 	s.lookup = publicLookup
+	s.defaultQuic.Store(-1)
 	s.tls = newCertHolder(cfg, log)
 	s.tls.find = s.panelCoverFiles
 	if box, err := secrets.Open(cfg.SecretKeyFile); err == nil {

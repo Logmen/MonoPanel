@@ -252,10 +252,14 @@ func (s *Server) applyFirewall(ctx context.Context, extraPorts ...int) (*apitype
 	return s.firewallStatus(ctx)
 }
 
+// anySiteHTTP3 says whether a site serves HTTP/3 — as nginx does: http3 on,
+// a certificate to serve (site.conf.tmpl listens for QUIC only with TLS), not
+// suspended (the stub listens on TCP alone), not being removed. The default
+// servers' QUIC sockets and the firewall's udp/443 follow it.
 func (s *Server) anySiteHTTP3(ctx context.Context) bool {
 	sites, _ := s.db.ListSites(ctx, 0)
 	for _, site := range sites {
-		if site.HTTP3 {
+		if site.HTTP3 && site.SSL == "auto" && site.Status != store.SiteSuspended && site.Status != store.SiteDeleting && s.certForSite(ctx, site) != nil {
 			return true
 		}
 	}

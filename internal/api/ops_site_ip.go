@@ -259,12 +259,14 @@ func (s *Server) jobSitesMoveIP(ctx context.Context, jc *jobs.Context) error {
 	if gone := s.pruneDefaultServers(ctx); len(gone) > 0 {
 		jc.Logf("removed the default servers of addresses no longer on this server: %s", strings.Join(gone, ", "))
 	}
-	files, err := s.nginxGlobalFiles(ctx)
+	files, quic, err := s.nginxGlobalFiles(ctx)
 	if err == nil {
 		web := s.profile.Web()
 		// nginx may be down since boot: reload-or-restart brings it up.
 		if _, err = s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Validate: [][]string{web.NginxCheckArgv}, Reload: []string{web.NginxService}, Force: true, Origin: "stack:nginx"}); err != nil {
 			err = fmt.Errorf("default servers: %w", err)
+		} else {
+			s.defaultQuic.Store(quicFlag(quic))
 		}
 	}
 	if failed == nil {
