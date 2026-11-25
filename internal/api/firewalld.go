@@ -48,6 +48,29 @@ func (s *Server) firewalldAdd(ctx context.Context, ports ...string) (running boo
 	return true, nil
 }
 
+// firewalldHasPort reports whether a port ("443/udp") is open in firewalld
+// now (its exit code: 0 yes, 1 no).
+func (s *Server) firewalldHasPort(ctx context.Context, port string) bool {
+	res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "firewall-cmd", Args: []string{"-q", "--query-port=" + port}})
+	return err == nil && res.ExitCode == 0
+}
+
+// firewalldCloseHTTP3 closes UDP 443 in firewalld, permanently and at once —
+// the one port the panel closes there (the agent's policy says why).
+func (s *Server) firewalldCloseHTTP3(ctx context.Context) error {
+	res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "firewall-cmd", Args: []string{"-q", "--permanent", "--remove-port=443/udp"}})
+	if err == nil && res.ExitCode == 0 {
+		res, err = s.agent.Tool(ctx, &agent.ToolRequest{Name: "firewall-cmd", Args: []string{"-q", "--reload"}})
+	}
+	switch {
+	case err != nil:
+		return err
+	case res.ExitCode != 0:
+		return errors.New(strings.TrimSpace(res.Output))
+	}
+	return nil
+}
+
 // firewalldRunning reports whether firewalld is installed and active.
 func (s *Server) firewalldRunning(ctx context.Context) bool {
 	res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "firewall-cmd", Args: []string{"--state"}})

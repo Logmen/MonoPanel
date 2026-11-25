@@ -248,6 +248,8 @@ func TestToolPolicyAcceptsThePanelsCallsDebian(t *testing.T) {
 		{"firewalld state", tc(modeTool, "firewall-cmd", "--state")},
 		{"firewalld reload", tc(modeTool, "firewall-cmd", "-q", "--reload")},
 		{"firewalld ports", tc(modeTool, "firewall-cmd", "-q", "--permanent", "--add-port=80/tcp", "--add-port=443/tcp")},
+		{"firewalld query port", tc(modeTool, "firewall-cmd", "-q", "--query-port=443/udp")},
+		{"firewalld close http3", tc(modeTool, "firewall-cmd", "-q", "--permanent", "--remove-port=443/udp")},
 		// metrics.go, ops_apps.go
 		{"journal", tc(modeTool, "journalctl", "-u", "nginx.service", "-n", "200", "--no-pager", "-o", "short-iso")},
 		{"journal app", tc(modeTool, "journalctl", "-u", "monopanel-app-alex-web.service", "-n", "5000", "--no-pager", "-o", "short-iso")},
@@ -531,6 +533,13 @@ func TestToolPolicyRefusesTheRest(t *testing.T) {
 		{"firewalld port 0", tc(modeTool, "firewall-cmd", "-q", "--permanent", "--add-port=0/tcp")},
 		{"firewalld port big", tc(modeTool, "firewall-cmd", "-q", "--permanent", "--add-port=99999/tcp")},
 		{"firewalld no ports", tc(modeTool, "firewall-cmd", "-q", "--permanent")},
+		// The one port the API closes is UDP 443: never SSH's, never TCP.
+		{"firewalld close ssh", tc(modeTool, "firewall-cmd", "-q", "--permanent", "--remove-port=22/tcp")},
+		{"firewalld close https tcp", tc(modeTool, "firewall-cmd", "-q", "--permanent", "--remove-port=443/tcp")},
+		{"firewalld close at runtime", tc(modeTool, "firewall-cmd", "-q", "--remove-port=443/udp")},
+		{"firewalld close with more", tc(modeTool, "firewall-cmd", "-q", "--permanent", "--remove-port=443/udp", "--remove-port=22/tcp")},
+		{"firewalld close service", tc(modeTool, "firewall-cmd", "-q", "--permanent", "--remove-service=ssh")},
+		{"firewalld query and more", tc(modeTool, "firewall-cmd", "-q", "--query-port=443/udp", "--add-port=1/tcp")},
 		// postfix tools
 		{"postmap shadow", tc(modeTool, "postmap", "hash:/etc/shadow")},
 		{"postmap up", tc(modeTool, "postmap", "hash:/etc/postfix/../shadow")},

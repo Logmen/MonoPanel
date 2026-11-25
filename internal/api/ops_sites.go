@@ -1342,6 +1342,7 @@ func (s *Server) applySiteLocked(ctx context.Context, jc *jobs.Context, p sitePa
 	if site.HTTP3 && tls && !suspended {
 		s.quicDefaultServers(ctx, jc)
 	}
+	s.firewallHTTP3(ctx, jc.Logf)
 	if !apacheMode {
 		// nginx no longer sends the site to its account's Apache (it left
 		// Apache mode or is suspended): its virtual host goes there, and the
@@ -1675,6 +1676,8 @@ func (s *Server) jobSiteDelete(ctx context.Context, jc *jobs.Context) error {
 		return err
 	}
 	s.refreshFail2ban(ctx)
+	// The last site with HTTP/3 gone: what the panel opened for it closes.
+	s.firewallHTTP3(ctx, jc.Logf)
 	jc.Progress(100, "site removed")
 	return nil
 }

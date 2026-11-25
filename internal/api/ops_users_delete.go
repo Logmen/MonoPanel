@@ -299,6 +299,9 @@ func (s *Server) jobUserDelete(ctx context.Context, jc *jobs.Context) error {
 	}
 	// The account's sites are gone: their logs leave the fail2ban jails.
 	s.refreshFail2ban(ctx)
+	// Its sites gone, perhaps the last with HTTP/3: what the panel opened for
+	// them closes.
+	s.firewallHTTP3(ctx, jc.Logf)
 	jc.Progress(100, fmt.Sprintf("user %s deleted (%d sites, %d databases, %d apps)", u.Login, len(sites), len(dbs), len(apps)))
 	return nil
 }

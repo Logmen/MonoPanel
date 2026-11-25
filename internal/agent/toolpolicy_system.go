@@ -221,16 +221,24 @@ func (s *Server) planNft(c *toolCall) (*toolPlan, error) {
 	)
 }
 
-var firewalldPortRe = regexp.MustCompile(`^--add-port=([0-9]{1,5})/(tcp|udp)$`)
+var (
+	firewalldPortRe  = regexp.MustCompile(`^--add-port=([0-9]{1,5})/(tcp|udp)$`)
+	firewalldQueryRe = regexp.MustCompile(`^--query-port=([0-9]{1,5})/(tcp|udp)$`)
+)
 
-// planFirewallCmd: firewalld's state, opening the panel's ports for good and
-// a reload (internal/api/firewalld.go).
+// planFirewallCmd: firewalld's state, whether a port is open, opening the
+// panel's ports for good, closing UDP 443 the panel opened for HTTP/3, and a
+// reload (internal/api/firewalld.go). Closing goes no further: SSH never runs
+// on UDP, so the one port the API may close cannot lock anybody out.
 func (s *Server) planFirewallCmd(c *toolCall) (*toolPlan, error) {
 	if err := onlyTool(c); err != nil {
 		return nil, err
 	}
 	a := c.args
-	if equalArgs(a, []string{"--state"}) || equalArgs(a, []string{"-q", "--reload"}) {
+	if equalArgs(a, []string{"--state"}) || equalArgs(a, []string{"-q", "--reload"}) || equalArgs(a, []string{"-q", "--permanent", "--remove-port=443/udp"}) {
+		return &toolPlan{args: a}, nil
+	}
+	if len(a) == 2 && a[0] == "-q" && firewalldQueryRe.MatchString(a[1]) {
 		return &toolPlan{args: a}, nil
 	}
 	if len(a) >= 3 && a[0] == "-q" && a[1] == "--permanent" {

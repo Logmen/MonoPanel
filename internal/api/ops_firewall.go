@@ -193,7 +193,8 @@ func (s *Server) applyFirewall(ctx context.Context, extraPorts ...int) (*apitype
 	}
 	sort.Slice(ports, func(i, j int) bool { a, _ := strconv.Atoi(ports[i]); b, _ := strconv.Atoi(ports[j]); return a < b })
 	fw := render.Firewall{Policy: "drop", Allow: []string{"tcp dport { " + strings.Join(ports, ", ") + " } accept"}}
-	if s.anySiteHTTP3(ctx) {
+	http3 := s.anySiteHTTP3(ctx)
+	if http3 {
 		fw.Allow = append(fw.Allow, "udp dport 443 accept")
 	}
 	plan := planFirewall(rules)
@@ -235,6 +236,12 @@ func (s *Server) applyFirewall(ctx context.Context, extraPorts ...int) (*apitype
 	}
 	s.agent.Service(ctx, nftUnit, "start") //nolint:errcheck // best effort: the state is read back afterwards
 	s.db.SetSetting(ctx, settingFirewall, "yes")
+	// What this table opened for HTTP/3 (firewallHTTP3); firewalld is gone.
+	if http3 {
+		s.db.SetSetting(ctx, settingHTTP3Port, "nft") //nolint:errcheck // a port left open is harmless
+	} else {
+		s.db.SetSetting(ctx, settingHTTP3Port, "") //nolint:errcheck // a port left open is harmless
+	}
 	if fail2banStopped {
 		// firewalld took fail2ban down with it (PartOf); its bans live in its
 		// own nftables table, so it simply starts next to the panel's one.
@@ -258,6 +265,7 @@ func (s *Server) anySiteHTTP3(ctx context.Context) bool {
 func (s *Server) disableFirewall(ctx context.Context) error {
 	s.agent.Tool(ctx, &agent.ToolRequest{Name: "nft", Args: []string{"delete", "table", "inet", "monopanel"}}) //nolint:errcheck // best effort: the state is read back afterwards
 	s.agent.Service(ctx, nftUnit, "disable")                                                                   //nolint:errcheck // best effort: the state is read back afterwards
+	s.db.SetSetting(ctx, settingHTTP3Port, "")                                                                 //nolint:errcheck // the table with its udp/443 is gone
 	return s.db.SetSetting(ctx, settingFirewall, "no")
 }
 
