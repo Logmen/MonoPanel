@@ -597,6 +597,9 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 	if c := s.http3Check(actx); c != nil {
 		add(*c)
 	}
+	if c := s.cliPHPCheck(actx); c != nil {
+		add(*c)
+	}
 	add(s.kernelModulesCheck(container))
 	if h := s.cfg.Web.Hostname; h != "" {
 		addrs, err := s.lookup(actx, h)

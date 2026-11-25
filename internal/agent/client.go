@@ -164,9 +164,11 @@ func (c *Client) RemoveSiteLogs(ctx context.Context, req *RemoveSiteLogsRequest)
 	return &r, c.call(ctx, "/v1/sitelogs/remove", req, &r)
 }
 
-// EnsureSymlink creates a symlink in a client's home.
-func (c *Client) EnsureSymlink(ctx context.Context, req *EnsureSymlinkRequest) error {
-	return c.call(ctx, "/v1/symlink/ensure", req, nil)
+// EnsureSymlink creates a symlink in a client's home, or points it at the
+// target.
+func (c *Client) EnsureSymlink(ctx context.Context, req *EnsureSymlinkRequest) (*EnsureSymlinkResponse, error) {
+	var r EnsureSymlinkResponse
+	return &r, c.call(ctx, "/v1/symlink/ensure", req, &r)
 }
 
 // SetACL applies POSIX ACLs.

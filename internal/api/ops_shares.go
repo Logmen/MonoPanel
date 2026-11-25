@@ -222,7 +222,7 @@ func (s *Server) bindShare(ctx context.Context, sh *store.Share, target string, 
 	}
 	if b.link != "" {
 		s.clearStaleMountPoint(ctx, b.link)
-		if err := s.agent.EnsureSymlink(ctx, &agent.EnsureSymlinkRequest{Path: b.link, Target: b.mount, Owner: sh.Login}); err != nil {
+		if _, err := s.agent.EnsureSymlink(ctx, &agent.EnsureSymlinkRequest{Path: b.link, Target: b.mount, Owner: sh.Login}); err != nil {
 			return fmt.Errorf("the folder in the guest's home, %s (is the name taken there? pass another name): %w", b.link, err)
 		}
 	}

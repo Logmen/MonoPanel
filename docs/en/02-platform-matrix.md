@@ -91,7 +91,7 @@ Implemented (stage 1): `internal/osprofile/php.go` describes the Sury/Remi layou
 ### 3.4 PHP version for the CLI
 
 - Globally: `/usr/bin/php` → `update-alternatives` / `alternatives` pointing to the default version.
-- Per client: `/var/www/<user>/data/bin/php` → a symlink to the version of the client's main site; the directory is added to `PATH` through `/etc/profile.d/monopanel.sh`; the panel's cron jobs run with an explicit path to the selected version.
+- Per client: `/var/www/<user>/data/bin/php` → a symlink to the PHP branch of the client's sites (the newest when there are several; without sites on PHP, the newest installed). The link moves when the sites' branches change (a version switch, a site removed, a branch removed), and the job's log says so; `mp doctor` (the `cli php` line) warns while the link points at another branch or at nothing; the directory is added to `PATH` through `/etc/profile.d/monopanel.sh`; the panel's cron jobs run with an explicit path to the selected version.
 
 ## 4. Database servers
 

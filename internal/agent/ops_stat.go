@@ -31,6 +31,9 @@ func (s *Server) stat(_ context.Context, req *StatRequest) (*StatResponse, error
 			if sys, ok := st.Sys().(*syscall.Stat_t); ok {
 				e.UID, e.GID = int(sys.Uid), int(sys.Gid)
 			}
+			if st.Mode()&os.ModeSymlink != 0 {
+				e.Link, _ = os.Readlink(p)
+			}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}

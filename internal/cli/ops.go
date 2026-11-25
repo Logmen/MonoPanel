@@ -114,7 +114,7 @@ func cronCmd() *cobra.Command {
 		return nil
 	}}
 	add.Flags().StringVar(&req.Schedule, "schedule", "", T("расписание, например \"*/5 * * * *\" или @daily", "schedule, e.g. \"*/5 * * * *\" or @daily"))
-	add.Flags().StringVar(&req.Command, "command", "", T("команда (PATH начинается с ~/data/bin, где php — версия сайта)", "command (PATH starts with ~/data/bin, where php is the site's PHP version)"))
+	add.Flags().StringVar(&req.Command, "command", "", T("команда (PATH начинается с ~/data/bin, где php — ветка PHP сайтов аккаунта, самая новая из них)", "command (PATH starts with ~/data/bin, where php is the PHP branch of the account's sites, the newest of them)"))
 	add.Flags().StringVar(&req.Comment, "comment", "", T("комментарий", "comment"))
 	add.Flags().BoolVar(&disabled, "disabled", false, T("создать выключенным", "create it disabled"))
 	add.MarkFlagRequired("schedule")

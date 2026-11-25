@@ -1156,9 +1156,7 @@ func (s *Server) applySiteLocked(ctx context.Context, jc *jobs.Context, p sitePa
 		} else if res.Written {
 			jc.Logf("placeholder page: %s/%s", l.docroot, placeholderName)
 		}
-		if err := s.agent.EnsureSymlink(ctx, &agent.EnsureSymlinkRequest{Path: path.Join(l.data, "bin", "php"), Target: l.php.CLIBinary, Owner: login, OnlyIfMissing: true}); err != nil {
-			jc.Logf("warning: php CLI symlink: %v", err)
-		}
+		s.syncCLIPHP(ctx, jc.Logf, user)
 		if err := s.refreshPHPCLIIni(ctx, l.php); err != nil {
 			jc.Logf("warning: PHP CLI settings: %v", err)
 		}
@@ -1675,6 +1673,10 @@ func (s *Server) jobSiteDelete(ctx context.Context, jc *jobs.Context) error {
 	s.refreshFail2ban(ctx)
 	// The last site with HTTP/3 gone: its QUIC sockets and udp/443 go too.
 	s.syncHTTP3(ctx, jc.Logf)
+	// The only site on the newest branch gone: cron follows the others.
+	if site.Mode != store.ModeProxy && site.PHPVersion != "" {
+		s.syncCLIPHP(ctx, jc.Logf, user)
+	}
 	jc.Progress(100, "site removed")
 	return nil
 }

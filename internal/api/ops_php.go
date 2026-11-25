@@ -688,6 +688,8 @@ func (s *Server) jobPHPRemove(ctx context.Context, jc *jobs.Context) error {
 		}
 		logTail(jc, res.Output, 3)
 	}
+	// Before the row goes: the log names the branch the links were on.
+	s.relinkCLIPHP(ctx, jc.Logf, layout)
 	if err := s.db.DeletePHPVersion(context.WithoutCancel(ctx), p.Version); err != nil {
 		return err
 	}

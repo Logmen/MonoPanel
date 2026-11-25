@@ -949,8 +949,8 @@ func (a *Agent) respond(path string, body []byte) any {
 					if !rootsAlone(agent.DirSpec{Owner: d.Owner}) || a.mountedOn(filepath.Clean(p)) {
 						e.UID, e.GID = 1500, 1500
 					}
-				} else if _, ok := a.symlinks[filepath.Clean(p)]; ok {
-					e.Exists, e.Mode, e.UID, e.GID = true, "Lrwxrwxrwx", 1500, 1500
+				} else if t, ok := a.symlinks[filepath.Clean(p)]; ok {
+					e.Exists, e.Mode, e.UID, e.GID, e.Link = true, "Lrwxrwxrwx", 1500, 1500, t
 				}
 			}
 			entries = append(entries, e)
@@ -988,10 +988,12 @@ func (a *Agent) respond(path string, body []byte) any {
 		if _, dir := a.dirSpecs[p]; dir {
 			return &agent.Error{Status: http.StatusForbidden, Message: "exists and is not a symlink: " + p}
 		}
-		if _, had := a.symlinks[p]; !had || !req.OnlyIfMissing {
-			a.symlinks[p] = req.Target
+		was, had := a.symlinks[p]
+		if had && was == req.Target {
+			return agent.EnsureSymlinkResponse{}
 		}
-		return map[string]any{}
+		a.symlinks[p] = req.Target
+		return agent.EnsureSymlinkResponse{Changed: true, Was: was}
 
 	case "/v1/user/password":
 		// A hash set with chpasswd -e is what UnixShadow reads back later.

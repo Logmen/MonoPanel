@@ -272,11 +272,17 @@ type RemoveSiteLogsResponse struct {
 
 // EnsureSymlinkRequest creates or updates a symlink (below WWWRoot).
 type EnsureSymlinkRequest struct {
-	Path          string `json:"path"`
-	Target        string `json:"target"`
-	Owner         string `json:"owner"`
-	Group         string `json:"group,omitempty"`
-	OnlyIfMissing bool   `json:"only_if_missing,omitempty"`
+	Path   string `json:"path"`
+	Target string `json:"target"`
+	Owner  string `json:"owner"`
+	Group  string `json:"group,omitempty"`
+}
+
+// EnsureSymlinkResponse says whether the link was made or pointed elsewhere
+// (Was, the target it had then).
+type EnsureSymlinkResponse struct {
+	Changed bool   `json:"changed"`
+	Was     string `json:"was,omitempty"`
 }
 
 // SetACLRequest applies POSIX ACL entries with setfacl.
@@ -396,6 +402,7 @@ type StatEntry struct {
 	UID     int    `json:"uid"`
 	GID     int    `json:"gid"`
 	ModTime string `json:"mod_time,omitempty"`
+	Link    string `json:"link,omitempty"` // a symlink's target
 }
 
 // StatResponse lists the entries.

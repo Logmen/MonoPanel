@@ -670,23 +670,24 @@ func (a *Agent) ensureFile(_ context.Context, req *agent.EnsureFileRequest) (*ag
 	return &agent.EnsureFileResponse{Written: written}, nil
 }
 
-func (a *Agent) ensureSymlink(_ context.Context, req *agent.EnsureSymlinkRequest) (*struct{}, error) {
+func (a *Agent) ensureSymlink(_ context.Context, req *agent.EnsureSymlinkRequest) (*agent.EnsureSymlinkResponse, error) {
 	if a.real(req.Path) {
-		if _, err := os.Lstat(req.Path); err == nil {
-			if req.OnlyIfMissing {
-				return &struct{}{}, nil
+		was, err := os.Readlink(req.Path)
+		if err == nil {
+			if was == req.Target {
+				return &agent.EnsureSymlinkResponse{}, nil
 			}
 			_ = os.Remove(req.Path)
 		}
 		if err := os.MkdirAll(filepath.Dir(req.Path), 0o755); err != nil {
 			return nil, err
 		}
-		return &struct{}{}, os.Symlink(req.Target, req.Path)
+		return &agent.EnsureSymlinkResponse{Changed: true, Was: was}, os.Symlink(req.Target, req.Path)
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.put(req.Path, "", 0o777)
-	return &struct{}{}, nil
+	return &agent.EnsureSymlinkResponse{Changed: true}, nil
 }
 
 func (a *Agent) removePaths(_ context.Context, req *agent.RemovePathsRequest) (*agent.RemovePathsResponse, error) {

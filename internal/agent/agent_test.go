@@ -247,18 +247,32 @@ func TestHomeFileOps(t *testing.T) {
 	if _, err := cl.EnsureFile(ctx, &EnsureFileRequest{Path: "/tmp/outside", Content: "x", Owner: me}); err == nil {
 		t.Fatal("outside www root must be refused")
 	}
-	if err := cl.EnsureSymlink(ctx, &EnsureSymlinkRequest{Path: filepath.Join(www, "alex", "data", "bin-php"), Target: "/usr/bin/php8.4", Owner: me}); err != nil {
-		t.Fatal(err)
+	link := filepath.Join(www, "alex", "data", "bin-php")
+	if res, err := cl.EnsureSymlink(ctx, &EnsureSymlinkRequest{Path: link, Target: "/usr/bin/php8.4", Owner: me}); err != nil || !res.Changed || res.Was != "" {
+		t.Fatalf("new link: %+v %v", res, err)
 	}
-	if target, _ := os.Readlink(filepath.Join(www, "alex", "data", "bin-php")); target != "/usr/bin/php8.4" {
+	if target, _ := os.Readlink(link); target != "/usr/bin/php8.4" {
 		t.Fatalf("symlink target %q", target)
 	}
-	// Every site apply ensures the link again: an existing one is fine, a
-	// link in a directory above it is not.
-	if err := cl.EnsureSymlink(ctx, &EnsureSymlinkRequest{Path: filepath.Join(www, "alex", "data", "bin-php"), Target: "/usr/bin/php8.4", Owner: me, OnlyIfMissing: true}); err != nil {
-		t.Fatalf("existing link: %v", err)
+	// Every site apply ensures the link again: the same target changes
+	// nothing, another replaces it in one rename and says what it was; a
+	// link in a directory above it is refused.
+	if res, err := cl.EnsureSymlink(ctx, &EnsureSymlinkRequest{Path: link, Target: "/usr/bin/php8.4", Owner: me}); err != nil || res.Changed {
+		t.Fatalf("existing link: %+v %v", res, err)
 	}
-	if err := cl.EnsureSymlink(ctx, &EnsureSymlinkRequest{Path: filepath.Join(www, "alex", "data", "www", "evil", "x"), Target: "/usr/bin/php8.4", Owner: me}); err == nil {
+	if res, err := cl.EnsureSymlink(ctx, &EnsureSymlinkRequest{Path: link, Target: "/usr/bin/php8.5", Owner: me}); err != nil || !res.Changed || res.Was != "/usr/bin/php8.4" {
+		t.Fatalf("replaced link: %+v %v", res, err)
+	}
+	if target, _ := os.Readlink(link); target != "/usr/bin/php8.5" {
+		t.Fatalf("replaced symlink target %q", target)
+	}
+	if _, err := os.Lstat(filepath.Join(www, "alex", "data", ".bin-php.mp-new")); !os.IsNotExist(err) {
+		t.Fatalf("temporary link left behind: %v", err)
+	}
+	if st, err := cl.Stat(ctx, link); err != nil || st.Entries[0].Link != "/usr/bin/php8.5" {
+		t.Fatalf("stat of the link: %+v %v", st, err)
+	}
+	if _, err := cl.EnsureSymlink(ctx, &EnsureSymlinkRequest{Path: filepath.Join(www, "alex", "data", "www", "evil", "x"), Target: "/usr/bin/php8.4", Owner: me}); err == nil {
 		t.Fatal("a link through a symlinked directory must be refused")
 	}
 	if _, err := cl.RemovePaths(ctx, &RemovePathsRequest{Paths: []string{filepath.Join(www, "alex", "data")}, Recursive: true}); err == nil {

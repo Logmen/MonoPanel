@@ -235,7 +235,7 @@ func primaryGID(login string) int {
 	return -1
 }
 
-func (s *Server) ensureSymlink(_ context.Context, req *EnsureSymlinkRequest) (*struct{}, error) {
+func (s *Server) ensureSymlink(_ context.Context, req *EnsureSymlinkRequest) (*EnsureSymlinkResponse, error) {
 	if req.Owner == "" || req.Target == "" {
 		return nil, &Error{Status: http.StatusBadRequest, Message: "owner and target are required"}
 	}
@@ -282,12 +282,25 @@ func (s *Server) ensureSymlink(_ context.Context, req *EnsureSymlinkRequest) (*s
 			return nil, &Error{Status: http.StatusForbidden, Message: "exists and is not a symlink: " + p}
 		}
 		buf := make([]byte, unix.PathMax)
-		if n, err := unix.Readlinkat(w.fd, name, buf); err == nil && (string(buf[:n]) == req.Target || req.OnlyIfMissing) {
-			return &struct{}{}, nil
+		was := ""
+		if n, err := unix.Readlinkat(w.fd, name, buf); err == nil {
+			if was = string(buf[:n]); was == req.Target {
+				return &EnsureSymlinkResponse{}, nil
+			}
 		}
-		if err := unix.Unlinkat(w.fd, name, 0); err != nil {
+		// Replaced in one rename: a cron job that starts meanwhile finds
+		// the old link or the new one, never none (data/bin/php).
+		tmp := "." + name + ".mp-new"
+		_ = unix.Unlinkat(w.fd, tmp, 0)
+		if err := unix.Symlinkat(req.Target, w.fd, tmp); err != nil {
+			return nil, &Error{Message: "symlink " + p, Output: err.Error()}
+		}
+		_ = unix.Fchownat(w.fd, tmp, uid, gid, unix.AT_SYMLINK_NOFOLLOW)
+		if err := unix.Renameat(w.fd, tmp, w.fd, name); err != nil {
+			_ = unix.Unlinkat(w.fd, tmp, 0)
 			return nil, &Error{Message: "replace " + p, Output: err.Error()}
 		}
+		return &EnsureSymlinkResponse{Changed: true, Was: was}, nil
 	case !errors.Is(err, unix.ENOENT):
 		return nil, &Error{Message: "stat " + p, Output: err.Error()}
 	}
@@ -295,7 +308,7 @@ func (s *Server) ensureSymlink(_ context.Context, req *EnsureSymlinkRequest) (*s
 		return nil, &Error{Message: "symlink " + p, Output: err.Error()}
 	}
 	_ = unix.Fchownat(w.fd, name, uid, gid, unix.AT_SYMLINK_NOFOLLOW)
-	return &struct{}{}, nil
+	return &EnsureSymlinkResponse{Changed: true}, nil
 }
 
 var (
