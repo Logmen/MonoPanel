@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -162,5 +163,41 @@ func TestMigrationTakesASharedWildcardOnce(t *testing.T) {
 		if why := v.why(&b.Certificates[i]); why != "" {
 			t.Errorf("%s: %s", b.Certificates[i].Name, why)
 		}
+	}
+}
+
+// The removal of an account takes the certificates named after its sites
+// only once nothing serves them: a wildcard named after alex's site still
+// serves bob's site under it, and stays; one only alex's site served goes.
+func TestAccountRemovalKeepsACertificateOthersServe(t *testing.T) {
+	f := newSiteFixture(t)
+	uid, gid := 1501, 1501
+	if err := f.db.CreateUser(f.ctx, &store.User{Login: "bob", Role: store.RoleUser, Status: store.UserActive, UnixUID: &uid, UnixGID: &gid, Home: "/var/www/bob", Shell: true}); err != nil {
+		t.Fatal(err)
+	}
+	f.createSite(map[string]any{"domain": "wild.example.com", "user": "alex", "php_version": "8.4", "ssl": "auto"})
+	f.createSite(map[string]any{"domain": "solo.example.com", "user": "alex", "php_version": "8.4", "ssl": "auto"})
+	kz := f.createSite(map[string]any{"domain": "kz.wild.example.com", "user": "bob", "php_version": "8.4", "ssl": "auto"})
+	cert, key := testCert(t, "*.wild.example.com", "wild.example.com")
+	var c store.Certificate
+	f.call(http.MethodPost, "/certificates/import", map[string]any{"name": "wild.example.com", "certificate": cert, "private_key": key}, http.StatusCreated, &c)
+	scert, skey := testCert(t, "solo.example.com")
+	var sc store.Certificate
+	f.call(http.MethodPost, "/certificates/import", map[string]any{"certificate": scert, "private_key": skey}, http.StatusCreated, &sc)
+	var del apitypes.JobRef
+	f.call(http.MethodDelete, "/users/alex", nil, http.StatusAccepted, &del)
+	if job := f.waitJob(del.JobID); job.Status != store.JobDone {
+		t.Fatalf("alex's removal: %s %s", job.Status, job.Error)
+	}
+	if got, err := f.db.GetCertificate(f.ctx, c.ID); err != nil {
+		t.Fatalf("the wildcard bob's site serves went: %v", err)
+	} else if _, err := os.Stat(got.CertPath); err != nil {
+		t.Errorf("its files went: %v", err)
+	}
+	if got, _ := f.db.GetSite(f.ctx, kz.ID); got.CertificateID == nil || *got.CertificateID != c.ID {
+		t.Errorf("bob's site lost its certificate: %v", got.CertificateID)
+	}
+	if _, err := f.db.GetCertificate(f.ctx, sc.ID); err == nil {
+		t.Error("the certificate only alex's site served stayed")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -128,27 +129,46 @@ func (s *Server) jobUserDelete(ctx context.Context, jc *jobs.Context) error {
 	if p.Purge && u.UnixUID != nil {
 		tree = treeWithHome
 	}
+	// The certificates named after the sites go once the sites are gone:
+	// another site may serve one (a wildcard, a name among its names) —
+	// a site of this account removed later in the loop, whose configuration
+	// still names its files, or another account's.
+	var certs []*store.Certificate
+	seenCert := map[int64]bool{}
 	for _, site := range sites {
 		if err := s.removeSiteConfig(ctx, jc, site, u, tree); err != nil {
 			return fail(fmt.Errorf("site %s: %w", site.Domain, err))
 		}
 		for _, name := range append([]string{site.Domain}, site.Aliases...) {
 			c, err := s.db.GetCertificateByName(ctx, name)
-			if err != nil || c.Name == s.cfg.Web.Hostname {
+			if err != nil || c.Name == s.cfg.Web.Hostname || seenCert[c.ID] {
 				continue
 			}
-			if err := s.acme.Remove(c.Name); err != nil {
-				jc.Logf("certificate %s: files not removed: %v", c.Name, err)
-			}
-			if err := s.db.DeleteCertificate(ctx, c.ID); err == nil {
-				jc.Logf("certificate %s removed", c.Name)
-			}
+			seenCert[c.ID] = true
+			certs = append(certs, c)
 		}
 		// The site's own site.delete, which runs beside this job under a
 		// key of its own, may have taken the row while this job waited for
 		// the site's lock: nothing is left to delete then.
 		if err := s.db.DeleteSite(ctx, site.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
 			return fail(err)
+		}
+	}
+	for _, c := range certs {
+		s.decorateCertUsage(ctx, []*store.Certificate{c})
+		users := c.UsedBySites
+		if c.UsedByPanel {
+			users = append(users, "the panel")
+		}
+		if len(users) > 0 {
+			jc.Logf("certificate %s kept: %s still serve it", c.Name, strings.Join(users, ", "))
+			continue
+		}
+		if err := s.acme.Remove(c.Name); err != nil {
+			jc.Logf("certificate %s: files not removed: %v", c.Name, err)
+		}
+		if err := s.db.DeleteCertificate(ctx, c.ID); err == nil {
+			jc.Logf("certificate %s removed", c.Name)
 		}
 	}
 

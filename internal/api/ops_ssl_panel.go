@@ -55,9 +55,9 @@ func (s *Server) noPanelHostname() error {
 	return huma.Error422UnprocessableEntity("the panel has no hostname to certify: set one first (mp config set web.hostname panel.example.com --restart)")
 }
 
-// certUsers reports which sites serve each certificate: by reference, and by
-// name for auto-SSL sites that have not been re-applied since their
-// certificate arrived.
+// certUsers reports which sites serve each certificate: by reference, and
+// for auto-SSL sites that have not been re-applied since their certificate
+// arrived, by name — or the certificate their apply takes (a wildcard).
 func (s *Server) certUsers(ctx context.Context) (byID map[int64][]string, byName map[string][]string) {
 	byID, byName = map[int64][]string{}, map[string][]string{}
 	sites, err := s.db.ListSites(ctx, 0)
@@ -73,6 +73,9 @@ func (s *Server) certUsers(ctx context.Context) (byID map[int64][]string, byName
 			byID[*site.CertificateID] = append(byID[*site.CertificateID], site.Domain)
 		case site.SSL == "auto":
 			byName[site.Domain] = append(byName[site.Domain], site.Domain)
+			if c := s.certForSite(ctx, site); c != nil && c.Name != site.Domain {
+				byID[c.ID] = append(byID[c.ID], site.Domain)
+			}
 		}
 	}
 	return byID, byName
