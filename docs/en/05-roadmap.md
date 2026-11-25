@@ -261,6 +261,9 @@ This is the project log by stage and date: what is done, what is verified and wh
 ### Mail policy (2026-11-22)
 - [x] No account sends mail as another account's domain: the milter `monopanel-mailpolicy` (the same binary, a user of its own without privileges, a socket systemd holds) answers postfix before opendkim and refuses a message whose envelope or From is in another account's domain (550 5.7.1); it checks mailboxes on 587/465, sendmail by the sender's uid and SMTP from the server's addresses by the socket's uid; while the policy does not answer, mail waits (`default_action=tempfail`). Before 0.9.0 such a message left, and opendkim signed it with the other domain's key. On EL `monopanel-mailguard` closes the milter ports 8890 and 8891 to everyone but root and postfix. Sieve redirects leave with the forwarding mailbox as envelope sender, vacation replies with the mailbox; a mail domain cannot be taken as a site or an alias of another account; opendkim's `TrustedHosts` are the server's addresses only. The `mail policy` line of `mp doctor`; on a downgrade below 0.9.0 the package's script takes the policy out of `main.cf` ([06 §11](06-mail.md#11-mail-policy)).
 
+### HTTP/3 and the firewall (0.9.4, 2026-11-25)
+- [x] A site with HTTP/3 opens UDP 443 in the panel's firewall or a running firewalld; once no site serves HTTP/3, the panel closes what it opened itself. `mp doctor`: an `http3` line that warns while the port is closed.
+
 ### A default server on 443 (0.9.3, 2026-11-25)
 - [x] Every address has a default server on 443 too: a name no site has and a client without SNI get a refused TLS handshake (`ssl_reject_handshake`), not the first site in file order with its certificate. The QUIC socket with `reuseport` comes once HTTP/3 is on for any site.
 
