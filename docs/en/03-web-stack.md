@@ -74,7 +74,7 @@ Configs:
 ```
 /etc/nginx/nginx.conf                          panel template (worker_processes auto, http{} with include)
 /etc/nginx/monopanel/http.d/*.conf             global: ssl defaults, gzip/brotli, maps, limit zones, log format,
-                                               ip-<ip>.conf — default-server per IP (acme, quic reuseport, 444 to unknown names)
+                                               ip-<ip>.conf — default-server per IP (acme, 444 and a refused TLS handshake to unknown names, quic reuseport)
 /etc/nginx/monopanel/snippets/*.conf           snippets: fastcgi, static-cache, deny-dotfiles, acme, ssl, proxy-apache
 /etc/nginx/monopanel/sites/<domain>.conf       the site's generated server{}
 /etc/nginx/monopanel/sites/<domain>.d/*.conf   user includes inside server{} — never overwritten
@@ -143,7 +143,7 @@ Mode B differs in its location blocks: static files matched by an extension rege
 
 HTTP/3: `listen … quic reuseport` is allowed once per IP:port, so the panel keeps a separate default-server for each IP (`http.d/ip-<ip>.conf`) with `reuseport`, and sites declare `quic` without it. It also answers ACME challenges and closes connections for unknown domains — see the next paragraph.
 
-The default server on each address (`http.d/ip-<address>.conf`) accepts ACME validations, redirects the panel's own name without a port to the panel's HTTPS port (`http://panel.example.com/` → `https://panel.example.com:8443/`), and closes everything else without a response (444). If the panel's name has a site of its own, the site wins: an exact `server_name` in nginx takes precedence over the default block. The files are regenerated when the API starts, so a change of `web.hostname` reaches nginx after `--restart`.
+The default server on each address (`http.d/ip-<address>.conf`) accepts ACME validations, redirects the panel's own name without a port to the panel's HTTPS port (`http://panel.example.com/` → `https://panel.example.com:8443/`), and closes everything else without a response (444). On 443 it (since 0.9.3) refuses the TLS handshake of a name no site has and of a client without SNI (`ssl_reject_handshake on`, no certificate needed): nginx would otherwise answer them with the address's first site in file order, certificate and all. It holds the QUIC socket with `reuseport` (nginx takes it once per address and port) once HTTP/3 is on for any site. If the panel's name has a site of its own, the site wins: an exact `server_name` in nginx takes precedence over the default block. The files are regenerated when the API starts, so a change of `web.hostname` reaches nginx after `--restart`.
 
 ## 4. Apache template (mode B)
 

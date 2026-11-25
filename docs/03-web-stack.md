@@ -74,7 +74,7 @@ Apache аккаунта отвечает только nginx. Каждый зап
 ```
 /etc/nginx/nginx.conf                          шаблон панели (worker_processes auto, http{} с include)
 /etc/nginx/monopanel/http.d/*.conf             глобальные: ssl defaults, gzip/brotli, maps, limit zones, log format,
-                                               ip-<ip>.conf — default-server на IP (acme, quic reuseport, 444 чужим именам)
+                                               ip-<ip>.conf — default-server на IP (acme, 444 и отказ TLS чужим именам, quic reuseport)
 /etc/nginx/monopanel/snippets/*.conf           фрагменты: fastcgi, static-cache, deny-dotfiles, acme, ssl, proxy-apache
 /etc/nginx/monopanel/sites/<domain>.conf       сгенерированный server{} сайта
 /etc/nginx/monopanel/sites/<domain>.d/*.conf   пользовательские include внутри server{} — не перезаписываются
@@ -143,7 +143,7 @@ server {
 
 HTTP/3: `listen … quic reuseport` допускается один раз на IP:порт, поэтому панель держит на каждый IP отдельный default-server (`http.d/ip-<ip>.conf`) с `reuseport`, а сайты объявляют `quic` без него. Он же принимает ACME-проверки и закрывает соединения к неизвестным доменам — об этом абзац ниже.
 
-Сервер по умолчанию на каждом адресе (`http.d/ip-<адрес>.conf`) принимает ACME-проверки, имя самой панели без порта перенаправляет на её HTTPS-порт (`http://panel.example.com/` → `https://panel.example.com:8443/`), а всё остальное закрывает без ответа (444). Если у имени панели есть свой сайт, побеждает сайт: точное `server_name` в nginx старше блока по умолчанию. Файлы перегенерируются при старте API, так что смена `web.hostname` доезжает до nginx после `--restart`.
+Сервер по умолчанию на каждом адресе (`http.d/ip-<адрес>.conf`) принимает ACME-проверки, имя самой панели без порта перенаправляет на её HTTPS-порт (`http://panel.example.com/` → `https://panel.example.com:8443/`), а всё остальное закрывает без ответа (444). На 443 он же (с 0.9.3) обрывает TLS-рукопожатие для имени, которого нет ни у одного сайта, и для клиента без SNI (`ssl_reject_handshake on`, сертификат не нужен): иначе nginx отвечал бы им первым по алфавиту сайтом адреса вместе с его сертификатом. Сокет QUIC с `reuseport` (nginx берёт его один раз на адрес и порт) появляется в нём, когда HTTP/3 включён хотя бы у одного сайта. Если у имени панели есть свой сайт, побеждает сайт: точное `server_name` в nginx старше блока по умолчанию. Файлы перегенерируются при старте API, так что смена `web.hostname` доезжает до nginx после `--restart`.
 
 ## 4. Шаблон Apache (режим B)
 

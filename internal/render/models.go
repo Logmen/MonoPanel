@@ -9,7 +9,11 @@ type NginxMain struct {
 
 // IPDefault feeds nginx/ip-default.conf.tmpl (one per IP address).
 type IPDefault struct {
-	IP       string
+	IP string
+	// TLS adds the port 443 block that refuses unknown names
+	// (ssl_reject_handshake: it needs no certificate, CertPath is optional);
+	// HTTP3 gives it the address's QUIC socket with reuseport, which nginx
+	// takes once per address and port.
 	TLS      bool
 	HTTP3    bool
 	CertPath string

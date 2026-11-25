@@ -259,7 +259,7 @@ func (s *Server) jobSitesMoveIP(ctx context.Context, jc *jobs.Context) error {
 	if gone := s.pruneDefaultServers(ctx); len(gone) > 0 {
 		jc.Logf("removed the default servers of addresses no longer on this server: %s", strings.Join(gone, ", "))
 	}
-	files, err := s.nginxGlobalFiles()
+	files, err := s.nginxGlobalFiles(ctx)
 	if err == nil {
 		web := s.profile.Web()
 		// nginx may be down since boot: reload-or-restart brings it up.
