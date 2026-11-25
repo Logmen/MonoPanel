@@ -1471,8 +1471,13 @@ var certSANRe = regexp.MustCompile(`^[a-z0-9*][a-z0-9*.:-]{0,252}$`)
 func (s *Server) vetCerts(ctx context.Context, v *migrateVet, b *apitypes.MigrationBundle, siteNames map[string]bool) {
 	seen := map[string]bool{}
 	own := s.panelNames(ctx)
+	// The custom certificates let in, by fingerprint: a source serves one
+	// file (a wildcard) on several sites, and it arrives once (sameCerts).
+	prints := map[string][]*apitypes.MigrationCert{}
+	var order []string
 	for i := range b.Certificates {
 		mc := &b.Certificates[i]
+		fp := ""
 		target := shown(mc.Name)
 		if mc.Name != acme.NormalizeName(mc.Name) || acme.ValidateNameDNS(mc.Name) != nil {
 			v.refuse(mc, "cert", target, "the certificate name is not a valid hostname")
@@ -1501,6 +1506,7 @@ func (s *Server) vetCerts(ctx context.Context, v *migrateVet, b *apitypes.Migrat
 			mc.Names = info.Names
 			na := info.NotAfter
 			mc.NotAfter = &na
+			fp = info.Fingerprint
 			if !strings.Contains(strings.ToLower(info.IssuerOrg), "let's encrypt") {
 				mc.Kind, mc.AutoRenew = store.CertKindCustom, false
 			}
@@ -1520,7 +1526,7 @@ func (s *Server) vetCerts(ctx context.Context, v *migrateVet, b *apitypes.Migrat
 			v.skip(mc, "cert", mc.Name, "the certificate is not installed: it is not for a site that arrives", "")
 			continue
 		}
-		if !containsName(mc.Names, mc.Name) && len(mc.Names) > 0 {
+		if !certCovers(mc.Names, mc.Name) && len(mc.Names) > 0 {
 			v.skip(mc, "cert", mc.Name, "the certificate is not installed: it does not cover its own name", "")
 			continue
 		}
@@ -1545,6 +1551,36 @@ func (s *Server) vetCerts(ctx context.Context, v *migrateVet, b *apitypes.Migrat
 		}
 		if mc.Kind == store.CertKindACME {
 			mc.Names = acmeNames(mc.Names, func(n string) bool { return siteNames[n] })
+		} else if fp != "" {
+			if prints[fp] == nil {
+				order = append(order, fp)
+			}
+			prints[fp] = append(prints[fp], mc)
+		}
+	}
+	for _, fp := range order {
+		sameCerts(v, prints[fp])
+	}
+}
+
+// sameCerts keeps one record of a certificate several sites of a source
+// serve: the one whose name the certificate carries (the shortest), else the
+// first. The others' sites are served by it all the same — it covers their
+// names, and an account's certificate serves its own sites (certForSite) —
+// and a renewal imported once reaches them all.
+func sameCerts(v *migrateVet, certs []*apitypes.MigrationCert) {
+	if len(certs) < 2 {
+		return
+	}
+	keep := certs[0]
+	for _, mc := range certs[1:] {
+		if containsName(mc.Names, mc.Name) && (!containsName(keep.Names, keep.Name) || len(mc.Name) < len(keep.Name)) {
+			keep = mc
+		}
+	}
+	for _, mc := range certs {
+		if mc != keep {
+			v.skip(mc, "cert", mc.Name, "the same certificate arrives as "+keep.Name+", which serves this site too", "")
 		}
 	}
 }

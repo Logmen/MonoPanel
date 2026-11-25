@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -114,6 +115,38 @@ func ValidateNameDNS(name string) error {
 // NormalizeName lowercases and trims a hostname.
 func NormalizeName(name string) string {
 	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(name), "."))
+}
+
+// NameCovers says whether a name a certificate carries covers host, by the
+// rules browsers follow (RFC 6125 §6.4.3, CA/B Baseline Requirements): the
+// same name, or "*." and a suffix with exactly one label in place of the
+// star — *.example.com covers www.example.com, not example.com and not
+// a.b.example.com. A star inside a label (f*.example.com) covers nothing,
+// and no wildcard covers an address.
+func NameCovers(pattern, host string) bool {
+	p, h := NormalizeName(pattern), NormalizeName(host)
+	if p == "" || h == "" {
+		return false
+	}
+	if p == h {
+		return !strings.Contains(p, "*")
+	}
+	rest, ok := strings.CutPrefix(p, "*")
+	if !ok || !strings.HasPrefix(rest, ".") || strings.Contains(rest, "*") || len(rest) < 2 || net.ParseIP(h) != nil {
+		return false
+	}
+	label, ok := strings.CutSuffix(h, rest)
+	return ok && label != "" && !strings.ContainsAny(label, ".*")
+}
+
+// CertCovers says whether any of a certificate's names covers host.
+func CertCovers(names []string, host string) bool {
+	for _, n := range names {
+		if NameCovers(n, host) {
+			return true
+		}
+	}
+	return false
 }
 
 type account struct {

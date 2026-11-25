@@ -92,7 +92,7 @@ func (s *Server) importCertificatePEM(ctx context.Context, p *principal, req api
 			name = acme.NormalizeName(info.Subject)
 		}
 	}
-	if !containsName(names, name) {
+	if !certCovers(names, name) {
 		return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("certificate does not cover %s (names: %s)", name, strings.Join(names, ", ")))
 	}
 	if time.Now().After(info.NotAfter) {
@@ -149,5 +149,8 @@ func (s *Server) importCertificatePEM(ctx context.Context, p *principal, req api
 		}
 	}
 	s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "cert.import", Target: name, IP: requestInfo(ctx).IP, Details: map[string]any{"names": names, "issuer": info.Issuer, "auto_renew": auto}})
+	// The answer says which sites took it: a wildcard goes to the sites it
+	// covers (reapplySitesForCert), not to every name under it.
+	s.decorateCertUsage(ctx, []*store.Certificate{c})
 	return c, nil
 }

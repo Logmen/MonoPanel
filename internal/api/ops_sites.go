@@ -764,25 +764,66 @@ func (s *Server) siteFail(ctx context.Context, site *store.Site, err error) erro
 	return err
 }
 
-// certForSite returns a valid certificate covering the site, if any.
+// certForSite returns a valid certificate covering the site, if any: the
+// one on the site's record, else the best of the others (certRank) — a
+// wildcard like *.example.com serves www.example.com too.
 func (s *Server) certForSite(ctx context.Context, site *store.Site) *store.Certificate {
-	var c *store.Certificate
-	var err error
 	if site.CertificateID != nil {
-		c, err = s.db.GetCertificate(ctx, *site.CertificateID)
-	}
-	if c == nil || err != nil {
-		c, err = s.db.GetCertificateByName(ctx, site.Domain)
-		if err != nil {
-			return nil
+		if c, err := s.db.GetCertificate(ctx, *site.CertificateID); err == nil && certUsable(c) && acme.CertCovers(c.Names, site.Domain) {
+			return c
 		}
 	}
-	// Files on disk decide: a failed renewal must not switch a site to HTTP
-	// while the previous certificate is still valid.
-	if c.CertPath == "" || c.KeyPath == "" || c.NotAfter == nil || time.Now().After(*c.NotAfter) || !containsName(c.Names, site.Domain) {
+	certs, err := s.db.ListCertificates(ctx)
+	if err != nil {
 		return nil
 	}
-	return c
+	var best *store.Certificate
+	bestRank := 0
+	for _, c := range certs {
+		r := certRank(c, site.Domain)
+		if r == 0 || !certUsable(c) || (best != nil && (r > bestRank || (r == bestRank && !c.NotAfter.After(*best.NotAfter)))) {
+			continue
+		}
+		if r > 1 && !s.certOwnerFits(ctx, c, site) {
+			continue
+		}
+		best, bestRank = c, r
+	}
+	return best
+}
+
+// certUsable says whether a certificate can be served now. Files on disk
+// decide: a failed renewal must not switch a site to HTTP while the previous
+// certificate is still valid.
+func certUsable(c *store.Certificate) bool {
+	return c.CertPath != "" && c.KeyPath != "" && c.NotAfter != nil && time.Now().Before(*c.NotAfter)
+}
+
+// certRank says how a certificate names a domain, best first: 1 the record
+// is the domain's own, 2 the domain is among its names, 3 a wildcard covers
+// it; 0 not at all.
+func certRank(c *store.Certificate, domain string) int {
+	switch {
+	case c.Name == domain && acme.CertCovers(c.Names, domain):
+		return 1
+	case containsName(c.Names, domain):
+		return 2
+	case acme.CertCovers(c.Names, domain):
+		return 3
+	}
+	return 0
+}
+
+// certOwnerFits says whether a certificate may serve a site it was not made
+// for: one of the panel's own or an administrator's serves any site, one an
+// account brought along (a migration) only that account's sites — its key is
+// in that account's hands.
+func (s *Server) certOwnerFits(ctx context.Context, c *store.Certificate, site *store.Site) bool {
+	if c.UserID == nil || *c.UserID == site.UserID {
+		return true
+	}
+	u, err := s.db.GetUserByID(ctx, *c.UserID)
+	return err == nil && u.Role == store.RoleAdmin
 }
 
 // jobSiteApply renders and applies the pool, nginx (and Apache) configuration.
@@ -1256,10 +1297,16 @@ func (s *Server) applySiteLocked(ctx context.Context, jc *jobs.Context, p sitePa
 	}
 	// An alias added to an HTTPS site: the certificate it has still names
 	// the domain, so it is served, but the new name needs a new one.
-	if site.SSL == "auto" && tls && !suspended && cert.Kind == store.CertKindACME && cert.Name == site.Domain {
+	if site.SSL == "auto" && tls && !suspended {
 		if missing := uncoveredNames(cert, site); len(missing) > 0 {
-			jc.Logf("certificate %s does not cover %s", cert.Name, strings.Join(missing, ", "))
-			s.orderSiteCertificate(ctx, jc, site, true)
+			if cert.Kind == store.CertKindACME && cert.Name == site.Domain {
+				jc.Logf("certificate %s does not cover %s", cert.Name, strings.Join(missing, ", "))
+				s.orderSiteCertificate(ctx, jc, site, true)
+			} else {
+				// Not the site's own ACME certificate (a wildcard, an imported
+				// one): nothing to re-order, but those names answer with a warning.
+				jc.Logf("warning: certificate %s does not cover %s: browsers warn on those names", cert.Name, strings.Join(missing, ", "))
+			}
 		}
 	}
 	// fail2ban reads the sites' own logs: a new site joins its nginx jails,
@@ -1343,11 +1390,11 @@ func (s *Server) pointsHere(ctx context.Context, name string) bool {
 	return false
 }
 
-// uncoveredNames lists the site's names a certificate does not carry.
+// uncoveredNames lists the site's names a certificate does not cover.
 func uncoveredNames(c *store.Certificate, site *store.Site) []string {
 	var out []string
 	for _, n := range append([]string{site.Domain}, site.Aliases...) {
-		if !containsName(c.Names, n) {
+		if !acme.CertCovers(c.Names, n) {
 			out = append(out, n)
 		}
 	}
@@ -1383,7 +1430,7 @@ func (s *Server) orderSiteCertificate(ctx context.Context, jc *jobs.Context, sit
 	if extend && existing != nil {
 		more := false
 		for _, n := range names {
-			if !containsName(existing.Names, n) {
+			if !acme.CertCovers(existing.Names, n) {
 				more = true
 			}
 		}
@@ -1416,33 +1463,65 @@ func (s *Server) orderSiteCertificate(ctx context.Context, jc *jobs.Context, sit
 }
 
 // reapplySitesForCert re-applies every auto-SSL site covered by a freshly
-// issued certificate.
+// issued or imported certificate. A site it names (by its domain or an
+// alias) takes it, as before; a site only its wildcard covers takes it when
+// the site has no valid certificate of its own — one for its very name stays
+// — and the certificate may serve it (certOwnerFits).
 func (s *Server) reapplySitesForCert(ctx context.Context, logf func(string, ...any), c *store.Certificate) {
-	seen := map[int64]bool{}
-	for _, n := range c.Names {
-		sites, err := s.db.FindSitesByName(ctx, n)
-		if err != nil {
+	sites, err := s.db.ListSites(ctx, 0)
+	if err != nil {
+		return
+	}
+	for _, site := range sites {
+		if site.SSL != "auto" || site.Status == store.SiteDeleting {
 			continue
 		}
-		for _, site := range sites {
-			if seen[site.ID] || site.SSL != "auto" || site.Status == store.SiteDeleting {
-				continue
-			}
-			seen[site.ID] = true
-			// The certificate alone (UpdateSiteChanges says why); a site
-			// whose removal was asked for meanwhile gets neither it nor an
-			// apply.
-			was := site.Clone()
-			id := c.ID
-			site.CertificateID = &id
-			if err := s.db.UpdateSiteChanges(ctx, was, site); err != nil {
-				continue
-			}
-			if _, err := s.enqueueSiteApply(ctx, site, "scheduler"); err == nil {
-				logf("site %s will be re-applied with HTTPS", site.Domain)
-			}
+		bound := site.CertificateID != nil && *site.CertificateID == c.ID
+		takes := s.certTakes(ctx, c, site)
+		if !takes && !bound {
+			continue
+		}
+		// The certificate alone (UpdateSiteChanges says why); a site
+		// whose removal was asked for meanwhile gets neither it nor an
+		// apply.
+		was := site.Clone()
+		id := c.ID
+		site.CertificateID = &id
+		if err := s.db.UpdateSiteChanges(ctx, was, site); err != nil {
+			continue
+		}
+		if _, err := s.enqueueSiteApply(ctx, site, "scheduler"); err != nil {
+			continue
+		}
+		if takes {
+			logf("site %s will be re-applied with HTTPS", site.Domain)
+		} else {
+			// The new files under the same path no longer cover it (the
+			// names changed): its apply finds another certificate or HTTP.
+			logf("site %s will be re-applied: certificate %s no longer covers it", site.Domain, c.Name)
 		}
 	}
+}
+
+// certTakes says whether a site moves to certificate c (reapplySitesForCert).
+func (s *Server) certTakes(ctx context.Context, c *store.Certificate, site *store.Site) bool {
+	for _, n := range append([]string{site.Domain}, site.Aliases...) {
+		if containsName(c.Names, n) {
+			return true
+		}
+	}
+	if !acme.CertCovers(c.Names, site.Domain) {
+		return false
+	}
+	if site.CertificateID != nil && *site.CertificateID == c.ID {
+		return true
+	}
+	if !s.certOwnerFits(ctx, c, site) {
+		return false
+	}
+	cur := s.certForSite(ctx, site)
+	// None yet, this one already, or another wildcard that runs out sooner.
+	return cur == nil || cur.ID == c.ID || (certRank(cur, site.Domain) == 3 && c.NotAfter != nil && c.NotAfter.After(*cur.NotAfter))
 }
 
 // jobSiteDelete removes configuration (and optionally files) of a site.

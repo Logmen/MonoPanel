@@ -166,6 +166,12 @@ func sameNames(a, b []string) bool {
 	return true
 }
 
+// certCovers says whether a certificate's names cover name: carry it (a
+// wildcard record's own name as well) or cover it by a wildcard.
+func certCovers(names []string, name string) bool {
+	return containsName(names, name) || acme.CertCovers(names, name)
+}
+
 func containsName(names []string, name string) bool {
 	name = acme.NormalizeName(name)
 	for _, n := range names {

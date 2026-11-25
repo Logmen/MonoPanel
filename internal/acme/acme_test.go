@@ -227,3 +227,38 @@ func TestParallelOrdersShareOneAccount(t *testing.T) {
 		t.Fatalf("%d registrations after a reuse and a second e-mail, want 2", n)
 	}
 }
+
+func TestNameCovers(t *testing.T) {
+	for _, tc := range []struct {
+		pattern, host string
+		want          bool
+	}{
+		{"*.qaj.kz", "kz.qaj.kz", true},
+		{"*.qaj.kz", "K10.QAJ.KZ.", true},
+		{"*.QAJ.kz.", "k10.qaj.kz", true},
+		{"*.qaj.kz", "qaj.kz", false},
+		{"*.qaj.kz", "www.kz.qaj.kz", false},
+		{"*.qaj.kz", "xqaj.kz", false},
+		{"*.qaj.kz", ".qaj.kz", false},
+		{"*.qaj.kz", "*.qaj.kz", false},
+		{"*.qaj.kz", "a*.qaj.kz", false},
+		{"qaj.kz", "qaj.kz", true},
+		{"qaj.kz", "kz.qaj.kz", false},
+		{"f*.qaj.kz", "foo.qaj.kz", false},
+		{"*.*.qaj.kz", "a.b.qaj.kz", false},
+		{"*", "localhost", false},
+		{"*.", "kz", false},
+		{"*.0.0.1", "10.0.0.1", false},
+		{"10.0.0.1", "10.0.0.1", true},
+		{"*.xn--80ak6aa92e.com", "www.xn--80ak6aa92e.com", true},
+		{"", "", false},
+		{"*.qaj.kz", "", false},
+	} {
+		if got := NameCovers(tc.pattern, tc.host); got != tc.want {
+			t.Errorf("NameCovers(%q, %q) = %v, want %v", tc.pattern, tc.host, got, tc.want)
+		}
+	}
+	if !CertCovers([]string{"*.qaj.kz", "qaj.kz"}, "qaj.kz") || !CertCovers([]string{"*.qaj.kz", "qaj.kz"}, "ru.qaj.kz") || CertCovers([]string{"*.qaj.kz", "qaj.kz"}, "a.b.qaj.kz") || CertCovers(nil, "qaj.kz") {
+		t.Error("CertCovers")
+	}
+}

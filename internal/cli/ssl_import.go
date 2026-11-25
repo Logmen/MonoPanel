@@ -53,6 +53,9 @@ func sslImportCmd() *cobra.Command {
 			renew = T("автопродление через Let's Encrypt", "auto-renewal via Let's Encrypt")
 		}
 		fmt.Printf(T("сертификат #%d %s: %s, выдан %s, действует до %s, %s\n", "certificate #%d %s: %s, issued by %s, valid until %s, %s\n"), res.ID, res.Name, strings.Join(res.Names, ", "), res.Issuer, res.NotAfter.Format("2006-01-02"), renew)
+		if len(res.UsedBySites) > 0 {
+			fmt.Printf(T("сайты: %s — переприменяются с HTTPS\n", "sites: %s — re-applied with HTTPS\n"), strings.Join(res.UsedBySites, ", "))
+		}
 		return nil
 	}}
 	c.Flags().StringVar(&certFile, "cert", "", T("файл сертификата (leaf или fullchain, PEM)", "certificate file (leaf or fullchain, PEM)"))
