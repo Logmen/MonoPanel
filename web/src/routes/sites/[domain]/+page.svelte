@@ -67,9 +67,12 @@
   let nginxBusy = $state(false);
   let nginxError = $state('');
 
+  // The certificate given by hand (PATCH certificate): its id, or auto.
+  let certPick = $state('auto');
   function take(s: any) {
     saved = s;
     site = structuredClone(s);
+    certPick = s.cert_pinned && s.certificate_id ? String(s.certificate_id) : 'auto';
     aliases = (s.aliases || []).join(', ');
     allow = (s.allow_from || []).join(', ');
     overrides = Object.entries(s.php_ini || {}).map(([key, value]) => ({ key, value: String(value) }));
@@ -91,6 +94,17 @@
     } catch (e: any) { error = e.text || String(e); }
   }
   const cert = $derived(saved ? (certs.find((c) => c.id === saved.certificate_id) ?? certs.find((c) => c.name === saved.domain) ?? null) : null);
+  // A name covers the host as browsers read it: the same name, or *. with
+  // exactly one label in place of the star (acme.NameCovers).
+  const nameCovers = (n: string, host: string) => {
+    n = n.toLowerCase().replace(/\.$/, '');
+    if (n === host) return !n.includes('*');
+    if (!n.startsWith('*.') || n.slice(1).includes('*')) return false;
+    const rest = n.slice(1);
+    return host.endsWith(rest) && host.length > rest.length && !host.slice(0, -rest.length).includes('.');
+  };
+  // The certificates the site may be given by hand: valid ones that cover it.
+  const fitting = $derived(saved ? certs.filter((c) => c.status === 'valid' && (c.names ?? []).some((n: string) => nameCovers(n, saved.domain))) : []);
   // Installing a CMS is a job; the administrator password comes back once
   // in the response and never appears in the job log.
   async function installCMS(e: Event) {
@@ -173,6 +187,7 @@
     if (rl !== (o.rate_limit || 0)) b.rate_limit = rl;
     if ((s.preset ?? '') !== (o.preset ?? '')) b.preset = s.preset ?? '';
     if ((s.session_store ?? '') !== (o.session_store ?? '')) b.session_store = s.session_store || 'files';
+    if (admin && certPick !== (o.cert_pinned && o.certificate_id ? String(o.certificate_id) : 'auto')) b.certificate = certPick;
     return b;
   }
   async function save(e: Event) {
@@ -267,6 +282,8 @@
         </div>
         {#if cert?.last_error}<div class="text-xs text-danger mt-1 break-words">{cert.last_error}</div>{/if}
       </div>
+      {#if admin}<div><label class="label" for="cp">{t('site.certPick')}</label><select id="cp" class="input" bind:value={certPick}><option value="auto">{t('site.certAuto')}</option>{#each fitting as c}<option value={String(c.id)}>{c.name} ({c.names.join(', ')})</option>{/each}</select>
+        <div class="text-xs text-muted mt-1">{t('site.certPickHint')}</div></div>{/if}
       <div><label class="label" for="rw">www</label><select id="rw" class="input" bind:value={site.redirect_www}><option value="none">{t('site.wwwAsIs')}</option><option value="to_root">{t('site.wwwToRoot')}</option><option value="to_www">{t('site.wwwToWww')}</option></select></div>
       <div><label class="label" for="pm">php-fpm pm</label><select id="pm" class="input" bind:value={site.fpm_pm}><option value="ondemand">ondemand</option><option value="dynamic">dynamic</option><option value="static">static</option></select></div>
       <div><label class="label" for="mc">max_children</label><input id="mc" class="input" type="number" min="1" max="512" required bind:value={site.fpm_max_children} /></div>

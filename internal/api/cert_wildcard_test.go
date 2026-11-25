@@ -3,12 +3,15 @@ package api
 import (
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"monopanel/internal/apitypes"
+	"monopanel/internal/auth"
+	"monopanel/internal/config"
 	"monopanel/internal/store"
 )
 
@@ -199,5 +202,145 @@ func TestAccountRemovalKeepsACertificateOthersServe(t *testing.T) {
 	}
 	if _, err := f.db.GetCertificate(f.ctx, sc.ID); err == nil {
 		t.Error("the certificate only alex's site served stayed")
+	}
+}
+
+// The panel's HTTPS port, phpMyAdmin and the mail server take a wildcard that
+// covers their name when none of that name is there — an administrator's,
+// never one an account brought along.
+func TestPanelAndMailTakeACoveringWildcard(t *testing.T) {
+	f := newFixture(t, func(c *config.Config) { c.Web.Hostname = "panel.wild.example.com" })
+	if err := f.s.tls.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if f.s.tls.Info().Source != "selfsigned" {
+		t.Fatalf("source %s before the import", f.s.tls.Info().Source)
+	}
+	// An account's wildcard: neither the panel nor the mail server takes it.
+	uid, gid := 1501, 1501
+	bob := &store.User{Login: "bob", Role: store.RoleUser, Status: store.UserActive, UnixUID: &uid, UnixGID: &gid, Home: "/var/www/bob"}
+	if err := f.db.CreateUser(f.ctx, bob); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	bcert, bkey := testCert(t, "*.wild.example.com")
+	bc, bk := filepath.Join(dir, "b.pem"), filepath.Join(dir, "bk.pem")
+	_ = os.WriteFile(bc, []byte(bcert), 0o600)
+	_ = os.WriteFile(bk, []byte(bkey), 0o600)
+	until := time.Now().Add(30 * 24 * time.Hour)
+	if err := f.db.UpsertCertificate(f.ctx, &store.Certificate{Name: "bob.wild.example.com", Names: []string{"*.wild.example.com"}, Kind: store.CertKindCustom, Status: store.CertValid,
+		CertPath: bc, KeyPath: bk, NotAfter: &until, UserID: &bob.ID}); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.s.tls.Reload()
+	if f.s.tls.Info().Source != "selfsigned" {
+		t.Error("the panel serves an account's wildcard")
+	}
+	if cp, _, _, _ := f.s.mailTLS(f.ctx, mailConfig{Hostname: "mail.wild.example.com"}); cp == bc {
+		t.Error("the mail server serves an account's wildcard")
+	}
+
+	cert, key := testCert(t, "*.wild.example.com", "wild.example.com")
+	var c store.Certificate
+	f.call(http.MethodPost, "/certificates/import", map[string]any{"name": "wild.example.com", "certificate": cert, "private_key": key}, http.StatusCreated, &c)
+	if cp, _ := f.s.tls.Files(); cp != c.CertPath || f.s.tls.Info().Source != "acme" {
+		t.Errorf("the panel serves %s (%s), want %s", cp, f.s.tls.Info().Source, c.CertPath)
+	}
+	if cp, _, fp := f.s.pmaCert(); cp != c.CertPath || fp == "" {
+		t.Errorf("phpMyAdmin is given %s", cp)
+	}
+	if cp, _, kind, _ := f.s.mailTLS(f.ctx, mailConfig{Hostname: "mail.wild.example.com"}); cp != c.CertPath || kind != store.CertKindCustom {
+		t.Errorf("the mail server is given %s (%s)", cp, kind)
+	}
+	var list []store.Certificate
+	f.call(http.MethodGet, "/certificates", nil, http.StatusOK, &list)
+	for _, l := range list {
+		if l.UsedByPanel != (l.ID == c.ID) {
+			t.Errorf("%s: used by the panel %v", l.Name, l.UsedByPanel)
+		}
+	}
+	// The panel cannot go back to self-signed while the wildcard is there:
+	// it is not the panel's own record.
+	f.call(http.MethodDelete, "/ssl/panel", nil, http.StatusConflict, nil)
+}
+
+// A certificate given to a site by hand stays: one issued or imported later
+// for the site's name does not take it over, and auto lets the panel choose
+// again. Only an administrator gives one.
+func TestSiteKeepsTheCertificateGivenByHand(t *testing.T) {
+	f := newSiteFixture(t)
+	site := f.createSite(map[string]any{"domain": "kz.wild.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	cert, key := testCert(t, "*.wild.example.com", "wild.example.com")
+	var w store.Certificate
+	f.call(http.MethodPost, "/certificates/import", map[string]any{"name": "wild.example.com", "certificate": cert, "private_key": key, "sites": []string{"kz.wild.example.com"}}, http.StatusCreated, &w)
+	got, _ := f.db.GetSite(f.ctx, site.ID)
+	if got.CertificateID == nil || *got.CertificateID != w.ID || !got.CertPinned || got.SSL != "auto" {
+		t.Fatalf("after the import with --site: cert %v pinned %v ssl %s", got.CertificateID, got.CertPinned, got.SSL)
+	}
+	// Its own certificate arrives: the site keeps the wildcard.
+	ocert, okey := testCert(t, "kz.wild.example.com")
+	var o store.Certificate
+	f.call(http.MethodPost, "/certificates/import", map[string]any{"certificate": ocert, "private_key": okey}, http.StatusCreated, &o)
+	if got, _ := f.db.GetSite(f.ctx, site.ID); got.CertificateID == nil || *got.CertificateID != w.ID {
+		t.Fatalf("the site's own certificate took the wildcard's place: %v", got.CertificateID)
+	}
+	// auto: the panel chooses — the site's own wins.
+	var out struct {
+		JobID int64 `json:"job_id"`
+	}
+	f.call(http.MethodPatch, "/sites/kz.wild.example.com", map[string]any{"certificate": "auto"}, http.StatusAccepted, &out)
+	f.waitJob(out.JobID)
+	if got, _ := f.db.GetSite(f.ctx, site.ID); got.CertPinned || got.CertificateID == nil || *got.CertificateID != o.ID {
+		t.Errorf("after auto: cert %v pinned %v (own %d, wildcard %d)", *got.CertificateID, got.CertPinned, o.ID, w.ID)
+	}
+	// By name, back to the wildcard; a certificate that does not cover the
+	// site, or none, is refused.
+	f.call(http.MethodPatch, "/sites/kz.wild.example.com", map[string]any{"certificate": "wild.example.com"}, http.StatusAccepted, &out)
+	f.waitJob(out.JobID)
+	if got, _ := f.db.GetSite(f.ctx, site.ID); !got.CertPinned || got.CertificateID == nil || *got.CertificateID != w.ID {
+		t.Errorf("by name: cert %v pinned %v", got.CertificateID, got.CertPinned)
+	}
+	other := f.createSite(map[string]any{"domain": "other.example.org", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	f.call(http.MethodPatch, "/sites/"+other.Domain, map[string]any{"certificate": "wild.example.com"}, http.StatusUnprocessableEntity, nil)
+	f.call(http.MethodPatch, "/sites/"+other.Domain, map[string]any{"certificate": "999"}, http.StatusNotFound, nil)
+	f.call(http.MethodPost, "/certificates/import", map[string]any{"certificate": cert, "private_key": key, "sites": []string{other.Domain}}, http.StatusUnprocessableEntity, nil)
+	// An ordinary account does not give its site a certificate by hand.
+	alex, err := f.db.GetUserByLogin(f.ctx, "alex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, _ := auth.HashPassword("alex-password-1")
+	if err := f.db.SetUserPassword(f.ctx, alex.ID, h); err != nil {
+		t.Fatal(err)
+	}
+	f.loginAs("alex", "alex-password-1")
+	f.call(http.MethodPatch, "/sites/kz.wild.example.com", map[string]any{"certificate": "auto"}, http.StatusForbidden, nil)
+}
+
+// A Let's Encrypt wildcard over an account's own site arrives with its
+// wildcard; one over a name the account does not have loses it. Without a
+// DNS provider its renewal fails with the command that fixes it.
+func TestMigratedLetsEncryptWildcardKeepsItsName(t *testing.T) {
+	own := map[string]bool{"qaj.example.org": true, "kz.qaj.example.org": true}
+	got := acmeNames([]string{"*.qaj.example.org", "qaj.example.org", "*.other.example.org", "*.kz.qaj.example.org", "x.qaj.example.org"}, func(n string) bool { return own[n] })
+	if !slices.Equal(got, []string{"*.qaj.example.org", "qaj.example.org", "*.kz.qaj.example.org"}) {
+		t.Errorf("acmeNames: %v", got)
+	}
+	if h := reorderHint("qaj.example.org", []string{"*.qaj.example.org", "qaj.example.org"}); h != "mp ssl issue qaj.example.org '*.qaj.example.org' --dns <provider>" {
+		t.Errorf("hint: %s", h)
+	}
+	f := newSiteFixture(t)
+	c := &store.Certificate{Name: "qaj.example.org", Names: []string{"*.qaj.example.org", "qaj.example.org"}, Kind: store.CertKindACME, AutoRenew: true, Status: store.CertPending, DirectoryURL: "https://acme.invalid/dir"}
+	if err := f.db.UpsertCertificate(f.ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	job, err := f.s.jobs.Enqueue(f.ctx, "cert.issue", certIssuePayload{CertID: c.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.waitJob(job.ID)
+	got2, _ := f.db.GetCertificate(f.ctx, c.ID)
+	if !strings.Contains(got2.LastError, "DNS-01") || !strings.Contains(got2.LastError, "--dns <provider>") {
+		t.Errorf("renewal error: %q", got2.LastError)
 	}
 }

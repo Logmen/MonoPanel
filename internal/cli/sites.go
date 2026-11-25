@@ -312,6 +312,7 @@ func siteCmd() *cobra.Command {
 	set.Flags().Bool("security-headers", false, T("заголовки X-Content-Type-Options, X-Frame-Options и Referrer-Policy", "the X-Content-Type-Options, X-Frame-Options and Referrer-Policy headers"))
 	set.Flags().IntVar(&rateLimit, "rate-limit", 0, T("запросов в секунду с одного адреса на динамические страницы (0 — без лимита)", "requests per second from one address on dynamic pages (0 — no limit)"))
 	set.Flags().StringVar(&upd.SSL, "ssl", "", T("auto или none", "auto or none"))
+	set.Flags().StringVar(&upd.Certificate, "cert", "", T("отдавать этот сертификат (id или имя) и держать его, даже когда для имён сайта выпущен другой; auto — панель выбирает сама", "serve this certificate (id or name) and keep it even when another one is issued for the site's names; auto lets the panel choose"))
 	set.Flags().StringVar(&upd.RedirectWWW, "redirect-www", "", T("none, to_www или to_root", "none, to_www or to_root"))
 	set.Flags().StringVar(&upd.FPMPM, "pm", "", T("ondemand, dynamic или static", "ondemand, dynamic or static"))
 	set.Flags().IntVar(&upd.FPMMaxChildren, "max-children", 0, "pm.max_children")

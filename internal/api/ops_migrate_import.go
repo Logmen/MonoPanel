@@ -916,7 +916,7 @@ func (s *Server) migrateSite(ctx context.Context, jc *jobs.Context, u *store.Use
 		return err
 	}
 	site.Aliases = names
-	site.ID, site.UserID, site.Login, site.CertificateID = 0, u.ID, u.Login, nil
+	site.ID, site.UserID, site.Login, site.CertificateID, site.CertPinned = 0, u.ID, u.Login, nil, false
 	site.Status, site.LastError = store.SitePending, ""
 	// Sessions stay in Valkey only where PHP can reach it: the instance
 	// itself comes later in this job, from the bundle.

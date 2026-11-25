@@ -140,9 +140,10 @@ func (s *Server) registerCerts() {
 			return nil, err
 		}
 		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "cert.delete", Target: c.Name, IP: requestInfo(ctx).IP})
-		if containsName(c.Names, s.cfg.Web.Hostname) {
+		if certCovers(c.Names, s.cfg.Web.Hostname) {
 			s.tls.Reload() //nolint:errcheck // the panel keeps serving the old certificate
 		}
+		s.mailFollowsCert(ctx, c)
 		return nil, nil
 	})
 
@@ -164,6 +165,35 @@ func sameNames(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// reorderHint is the command that orders a certificate's names again under
+// its record's name (the first name names the record), through DNS-01.
+func reorderHint(name string, names []string) string {
+	args := []string{name}
+	for _, n := range names {
+		if acme.NormalizeName(n) != acme.NormalizeName(name) {
+			args = append(args, n)
+		}
+	}
+	for i, a := range args {
+		if strings.Contains(a, "*") {
+			args[i] = "'" + a + "'"
+		}
+	}
+	return "mp ssl issue " + strings.Join(args, " ") + " --dns <provider>"
+}
+
+// mailFollowsCert re-renders the mail services after a certificate that
+// covers the mail hostname arrived or went: they name its files.
+func (s *Server) mailFollowsCert(ctx context.Context, c *store.Certificate) {
+	mc := s.loadMailConfig(ctx)
+	if !mc.Installed || !certCovers(c.Names, mc.Hostname) {
+		return
+	}
+	if err := s.applyMailConfig(context.WithoutCancel(ctx), func(format string, args ...any) { s.log.Info(fmt.Sprintf(format, args...), "cert", c.Name) }, true); err != nil {
+		s.log.Warn("mail: the services did not follow the certificate", "cert", c.Name, "err", err)
+	}
 }
 
 // certCovers says whether a certificate's names cover name: carry it (a
@@ -256,6 +286,11 @@ func (s *Server) jobCertIssue(ctx context.Context, jc *jobs.Context) error {
 	if err != nil {
 		return err
 	}
+	if c.DNSProvider == "" && wildcardName(c.Names) {
+		// A wildcard that arrived from another server (a migration) has no
+		// DNS provider here, and HTTP-01 cannot prove one.
+		return s.certFail(ctx, c, fmt.Errorf("%s is a wildcard: it renews through DNS-01 only; add a DNS provider and order it with it: %s", c.Name, reorderHint(c.Name, c.Names)))
+	}
 	var dnsType string
 	var dnsCreds map[string]string
 	if c.DNSProvider != "" {
@@ -328,14 +363,14 @@ func (s *Server) jobCertIssue(ctx context.Context, jc *jobs.Context) error {
 	}
 	jc.Logf("files: %s", res.CertPath)
 	s.reapplySitesForCert(context.WithoutCancel(ctx), jc.Logf, c)
-	if mc := s.loadMailConfig(ctx); mc.Installed && containsName(c.Names, mc.Hostname) {
+	if mc := s.loadMailConfig(ctx); mc.Installed && certCovers(c.Names, mc.Hostname) {
 		if err := s.applyMailConfig(context.WithoutCancel(ctx), jc.Logf, true); err != nil {
 			jc.Logf("warning: the mail services did not pick up the certificate: %v", err)
 		} else {
 			jc.Logf("postfix and dovecot switched to this certificate")
 		}
 	}
-	if containsName(c.Names, s.cfg.Web.Hostname) {
+	if certCovers(c.Names, s.cfg.Web.Hostname) {
 		if err := s.tls.Reload(); err != nil {
 			jc.Logf("warning: panel certificate reload failed: %v", err)
 		} else {

@@ -57,6 +57,7 @@ mp site add <domain> --user <login> [--php 8.4] [--mode fpm|apache|proxy] [--bac
             [--static-by-nginx=false] [--allow-exec] [--security-headers] [--rate-limit 10]
 mp site set <domain> [флаги site add, кроме --user и --no-https-redirect] [--rm-alias …] [--no-www]
             [--https-redirect=false] [--allow-all] [--sessions files|valkey]   # --docroot '' — корень, --preset '' — универсальный
+            [--cert <id|имя>|auto]                                            # сертификат вручную (администратор); auto — выбирает панель
 mp site list | show <domain> | presets
 mp site apply | fix | suspend | unsuspend <domain>   # fix — владелец, права, ACL и метки SELinux файлов сайта
 mp site rm <domain> [--purge]
@@ -121,7 +122,7 @@ mp db phpmyadmin open <name>                      # одноразовая сс�
 mp ssl list | show <id|имя> | rm <id|имя>
 mp ssl renew <id|имя> | --all
 mp ssl issue <имя> [имя…] [--dns <провайдер>] [--staging] [--rsa] [--email …] [--no-auto-renew] [--directory URL]
-mp ssl import [имя] --cert f --key f [--chain f] [--no-auto-renew]
+mp ssl import [имя] --cert f --key f [--chain f] [--no-auto-renew] [--site <домен>…]   # --site: сайт держит этот сертификат
 mp ssl panel                         # сертификат самой панели и запись за ним
 mp ssl panel issue [--dns …] [--staging] [--rsa] [--email …] | import --cert f --key f | self-signed
 mp web tls                           # какой сертификат панель отдаёт прямо сейчас

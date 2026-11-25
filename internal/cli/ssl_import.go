@@ -13,6 +13,7 @@ import (
 func sslImportCmd() *cobra.Command {
 	var certFile, keyFile, chainFile string
 	var noRenew bool
+	var sites []string
 	c := &cobra.Command{Use: "import [hostname]", Short: T("импортировать готовый сертификат (PEM); сертификаты Let's Encrypt дальше продлеваются через ACME", "import an existing certificate (PEM); Let's Encrypt certificates are then renewed via ACME"), Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cl, err := newClient()
 		if err != nil {
@@ -33,7 +34,7 @@ func sslImportCmd() *cobra.Command {
 			}
 			cert = append(append(cert, '\n'), chain...)
 		}
-		req := apitypes.ImportCertificateRequest{Certificate: string(cert), PrivateKey: string(key)}
+		req := apitypes.ImportCertificateRequest{Certificate: string(cert), PrivateKey: string(key), Sites: sites}
 		if len(args) == 1 {
 			req.Name = args[0]
 		}
@@ -62,6 +63,7 @@ func sslImportCmd() *cobra.Command {
 	c.Flags().StringVar(&keyFile, "key", "", T("файл закрытого ключа (PEM)", "private key file (PEM)"))
 	c.Flags().StringVar(&chainFile, "chain", "", T("файл промежуточных сертификатов, если их нет в --cert", "file with the intermediate certificates, if --cert lacks them"))
 	c.Flags().BoolVar(&noRenew, "no-auto-renew", false, T("не продлевать через ACME", "do not renew via ACME"))
+	c.Flags().StringSliceVar(&sites, "site", nil, T("сайт, который отдаёт этот сертификат и держит его (можно несколько раз); без флага сертификат достаётся сайтам, которые он покрывает и у которых нет своего", "a site that serves this certificate and keeps it (repeatable); without the flag it goes to the sites it covers that have none of their own"))
 	c.MarkFlagRequired("cert")
 	c.MarkFlagRequired("key")
 	return c

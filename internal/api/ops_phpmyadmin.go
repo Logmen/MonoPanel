@@ -174,14 +174,10 @@ func (s *Server) pmaURL(ctx context.Context, port int) string {
 }
 
 // pmaCert is the panel's certificate as it serves it now: the issued one
-// of its name, or the self-signed fallback.
+// of its name or one that covers it, or the self-signed fallback.
 func (s *Server) pmaCert() (certPath, keyPath, fingerprint string) {
-	info := s.tls.Info()
-	if name := acme.NormalizeName(s.cfg.Web.Hostname); info.Source == "acme" && name != "" {
-		dir := filepath.Join(s.cfg.DataDir, "certs", name)
-		return filepath.Join(dir, "fullchain.pem"), filepath.Join(dir, "privkey.pem"), info.Certificate.Fingerprint
-	}
-	return s.cfg.TLSCertPath(), s.cfg.TLSKeyPath(), info.Certificate.Fingerprint
+	certPath, keyPath = s.tls.Files()
+	return certPath, keyPath, s.tls.Info().Certificate.Fingerprint
 }
 
 // pmaPortError says why port cannot be phpMyAdmin's: below 1024, or one the

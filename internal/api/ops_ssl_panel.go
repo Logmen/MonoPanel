@@ -85,8 +85,9 @@ func (s *Server) certUsers(ctx context.Context) (byID map[int64][]string, byName
 func (s *Server) decorateCertUsage(ctx context.Context, certs []*store.Certificate) {
 	byID, byName := s.certUsers(ctx)
 	panel := s.panelCertName()
+	served, _ := s.tls.Files()
 	for _, c := range certs {
-		c.UsedByPanel = panel != "" && c.Name == panel
+		c.UsedByPanel = panel != "" && (c.Name == panel || (c.CertPath != "" && c.CertPath == served))
 		c.UsedBySites = append(append([]string{}, byID[c.ID]...), byName[c.Name]...)
 		if c.UsedBySites == nil {
 			c.UsedBySites = []string{}
@@ -111,7 +112,12 @@ func (s *Server) certInUse(ctx context.Context, c *store.Certificate) error {
 func (s *Server) panelTLS(ctx context.Context) apitypes.PanelTLS {
 	out := apitypes.PanelTLS{TLSInfo: s.tls.Info(), DNSProviders: []string{}}
 	if name := s.panelCertName(); name != "" {
-		if c, err := s.db.GetCertificateByName(ctx, name); err == nil {
+		c, err := s.db.GetCertificateByName(ctx, name)
+		if err != nil {
+			// None of its name: the one that covers it (a wildcard).
+			c = s.systemCert(ctx, name)
+		}
+		if c != nil {
 			s.decorateCertUsage(ctx, []*store.Certificate{c})
 			out.Record = c
 		}
@@ -170,6 +176,9 @@ func (s *Server) registerPanelTLS() {
 		p := principalFrom(ctx)
 		c, err := s.db.GetCertificateByName(ctx, s.panelCertName())
 		if errors.Is(err, store.ErrNotFound) {
+			if w := s.systemCert(ctx, s.panelCertName()); w != nil {
+				return nil, huma.Error409Conflict(fmt.Sprintf("the panel serves %s, which covers its name and is not the panel's own (sites use it as well); delete it to go back to the self-signed certificate (mp ssl rm %s)", w.Name, w.Name))
+			}
 			return nil, huma.Error404NotFound("the panel serves the self-signed certificate already")
 		}
 		if err != nil {

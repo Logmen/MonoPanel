@@ -29,6 +29,8 @@ func init() {
 		op("sites-delete", cli("site rm"), web(list)),
 		op("sites-get", cli("site show"), web(site)),
 		op("sites-update", cli("site set"), web(site),
+			adminField("the handler refuses a certificate given by hand from anyone but an administrator (ops_sites.go), and the site page shows the select to administrators only", "certificate"),
+			field("certificate", flag("cert")),
 			field("aliases", flag("alias", "rm-alias")),
 			field("allow_from", flag("allow", "allow-all")),
 			field("client_max_body", flag("max-body")),

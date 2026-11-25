@@ -57,6 +57,7 @@ mp site add <domain> --user <login> [--php 8.4] [--mode fpm|apache|proxy] [--bac
             [--static-by-nginx=false] [--allow-exec] [--security-headers] [--rate-limit 10]
 mp site set <domain> [the flags of site add but --user and --no-https-redirect] [--rm-alias …] [--no-www]
             [--https-redirect=false] [--allow-all] [--sessions files|valkey]   # --docroot '' — the site root, --preset '' — generic
+            [--cert <id|name>|auto]                                           # a certificate by hand (administrators); auto — the panel chooses
 mp site list | show <domain> | presets
 mp site apply | fix | suspend | unsuspend <domain>   # fix — owner, permissions, ACLs and SELinux labels of the site's files
 mp site rm <domain> [--purge]
@@ -122,7 +123,7 @@ mp db phpmyadmin open <name>                      # one-time link (one minute, o
 mp ssl list | show <id|name> | rm <id|name>
 mp ssl renew <id|name> | --all
 mp ssl issue <name> [name…] [--dns <provider>] [--staging] [--rsa] [--email …] [--no-auto-renew] [--directory URL]
-mp ssl import [name] --cert f --key f [--chain f] [--no-auto-renew]
+mp ssl import [name] --cert f --key f [--chain f] [--no-auto-renew] [--site <domain>…]   # --site: the site keeps this certificate
 mp ssl panel                         # the panel's own certificate and the record behind it
 mp ssl panel issue [--dns …] [--staging] [--rsa] [--email …] | import --cert f --key f | self-signed
 mp web tls                           # which certificate the panel is serving right now

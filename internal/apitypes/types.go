@@ -315,6 +315,7 @@ type SiteUpdateRequest struct {
 	RateLimit       *int              `json:"rate_limit,omitempty" minimum:"0" maximum:"10000" doc:"Requests per second from one address on dynamic pages; 0 = no limit"`
 	Preset          *string           `json:"preset,omitempty" doc:"CMS preset: wordpress, joomla, bitrix, opencart or \"\" for generic"`
 	SessionStore    string            `json:"session_store,omitempty" enum:"files,valkey" doc:"Where PHP keeps sessions: files in the account's tmp, or its Valkey sessions instance (needs the redis extension of the site's PHP)"`
+	Certificate     string            `json:"certificate,omitempty" maxLength:"253" doc:"Administrators: serve this certificate (id or name) and keep it — one issued or renewed later for the site's names does not take its place; auto lets the panel choose again"`
 }
 
 // SiteMoveIPRequest moves the sites of one address to another: after the
@@ -687,10 +688,11 @@ type ValkeyList struct {
 // ImportCertificateRequest installs an existing certificate. Let's Encrypt
 // certificates are renewed through ACME when due unless auto_renew is false.
 type ImportCertificateRequest struct {
-	Name        string `json:"name,omitempty" doc:"Primary hostname (default: certificate subject)"`
-	Certificate string `json:"certificate" minLength:"1" doc:"PEM: leaf certificate followed by intermediates"`
-	PrivateKey  string `json:"private_key" minLength:"1" doc:"PEM private key"`
-	AutoRenew   *bool  `json:"auto_renew,omitempty" doc:"Re-issue via Let's Encrypt 30 days before expiry (default: yes for Let's Encrypt certificates)"`
+	Name        string   `json:"name,omitempty" doc:"Primary hostname (default: certificate subject)"`
+	Certificate string   `json:"certificate" minLength:"1" doc:"PEM: leaf certificate followed by intermediates"`
+	PrivateKey  string   `json:"private_key" minLength:"1" doc:"PEM private key"`
+	AutoRenew   *bool    `json:"auto_renew,omitempty" doc:"Re-issue via Let's Encrypt 30 days before expiry (default: yes for Let's Encrypt certificates)"`
+	Sites       []string `json:"sites,omitempty" maxItems:"256" doc:"Sites that serve it and keep it (as PATCH /sites/{domain} certificate); without them it goes to the sites it covers that have no valid certificate of their own"`
 }
 
 // RealIPSettings tells nginx which proxies may set the real client address.

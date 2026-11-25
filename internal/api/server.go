@@ -286,6 +286,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	s.hostIPv6s = localIPv6s
 	s.lookup = publicLookup
 	s.tls = newCertHolder(cfg, log)
+	s.tls.find = s.panelCoverFiles
 	if box, err := secrets.Open(cfg.SecretKeyFile); err == nil {
 		s.secrets = box
 	} else {

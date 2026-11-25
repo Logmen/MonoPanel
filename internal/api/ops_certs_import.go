@@ -98,6 +98,24 @@ func (s *Server) importCertificatePEM(ctx context.Context, p *principal, req api
 	if time.Now().After(info.NotAfter) {
 		return nil, huma.Error422UnprocessableEntity("certificate expired on " + info.NotAfter.Format("2006-01-02"))
 	}
+	// The sites it is given by hand: checked before anything is written.
+	var pinned []*store.Site
+	for _, d := range req.Sites {
+		site, err := s.db.GetSiteByDomain(ctx, acme.NormalizeName(d))
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, huma.Error404NotFound("site " + d + " not found")
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !certCovers(names, site.Domain) {
+			return nil, huma.Error422UnprocessableEntity(fmt.Sprintf("certificate does not cover the site %s (names: %s)", site.Domain, strings.Join(names, ", ")))
+		}
+		if site.Status == store.SiteDeleting {
+			return nil, huma.Error409Conflict("site " + site.Domain + " is being deleted")
+		}
+		pinned = append(pinned, site)
+	}
 	isLE := strings.Contains(strings.ToLower(info.IssuerOrg), "let's encrypt")
 	auto := isLE
 	if req.AutoRenew != nil {
@@ -142,13 +160,22 @@ func (s *Server) importCertificatePEM(ctx context.Context, p *principal, req api
 	if err := s.db.UpsertCertificate(ctx, c); err != nil {
 		return nil, err
 	}
+	for _, site := range pinned {
+		was := site.Clone()
+		id := c.ID
+		site.CertificateID, site.CertPinned, site.SSL = &id, true, "auto"
+		if err := s.db.UpdateSiteChanges(ctx, was, site); err != nil {
+			return nil, err
+		}
+	}
 	s.reapplySitesForCert(ctx, func(format string, args ...any) { s.log.Info(fmt.Sprintf(format, args...), "cert", name) }, c)
-	if containsName(c.Names, s.cfg.Web.Hostname) {
+	if certCovers(c.Names, s.cfg.Web.Hostname) {
 		if err := s.tls.Reload(); err != nil {
 			s.log.Warn("panel certificate reload", "err", err)
 		}
 	}
-	s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "cert.import", Target: name, IP: requestInfo(ctx).IP, Details: map[string]any{"names": names, "issuer": info.Issuer, "auto_renew": auto}})
+	s.mailFollowsCert(ctx, c)
+	s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "cert.import", Target: name, IP: requestInfo(ctx).IP, Details: map[string]any{"names": names, "issuer": info.Issuer, "auto_renew": auto, "sites": req.Sites}})
 	// The answer says which sites took it: a wildcard goes to the sites it
 	// covers (reapplySitesForCert), not to every name under it.
 	s.decorateCertUsage(ctx, []*store.Certificate{c})

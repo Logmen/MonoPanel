@@ -83,7 +83,7 @@ func TestSaveAppliedSite(t *testing.T) {
 	cert := c.ID
 	from := read.Status
 	read.IP, read.CertificateID, read.Status, read.LastError = "192.0.2.10", &cert, SiteActive, ""
-	if err := db.SaveAppliedSite(ctx, read, from, false); err != nil {
+	if err := db.SaveAppliedSite(ctx, read, from, false, nil); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := db.GetSite(ctx, s.ID)
@@ -91,13 +91,31 @@ func TestSaveAppliedSite(t *testing.T) {
 		t.Fatalf("after the apply: mode %s php %s status %s ip %s cert %v", got.Mode, got.PHPVersion, got.Status, got.IP, got.CertificateID)
 	}
 	read.IP, read.Status, read.LastError = "198.51.100.1", SiteError, "boom"
-	if err := db.SaveAppliedSite(ctx, read, SiteActive, true); err != nil {
+	if err := db.SaveAppliedSite(ctx, read, SiteActive, true, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := db.GetSite(ctx, s.ID); got.IP != "192.0.2.10" || got.CertificateID == nil || *got.CertificateID != cert || got.Status != SiteError || got.LastError != "boom" {
 		t.Fatalf("second apply: ip %s cert %v status %s %q", got.IP, got.CertificateID, got.Status, got.LastError)
 	}
-	if err := db.SaveAppliedSite(ctx, &Site{ID: 999}, SiteActive, false); !errors.Is(err, ErrNotFound) {
+	// A certificate given meanwhile (by hand) stays: the apply read none.
+	c2 := &Certificate{Name: "www.example.com", Names: []string{"www.example.com"}}
+	if err := db.UpsertCertificate(ctx, c2); err != nil {
+		t.Fatal(err)
+	}
+	hand, _ := db.GetSite(ctx, s.ID)
+	was := hand.Clone()
+	hand.CertificateID = &c2.ID
+	if err := db.UpdateSiteChanges(ctx, was, hand); err != nil {
+		t.Fatal(err)
+	}
+	read.CertificateID = &cert
+	if err := db.SaveAppliedSite(ctx, read, SiteError, true, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.GetSite(ctx, s.ID); got.CertificateID == nil || *got.CertificateID != c2.ID {
+		t.Fatalf("the certificate given meanwhile was overwritten: %v", got.CertificateID)
+	}
+	if err := db.SaveAppliedSite(ctx, &Site{ID: 999}, SiteActive, false, nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a site that is gone: %v", err)
 	}
 }
@@ -123,7 +141,7 @@ func TestSiteStatusOnlyOverWhatTheJobRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	read.Status, read.LastError = SiteActive, ""
-	if err := db.SaveAppliedSite(ctx, read, from, false); err != nil {
+	if err := db.SaveAppliedSite(ctx, read, from, false, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := db.GetSite(ctx, s.ID); got.Status != SiteSuspended {

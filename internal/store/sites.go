@@ -46,8 +46,11 @@ type Site struct {
 	AllowExec      bool              `json:"allow_exec"`
 	ClientMaxBody  string            `json:"client_max_body"`
 	CertificateID  *int64            `json:"certificate_id,omitempty"`
-	Backend        string            `json:"backend,omitempty"`
-	AllowFrom      []string          `json:"allow_from"`
+	// CertPinned: the certificate was given by hand and stays (the column
+	// cert_pinned says why).
+	CertPinned bool     `json:"cert_pinned,omitempty"`
+	Backend    string   `json:"backend,omitempty"`
+	AllowFrom  []string `json:"allow_from"`
 	// SecurityHeaders adds X-Content-Type-Options, X-Frame-Options and
 	// Referrer-Policy to every response; RateLimit caps requests per second
 	// from one address on dynamic pages (0 — no limit).
@@ -72,15 +75,15 @@ type Site struct {
 	Login string `json:"login,omitempty"`
 }
 
-const siteCols = `s.id, s.user_id, s.domain, s.aliases, s.mode, s.php_version, s.docroot, s.ip, s.http2, s.http3, s.ssl, s.redirect_https, s.redirect_www, s.static_by_nginx, s.fpm_pm, s.fpm_max_children, s.php_ini, s.allow_exec, s.client_max_body, s.certificate_id, s.status, s.last_error, s.created_at, s.updated_at, u.login, s.backend, s.allow_from, s.preset, s.cms, s.cms_version, s.cms_at, s.cms_database, s.session_store, s.ipv6, s.security_headers, s.rate_limit`
+const siteCols = `s.id, s.user_id, s.domain, s.aliases, s.mode, s.php_version, s.docroot, s.ip, s.http2, s.http3, s.ssl, s.redirect_https, s.redirect_www, s.static_by_nginx, s.fpm_pm, s.fpm_max_children, s.php_ini, s.allow_exec, s.client_max_body, s.certificate_id, s.status, s.last_error, s.created_at, s.updated_at, u.login, s.backend, s.allow_from, s.preset, s.cms, s.cms_version, s.cms_at, s.cms_database, s.session_store, s.ipv6, s.security_headers, s.rate_limit, s.cert_pinned`
 const siteFrom = ` FROM sites s JOIN users u ON u.id = s.user_id`
 
 func scanSite(sc scanner) (*Site, error) {
 	var s Site
 	var aliases, ini, allow, created, updated string
-	var http2, http3, redir, static, exec, headers int
+	var http2, http3, redir, static, exec, headers, pinned int
 	var cert sql.NullInt64
-	if err := sc.Scan(&s.ID, &s.UserID, &s.Domain, &aliases, &s.Mode, &s.PHPVersion, &s.Docroot, &s.IP, &http2, &http3, &s.SSL, &redir, &s.RedirectWWW, &static, &s.FPMPM, &s.FPMMaxChildren, &ini, &exec, &s.ClientMaxBody, &cert, &s.Status, &s.LastError, &created, &updated, &s.Login, &s.Backend, &allow, &s.Preset, &s.CMS, &s.CMSVersion, &s.CMSAt, &s.CMSDatabase, &s.SessionStore, &s.IPv6, &headers, &s.RateLimit); err != nil {
+	if err := sc.Scan(&s.ID, &s.UserID, &s.Domain, &aliases, &s.Mode, &s.PHPVersion, &s.Docroot, &s.IP, &http2, &http3, &s.SSL, &redir, &s.RedirectWWW, &static, &s.FPMPM, &s.FPMMaxChildren, &ini, &exec, &s.ClientMaxBody, &cert, &s.Status, &s.LastError, &created, &updated, &s.Login, &s.Backend, &allow, &s.Preset, &s.CMS, &s.CMSVersion, &s.CMSAt, &s.CMSDatabase, &s.SessionStore, &s.IPv6, &headers, &s.RateLimit, &pinned); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -98,7 +101,7 @@ func scanSite(sc scanner) (*Site, error) {
 	if s.PHPIni == nil {
 		s.PHPIni = map[string]string{}
 	}
-	s.HTTP2, s.HTTP3, s.RedirectHTTPS, s.StaticByNginx, s.AllowExec, s.SecurityHeaders = http2 != 0, http3 != 0, redir != 0, static != 0, exec != 0, headers != 0
+	s.HTTP2, s.HTTP3, s.RedirectHTTPS, s.StaticByNginx, s.AllowExec, s.SecurityHeaders, s.CertPinned = http2 != 0, http3 != 0, redir != 0, static != 0, exec != 0, headers != 0, pinned != 0
 	if cert.Valid {
 		v := cert.Int64
 		s.CertificateID = &v
@@ -143,9 +146,9 @@ func (d *DB) CreateSite(ctx context.Context, s *Site) error {
 	ini, _ := json.Marshal(s.PHPIni)
 	allow, _ := json.Marshal(s.AllowFrom)
 	ts := now()
-	err := d.sql.QueryRowContext(ctx, `INSERT INTO sites(user_id, domain, aliases, mode, php_version, docroot, ip, http2, http3, ssl, redirect_https, redirect_www, static_by_nginx, fpm_pm, fpm_max_children, php_ini, allow_exec, client_max_body, certificate_id, backend, allow_from, preset, cms, cms_version, cms_at, cms_database, session_store, ipv6, security_headers, rate_limit, status, last_error, created_at, updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
-		s.UserID, s.Domain, string(aliases), s.Mode, s.PHPVersion, s.Docroot, s.IP, boolInt(s.HTTP2), boolInt(s.HTTP3), s.SSL, boolInt(s.RedirectHTTPS), s.RedirectWWW, boolInt(s.StaticByNginx), s.FPMPM, s.FPMMaxChildren, string(ini), boolInt(s.AllowExec), s.ClientMaxBody, nullInt64Ptr(s.CertificateID), s.Backend, string(allow), s.Preset, s.CMS, s.CMSVersion, s.CMSAt, s.CMSDatabase, s.SessionStore, s.IPv6, boolInt(s.SecurityHeaders), s.RateLimit, s.Status, s.LastError, ts, ts).Scan(&s.ID)
+	err := d.sql.QueryRowContext(ctx, `INSERT INTO sites(user_id, domain, aliases, mode, php_version, docroot, ip, http2, http3, ssl, redirect_https, redirect_www, static_by_nginx, fpm_pm, fpm_max_children, php_ini, allow_exec, client_max_body, certificate_id, backend, allow_from, preset, cms, cms_version, cms_at, cms_database, session_store, ipv6, security_headers, rate_limit, cert_pinned, status, last_error, created_at, updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+		s.UserID, s.Domain, string(aliases), s.Mode, s.PHPVersion, s.Docroot, s.IP, boolInt(s.HTTP2), boolInt(s.HTTP3), s.SSL, boolInt(s.RedirectHTTPS), s.RedirectWWW, boolInt(s.StaticByNginx), s.FPMPM, s.FPMMaxChildren, string(ini), boolInt(s.AllowExec), s.ClientMaxBody, nullInt64Ptr(s.CertificateID), s.Backend, string(allow), s.Preset, s.CMS, s.CMSVersion, s.CMSAt, s.CMSDatabase, s.SessionStore, s.IPv6, boolInt(s.SecurityHeaders), s.RateLimit, boolInt(s.CertPinned), s.Status, s.LastError, ts, ts).Scan(&s.ID)
 	if err != nil {
 		if isUnique(err) {
 			return ErrExists
@@ -196,7 +199,7 @@ func siteColumns(s *Site) []siteColumn {
 		{"http2", boolInt(s.HTTP2)}, {"http3", boolInt(s.HTTP3)}, {"ssl", s.SSL}, {"redirect_https", boolInt(s.RedirectHTTPS)},
 		{"redirect_www", s.RedirectWWW}, {"static_by_nginx", boolInt(s.StaticByNginx)}, {"fpm_pm", s.FPMPM},
 		{"fpm_max_children", s.FPMMaxChildren}, {"php_ini", string(ini)}, {"allow_exec", boolInt(s.AllowExec)},
-		{"client_max_body", s.ClientMaxBody}, {"certificate_id", nullInt64Ptr(s.CertificateID)}, {"backend", s.Backend},
+		{"client_max_body", s.ClientMaxBody}, {"certificate_id", nullInt64Ptr(s.CertificateID)}, {"cert_pinned", boolInt(s.CertPinned)}, {"backend", s.Backend},
 		{"allow_from", string(allow)}, {"preset", s.Preset}, {"cms", s.CMS}, {"cms_version", s.CMSVersion}, {"cms_at", s.CMSAt},
 		{"cms_database", s.CMSDatabase}, {"session_store", s.SessionStore}, {"ipv6", s.IPv6},
 		{"security_headers", boolInt(s.SecurityHeaders)}, {"rate_limit", s.RateLimit}, {"status", s.Status}, {"last_error", s.LastError},
@@ -324,7 +327,9 @@ func (d *DB) MarkSiteDeleting(ctx context.Context, id int64) error {
 
 // SaveAppliedSite stores what a site.apply decided and nothing else: the
 // address it took for a site without one (unless one was set meanwhile), the
-// certificate it serves (withCert), the status and the error. The other
+// certificate it serves (withCert; unless the site's certificate changed from
+// fromCert, the one the apply read, meanwhile — given by hand or let go with
+// mp site set --cert), the status and the error. The other
 // fields stay as they are now: a change made while the apply ran is the next
 // apply's to render, not to be overwritten with what this one read. The
 // status and the error, too, go in only while the status is still from, the
@@ -332,12 +337,12 @@ func (d *DB) MarkSiteDeleting(ctx context.Context, id int64) error {
 // for meanwhile has its own job queued, which waits for this apply and then
 // reads the site — it must find what was asked for, not what this apply
 // decided from the status before.
-func (d *DB) SaveAppliedSite(ctx context.Context, s *Site, from string, withCert bool) error {
+func (d *DB) SaveAppliedSite(ctx context.Context, s *Site, from string, withCert bool, fromCert *int64) error {
 	// SQLite evaluates every expression of SET on the row as it was: both
 	// CASEs see the status before this update.
-	res, err := d.sql.ExecContext(ctx, `UPDATE sites SET ip=CASE WHEN ip='' THEN ? ELSE ip END, certificate_id=CASE WHEN ? THEN ? ELSE certificate_id END,
+	res, err := d.sql.ExecContext(ctx, `UPDATE sites SET ip=CASE WHEN ip='' THEN ? ELSE ip END, certificate_id=CASE WHEN ? AND certificate_id IS ? THEN ? ELSE certificate_id END,
 		status=CASE WHEN status=? THEN ? ELSE status END, last_error=CASE WHEN status=? THEN ? ELSE last_error END, updated_at=? WHERE id=?`,
-		s.IP, boolInt(withCert), nullInt64Ptr(s.CertificateID), from, s.Status, from, s.LastError, now(), s.ID)
+		s.IP, boolInt(withCert), nullInt64Ptr(fromCert), nullInt64Ptr(s.CertificateID), from, s.Status, from, s.LastError, now(), s.ID)
 	if err != nil {
 		return err
 	}

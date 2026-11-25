@@ -476,8 +476,8 @@ func (s *Server) stubPostfix(ctx context.Context, c mailConfig) error {
 // hostname when it resolves to this host; until it arrives the services use a
 // self-signed pair.
 func (s *Server) orderMailCertificate(ctx context.Context, jc *jobs.Context, c mailConfig) {
-	if existing, err := s.db.GetCertificateByName(ctx, c.Hostname); err == nil && existing.Status == store.CertValid && existing.NotAfter != nil && time.Now().Before(*existing.NotAfter) {
-		jc.Logf("certificate for %s is already issued, valid until %s", c.Hostname, existing.NotAfter.Format("2006-01-02"))
+	if existing := s.systemCert(ctx, c.Hostname); existing != nil {
+		jc.Logf("certificate %s covers %s, valid until %s", existing.Name, c.Hostname, existing.NotAfter.Format("2006-01-02"))
 		return
 	}
 	local := map[string]bool{}

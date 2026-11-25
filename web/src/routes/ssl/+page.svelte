@@ -103,14 +103,15 @@
   };
   async function issueSite(e: Event) { e.preventDefault(); if (!siteIssue) return; error = ''; try { const r: any = await api(`/sites/${encodeURIComponent(siteIssue.domain)}/tls/issue`, { method: 'POST', json: { staging: sform.staging, dns: sform.dns || undefined, email: sform.email || undefined } }); jobs = [r.job_id]; siteIssue = null; await load(); } catch (e) { fail(e); } }
   // An existing certificate for a site: the panel checks it covers the domain,
-  // and the sites it covers switch to it. A site without HTTPS gets it turned
-  // on — that is what installing a certificate is for.
+  // gives it to the site for good (sites) and to the other sites it covers that
+  // have none. A site without HTTPS gets it turned on — that is what installing
+  // a certificate is for.
   async function importSite(e: Event) {
     e.preventDefault(); if (!siteImport) return; error = '';
     const site = siteImport;
     try {
-      const c: any = await api('/certificates/import', { method: 'POST', json: { name: site.domain, certificate: simp.certificate, private_key: simp.private_key, auto_renew: simp.no_renew ? false : undefined } });
-      if (site.ssl !== 'auto') { const r: any = await api(`/sites/${encodeURIComponent(site.domain)}`, { method: 'PATCH', json: { ssl: 'auto' } }); if (r?.job_id) jobs = [r.job_id]; }
+      // The site is given it by hand (sites): it keeps it, and HTTPS goes on.
+      const c: any = await api('/certificates/import', { method: 'POST', json: { name: site.domain, certificate: simp.certificate, private_key: simp.private_key, auto_renew: simp.no_renew ? false : undefined, sites: [site.domain] } });
       notify(t(c.auto_renew ? 'ssl.siteImportedRenew' : 'ssl.siteImported', { domain: site.domain }));
       siteImport = null; simp = { certificate: '', private_key: '', no_renew: false }; await load();
     } catch (e) { fail(e); }

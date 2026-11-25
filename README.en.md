@@ -166,7 +166,7 @@ Under each heading are that area's `mp` commands.
 
 - lego: HTTP-01 through the nginx webroot, DNS-01 (Cloudflare, Hetzner, DigitalOcean, Gandi, deSEC, Namecheap, RFC2136) for wildcards, renewal 30 days ahead.
 - The panel's own certificate and the sites' certificates are kept apart: the panel orders for its hostname only and picks it up live, a site orders for its domain and aliases and switches itself to HTTPS. A certificate in use cannot be deleted.
-- Certificates issued elsewhere (bought, corporate) — `mp ssl import --cert --key` or the "Import" button on the site's row of the SSL page. The sites the certificate covers switch to it; a Let's Encrypt certificate is then renewed by the panel, any other one is not.
+- Certificates issued elsewhere (bought, corporate) — `mp ssl import --cert --key` or the "Import" button on the site's row of the SSL page. The sites the certificate covers (a wildcard `*.example.com` covers subdomains one label deep) switch to it unless they have a valid one of their own; `--site <domain>` or `mp site set <domain> --cert <id|name>` pins a certificate to a site. The panel and mail take a wildcard that covers their name too. A Let's Encrypt certificate is then renewed by the panel, a wildcard through DNS-01; any other one is not.
 
 ### Mail
 

@@ -1551,6 +1551,10 @@ func (s *Server) vetCerts(ctx context.Context, v *migrateVet, b *apitypes.Migrat
 		}
 		if mc.Kind == store.CertKindACME {
 			mc.Names = acmeNames(mc.Names, func(n string) bool { return siteNames[n] })
+			if wildcardName(mc.Names) && mc.AutoRenew {
+				v.warn("cert", mc.Name, "a Let's Encrypt wildcard renews through DNS-01 only: before it expires add a DNS provider here and order it again with it",
+					"mp dns-provider add …; "+reorderHint(mc.Name, mc.Names))
+			}
 		} else if fp != "" {
 			if prints[fp] == nil {
 				order = append(order, fp)
@@ -1586,19 +1590,35 @@ func sameCerts(v *migrateVet, certs []*apitypes.MigrationCert) {
 }
 
 // acmeNames is what an ACME certificate of a source names in its record here:
-// the names it covers that are the account's own sites. The record's names
+// the names it covers that are the account's own sites, and a wildcard over
+// one of them (*.example.com of the site example.com). The record's names
 // are what a renewal orders and which sites the renewed certificate is
-// attached to (reapplySitesForCert, whoever owns them), and the issuer that
-// makes a certificate ACME is only a string in it: the source's choice of
-// names must not reach a site another account adds later.
+// attached to (reapplySitesForCert), and the issuer that makes a certificate
+// ACME is only a string in it: the source's choice of names must not reach a
+// site another account adds later — a wildcard serves only its account's
+// sites (certOwnerFits), and another account cannot add a site under an
+// account's domain (foreignDomain).
 func acmeNames(names []string, own func(string) bool) []string {
 	out := []string{}
 	for _, n := range names {
-		if n = acme.NormalizeName(n); own(n) && !containsName(out, n) {
+		n = acme.NormalizeName(n)
+		base, wild := strings.CutPrefix(n, "*.")
+		if (own(n) || (wild && !strings.Contains(base, "*") && own(base))) && !containsName(out, n) {
 			out = append(out, n)
 		}
 	}
 	return out
+}
+
+// wildcardName says whether a certificate's names include a wildcard: it
+// renews through DNS-01 only.
+func wildcardName(names []string) bool {
+	for _, n := range names {
+		if strings.Contains(n, "*") {
+			return true
+		}
+	}
+	return false
 }
 
 // checkCertPair is what certificates-import checks before it writes files:

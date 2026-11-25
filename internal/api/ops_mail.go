@@ -133,18 +133,15 @@ func (s *Server) changeMailConfig(ctx context.Context, change func(c *mailConfig
 }
 
 // mailTLS returns the certificate the mail services should present. A valid
-// panel certificate for the mail hostname wins; otherwise a self-signed pair
+// panel certificate for the mail hostname wins (one of its name, or one that
+// covers it: systemCert); otherwise a self-signed pair
 // under <data>/mail keeps the daemons able to start (and clients complaining).
 func (s *Server) mailTLS(ctx context.Context, c mailConfig) (certPath, keyPath, kind string, until *time.Time) {
 	if c.Hostname == "" {
 		return "", "", "none", nil
 	}
-	if cert, err := s.db.GetCertificateByName(ctx, c.Hostname); err == nil {
-		if cert.CertPath != "" && cert.KeyPath != "" && cert.NotAfter != nil && time.Now().Before(*cert.NotAfter) {
-			if _, err := os.Stat(cert.CertPath); err == nil {
-				return cert.CertPath, cert.KeyPath, cert.Kind, cert.NotAfter
-			}
-		}
+	if cert := s.systemCert(ctx, c.Hostname); cert != nil {
+		return cert.CertPath, cert.KeyPath, cert.Kind, cert.NotAfter
 	}
 	dir := filepath.Join(s.cfg.DataDir, "mail")
 	cp, kp := filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key")

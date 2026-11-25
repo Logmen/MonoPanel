@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path"
@@ -541,6 +542,14 @@ func (s *Server) registerSites() {
 		if b.SSL != "" {
 			site.SSL = b.SSL
 		}
+		if b.Certificate != "" {
+			if p.Role != store.RoleAdmin {
+				return nil, huma.Error403Forbidden("only an administrator gives a site a certificate by hand")
+			}
+			if err := s.pinSiteCert(ctx, site, b.Certificate); err != nil {
+				return nil, err
+			}
+		}
 		if b.HTTP2 != nil {
 			site.HTTP2 = *b.HTTP2
 		}
@@ -792,6 +801,50 @@ func (s *Server) certForSite(ctx context.Context, site *store.Site) *store.Certi
 	return best
 }
 
+// pinSiteCert gives a site the certificate ref names (an id or a name) for
+// good — reapplySitesForCert leaves it there — or, with "auto", lets the
+// panel choose again (certForSite). A certificate given by hand turns HTTPS on.
+func (s *Server) pinSiteCert(ctx context.Context, site *store.Site, ref string) error {
+	if ref == "auto" {
+		site.CertificateID, site.CertPinned = nil, false
+		return nil
+	}
+	c, err := s.certByRef(ctx, ref)
+	if errors.Is(err, store.ErrNotFound) {
+		return huma.Error404NotFound("certificate " + ref + " not found")
+	}
+	if err != nil {
+		return err
+	}
+	if err := s.certFitsSite(ctx, c, site); err != nil {
+		return err
+	}
+	id := c.ID
+	site.CertificateID, site.CertPinned, site.SSL = &id, true, "auto"
+	return nil
+}
+
+// certFitsSite says why a certificate cannot serve a site by hand, or nil.
+func (s *Server) certFitsSite(ctx context.Context, c *store.Certificate, site *store.Site) error {
+	switch {
+	case !certCovers(c.Names, site.Domain):
+		return huma.Error422UnprocessableEntity(fmt.Sprintf("certificate %s does not cover %s (names: %s)", c.Name, site.Domain, strings.Join(c.Names, ", ")))
+	case !certUsable(c):
+		return huma.Error422UnprocessableEntity(fmt.Sprintf("certificate %s is not valid now (%s); issue or import it first", c.Name, c.Status))
+	case !s.certOwnerFits(ctx, c, site):
+		return huma.Error422UnprocessableEntity(fmt.Sprintf("certificate %s belongs to another account and does not serve %s", c.Name, site.Domain))
+	}
+	return nil
+}
+
+// certByRef finds a certificate by its id or its name.
+func (s *Server) certByRef(ctx context.Context, ref string) (*store.Certificate, error) {
+	if id, err := strconv.ParseInt(ref, 10, 64); err == nil {
+		return s.db.GetCertificate(ctx, id)
+	}
+	return s.db.GetCertificateByName(ctx, acme.NormalizeName(ref))
+}
+
 // certUsable says whether a certificate can be served now. Files on disk
 // decide: a failed renewal must not switch a site to HTTP while the previous
 // certificate is still valid.
@@ -819,11 +872,59 @@ func certRank(c *store.Certificate, domain string) int {
 // account brought along (a migration) only that account's sites — its key is
 // in that account's hands.
 func (s *Server) certOwnerFits(ctx context.Context, c *store.Certificate, site *store.Site) bool {
-	if c.UserID == nil || *c.UserID == site.UserID {
+	return (c.UserID != nil && *c.UserID == site.UserID) || s.adminCert(ctx, c)
+}
+
+// adminCert says whether a certificate is the panel's or an administrator's.
+func (s *Server) adminCert(ctx context.Context, c *store.Certificate) bool {
+	if c.UserID == nil {
 		return true
 	}
 	u, err := s.db.GetUserByID(ctx, *c.UserID)
 	return err == nil && u.Role == store.RoleAdmin
+}
+
+// systemCert is the certificate a service of the panel itself (its HTTPS
+// port, phpMyAdmin, the mail server) serves for host: the record of host's
+// own name, else the best valid one that covers it (certRank) — the panel's
+// or an administrator's: an account's key never serves the panel's
+// services. Its files must be there.
+func (s *Server) systemCert(ctx context.Context, host string) *store.Certificate {
+	host = acme.NormalizeName(host)
+	if host == "" || net.ParseIP(host) != nil {
+		return nil
+	}
+	certs, err := s.db.ListCertificates(ctx)
+	if err != nil {
+		return nil
+	}
+	var best *store.Certificate
+	bestRank := 0
+	for _, c := range certs {
+		r := certRank(c, host)
+		if r == 0 || !certUsable(c) || (best != nil && (r > bestRank || (r == bestRank && !c.NotAfter.After(*best.NotAfter)))) {
+			continue
+		}
+		if r > 1 && !s.adminCert(ctx, c) {
+			continue
+		}
+		if _, err := os.Stat(c.CertPath); err != nil {
+			continue
+		}
+		best, bestRank = c, r
+	}
+	return best
+}
+
+// panelCoverFiles are the files of the certificate that covers the panel's
+// hostname (certHolder.find).
+func (s *Server) panelCoverFiles() (certPath, keyPath string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if c := s.systemCert(ctx, s.panelCertName()); c != nil {
+		return c.CertPath, c.KeyPath
+	}
+	return "", ""
 }
 
 // jobSiteApply renders and applies the pool, nginx (and Apache) configuration.
@@ -981,9 +1082,14 @@ func (s *Server) applySiteLocked(ctx context.Context, jc *jobs.Context, p sitePa
 	if err != nil {
 		return err
 	}
-	// The status as read: the apply saves its own only while it is still
-	// this one (store.SaveAppliedSite).
+	// The status and the certificate as read: the apply saves its own only
+	// while they are still these (store.SaveAppliedSite).
 	from := site.Status
+	var fromCert *int64
+	if site.CertificateID != nil {
+		id := *site.CertificateID
+		fromCert = &id
+	}
 	user, err := s.db.GetUserByID(ctx, site.UserID)
 	if err != nil {
 		return err
@@ -1064,7 +1170,12 @@ func (s *Server) applySiteLocked(ctx context.Context, jc *jobs.Context, p sitePa
 		cert = s.certForSite(ctx, site)
 	}
 	tls := cert != nil
-	if tls {
+	if tls && site.CertPinned && site.CertificateID != nil && *site.CertificateID != cert.ID {
+		// The one given by hand is not valid now: another serves meanwhile,
+		// and the site keeps the one it was given.
+		jc.Logf("warning: the certificate given to the site is not valid now; %s serves meanwhile", cert.Name)
+		jc.Logf("TLS: %s (%s, until %s)", cert.Name, cert.Issuer, cert.NotAfter.Format("2006-01-02"))
+	} else if tls {
 		id := cert.ID
 		site.CertificateID = &id
 		jc.Logf("TLS: %s (%s, until %s)", cert.Name, cert.Issuer, cert.NotAfter.Format("2006-01-02"))
@@ -1289,7 +1400,7 @@ func (s *Server) applySiteLocked(ctx context.Context, jc *jobs.Context, p sitePa
 	// Only what the apply decided goes back: a change made while it ran (the
 	// mode, the PHP branch, a suspension) stays for the site.apply that change
 	// queued, and is not overwritten with what this one read at its start.
-	if err := s.db.SaveAppliedSite(context.WithoutCancel(ctx), site, from, tls); err != nil {
+	if err := s.db.SaveAppliedSite(context.WithoutCancel(ctx), site, from, tls, fromCert); err != nil {
 		return err
 	}
 	if site.SSL == "auto" && !tls && !suspended {
@@ -1477,6 +1588,9 @@ func (s *Server) reapplySitesForCert(ctx context.Context, logf func(string, ...a
 			continue
 		}
 		bound := site.CertificateID != nil && *site.CertificateID == c.ID
+		if site.CertPinned && site.CertificateID != nil && !bound {
+			continue // given another by hand (pinSiteCert)
+		}
 		takes := s.certTakes(ctx, c, site)
 		if !takes && !bound {
 			continue
