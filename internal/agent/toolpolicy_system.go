@@ -226,34 +226,45 @@ var (
 	firewalldQueryRe = regexp.MustCompile(`^--query-port=([0-9]{1,5})/(tcp|udp)$`)
 )
 
-// planFirewallCmd: firewalld's state, whether a port is open, opening the
-// panel's ports for good, closing UDP 443 the panel opened for HTTP/3, and a
-// reload (internal/api/firewalld.go). Closing goes no further: SSH never runs
-// on UDP, so the one port the API may close cannot lock anybody out.
+// planFirewallCmd: firewalld's state, whether a port is open (now and for
+// good), opening the panel's ports (for good and now — no --reload, which
+// would drop everybody else's runtime rules) and closing UDP 443 the panel
+// opened for HTTP/3, on either side (internal/api/firewalld.go,
+// firewall_http3.go). Closing goes no further: SSH never runs on UDP, so the
+// one port the API may close cannot lock anybody out.
 func (s *Server) planFirewallCmd(c *toolCall) (*toolPlan, error) {
 	if err := onlyTool(c); err != nil {
 		return nil, err
 	}
 	a := c.args
-	if equalArgs(a, []string{"--state"}) || equalArgs(a, []string{"-q", "--reload"}) || equalArgs(a, []string{"-q", "--permanent", "--remove-port=443/udp"}) {
+	if equalArgs(a, []string{"--state"}) ||
+		equalArgs(a, []string{"-q", "--remove-port=443/udp"}) ||
+		equalArgs(a, []string{"-q", "--permanent", "--remove-port=443/udp"}) {
 		return &toolPlan{args: a}, nil
 	}
-	if len(a) == 2 && a[0] == "-q" && firewalldQueryRe.MatchString(a[1]) {
+	if len(a) < 2 || a[0] != "-q" {
+		return nil, refuseArgs("firewall-cmd", a, "not a form the panel uses")
+	}
+	rest := a[1:]
+	if rest[0] == "--permanent" {
+		rest = rest[1:]
+	}
+	if len(rest) == 1 && firewalldQueryRe.MatchString(rest[0]) {
 		return &toolPlan{args: a}, nil
 	}
-	if len(a) >= 3 && a[0] == "-q" && a[1] == "--permanent" {
-		for _, p := range a[2:] {
-			m := firewalldPortRe.FindStringSubmatch(p)
-			if m == nil {
-				return nil, refuseArgs("firewall-cmd", a, "the panel only adds ports (--add-port=<port>/tcp)")
-			}
-			if n, _ := strconv.Atoi(m[1]); n < 1 || n > 65535 {
-				return nil, notAllowed("the port "+m[1], "out of range")
-			}
+	if len(rest) == 0 {
+		return nil, refuseArgs("firewall-cmd", a, "not a form the panel uses")
+	}
+	for _, p := range rest {
+		m := firewalldPortRe.FindStringSubmatch(p)
+		if m == nil {
+			return nil, refuseArgs("firewall-cmd", a, "the panel only adds ports (--add-port=<port>/tcp)")
 		}
-		return &toolPlan{args: a}, nil
+		if n, _ := strconv.Atoi(m[1]); n < 1 || n > 65535 {
+			return nil, notAllowed("the port "+m[1], "out of range")
+		}
 	}
-	return nil, refuseArgs("firewall-cmd", a, "not a form the panel uses")
+	return &toolPlan{args: a}, nil
 }
 
 // selinuxContexts are the file contexts the panel adds, rule → type

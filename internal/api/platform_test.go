@@ -501,21 +501,25 @@ func TestNginxInstallOpensFirewalld(t *testing.T) {
 	if job := f.waitJob(ref.JobID); job.Status != store.JobDone {
 		t.Fatalf("nginx install: %s %s", job.Status, job.Error)
 	}
-	opened, reloaded := false, false
+	permanent, runtime := false, false
 	for _, tool := range f.agent.Tools() {
 		if tool.Name != "firewall-cmd" {
 			continue
 		}
 		args := strings.Join(tool.Args, " ")
-		if strings.Contains(args, "--permanent") && strings.Contains(args, "--add-port=80/tcp") && strings.Contains(args, "--add-port=443/tcp") {
-			opened = true
+		if strings.Contains(args, "--add-port=80/tcp") && strings.Contains(args, "--add-port=443/tcp") {
+			if strings.Contains(args, "--permanent") {
+				permanent = true
+			} else {
+				runtime = true
+			}
 		}
 		if strings.Contains(args, "--reload") {
-			reloaded = true
+			t.Errorf("a reload drops other runtime rules: %s", args)
 		}
 	}
-	if !opened || !reloaded {
-		t.Fatalf("firewalld not opened for nginx: opened=%v reloaded=%v", opened, reloaded)
+	if !permanent || !runtime {
+		t.Fatalf("firewalld not opened for nginx: permanent=%v runtime=%v", permanent, runtime)
 	}
 
 	// Without firewalld (the default fake answers "" to --state) nothing is added.

@@ -7,12 +7,25 @@ import (
 	"testing"
 )
 
-// fakeFirewalld answers firewall-cmd as a running firewalld with ports open:
-// --query-port, --add-port and --remove-port act on them.
+// fakeFirewalld answers firewall-cmd as firewalld does, with its two
+// configurations apart: runtime (what works now) and permanent (what a
+// reload or a reboot brings back). --query-port, --add-port and
+// --remove-port act on one of them, --permanent says which; --reload
+// replaces runtime with permanent.
 type fakeFirewalld struct {
-	mu      sync.Mutex
-	running bool
-	open    map[string]bool
+	mu        sync.Mutex
+	running   bool
+	runtime   map[string]bool
+	permanent map[string]bool
+}
+
+// newFakeFirewalld is a firewalld with ports open on both sides.
+func newFakeFirewalld(running bool, ports ...string) *fakeFirewalld {
+	fw := &fakeFirewalld{running: running, runtime: map[string]bool{}, permanent: map[string]bool{}}
+	for _, p := range ports {
+		fw.runtime[p], fw.permanent[p] = true, true
+	}
+	return fw
 }
 
 func (fw *fakeFirewalld) hook(req agentReq) *agentRes {
@@ -22,27 +35,55 @@ func (fw *fakeFirewalld) hook(req agentReq) *agentRes {
 	fw.mu.Lock()
 	defer fw.mu.Unlock()
 	a := req.Args
-	switch {
-	case len(a) == 1 && a[0] == "--state":
+	if len(a) == 1 && a[0] == "--state" {
 		if fw.running {
 			return &agentRes{Output: "running\n"}
 		}
 		return &agentRes{ExitCode: 252, Output: "not running\n"}
-	case len(a) == 2 && strings.HasPrefix(a[1], "--query-port="):
-		if fw.open[strings.TrimPrefix(a[1], "--query-port=")] {
+	}
+	if len(a) > 0 && a[0] == "-q" {
+		a = a[1:]
+	}
+	set := fw.runtime
+	if len(a) > 0 && a[0] == "--permanent" {
+		set, a = fw.permanent, a[1:]
+	}
+	if len(a) == 1 && a[0] == "--reload" {
+		fw.runtime = map[string]bool{}
+		for p := range fw.permanent {
+			fw.runtime[p] = true
+		}
+		return &agentRes{}
+	}
+	if len(a) == 1 && strings.HasPrefix(a[0], "--query-port=") {
+		if set[strings.TrimPrefix(a[0], "--query-port=")] {
 			return &agentRes{}
 		}
 		return &agentRes{ExitCode: 1}
 	}
 	for _, x := range a {
 		if p, ok := strings.CutPrefix(x, "--add-port="); ok {
-			fw.open[p] = true
+			set[p] = true
 		}
 		if p, ok := strings.CutPrefix(x, "--remove-port="); ok {
-			delete(fw.open, p)
+			delete(set, p)
 		}
 	}
 	return &agentRes{}
+}
+
+// state is a port's two sides, under the lock.
+func (fw *fakeFirewalld) state(port string) (runtime, permanent bool) {
+	fw.mu.Lock()
+	defer fw.mu.Unlock()
+	return fw.runtime[port], fw.permanent[port]
+}
+
+// set puts a port's two sides as an admin would, under the lock.
+func (fw *fakeFirewalld) set(port string, runtime, permanent bool) {
+	fw.mu.Lock()
+	defer fw.mu.Unlock()
+	fw.runtime[port], fw.permanent[port] = runtime, permanent
 }
 
 // firewallCalls are the firewall-cmd and nft calls the fake agent saw from
@@ -78,11 +119,11 @@ func setHTTP3(t *testing.T, f *siteFixture, on bool) {
 // while it is open, and loses it — the panel opened it — once no site does.
 func TestHTTP3OpensAndClosesUDP443InFirewalld(t *testing.T) {
 	f := newSiteFixture(t)
-	fw := &fakeFirewalld{running: true, open: map[string]bool{"80/tcp": true, "443/tcp": true}}
+	fw := newFakeFirewalld(true, "80/tcp", "443/tcp")
 	f.agent.ToolHook = fw.hook
 	n := len(f.agent.Tools())
 	http3Site(t, f, true)
-	if !fw.open["443/udp"] {
+	if rt, pm := fw.state("443/udp"); !rt || !pm {
 		t.Fatalf("udp/443 not opened: %v", firewallCalls(f, n))
 	}
 	if v, _ := f.db.GetSetting(f.ctx, settingHTTP3Port); v != "firewalld" {
@@ -101,8 +142,8 @@ func TestHTTP3OpensAndClosesUDP443InFirewalld(t *testing.T) {
 		}
 	}
 	setHTTP3(t, f, false)
-	if fw.open["443/udp"] {
-		t.Error("udp/443 stays open with no site on HTTP/3")
+	if rt, pm := fw.state("443/udp"); rt || pm {
+		t.Errorf("udp/443 stays open with no site on HTTP/3: runtime %v, permanent %v", rt, pm)
 	}
 	if v, _ := f.db.GetSetting(f.ctx, settingHTTP3Port); v != "" {
 		t.Errorf("marker %q after closing", v)
@@ -113,7 +154,7 @@ func TestHTTP3OpensAndClosesUDP443InFirewalld(t *testing.T) {
 // site on HTTP/3 and nothing opened a site apply asks the firewall nothing.
 func TestHTTP3LeavesAForeignUDP443AndIdleHostsAlone(t *testing.T) {
 	f := newSiteFixture(t)
-	fw := &fakeFirewalld{running: true, open: map[string]bool{"443/udp": true}}
+	fw := newFakeFirewalld(true, "443/udp")
 	f.agent.ToolHook = fw.hook
 	n := len(f.agent.Tools())
 	http3Site(t, f, false)
@@ -125,15 +166,15 @@ func TestHTTP3LeavesAForeignUDP443AndIdleHostsAlone(t *testing.T) {
 		t.Errorf("marked as opened by the panel: %q", v)
 	}
 	setHTTP3(t, f, false)
-	if !fw.open["443/udp"] {
-		t.Error("closed a udp/443 the panel did not open")
+	if rt, pm := fw.state("443/udp"); !rt || !pm {
+		t.Errorf("closed a udp/443 the panel did not open: runtime %v, permanent %v", rt, pm)
 	}
 }
 
 // No firewalld and the panel's firewall off: nothing to open, nothing tried.
 func TestHTTP3WithoutAHostFirewall(t *testing.T) {
 	f := newSiteFixture(t)
-	fw := &fakeFirewalld{open: map[string]bool{}}
+	fw := newFakeFirewalld(false)
 	f.agent.ToolHook = fw.hook
 	n := len(f.agent.Tools())
 	http3Site(t, f, true)
@@ -217,14 +258,130 @@ func TestHTTP3ReappliesThePanelFirewall(t *testing.T) {
 // closed (the panel could not open it).
 func TestHTTP3DoctorWarnsWhenFirewalldKeepsItClosed(t *testing.T) {
 	f := newSiteFixture(t)
-	fw := &fakeFirewalld{running: true, open: map[string]bool{}}
+	fw := newFakeFirewalld(true)
 	f.agent.ToolHook = fw.hook
 	http3Site(t, f, true)
-	fw.mu.Lock()
-	delete(fw.open, "443/udp")
-	fw.mu.Unlock()
+	fw.set("443/udp", false, true)
 	c := f.s.http3Check(f.ctx)
 	if c == nil || c.Status != "warn" || !strings.Contains(c.Detail, "udp/443 is closed in firewalld") {
 		t.Errorf("doctor: %+v", c)
+	}
+}
+
+// firewalld keeps runtime and permanent apart until a reload. The panel looks
+// at both: it marks as its own only a permanent rule it added (an admin's
+// --permanent not reloaded yet stays theirs), opens the runtime side without
+// a reload — that would drop everybody else's runtime rules — and closes
+// both sides of its own rule.
+func TestHTTP3FirewalldRuntimeAndPermanent(t *testing.T) {
+	for _, tc := range []struct {
+		name                     string
+		runtime, permanent       bool   // udp/443 before HTTP/3
+		marker                   string // once a site serves HTTP/3
+		offRuntime, offPermanent bool   // once none does
+	}{
+		{"closed", false, false, "firewalld", false, false},
+		{"an admin's permanent rule, not reloaded", false, true, "", true, true},
+		{"open until the next reload only", true, false, "firewalld", false, false},
+		{"open", true, true, "", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSiteFixture(t)
+			fw := newFakeFirewalld(true)
+			fw.set("443/udp", tc.runtime, tc.permanent)
+			f.agent.ToolHook = fw.hook
+			n := len(f.agent.Tools())
+			http3Site(t, f, true)
+			if rt, pm := fw.state("443/udp"); !rt || !pm {
+				t.Errorf("HTTP/3 on: runtime %v, permanent %v; calls %v", rt, pm, firewallCalls(f, n))
+			}
+			if v, _ := f.db.GetSetting(f.ctx, settingHTTP3Port); v != tc.marker {
+				t.Errorf("marker %q, want %q", v, tc.marker)
+			}
+			if c := f.s.http3Check(f.ctx); c == nil || c.Status != "ok" {
+				t.Errorf("doctor: %+v", c)
+			}
+			setHTTP3(t, f, false)
+			if rt, pm := fw.state("443/udp"); rt != tc.offRuntime || pm != tc.offPermanent {
+				t.Errorf("HTTP/3 off: runtime %v, permanent %v; want %v, %v", rt, pm, tc.offRuntime, tc.offPermanent)
+			}
+			if v, _ := f.db.GetSetting(f.ctx, settingHTTP3Port); v != "" {
+				t.Errorf("marker %q after HTTP/3 off", v)
+			}
+			for _, c := range firewallCalls(f, n) {
+				if strings.Contains(c, "--reload") {
+					t.Errorf("a reload drops other runtime rules: %s", c)
+				}
+			}
+		})
+	}
+}
+
+// The panel's rule loses its runtime side by hand: closing still removes the
+// permanent one, which the next reload or reboot would bring back.
+func TestHTTP3ClosesThePermanentRuleWithoutItsRuntimeSide(t *testing.T) {
+	f := newSiteFixture(t)
+	fw := newFakeFirewalld(true)
+	f.agent.ToolHook = fw.hook
+	http3Site(t, f, true)
+	fw.set("443/udp", false, true)
+	setHTTP3(t, f, false)
+	if rt, pm := fw.state("443/udp"); rt || pm {
+		t.Errorf("runtime %v, permanent %v", rt, pm)
+	}
+}
+
+// The doctor tells a udp/443 open until the next reload from one open for
+// good, and a site apply makes it permanent.
+func TestHTTP3DoctorWarnsAboutARuntimeOnlyPort(t *testing.T) {
+	f := newSiteFixture(t)
+	fw := newFakeFirewalld(true)
+	f.agent.ToolHook = fw.hook
+	http3Site(t, f, true)
+	fw.set("443/udp", true, false)
+	c := f.s.http3Check(f.ctx)
+	if c == nil || c.Status != "warn" || !strings.Contains(c.Detail, "until the next reload") {
+		t.Fatalf("doctor: %+v", c)
+	}
+	var out struct {
+		JobID int64 `json:"job_id"`
+	}
+	f.call(http.MethodPost, "/sites/h3.example.com/apply", nil, http.StatusAccepted, &out)
+	f.waitJob(out.JobID)
+	if _, pm := fw.state("443/udp"); !pm {
+		t.Error("the apply left udp/443 open until the next reload only")
+	}
+	if c := f.s.http3Check(f.ctx); c == nil || c.Status != "ok" {
+		t.Errorf("doctor after the apply: %+v", c)
+	}
+}
+
+// firewalld stopped when the last site drops HTTP/3: the marker waits, and
+// the first apply once it runs again closes the panel's rule.
+func TestHTTP3ClosesOnceFirewalldRunsAgain(t *testing.T) {
+	f := newSiteFixture(t)
+	fw := newFakeFirewalld(true)
+	f.agent.ToolHook = fw.hook
+	http3Site(t, f, true)
+	fw.mu.Lock()
+	fw.running = false
+	fw.mu.Unlock()
+	setHTTP3(t, f, false)
+	if v, _ := f.db.GetSetting(f.ctx, settingHTTP3Port); v != "firewalld" {
+		t.Fatalf("marker %q while firewalld is stopped", v)
+	}
+	fw.mu.Lock()
+	fw.running = true
+	fw.mu.Unlock()
+	var out struct {
+		JobID int64 `json:"job_id"`
+	}
+	f.call(http.MethodPost, "/sites/h3.example.com/apply", nil, http.StatusAccepted, &out)
+	f.waitJob(out.JobID)
+	if rt, pm := fw.state("443/udp"); rt || pm {
+		t.Errorf("runtime %v, permanent %v", rt, pm)
+	}
+	if v, _ := f.db.GetSetting(f.ctx, settingHTTP3Port); v != "" {
+		t.Errorf("marker %q", v)
 	}
 }

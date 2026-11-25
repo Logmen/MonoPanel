@@ -1054,7 +1054,8 @@ func openFirewalld(listen string) (string, error) {
 	if err != nil || port == "" {
 		return "", fmt.Errorf("listen address %q has no port", listen)
 	}
-	for _, args := range [][]string{{"-q", "--permanent", "--add-port=" + port + "/tcp"}, {"-q", "--reload"}} {
+	// For good and at once; no --reload, which drops other runtime rules.
+	for _, args := range [][]string{{"-q", "--permanent", "--add-port=" + port + "/tcp"}, {"-q", "--add-port=" + port + "/tcp"}} {
 		if out, err := exec.Command("/usr/bin/firewall-cmd", args...).CombinedOutput(); err != nil {
 			return "", fmt.Errorf("firewall-cmd %s: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))
 		}

@@ -9,8 +9,9 @@ import (
 )
 
 // settingHTTP3Port records where the panel opened UDP 443 for HTTP/3: "nft"
-// (its own table, applyFirewall), "firewalld", or "" — what it may close
-// again once no site serves HTTP/3. A UDP 443 somebody else opened stays.
+// (its own table, applyFirewall), "firewalld" (a permanent rule the panel
+// added there), or "" — what it may close again once no site serves HTTP/3.
+// A UDP 443 somebody else opened stays.
 const settingHTTP3Port = "firewall.http3_port"
 
 // firewallHTTP3 keeps the host's firewall in step with HTTP/3. A site's
@@ -41,21 +42,53 @@ func (s *Server) firewallHTTP3(ctx context.Context, logf func(string, ...any)) {
 	}
 	switch {
 	case want:
-		if !s.firewalldRunning(ctx) || s.firewalldHasPort(ctx, "443/udp") {
+		if !s.firewalldRunning(ctx) {
 			return
 		}
-		if _, err := s.firewalldAdd(ctx, "443/udp"); err != nil {
-			logf("warning: HTTP/3 is on, but udp/443 is closed in firewalld (%v): browsers fall back to HTTP/2", err)
+		runtime, permanent := s.firewalldPort(ctx, "443/udp")
+		if runtime && permanent {
 			return
 		}
-		s.db.SetSetting(ctx, settingHTTP3Port, "firewalld") //nolint:errcheck // a port left open is harmless
-		logf("firewalld: udp/443 opened for HTTP/3")
+		// A permanent rule the panel adds is its own, to remove again; an
+		// admin's (a --permanent not reloaded yet) stays theirs. The runtime
+		// side catches up without a reload either way.
+		if !permanent {
+			if err := s.firewallCmd(ctx, "-q", "--permanent", "--add-port=443/udp"); err != nil {
+				logf("warning: HTTP/3 is on, but udp/443 is not open for good in firewalld (%v)", err)
+				return
+			}
+			s.db.SetSetting(ctx, settingHTTP3Port, "firewalld") //nolint:errcheck // a port left open is harmless
+		}
+		if !runtime {
+			if err := s.firewallCmd(ctx, "-q", "--add-port=443/udp"); err != nil {
+				logf("warning: HTTP/3 is on, but udp/443 is closed in firewalld (%v): browsers fall back to HTTP/2", err)
+				return
+			}
+			logf("firewalld: udp/443 opened for HTTP/3")
+			return
+		}
+		logf("firewalld: udp/443 for HTTP/3 made permanent, it was open until the next reload only")
 	case opened == "firewalld":
-		if s.firewalldRunning(ctx) && s.firewalldHasPort(ctx, "443/udp") {
-			if err := s.firewalldCloseHTTP3(ctx); err != nil {
+		if !s.firewalldRunning(ctx) {
+			// Stopped: the panel's rule waits for it, the marker too.
+			return
+		}
+		// Both sides: a runtime rule dropped by hand leaves the permanent
+		// one, which the next reload or reboot would bring back.
+		runtime, permanent := s.firewalldPort(ctx, "443/udp")
+		if permanent {
+			if err := s.firewallCmd(ctx, "-q", "--permanent", "--remove-port=443/udp"); err != nil {
 				logf("warning: firewalld: udp/443 stays open: %v", err)
 				return
 			}
+		}
+		if runtime {
+			if err := s.firewallCmd(ctx, "-q", "--remove-port=443/udp"); err != nil {
+				logf("warning: firewalld: udp/443 stays open until the next reload: %v", err)
+				return
+			}
+		}
+		if runtime || permanent {
 			logf("firewalld: udp/443 closed, no site serves HTTP/3")
 		}
 		s.db.SetSetting(ctx, settingHTTP3Port, "") //nolint:errcheck // a port left open is harmless
@@ -89,8 +122,13 @@ func (s *Server) http3Check(ctx context.Context) *apitypes.Check {
 		return &c
 	}
 	if s.firewalldRunning(ctx) {
-		if !s.firewalldHasPort(ctx, "443/udp") {
+		runtime, permanent := s.firewalldPort(ctx, "443/udp")
+		switch {
+		case !runtime:
 			c := check(name, "warn", "HTTP/3 is on, but udp/443 is closed in firewalld: browsers fall back to HTTP/2; "+fix)
+			return &c
+		case !permanent:
+			c := check(name, "warn", "udp/443 is open in firewalld until the next reload or reboot only; mp site apply <a site with HTTP/3> makes it permanent")
 			return &c
 		}
 		c := check(name, "ok", "udp/443 open in firewalld; it must be open in front of the server too")

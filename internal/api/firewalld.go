@@ -25,48 +25,48 @@ func (s *Server) firewalldOpen(ctx context.Context, logf func(string, ...any), p
 	}
 }
 
-// firewalldAdd opens ports in firewalld, permanently and at once; running is
-// false when there is no firewalld to talk to.
+// firewalldAdd opens ports in firewalld for good and at once: a permanent
+// rule (what a reload or a reboot brings back) and the same rule at runtime
+// (what works now). No --reload: it drops every runtime-only rule, somebody
+// else's included. A port open already is only a warning to firewall-cmd,
+// exit code 0. running is false when there is no firewalld to talk to.
 func (s *Server) firewalldAdd(ctx context.Context, ports ...string) (running bool, err error) {
 	if !s.firewalldRunning(ctx) {
 		return false, nil
 	}
-	args := []string{"-q", "--permanent"}
+	add := make([]string, 0, len(ports))
 	for _, p := range ports {
-		args = append(args, "--add-port="+p)
+		add = append(add, "--add-port="+p)
 	}
-	res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "firewall-cmd", Args: args})
-	if err == nil && res.ExitCode == 0 {
-		res, err = s.agent.Tool(ctx, &agent.ToolRequest{Name: "firewall-cmd", Args: []string{"-q", "--reload"}})
-	}
-	switch {
-	case err != nil:
+	if err := s.firewallCmd(ctx, append([]string{"-q", "--permanent"}, add...)...); err != nil {
 		return true, err
-	case res.ExitCode != 0:
-		return true, errors.New(strings.TrimSpace(res.Output))
 	}
-	return true, nil
+	return true, s.firewallCmd(ctx, append([]string{"-q"}, add...)...)
 }
 
-// firewalldHasPort reports whether a port ("443/udp") is open in firewalld
-// now (its exit code: 0 yes, 1 no).
-func (s *Server) firewalldHasPort(ctx context.Context, port string) bool {
-	res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "firewall-cmd", Args: []string{"-q", "--query-port=" + port}})
-	return err == nil && res.ExitCode == 0
+// firewalldPort says whether a port ("443/udp") is open in firewalld now
+// (runtime) and for good (permanent). The two differ until a reload: an
+// admin's --permanent alone, or a port opened at runtime only, which the
+// next reload or reboot takes away.
+func (s *Server) firewalldPort(ctx context.Context, port string) (runtime, permanent bool) {
+	query := func(args ...string) bool {
+		res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "firewall-cmd", Args: args})
+		return err == nil && res.ExitCode == 0 // 0 yes, 1 no
+	}
+	return query("-q", "--query-port="+port), query("-q", "--permanent", "--query-port="+port)
 }
 
-// firewalldCloseHTTP3 closes UDP 443 in firewalld, permanently and at once —
-// the one port the panel closes there (the agent's policy says why).
-func (s *Server) firewalldCloseHTTP3(ctx context.Context) error {
-	res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "firewall-cmd", Args: []string{"-q", "--permanent", "--remove-port=443/udp"}})
-	if err == nil && res.ExitCode == 0 {
-		res, err = s.agent.Tool(ctx, &agent.ToolRequest{Name: "firewall-cmd", Args: []string{"-q", "--reload"}})
-	}
+// firewallCmd runs firewall-cmd; a non-zero exit is an error with its output.
+func (s *Server) firewallCmd(ctx context.Context, args ...string) error {
+	res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "firewall-cmd", Args: args})
 	switch {
 	case err != nil:
 		return err
 	case res.ExitCode != 0:
-		return errors.New(strings.TrimSpace(res.Output))
+		if out := strings.TrimSpace(res.Output); out != "" {
+			return errors.New(out)
+		}
+		return fmt.Errorf("firewall-cmd %s: exit code %d", strings.Join(args, " "), res.ExitCode)
 	}
 	return nil
 }
