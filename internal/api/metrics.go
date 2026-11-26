@@ -593,6 +593,9 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 	for _, c := range s.mailDoctorChecks(actx) {
 		add(c)
 	}
+	if c := s.sendmailCheck(actx); c != nil {
+		add(*c)
+	}
 	add(s.pmaCheck(actx))
 	if c := s.http3Check(actx); c != nil {
 		add(*c)

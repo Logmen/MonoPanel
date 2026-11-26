@@ -111,6 +111,9 @@ type Agent struct {
 	// Stat answers agent.Stat for these paths as existing files; a path with
 	// a trailing "/" is reported as a directory. Unknown paths do not exist.
 	Stat map[string]bool
+	// StatLinks answers agent.Stat for these paths as symlinks to the given
+	// targets (the agent's Stat does not follow them).
+	StatLinks map[string]string
 	// StatWritten makes agent.Stat also find what config/apply wrote and
 	// paths/remove has not taken away since, as the real agent finds it on
 	// disk: code that asks whether it wrote a file before.
@@ -289,6 +292,7 @@ func Start(t *testing.T) *Agent {
 		siteLogs:     map[string]map[string]bool{},
 		Fail:         map[string]string{},
 		Stat:         map[string]bool{},
+		StatLinks:    map[string]string{},
 		ReadFile:     map[string]string{},
 		ToolOutput:   map[string]string{},
 		StreamOutput: map[string]string{},
@@ -956,6 +960,10 @@ func (a *Agent) respond(path string, body []byte) any {
 		for _, p := range req.Paths {
 			if t, ok := a.ModTime[p]; ok {
 				entries = append(entries, agent.StatEntry{Path: p, Exists: true, Size: int64(len(a.ReadFile[p])), Mode: "-rw-r-----", ModTime: t.UTC().Format(time.RFC3339)})
+				continue
+			}
+			if t, ok := a.StatLinks[p]; ok {
+				entries = append(entries, agent.StatEntry{Path: p, Exists: true, Mode: "Lrwxrwxrwx", Link: t})
 				continue
 			}
 			isDir, exists := a.Stat[p]

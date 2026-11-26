@@ -264,6 +264,8 @@ The default `disable_functions` are listed above; the per-site `allow_exec` swit
 
 `mp doctor` warns about any pool of an installed branch that has `catch_workers_output` on (its `php-fpm pools` line): with it a worker can reach root through the master (CVE-2026-129291; fixed in PHP 8.2.36, 8.3.37, 8.4.28 and 8.5.13). The 0.8.19 template had it on. 0.9.0 rewrites the sites' pools as it moves the sites to the log tree ([§2](#2-file-layout-on-the-server)): a site whose move failed keeps its old pool until it is applied (`mp site apply <domain>`) — the doctor's "site logs" line names such sites; take the line out of a pool of your own by hand. A pool directory or file the doctor could not read is named in a warning, not taken as clean.
 
+`mail()` of every PHP site hands the message to `/usr/sbin/sendmail` (`sendmail_path` above). Without it `mail()` just returns false and the message is gone with no trace in the logs, so while there are PHP sites `mp doctor` checks for it (the `sendmail` line, following symlink chains such as `/etc/alternatives/mta`) and warns when it is missing. The panel's mail (`mp mail install`) brings it, and so does any MTA — postfix, msmtp-mta.
+
 By default PHP sessions are files in the account's `tmp/sess`. A site can be switched to the `sessions` Valkey instance of its account (`mp site set <domain> --sessions valkey`, the "PHP sessions" field in the site settings), and then, instead of a `session.save_path` pointing to files, the pool gets:
 
 ```ini

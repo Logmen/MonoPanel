@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"strings"
 
 	"monopanel/internal/apitypes"
@@ -89,4 +90,74 @@ func (s *Server) webmailCheck(ctx context.Context, c mailConfig, probes map[int]
 		return check(name, "warn", fmt.Sprintf("Roundcube %s at %s, this panel ships %s; mp mail webmail %s --user %s updates it", c.WebmailVersion, where, roundcubeVersion, site.Domain, owner))
 	}
 	return check(name, "ok", fmt.Sprintf("Roundcube %s at %s", roundcubeVersion, where))
+}
+
+// sendmailBin is where the pools of the sites point PHP's sendmail_path
+// (templates/php-fpm/pool.conf.tmpl).
+const sendmailBin = "/usr/sbin/sendmail"
+
+// sendmailCheck is the doctor's "sendmail" line while sites run PHP: every
+// pool hands mail() to /usr/sbin/sendmail, and without it mail() returns
+// false with nothing in the site's log, so a contact form loses its letters
+// quietly. The panel's mail server brings it (postfix), any MTA does.
+func (s *Server) sendmailCheck(ctx context.Context) *apitypes.Check {
+	const name = "sendmail"
+	sites, err := s.db.ListSites(ctx, 0)
+	if err != nil {
+		return nil
+	}
+	php := false
+	for _, site := range sites {
+		php = php || (site.Status != store.SiteDeleting && site.Mode != store.ModeProxy && site.PHPVersion != "")
+	}
+	if !php {
+		return nil
+	}
+	chain, ok, err := s.sendmailTarget(ctx)
+	if err != nil {
+		return nil
+	}
+	if !ok {
+		c := check(name, "warn", "PHP sites send mail through "+sendmailBin+", which is not there: mail() fails quietly; mp mail install sets up the panel's mail (or install an MTA such as postfix or msmtp-mta)")
+		return &c
+	}
+	c := check(name, "ok", strings.Join(append([]string{sendmailBin}, chain...), " → ")+" takes mail() of the PHP sites")
+	return &c
+}
+
+// sendmailHops bounds how many symlinks sendmailTarget follows: a loop ends
+// there.
+const sendmailHops = 8
+
+// sendmailTarget follows /usr/sbin/sendmail to the file it is: the agent's
+// Stat does not follow a symlink, and sendmail mostly is one — on EL through
+// the alternatives (/etc/alternatives/mta → /usr/sbin/sendmail.postfix), on
+// Debian to ../lib/sendmail or to msmtp. A relative target counts from the
+// link's own directory. chain lists the hops; ok says a file is at the end
+// of them, not a dangling link, a loop or a directory.
+func (s *Server) sendmailTarget(ctx context.Context) (chain []string, ok bool, err error) {
+	p := sendmailBin
+	for range sendmailHops {
+		st, err := s.agent.Stat(ctx, p)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(st.Entries) != 1 {
+			return nil, false, fmt.Errorf("stat %s: %d entries", p, len(st.Entries))
+		}
+		e := st.Entries[0]
+		if !e.Exists {
+			return chain, false, nil
+		}
+		if e.Link == "" {
+			return chain, !e.IsDir, nil
+		}
+		next := e.Link
+		if !path.IsAbs(next) {
+			next = path.Join(path.Dir(p), next)
+		}
+		p = path.Clean(next)
+		chain = append(chain, p)
+	}
+	return chain, false, nil
 }
