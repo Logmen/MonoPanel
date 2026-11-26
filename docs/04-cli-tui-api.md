@@ -35,7 +35,7 @@ mp doctor                            # диагностика (в т.ч. пес�
 mp whoami                            # кто вы для панели: аккаунт, роль, способ входа, токен, 2FA
 mp version
 mp update                            # что стоит и что вышло; после отката — что версия уже числится в базе пакетов
-mp update check | apply [--version v0.9.8]    # apply ставит заново и версию, чья установка откатилась
+mp update check | apply [--version v0.9.9]    # apply ставит заново и версию, чья установка откатилась
 mp update settings [--repo owner/name] [--channel stable|beta] [--check-hours 24] [--auto-apply] [--api …]
                    [--token …|--token-stdin|--clear-token]   # --repo "-" выключает обновления
 mp update trust [--key <ключ форка>] [--restart] | --clear | --off   # только root на сервере; без флагов — какой ключ проверяет подпись
