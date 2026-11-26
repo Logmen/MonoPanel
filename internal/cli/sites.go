@@ -281,7 +281,7 @@ func siteCmd() *cobra.Command {
 		for _, f := range []struct {
 			name string
 			dst  **bool
-		}{{"http2", &upd.HTTP2}, {"http3", &upd.HTTP3}, {"https-redirect", &upd.RedirectHTTPS}, {"static-by-nginx", &upd.StaticByNginx}, {"allow-exec", &upd.AllowExec}, {"security-headers", &upd.SecurityHeaders}} {
+		}{{"http2", &upd.HTTP2}, {"http3", &upd.HTTP3}, {"https-redirect", &upd.RedirectHTTPS}, {"static-by-nginx", &upd.StaticByNginx}, {"allow-exec", &upd.AllowExec}, {"security-headers", &upd.SecurityHeaders}, {"default-tls", &upd.DefaultTLS}} {
 			if cmd.Flags().Changed(f.name) {
 				v, _ := cmd.Flags().GetBool(f.name)
 				*f.dst = &v
@@ -320,6 +320,7 @@ func siteCmd() *cobra.Command {
 	set.Flags().StringSliceVar(&updIni, "ini", nil, T("php_value key=value (пустое значение удаляет)", "php_value key=value (an empty value removes the key)"))
 	set.Flags().Bool("http2", true, "HTTP/2")
 	set.Flags().Bool("http3", false, "HTTP/3")
+	set.Flags().Bool("default-tls", false, T("клиенты TLS без SNI на адресе сайта (обратный прокси, который ходит по IP) получают его сертификат, а сайт выбирает их Host; один сайт на адрес (администратор)", "TLS clients without SNI on the site's address (a reverse proxy that connects by IP) get its certificate, and their Host picks the site; one site per address (administrators)"))
 	set.Flags().Bool("https-redirect", true, T("перенаправлять HTTP на HTTPS", "redirect HTTP to HTTPS"))
 	set.Flags().Bool("static-by-nginx", true, T("в режиме apache отдавать статику через nginx", "in apache mode, serve static files through nginx"))
 	set.Flags().Bool("allow-exec", false, T("разрешить exec/system/proc_open", "allow exec/system/proc_open"))

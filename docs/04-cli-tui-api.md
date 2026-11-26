@@ -58,6 +58,7 @@ mp site add <domain> --user <login> [--php 8.4] [--mode fpm|apache|proxy] [--bac
 mp site set <domain> [флаги site add, кроме --user и --no-https-redirect] [--rm-alias …] [--no-www]
             [--https-redirect=false] [--allow-all] [--sessions files|valkey]   # --docroot '' — корень, --preset '' — универсальный
             [--cert <id|имя>|auto]                                            # сертификат вручную (администратор); auto — выбирает панель
+            [--default-tls[=false]]                                           # клиенты TLS без SNI на адресе сайта (обратный прокси по IP) получают его сертификат; один сайт на адрес (администратор)
 mp site list | show <domain> | presets
 mp site apply | fix | suspend | unsuspend <domain>   # fix — владелец, права, ACL и метки SELinux файлов сайта
 mp site rm <domain> [--purge]
@@ -65,7 +66,7 @@ mp site logs <domain> [--type access|error|php|slow|apache-access|apache-error] 
 mp site nginx <domain> [--set файл | --clear | --generated]   # свои директивы в server {}: проверка агентом, nginx -t и откат
 mp site php <domain>                 # действующие PHP-параметры и откуда каждый взялся
 mp site tls <domain> [--dns <провайдер>] [--staging] [--email …]   # сертификат на домен с алиасами, сайт переходит на HTTPS
-mp site move-ip <новый-адрес> [--from <прежний>]   # после смены IP хоста: все сайты пропавших адресов разом; каждый сайт — под своей блокировкой: меняется только адрес, удалённые и удаляемые сайты пропускаются, блок вебпочты на порту переезжает вместе с её сайтом
+mp site move-ip <новый-адрес> [--from <прежний>]   # после смены IP хоста: все сайты пропавших адресов разом; каждый сайт — под своей блокировкой: меняется только адрес, удалённые и удаляемые сайты пропускаются, блок вебпочты на порту переезжает вместе с её сайтом; задача заканчивается, когда сайты применены на новом адресе, и падает, называя сайты, чьё применение не прошло (у них нет server block до удачного mp site apply) — прежний адрес с интерфейса снимают после неё
 mp selinux [enforcing|permissive] [--yes]
 mp cms list
 mp cms install <domain> wordpress|joomla|opencart|bitrix [--title …] [--admin-login …] [--admin-password …|--password-stdin]

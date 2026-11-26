@@ -189,3 +189,64 @@ func TestDefaultServersQUICFollowsWhatNginxServes(t *testing.T) {
 		t.Error("no QUIC socket after the site came back")
 	}
 }
+
+// A reverse proxy that connects by IP sends no SNI: an administrator gives
+// the address a site for those clients (default_tls), whose certificate the
+// default server on 443 shows them, while a name no site has still gets a
+// refused handshake. One site per address; an ordinary account cannot choose
+// it — it decides for the whole address.
+func TestDefaultTLSGivesClientsWithoutSNIASite(t *testing.T) {
+	f := newSiteFixture(t)
+	f.s.SetHostIPs(func() []string { return []string{"203.0.113.10"} })
+	for _, d := range []string{"kz.example.com", "ru.example.com"} {
+		cert, key := testCert(t, d)
+		f.call(http.MethodPost, "/certificates/import", map[string]any{"certificate": cert, "private_key": key}, http.StatusCreated, nil)
+		f.createSite(map[string]any{"domain": d, "user": "alex", "php_version": "8.4", "ssl": "auto", "ip": "203.0.113.10"})
+	}
+	conf := func() string { c, _ := f.agent.File("/etc/nginx/monopanel/http.d/ip-203.0.113.10.conf"); return c }
+	if c := conf(); !strings.Contains(c, "ssl_reject_handshake on;") || strings.Contains(c, "ssl_certificate ") {
+		t.Fatalf("before:\n%s", c)
+	}
+	f.siteJob(http.MethodPatch, "/sites/kz.example.com", map[string]any{"default_tls": true})
+	c := conf()
+	for _, want := range []string{"listen 203.0.113.10:443 ssl default_server;", "ssl_certificate     ", "kz.example.com", "return 301 https://kz.example.com$request_uri;", `server_name "~[a-z]";`, "ssl_reject_handshake on;"} {
+		if !strings.Contains(c, want) {
+			t.Errorf("no %q in\n%s", want, c)
+		}
+	}
+	if strings.Count(c, "default_server") != 2 {
+		t.Errorf("default_server on 80 and 443 only:\n%s", c)
+	}
+	if log := f.lastJobLog("site.apply"); !strings.Contains(log, "TLS clients without SNI on 203.0.113.10 (a reverse proxy by IP) get the certificate of kz.example.com") {
+		t.Errorf("not in the log:\n%s", log)
+	}
+	// Another site of the address takes it over.
+	f.siteJob(http.MethodPatch, "/sites/ru.example.com", map[string]any{"default_tls": true})
+	if kz, _ := f.db.GetSiteByDomain(f.ctx, "kz.example.com"); kz.DefaultTLS {
+		t.Error("two sites for the clients without SNI of one address")
+	}
+	if c := conf(); !strings.Contains(c, "return 301 https://ru.example.com$request_uri;") {
+		t.Errorf("after ru took it:\n%s", c)
+	}
+	// Suspended, it answers nobody: the handshake is refused again.
+	f.siteAction("ru.example.com", "suspend")
+	if c := conf(); strings.Contains(c, "ssl_certificate ") || !strings.Contains(c, "ssl_reject_handshake on;") {
+		t.Errorf("suspended:\n%s", c)
+	}
+	f.siteAction("ru.example.com", "unsuspend")
+	if c := conf(); !strings.Contains(c, "ru.example.com") {
+		t.Errorf("unsuspended:\n%s", c)
+	}
+	f.siteJob(http.MethodPatch, "/sites/ru.example.com", map[string]any{"default_tls": false})
+	if c := conf(); strings.Contains(c, "ssl_certificate ") || strings.Contains(c, "~[a-z]") {
+		t.Errorf("off:\n%s", c)
+	}
+
+	// An account's own site: not its choice.
+	f.userWithPassword("bob", "bob-password", 1501)
+	cert, key := testCert(t, "bob.example.com")
+	f.call(http.MethodPost, "/certificates/import", map[string]any{"certificate": cert, "private_key": key}, http.StatusCreated, nil)
+	f.createSite(map[string]any{"domain": "bob.example.com", "user": "bob", "php_version": "8.4", "ssl": "auto", "ip": "203.0.113.10"})
+	f.loginAs("bob", "bob-password")
+	f.call(http.MethodPatch, "/sites/bob.example.com", map[string]any{"default_tls": true}, http.StatusForbidden, nil)
+}

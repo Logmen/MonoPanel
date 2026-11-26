@@ -95,8 +95,9 @@ func adminFlag(path, flag string) bool {
 	case "site nginx":
 		return flag == "set" || flag == "clear"
 	case "site set":
-		// A certificate given by hand: the API takes it from administrators.
-		return flag == "cert"
+		// A certificate given by hand, the site for clients without SNI: the
+		// API takes them from administrators.
+		return flag == "cert" || flag == "default-tls"
 	case "user set":
 		return flag == "shell" || flag == "sftp-only" || flag == "status"
 	case "audit":

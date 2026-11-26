@@ -58,6 +58,7 @@ mp site add <domain> --user <login> [--php 8.4] [--mode fpm|apache|proxy] [--bac
 mp site set <domain> [the flags of site add but --user and --no-https-redirect] [--rm-alias …] [--no-www]
             [--https-redirect=false] [--allow-all] [--sessions files|valkey]   # --docroot '' — the site root, --preset '' — generic
             [--cert <id|name>|auto]                                           # a certificate by hand (administrators); auto — the panel chooses
+            [--default-tls[=false]]                                           # TLS clients without SNI on the site's address (a reverse proxy by IP) get its certificate; one site per address (administrators)
 mp site list | show <domain> | presets
 mp site apply | fix | suspend | unsuspend <domain>   # fix — owner, permissions, ACLs and SELinux labels of the site's files
 mp site rm <domain> [--purge]
@@ -65,7 +66,7 @@ mp site logs <domain> [--type access|error|php|slow|apache-access|apache-error] 
 mp site nginx <domain> [--set file | --clear | --generated]   # custom directives in server {}: the agent's check, nginx -t, rollback
 mp site php <domain>                 # effective PHP settings and where each one comes from
 mp site tls <domain> [--dns <provider>] [--staging] [--email …]   # a certificate for the domain and its aliases; the site switches to HTTPS
-mp site move-ip <new-address> [--from <previous>]  # after the host's IP changes: all sites on the vanished addresses at once; each site under its lock: only the address changes, sites deleted or being deleted are skipped, the webmail's block on its port moves with its site
+mp site move-ip <new-address> [--from <previous>]  # after the host's IP changes: all sites on the vanished addresses at once; each site under its lock: only the address changes, sites deleted or being deleted are skipped, the webmail's block on its port moves with its site; the job ends once the sites are applied on the new address and fails naming those whose apply did not go through (they have no server block until mp site apply succeeds) — take the old address off the interface after it
 mp selinux [enforcing|permissive] [--yes]
 mp cms list
 mp cms install <domain> wordpress|joomla|opencart|bitrix [--title …] [--admin-login …] [--admin-password …|--password-stdin]

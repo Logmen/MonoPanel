@@ -316,6 +316,7 @@ type SiteUpdateRequest struct {
 	Preset          *string           `json:"preset,omitempty" doc:"CMS preset: wordpress, joomla, bitrix, opencart or \"\" for generic"`
 	SessionStore    string            `json:"session_store,omitempty" enum:"files,valkey" doc:"Where PHP keeps sessions: files in the account's tmp, or its Valkey sessions instance (needs the redis extension of the site's PHP)"`
 	Certificate     string            `json:"certificate,omitempty" maxLength:"253" doc:"Administrators: serve this certificate (id or name) and keep it — one issued or renewed later for the site's names does not take its place; auto lets the panel choose again"`
+	DefaultTLS      *bool             `json:"default_tls,omitempty" doc:"Administrators: TLS clients without SNI on the site's address (a reverse proxy that connects by IP) get this site's certificate, and their Host header picks the site; one site per address — setting it takes it off the others"`
 }
 
 // SiteMoveIPRequest moves the sites of one address to another: after the

@@ -69,6 +69,7 @@ func TestNginxContentPasses(t *testing.T) {
 		add("ip default tls "+ip, "/etc/nginx/monopanel/http.d/ip-"+strings.Trim(ip, "[]")+".conf", renderT(t, "nginx/ip-default.conf.tmpl", render.IPDefault{IP: ip, TLS: true, HTTP3: true, CertPath: "/c.pem", KeyPath: "/k.pem"}))
 		// What defaultServerFiles renders: no certificate, QUIC or not.
 		add("ip default tls no cert "+ip, "/etc/nginx/monopanel/http.d/ip-"+strings.Trim(ip, "[]")+".conf", renderT(t, "nginx/ip-default.conf.tmpl", render.IPDefault{IP: ip, TLS: true, PanelHost: "panel.example.com", PanelPort: 8443}))
+		add("ip default tls no sni site "+ip, "/etc/nginx/monopanel/http.d/ip-"+strings.Trim(ip, "[]")+".conf", renderT(t, "nginx/ip-default.conf.tmpl", render.IPDefault{IP: ip, TLS: true, HTTP3: true, CertPath: "/c.pem", KeyPath: "/k.pem", NoSNISite: "kz.example.com"}))
 		add("ip default tls no cert quic "+ip, "/etc/nginx/monopanel/http.d/ip-"+strings.Trim(ip, "[]")+".conf", renderT(t, "nginx/ip-default.conf.tmpl", render.IPDefault{IP: ip, TLS: true, HTTP3: true, PanelHost: "panel.example.com", PanelPort: 8443}))
 	}
 	add("ip default no panel host", "/etc/nginx/monopanel/http.d/ip-198.51.100.1.conf", renderT(t, "nginx/ip-default.conf.tmpl", render.IPDefault{IP: "198.51.100.1"}))

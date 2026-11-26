@@ -628,7 +628,9 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 	if sites, err := s.db.ListSites(actx, 0); err == nil {
 		paths := []string{}
 		for _, site := range sites {
-			if site.Status != store.SiteActive {
+			// A site whose apply failed is "error" — after a move-ip, without
+			// any server block (jobSitesMoveIP).
+			if site.Status != store.SiteActive && site.Status != store.SiteError {
 				continue
 			}
 			if u, err := s.db.GetUserByID(actx, site.UserID); err == nil {

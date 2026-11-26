@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"monopanel/internal/agent"
+	"monopanel/internal/jobs"
 )
 
 // What a backup gives restic: the agent lets restic back up or restore for
@@ -30,7 +31,11 @@ const (
 //     mail domain, every one of them a stream the agent ends at
 //     agent.StreamLimit, one after another. A day is four of them: the
 //     home's whole limit and three times as much for the databases and the
-//     mail, and still an end for a migration whose source stopped answering.
+//     mail, and still an end for a migration whose source stopped answering;
+//   - sites.move-ip: it waits for the applies of the sites it moved, each
+//     with its own hour (jobSitesMoveIP). A long job so that they run on the
+//     spare worker while a backup holds the other one — not hours later,
+//     with the sites out of nginx meanwhile.
 //
 // Every other type keeps the default hour: what it waits for takes minutes,
 // and a package run of the stack's, PHP's or the mail's jobs, which the
@@ -42,6 +47,7 @@ var jobLimits = map[string]time.Duration{
 	"backup.run":     resticLimit + pruneLimit + time.Hour,
 	"backup.restore": resticLimit + time.Hour,
 	"migrate.run":    4 * agent.StreamLimit,
+	"sites.move-ip":  jobs.DefaultLimit + time.Hour,
 }
 
 // seconds is d as the whole seconds an agent call's TimeoutSeconds takes.

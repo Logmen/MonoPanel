@@ -66,9 +66,9 @@ type Server struct {
 	started time.Time
 	limiter *loginLimiter
 	tls     *certHolder
-	// defaultQuic is what the default servers nginx has were last written
-	// with: 1 with the QUIC sockets, 0 without, -1 not known (syncHTTP3).
-	defaultQuic atomic.Int32
+	// defaultWith is what the default servers nginx has were last written
+	// with, nil while not known (syncDefaultServers).
+	defaultWith atomic.Pointer[defaultInputs]
 	acme        *acme.Manager
 	secrets     *secrets.Box
 	// Readiness waits after a reload: systemd returns before php-fpm opens the
@@ -288,7 +288,6 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	s.hostIPs = localIPv4s
 	s.hostIPv6s = localIPv6s
 	s.lookup = publicLookup
-	s.defaultQuic.Store(-1)
 	s.tls = newCertHolder(cfg, log)
 	s.tls.find = s.panelCoverFiles
 	if box, err := secrets.Open(cfg.SecretKeyFile); err == nil {

@@ -31,6 +31,8 @@ func init() {
 		op("sites-update", cli("site set"), web(site),
 			adminField("the handler refuses a certificate given by hand from anyone but an administrator (ops_sites.go), and the site page shows the select to administrators only", "certificate"),
 			field("certificate", flag("cert")),
+			adminField("the handler takes the site for clients without SNI only from an administrator (ops_sites.go): it decides for the whole address; the site page shows the switch to administrators only", "default_tls"),
+			field("default_tls", flag("default-tls")),
 			field("aliases", flag("alias", "rm-alias")),
 			field("allow_from", flag("allow", "allow-all")),
 			field("client_max_body", flag("max-body")),

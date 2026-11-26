@@ -154,6 +154,12 @@ func (s *Server) jobUserDelete(ctx context.Context, jc *jobs.Context) error {
 			return fail(err)
 		}
 	}
+	// A site gone may have been the one for the clients without SNI of its
+	// address: the default server stops naming its certificate's files
+	// before they go.
+	if len(certs) > 0 {
+		s.syncDefaultServers(ctx, jc.Logf)
+	}
 	for _, c := range certs {
 		s.decorateCertUsage(ctx, []*store.Certificate{c})
 		users := c.UsedBySites

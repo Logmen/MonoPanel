@@ -18,6 +18,11 @@ type IPDefault struct {
 	HTTP3    bool
 	CertPath string
 	KeyPath  string
+	// NoSNISite is the site whose certificate (CertPath) a TLS client
+	// without SNI gets on the address — a reverse proxy that connects by IP
+	// sends none; its Host then picks the site. A name no site has is still
+	// refused when it comes as SNI.
+	NoSNISite string
 	// PanelHost and PanelPort make http://<panel host>/ lead to the panel.
 	PanelHost string
 	PanelPort int

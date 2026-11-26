@@ -259,14 +259,14 @@ func (s *Server) jobSitesMoveIP(ctx context.Context, jc *jobs.Context) error {
 	if gone := s.pruneDefaultServers(ctx); len(gone) > 0 {
 		jc.Logf("removed the default servers of addresses no longer on this server: %s", strings.Join(gone, ", "))
 	}
-	files, quic, err := s.nginxGlobalFiles(ctx)
+	files, in, err := s.nginxGlobalFiles(ctx)
 	if err == nil {
 		web := s.profile.Web()
 		// nginx may be down since boot: reload-or-restart brings it up.
 		if _, err = s.agent.ApplyConfigSet(ctx, &agent.ApplyConfigSetRequest{Files: files, Validate: [][]string{web.NginxCheckArgv}, Reload: []string{web.NginxService}, Force: true, Origin: "stack:nginx"}); err != nil {
 			err = fmt.Errorf("default servers: %w", err)
 		} else {
-			s.defaultQuic.Store(quicFlag(quic))
+			s.defaultWith.Store(in)
 		}
 	}
 	if failed == nil {
@@ -276,11 +276,13 @@ func (s *Server) jobSitesMoveIP(ctx context.Context, jc *jobs.Context) error {
 	// their configuration is gone, and a second move-ip, which lists what
 	// is still on the old address, would not find them.
 	jc.Progress(50, "sites")
+	applies := map[int64]string{}
 	for _, site := range moved {
 		id, err := s.enqueueSiteApply(ctx, site, jc.RequestedBy)
 		if err != nil {
 			return errors.Join(failed, err)
 		}
+		applies[id] = site.Domain
 		jc.Logf("%s: job #%d applies the configuration", site.Domain, id)
 	}
 	// The webmail's block on its port went with its site's (moveSiteIP):
@@ -291,6 +293,15 @@ func (s *Server) jobSitesMoveIP(ctx context.Context, jc *jobs.Context) error {
 			return errors.Join(failed, err)
 		}
 		jc.Logf("the webmail on its port: job #%d writes its server block again", job.ID)
+	}
+	// The move is done once the sites answer on the new address: until then
+	// they have no server block at all, and one whose apply fails has none
+	// after it either (new.qaj.kz, 26.11.2026: the address was taken off the
+	// interface on "done" while the applies still ran, and two sites stayed
+	// without their configuration).
+	jc.Progress(70, "waiting for the sites to come back")
+	if err := s.waitSiteApplies(ctx, jc.Logf, applies, p.To); err != nil {
+		failed = errors.Join(failed, err)
 	}
 	if failed != nil {
 		return failed
@@ -359,4 +370,41 @@ func (s *Server) moveSiteIP(ctx context.Context, jc *jobs.Context, listed *store
 	}
 	jc.Logf("%s: %s → %s", site.Domain, listed.IP, to)
 	return true, webmail, nil
+}
+
+// waitSiteApplies waits for the site.apply jobs a move queued (id → domain)
+// and fails naming the sites whose apply failed: they have no server block
+// until an apply of theirs succeeds.
+func (s *Server) waitSiteApplies(ctx context.Context, logf func(string, ...any), applies map[int64]string, to string) error {
+	var failed []string
+	for len(applies) > 0 {
+		for id, domain := range applies {
+			job, err := s.db.GetJob(ctx, id)
+			if err != nil {
+				return err
+			}
+			switch job.Status {
+			case store.JobDone:
+				logf("%s: up on %s", domain, to)
+			case store.JobFailed, store.JobCancelled:
+				failed = append(failed, fmt.Sprintf("%s (job #%d: %s)", domain, id, job.Error))
+			default:
+				continue
+			}
+			delete(applies, id)
+		}
+		if len(applies) == 0 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+	if len(failed) == 0 {
+		return nil
+	}
+	sort.Strings(failed)
+	return fmt.Errorf("%d site(s) are not up on %s and have no server block until mp site apply <domain> succeeds: %s", len(failed), to, strings.Join(failed, "; "))
 }

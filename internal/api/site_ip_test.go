@@ -1,7 +1,10 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -11,6 +14,7 @@ import (
 
 	"monopanel/internal/agent"
 	"monopanel/internal/apitypes"
+	"monopanel/internal/jobs"
 	"monopanel/internal/store"
 )
 
@@ -432,5 +436,42 @@ func TestSiteChangeKeepsWhatChangedMeanwhile(t *testing.T) {
 	f.call(http.MethodPatch, "/sites/one.example.com", map[string]any{"ipv6": "2001:db8::1", "client_max_body": "256m"}, http.StatusConflict, nil)
 	if got, _ := f.db.GetSite(f.ctx, site.ID); got.Status != store.SiteDeleting || got.ClientMaxBody != "128m" {
 		t.Fatalf("a change beside the removal: status %s, client_max_body %s", got.Status, got.ClientMaxBody)
+	}
+}
+
+// A move is done once its sites are up on the new address: it waits for
+// their applies and fails naming those whose apply failed — they have no
+// server block until one succeeds (new.qaj.kz, 26.11.2026).
+func TestSitesMoveIPWaitsForTheAppliesAndNamesTheFailed(t *testing.T) {
+	f := newSiteFixture(t)
+	site := f.createSite(map[string]any{"domain": "one.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	ok, err := f.s.enqueueSiteApply(f.ctx, site, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An apply refused by nginx -t, as the one of a site whose address went.
+	f.s.jobs.Register("test.refused", func(context.Context, *jobs.Context) error {
+		return errors.New("nginx: [emerg] bind() to 10.0.0.1:80 failed (99)")
+	})
+	bad, err := f.s.jobs.Enqueue(f.ctx, "test.refused", struct{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	err = f.s.waitSiteApplies(f.ctx, logf, map[int64]string{ok: "one.example.com", bad.ID: "two.example.com"}, "10.0.0.2")
+	if err == nil || !strings.Contains(err.Error(), "1 site(s) are not up on 10.0.0.2") || !strings.Contains(err.Error(), fmt.Sprintf("two.example.com (job #%d", bad.ID)) || strings.Contains(err.Error(), "one.example.com") {
+		t.Fatalf("err %v", err)
+	}
+	if len(lines) != 1 || lines[0] != "one.example.com: up on 10.0.0.2" {
+		t.Errorf("log %q", lines)
+	}
+	// The doctor counts a failed site without its server block as missing.
+	if err := f.db.SetSiteStatusFrom(f.ctx, site.ID, store.SiteActive, store.SiteError, "nginx -t failed"); err != nil {
+		t.Fatal(err)
+	}
+	// (The fake's Stat finds no file the apply wrote: the block is missing.)
+	if got := f.doctorCheck("drift"); !strings.HasPrefix(got, "warn: ") || !strings.Contains(got, "/etc/nginx/monopanel/sites/one.example.com.conf") {
+		t.Errorf("doctor: %q", got)
 	}
 }

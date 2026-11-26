@@ -550,6 +550,14 @@ func (s *Server) registerSites() {
 				return nil, err
 			}
 		}
+		if b.DefaultTLS != nil && *b.DefaultTLS != site.DefaultTLS {
+			// Which site the clients without SNI of an address reach is the
+			// whole address's business, other accounts' sites included.
+			if p.Role != store.RoleAdmin {
+				return nil, huma.Error403Forbidden("only an administrator chooses the site that answers clients without SNI")
+			}
+			site.DefaultTLS = *b.DefaultTLS
+		}
 		if b.HTTP2 != nil {
 			site.HTTP2 = *b.HTTP2
 		}
@@ -624,6 +632,11 @@ func (s *Server) registerSites() {
 		}
 		if err := s.writeSiteChange(ctx, was, site); err != nil {
 			return nil, err
+		}
+		if site.DefaultTLS && !was.DefaultTLS {
+			if err := s.db.ClearDefaultTLS(ctx, site.IP, site.ID); err != nil {
+				return nil, err
+			}
 		}
 		jobID, err := s.enqueueSiteApply(ctx, site, p.Login)
 		if err != nil {

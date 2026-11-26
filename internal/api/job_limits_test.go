@@ -19,7 +19,7 @@ import (
 // of the agent's streams. Every other job type keeps the hour.
 func TestJobLimitsFitTheirWork(t *testing.T) {
 	f := newSiteFixture(t)
-	want := map[string]time.Duration{"backup.run": 8 * time.Hour, "backup.restore": 7 * time.Hour, "migrate.run": 24 * time.Hour}
+	want := map[string]time.Duration{"backup.run": 8 * time.Hour, "backup.restore": 7 * time.Hour, "migrate.run": 24 * time.Hour, "sites.move-ip": 2 * time.Hour}
 	for _, typ := range []string{
 		"user.provision", "user.delete", "stack.install", "apache.migrate", "apache.backend", "stack.remove", "stack.upgrade",
 		"cert.issue", "php.install", "php.remove", "site.apply", "site.fix", "site.cms", "site.delete", "sites.move-ip",

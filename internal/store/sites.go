@@ -48,7 +48,10 @@ type Site struct {
 	CertificateID  *int64            `json:"certificate_id,omitempty"`
 	// CertPinned: the certificate was given by hand and stays (the column
 	// cert_pinned says why).
-	CertPinned bool     `json:"cert_pinned,omitempty"`
+	CertPinned bool `json:"cert_pinned,omitempty"`
+	// DefaultTLS: a TLS client without SNI on the site's address gets its
+	// certificate (one site per address; the column default_tls says why).
+	DefaultTLS bool     `json:"default_tls,omitempty"`
 	Backend    string   `json:"backend,omitempty"`
 	AllowFrom  []string `json:"allow_from"`
 	// SecurityHeaders adds X-Content-Type-Options, X-Frame-Options and
@@ -75,15 +78,15 @@ type Site struct {
 	Login string `json:"login,omitempty"`
 }
 
-const siteCols = `s.id, s.user_id, s.domain, s.aliases, s.mode, s.php_version, s.docroot, s.ip, s.http2, s.http3, s.ssl, s.redirect_https, s.redirect_www, s.static_by_nginx, s.fpm_pm, s.fpm_max_children, s.php_ini, s.allow_exec, s.client_max_body, s.certificate_id, s.status, s.last_error, s.created_at, s.updated_at, u.login, s.backend, s.allow_from, s.preset, s.cms, s.cms_version, s.cms_at, s.cms_database, s.session_store, s.ipv6, s.security_headers, s.rate_limit, s.cert_pinned`
+const siteCols = `s.id, s.user_id, s.domain, s.aliases, s.mode, s.php_version, s.docroot, s.ip, s.http2, s.http3, s.ssl, s.redirect_https, s.redirect_www, s.static_by_nginx, s.fpm_pm, s.fpm_max_children, s.php_ini, s.allow_exec, s.client_max_body, s.certificate_id, s.status, s.last_error, s.created_at, s.updated_at, u.login, s.backend, s.allow_from, s.preset, s.cms, s.cms_version, s.cms_at, s.cms_database, s.session_store, s.ipv6, s.security_headers, s.rate_limit, s.cert_pinned, s.default_tls`
 const siteFrom = ` FROM sites s JOIN users u ON u.id = s.user_id`
 
 func scanSite(sc scanner) (*Site, error) {
 	var s Site
 	var aliases, ini, allow, created, updated string
-	var http2, http3, redir, static, exec, headers, pinned int
+	var http2, http3, redir, static, exec, headers, pinned, defTLS int
 	var cert sql.NullInt64
-	if err := sc.Scan(&s.ID, &s.UserID, &s.Domain, &aliases, &s.Mode, &s.PHPVersion, &s.Docroot, &s.IP, &http2, &http3, &s.SSL, &redir, &s.RedirectWWW, &static, &s.FPMPM, &s.FPMMaxChildren, &ini, &exec, &s.ClientMaxBody, &cert, &s.Status, &s.LastError, &created, &updated, &s.Login, &s.Backend, &allow, &s.Preset, &s.CMS, &s.CMSVersion, &s.CMSAt, &s.CMSDatabase, &s.SessionStore, &s.IPv6, &headers, &s.RateLimit, &pinned); err != nil {
+	if err := sc.Scan(&s.ID, &s.UserID, &s.Domain, &aliases, &s.Mode, &s.PHPVersion, &s.Docroot, &s.IP, &http2, &http3, &s.SSL, &redir, &s.RedirectWWW, &static, &s.FPMPM, &s.FPMMaxChildren, &ini, &exec, &s.ClientMaxBody, &cert, &s.Status, &s.LastError, &created, &updated, &s.Login, &s.Backend, &allow, &s.Preset, &s.CMS, &s.CMSVersion, &s.CMSAt, &s.CMSDatabase, &s.SessionStore, &s.IPv6, &headers, &s.RateLimit, &pinned, &defTLS); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -101,7 +104,7 @@ func scanSite(sc scanner) (*Site, error) {
 	if s.PHPIni == nil {
 		s.PHPIni = map[string]string{}
 	}
-	s.HTTP2, s.HTTP3, s.RedirectHTTPS, s.StaticByNginx, s.AllowExec, s.SecurityHeaders, s.CertPinned = http2 != 0, http3 != 0, redir != 0, static != 0, exec != 0, headers != 0, pinned != 0
+	s.HTTP2, s.HTTP3, s.RedirectHTTPS, s.StaticByNginx, s.AllowExec, s.SecurityHeaders, s.CertPinned, s.DefaultTLS = http2 != 0, http3 != 0, redir != 0, static != 0, exec != 0, headers != 0, pinned != 0, defTLS != 0
 	if cert.Valid {
 		v := cert.Int64
 		s.CertificateID = &v
@@ -199,7 +202,7 @@ func siteColumns(s *Site) []siteColumn {
 		{"http2", boolInt(s.HTTP2)}, {"http3", boolInt(s.HTTP3)}, {"ssl", s.SSL}, {"redirect_https", boolInt(s.RedirectHTTPS)},
 		{"redirect_www", s.RedirectWWW}, {"static_by_nginx", boolInt(s.StaticByNginx)}, {"fpm_pm", s.FPMPM},
 		{"fpm_max_children", s.FPMMaxChildren}, {"php_ini", string(ini)}, {"allow_exec", boolInt(s.AllowExec)},
-		{"client_max_body", s.ClientMaxBody}, {"certificate_id", nullInt64Ptr(s.CertificateID)}, {"cert_pinned", boolInt(s.CertPinned)}, {"backend", s.Backend},
+		{"client_max_body", s.ClientMaxBody}, {"certificate_id", nullInt64Ptr(s.CertificateID)}, {"cert_pinned", boolInt(s.CertPinned)}, {"default_tls", boolInt(s.DefaultTLS)}, {"backend", s.Backend},
 		{"allow_from", string(allow)}, {"preset", s.Preset}, {"cms", s.CMS}, {"cms_version", s.CMSVersion}, {"cms_at", s.CMSAt},
 		{"cms_database", s.CMSDatabase}, {"session_store", s.SessionStore}, {"ipv6", s.IPv6},
 		{"security_headers", boolInt(s.SecurityHeaders)}, {"rate_limit", s.RateLimit}, {"status", s.Status}, {"last_error", s.LastError},
@@ -446,4 +449,11 @@ func (d *DB) DeleteSite(ctx context.Context, id int64) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// ClearDefaultTLS takes default_tls off the other sites of an address: one
+// site per address answers the clients without SNI.
+func (d *DB) ClearDefaultTLS(ctx context.Context, ip string, except int64) error {
+	_, err := d.sql.ExecContext(ctx, `UPDATE sites SET default_tls=0, updated_at=? WHERE ip=? AND id<>? AND default_tls<>0`, now(), ip, except)
+	return err
 }

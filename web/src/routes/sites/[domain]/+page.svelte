@@ -188,6 +188,7 @@
     if ((s.preset ?? '') !== (o.preset ?? '')) b.preset = s.preset ?? '';
     if ((s.session_store ?? '') !== (o.session_store ?? '')) b.session_store = s.session_store || 'files';
     if (admin && certPick !== (o.cert_pinned && o.certificate_id ? String(o.certificate_id) : 'auto')) b.certificate = certPick;
+    if (admin && !!s.default_tls !== !!o.default_tls) b.default_tls = !!s.default_tls;
     return b;
   }
   async function save(e: Event) {
@@ -297,6 +298,7 @@
         <label class="flex items-center gap-1.5"><input type="checkbox" bind:checked={site.redirect_https} /> HTTP → HTTPS (+HSTS)</label>
         <label class="flex items-center gap-1.5"><input type="checkbox" bind:checked={site.http2} /> HTTP/2</label>
         <label class="flex items-center gap-1.5"><input type="checkbox" bind:checked={site.http3} /> HTTP/3</label>
+        {#if admin}<label class="flex items-center gap-1.5" title={t('site.defaultTLSHint')}><input type="checkbox" bind:checked={site.default_tls} /> {t('site.defaultTLS')}</label>{/if}
         <label class="flex items-center gap-1.5"><input type="checkbox" bind:checked={site.static_by_nginx} /> {t('site.staticByNginx')}</label>
         <label class="flex items-center gap-1.5"><input type="checkbox" bind:checked={site.allow_exec} /> {t('site.allowExec')}</label>
         <label class="flex items-center gap-1.5"><input type="checkbox" bind:checked={site.security_headers} /> {t('site.securityHeaders')}</label>
