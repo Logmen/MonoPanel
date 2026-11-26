@@ -10,6 +10,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -643,6 +645,10 @@ func (s *Server) nginxGlobalFiles(ctx context.Context) ([]agent.FileSpec, *defau
 		return nil, nil, err
 	}
 	for name, content := range snippets {
+		if name == "ssl.conf" {
+			resolv, _ := os.ReadFile(s.resolvConf)
+			content = sslSnippet(content, string(resolv))
+		}
 		files = append(files, agent.FileSpec{Path: path.Join(confDir, "monopanel", "snippets", name), Content: content, Mode: 0o644})
 	}
 	in := s.defaultInputs(ctx)
@@ -651,6 +657,71 @@ func (s *Server) nginxGlobalFiles(ctx context.Context) ([]agent.FileSpec, *defau
 		return nil, nil, err
 	}
 	return append(files, defaults...), in, nil
+}
+
+// sslSnippet gives the TLS snippet the host's own name servers for nginx's
+// resolver, which OCSP stapling asks for the responder's address. The
+// template names systemd-resolved's stub, 127.0.0.53: EL runs no such
+// thing, and nginx's error log there filled with "send() failed (111)
+// while resolving". The resolver line takes the nameserver lines of
+// /etc/resolv.conf (on Ubuntu that is the stub, which works there); the
+// template's public servers stay behind them, as they were, and so do its
+// parameters (valid=…). Without a usable nameserver line the template's
+// line stays.
+func sslSnippet(tmpl, resolvConf string) string {
+	servers := nginxResolvers(resolvConf)
+	if len(servers) == 0 {
+		return tmpl
+	}
+	return sslResolverRe.ReplaceAllStringFunc(tmpl, func(line string) string {
+		fields := strings.Fields(strings.TrimSuffix(line, ";"))[1:]
+		var public, params []string
+		for _, f := range fields {
+			if strings.Contains(f, "=") {
+				params = append(params, f)
+				continue
+			}
+			if ip := net.ParseIP(strings.Trim(f, "[]")); ip != nil && !ip.IsLoopback() {
+				public = append(public, f)
+			}
+		}
+		out := append([]string(nil), servers...)
+		for _, p := range public {
+			if !slices.Contains(out, p) {
+				out = append(out, p)
+			}
+		}
+		return "resolver " + strings.Join(append(out, params...), " ") + ";"
+	})
+}
+
+// sslResolverRe finds the resolver directive of the TLS snippet.
+var sslResolverRe = regexp.MustCompile(`(?m)^resolver\s[^;\n]*;`)
+
+// nginxResolvers reads the nameserver lines of a resolv.conf in nginx's
+// spelling: an IPv6 address in brackets. A link-local one with its zone
+// (fe80::1%eth0) is left out, nginx cannot name the interface; anything that
+// is no address does not reach nginx's configuration either.
+func nginxResolvers(resolvConf string) []string {
+	var out []string
+	for _, l := range strings.Split(resolvConf, "\n") {
+		f := strings.Fields(l)
+		if len(f) < 2 || f[0] != "nameserver" {
+			continue
+		}
+		ip := net.ParseIP(f[1])
+		if ip == nil {
+			continue
+		}
+		a := ip.String()
+		if ip.To4() == nil {
+			a = "[" + a + "]"
+		}
+		if !slices.Contains(out, a) {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // defaultInputs is what the default servers are rendered from besides the

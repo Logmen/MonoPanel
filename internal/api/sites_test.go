@@ -76,6 +76,8 @@ func newFixture(t *testing.T, tweak func(*config.Config)) *siteFixture {
 	s.SetHostIPv6s(func() []string { return nil }) // the developer's machine may have one; tests set their own
 	// Whatever the developer's machine allows, accounts bind no port below 1024.
 	s.SetUnprivilegedPortStart(func() int { return 1024 })
+	// Nor do its name servers reach nginx's resolver: no resolv.conf here.
+	s.resolvConf = filepath.Join(cfg.RunDir, "resolv.conf")
 	runner.Start(ctx)
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)

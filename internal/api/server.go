@@ -183,6 +183,10 @@ type Server struct {
 	hostIPv6s func() []string
 	// lookup resolves a name in public DNS; tests answer themselves.
 	lookup func(ctx context.Context, name string) ([]string, error)
+	// resolvConf is the host's resolver configuration: nginx's resolver in
+	// the TLS snippet comes from its name servers (sslSnippet). Tests point
+	// it at a file of their own.
+	resolvConf string
 	// restoresRead, set by a test, runs after each read of the in-place
 	// restores the removal of an account or a site looks for
 	// (inPlaceRestoreInto), restoreMu held: the test moves a restore on
@@ -288,6 +292,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	s.hostIPs = localIPv4s
 	s.hostIPv6s = localIPv6s
 	s.lookup = publicLookup
+	s.resolvConf = "/etc/resolv.conf"
 	s.tls = newCertHolder(cfg, log)
 	s.tls.find = s.panelCoverFiles
 	if box, err := secrets.Open(cfg.SecretKeyFile); err == nil {
