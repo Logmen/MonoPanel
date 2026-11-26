@@ -86,4 +86,45 @@ func TestRemiSharedIniKeepsShortTagsForSiteApply(t *testing.T) {
 	if ini, _ := f.agent.File(shared); !strings.Contains(ini, "short_open_tag = Off\n") {
 		t.Errorf("the start opened short tags in the shared php.d:\n%s", ini)
 	}
+	// The doctor says what brings the file in line: on Remi the start does
+	// not, a site apply does.
+	if got := f.doctorCheck("php cli"); !strings.HasPrefix(got, "warn: ") || !strings.Contains(got, "short_open_tag Off instead of On") || !strings.Contains(got, "PHP 8.4: FPM reads the same file, so short_open_tag there changes only with mp site apply <domain>") {
+		t.Errorf("doctor while the change waits for a site apply: %q", got)
+	}
+}
+
+// A branch no site's pool runs on has nothing to wait for, and no site apply
+// would ever write its shared php.d: the Bitrix site gone, short tags close
+// at the panel's next start, and the doctor's warning clears. It used to stay
+// for good.
+func TestRemiSharedIniWithoutPoolsIsWrittenAtOnce(t *testing.T) {
+	withOSRelease(t, "ID=almalinux\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=9.8\n")
+	f := newSiteFixture(t)
+	const shared = "/etc/opt/remi/php84/php.d/99-monopanel.ini"
+	owner, _ := f.db.GetUserByLogin(f.ctx, "alex")
+	bx := &store.Site{UserID: owner.ID, Domain: "bx.example.com", PHPVersion: "8.4", Mode: store.ModeFPM, Preset: presetBitrix, SSL: "none", Status: store.SiteActive}
+	if err := f.db.CreateSite(f.ctx, bx); err != nil {
+		t.Fatal(err)
+	}
+	f.s.refreshPHPCLIInis(f.ctx)
+	if ini, _ := f.agent.File(shared); !strings.Contains(ini, "short_open_tag = On\n") {
+		t.Fatalf("a Bitrix site on the branch, a fresh file:\n%s", ini)
+	}
+	// The site goes; a proxy site on the branch runs no pool.
+	if err := f.db.DeleteSite(f.ctx, bx.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.CreateSite(f.ctx, &store.Site{UserID: owner.ID, Domain: "app.example.com", PHPVersion: "8.4", Mode: store.ModeProxy, Backend: "http://127.0.0.1:3000", SSL: "none", Status: store.SiteActive}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.doctorCheck("php cli"); !strings.HasPrefix(got, "warn: ") || !strings.Contains(got, "short_open_tag On instead of Off") || strings.Contains(got, "FPM reads the same file") {
+		t.Errorf("doctor before the start: %q", got)
+	}
+	f.s.refreshPHPCLIInis(f.ctx)
+	if ini, _ := f.agent.File(shared); !strings.Contains(ini, "short_open_tag = Off\n") {
+		t.Errorf("no pool on the branch, the start left short tags open:\n%s", ini)
+	}
+	if got := f.doctorCheck("php cli"); !strings.HasPrefix(got, "ok: ") {
+		t.Errorf("doctor after the start: %q", got)
+	}
 }

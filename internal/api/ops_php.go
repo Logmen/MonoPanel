@@ -802,7 +802,9 @@ var shortOpenTagRe = regexp.MustCompile(`(?m)^short_open_tag\s*=\s*(\S+)`)
 // fpm/conf.d — is left for the next site apply when its short_open_tag
 // would change: short tags opened there for 1C-Bitrix's command line reach
 // every pool of the branch that does not close them itself, and only pools
-// rendered by 0.8.6 or later do. reload asks FPM to re-read what changed.
+// rendered by 0.8.6 or later do. A branch no site's pool runs has nothing to
+// wait for, and no site apply would ever come to write the file: it is
+// written at once. reload asks FPM to re-read what changed.
 func (s *Server) refreshPHPInis(ctx context.Context, layout *osprofile.PHPLayout, cliOnly, reload bool) ([]string, error) {
 	files, err := s.phpIniFiles(ctx, layout, cliOnly)
 	if err != nil || len(files) == 0 {
@@ -810,9 +812,10 @@ func (s *Server) refreshPHPInis(ctx context.Context, layout *osprofile.PHPLayout
 	}
 	keep := files[:0]
 	var deferred []string
+	pools := s.branchRunsPools(ctx, layout.Version)
 	for _, f := range files {
 		fpmReads := path.Dir(f.Path) != layout.CLIIniDir || len(layout.IniDirs) == 1
-		if fpmReads {
+		if fpmReads && pools {
 			if cur, err := s.agent.ReadFile(ctx, f.Path, 64<<10); err == nil && cur.Content != "" {
 				was, now := shortOpenTagRe.FindStringSubmatch(cur.Content), shortOpenTagRe.FindStringSubmatch(f.Content)
 				if was != nil && now != nil && iniOn(was[1]) != iniOn(now[1]) {
@@ -840,6 +843,22 @@ func (s *Server) refreshPHPInis(ctx context.Context, layout *osprofile.PHPLayout
 	return res.Written, nil
 }
 
+// branchRunsPools says whether the pool of a site runs on the branch (a proxy
+// site has none). When the sites cannot be read it says yes: the caller then
+// waits for a site apply as before.
+func (s *Server) branchRunsPools(ctx context.Context, version string) bool {
+	sites, err := s.db.ListSites(ctx, 0)
+	if err != nil {
+		return true
+	}
+	for _, site := range sites {
+		if site.PHPVersion == version && site.Mode != store.ModeProxy && site.Status != store.SiteDeleting {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) branchRunsBitrix(ctx context.Context, version string) bool {
 	sites, _ := s.db.ListSites(ctx, 0)
 	for _, site := range sites {
@@ -853,7 +872,8 @@ func (s *Server) branchRunsBitrix(ctx context.Context, version string) bool {
 // refreshPHPCLIInis brings the CLI copies of every branch up to date at
 // startup: a panel update that changed them, the server-wide layer an older
 // panel did not write there. Remi's shared directory is FPM's too, so a
-// change of its short_open_tag waits for a site apply (refreshPHPInis).
+// change of its short_open_tag waits for a site apply while a site's pool
+// runs the branch (refreshPHPInis).
 func (s *Server) refreshPHPCLIInis(ctx context.Context) {
 	versions, err := s.db.ListPHPVersions(ctx)
 	if err != nil {

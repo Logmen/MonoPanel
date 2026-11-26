@@ -77,7 +77,7 @@ func (s *Server) phpCLICheck(ctx context.Context) *apitypes.Check {
 	if err != nil {
 		return nil
 	}
-	var stale []string
+	var stale, waiting []string
 	checked := 0
 	for _, v := range versions {
 		l := phpLayout(s, v.Version)
@@ -94,6 +94,12 @@ func (s *Server) phpCLICheck(ctx context.Context) *apitypes.Check {
 		}
 		checked++
 		want, have := iniValues(files[0].Content), iniValues(cur.Content)
+		// Remi's php.d is FPM's too: there a change of short_open_tag waits
+		// for a site apply while the branch has a site (refreshPHPInis), and
+		// neither the panel's start nor mp php ini set makes it.
+		if len(l.IniDirs) == 1 && have["short_open_tag"] != "" && iniOn(have["short_open_tag"]) != iniOn(want["short_open_tag"]) && s.branchRunsPools(ctx, v.Version) {
+			waiting = append(waiting, v.Version)
+		}
 		var diff []string
 		for _, k := range slices.Sorted(maps.Keys(want)) {
 			if have[k] != want[k] {
@@ -115,7 +121,11 @@ func (s *Server) phpCLICheck(ctx context.Context) *apitypes.Check {
 		return nil
 	}
 	if len(stale) > 0 {
-		c := check("php cli", "warn", "the command line and cron read other values than the sites: "+strings.Join(stale, "; ")+". The panel rewrites the file at its start and on mp php ini set; mp site apply <domain> of a site on that branch does it too")
+		hint := ". The panel rewrites the file at its start and on mp php ini set; mp site apply <domain> of a site on that branch does it too"
+		if len(waiting) > 0 {
+			hint += fmt.Sprintf(". PHP %s: FPM reads the same file, so short_open_tag there changes only with mp site apply <domain> of a site on the branch", strings.Join(waiting, ", "))
+		}
+		c := check("php cli", "warn", "the command line and cron read other values than the sites: "+strings.Join(stale, "; ")+hint)
 		return &c
 	}
 	c := check("php cli", "ok", "the command line and cron read the sites' server-wide values")
