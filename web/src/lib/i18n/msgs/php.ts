@@ -56,6 +56,7 @@ export const php = frag({
     'php.extCriticalTitle': 'Needed by a typical site',
     'php.extDisableTitle': 'Disable',
     'php.extEnableTitle': 'Enable',
+    'php.extBuiltInTitle': 'Built into PHP: always on, nothing to switch',
     'php.extCriticalFoot': '* a typical site stops working without this extension'
   },
   ru: {
@@ -113,6 +114,7 @@ export const php = frag({
     'php.extCriticalTitle': 'нужен типовому сайту',
     'php.extDisableTitle': 'выключить',
     'php.extEnableTitle': 'включить',
+    'php.extBuiltInTitle': 'встроено в PHP: всегда включено, переключать нечего',
     'php.extCriticalFoot': '* без этого расширения типовой сайт перестанет работать'
   }
 });

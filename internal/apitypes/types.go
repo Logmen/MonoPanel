@@ -848,6 +848,9 @@ type PHPExtension struct {
 	// nobody installed yet; switching it on installs Package first.
 	Installed bool   `json:"installed"`
 	Package   string `json:"package,omitempty"`
+	// BuiltIn is compiled into PHP itself (opcache from 8.5): always on,
+	// there is nothing to switch.
+	BuiltIn bool `json:"built_in,omitempty" doc:"Compiled into PHP (opcache from 8.5): always on, it cannot be switched on or off"`
 }
 
 // PHPExtensions is the extension list of one branch.

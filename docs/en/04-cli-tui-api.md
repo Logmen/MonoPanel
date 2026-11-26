@@ -74,7 +74,7 @@ mp cms install <domain> wordpress|joomla|opencart|bitrix [--title …] [--admin-
 
 mp php list [--available]            # PACKAGE is the FPM package as installed now, as in mp stack list
 mp php install <version> | remove <version>
-mp php ext list <version> | enable <version> <extension> | disable <version> <extension>
+mp php ext list <version> | enable <version> <extension> | disable <version> <extension>   # opcache from 8.5 is built into PHP: always on, not switched
 mp php ini [set key=value … | unset key …]   # PHP settings for all sites
 
 mp stack list                        # apache shows "N of M running": an Apache per account with sites in that mode; UPDATE —

@@ -88,9 +88,39 @@ func (s *Server) phpModules(ctx context.Context, version string) ([]apitypes.PHP
 		name := strings.TrimSuffix(e.Name, ".ini")
 		out = append(out, apitypes.PHPExtension{Name: name, Enabled: enabled[name], Critical: criticalExtensions[name], Installed: true})
 	}
+	out = withBuiltInExtensions(out, version)
 	out = s.withOfferedExtensions(out, version)
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// builtInExtension says whether a branch has the extension compiled in:
+// from PHP 8.5 opcache is part of PHP itself, always loaded, and its ini
+// holds settings only (no zend_extension line on Remi), so the ini alone
+// would show it switched off and a toggle would only restart FPM.
+func builtInExtension(version, name string) bool {
+	return name == "opcache" && !versionLess(version, "8.5")
+}
+
+// withBuiltInExtensions marks what the branch has compiled in as built in
+// and on, and lists it where no ini names it.
+func withBuiltInExtensions(list []apitypes.PHPExtension, version string) []apitypes.PHPExtension {
+	for _, name := range []string{"opcache"} {
+		if !builtInExtension(version, name) {
+			continue
+		}
+		found := false
+		for i := range list {
+			if list[i].Name == name {
+				list[i] = apitypes.PHPExtension{Name: name, Enabled: true, Installed: true, BuiltIn: true}
+				found = true
+			}
+		}
+		if !found {
+			list = append(list, apitypes.PHPExtension{Name: name, Enabled: true, Installed: true, BuiltIn: true})
+		}
+	}
+	return list
 }
 
 // withOfferedExtensions adds the branch's optional packages nobody installed
@@ -153,6 +183,15 @@ func (s *Server) registerPHPExtensions() {
 		}
 		if ext == nil {
 			return nil, huma.Error422UnprocessableEntity("PHP " + in.Version + " has no such extension: " + in.Body.Name)
+		}
+		if ext.BuiltIn {
+			// Nothing in php.d loads it: a toggle would change no file and
+			// only restart every pool of the branch.
+			msg := in.Body.Name + " is built into PHP " + in.Version + " and always on: there is nothing to switch"
+			if in.Body.Name == "opcache" {
+				msg += "; a site turns its cache off with mp site set <domain> --ini opcache.enable=0"
+			}
+			return nil, huma.Error422UnprocessableEntity(msg)
 		}
 		if in.Body.Name == "redis" && !in.Body.Enabled {
 			// Без него session_start() на сайтах с сессиями в Valkey падает.
@@ -219,7 +258,10 @@ var extLineRe = regexp.MustCompile(`^(\s*)(;\s*)?((?:zend_)?extension\s*=.*)$`)
 
 // phpModulesEL lists the branch's php.d (Remi: /etc/opt/remi/phpXY/php.d):
 // "20-imagick.ini" is the extension imagick, enabled while its extension=
-// line is not commented out.
+// line is not commented out. An ini without any extension line, live or
+// commented, holds settings only: switching it on would change nothing and
+// restart FPM, so it is no extension of the list (opcache from 8.5, whose
+// ini is such, is listed as built in).
 func (s *Server) phpModulesEL(ctx context.Context, version string) ([]apitypes.PHPExtension, error) {
 	layout := osprofile.PHP(s.profile, version)
 	if layout == nil || len(layout.IniDirs) == 0 {
@@ -241,17 +283,24 @@ func (s *Server) phpModulesEL(ctx context.Context, version string) ([]apitypes.P
 		if name == "monopanel" || strings.HasPrefix(name, "monopanel") {
 			continue // the panel's own settings, not an extension
 		}
-		enabled := false
+		// A file that cannot be read stays in the list, switched off: what
+		// it holds is not known.
+		enabled, lines := false, true
 		if f, err := s.agent.ReadFile(ctx, path.Join(layout.IniDirs[0], e.Name), 64*1024); err == nil {
+			lines = false
 			for _, line := range strings.Split(f.Content, "\n") {
-				if m := extLineRe.FindStringSubmatch(line); m != nil && m[2] == "" {
-					enabled = true
-					break
+				if m := extLineRe.FindStringSubmatch(line); m != nil {
+					lines = true
+					enabled = enabled || m[2] == ""
 				}
 			}
 		}
+		if !lines {
+			continue
+		}
 		out = append(out, apitypes.PHPExtension{Name: name, Enabled: enabled, Critical: criticalExtensions[name], Installed: true})
 	}
+	out = withBuiltInExtensions(out, version)
 	out = s.withOfferedExtensions(out, version)
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil

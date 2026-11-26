@@ -87,15 +87,19 @@ func phpExtScreen(m *model, version string) screen {
 			if e.Critical {
 				note = T("нужно типовому сайту", "needed by a typical site")
 			}
+			if e.BuiltIn {
+				note = T("встроено в PHP, не переключается", "built into PHP, cannot be switched")
+			}
 			res.rows = append(res.rows, row{cells: []string{e.Name, state, note}, tones: []tone{toneNone, tn, toneMuted},
-				vals: map[string]string{"name": e.Name, "enabled": tf(e.Enabled), "critical": tf(e.Critical)}})
+				vals: map[string]string{"name": e.Name, "enabled": tf(e.Enabled), "critical": tf(e.Critical), "builtin": tf(e.BuiltIn)}})
 		}
 		return res, nil
 	}
 	vn := []string{"version", "name"}
+	// What PHP has compiled in has no switch: neither action is offered.
 	s.acts = []*act{
-		{path: "php ext enable", key: "e", args: vn, quick: true, when: func(v map[string]string) bool { return v["enabled"] != "true" }},
-		{path: "php ext disable", key: "e", args: vn, when: func(v map[string]string) bool { return v["enabled"] == "true" }},
+		{path: "php ext enable", key: "e", args: vn, quick: true, when: func(v map[string]string) bool { return v["enabled"] != "true" && v["builtin"] != "true" }},
+		{path: "php ext disable", key: "e", args: vn, when: func(v map[string]string) bool { return v["enabled"] == "true" && v["builtin"] != "true" }},
 		{path: "php ext list", args: []string{"version"}, quick: true},
 	}
 	return s

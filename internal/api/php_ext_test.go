@@ -157,3 +157,84 @@ func TestPHPOfferedExtensionInstalls(t *testing.T) {
 		t.Fatal("switching an offered extension on must install its package")
 	}
 }
+
+// From PHP 8.5 opcache is built in and always on; Remi's 10-opcache.ini
+// holds its settings and no zend_extension line. The list showed it off and
+// "needed by a typical site", and a toggle changed nothing but restarted FPM.
+// An ini of settings alone is no extension to switch on.
+func TestPHPBuiltInOpcache(t *testing.T) {
+	withOSRelease(t, "ID=almalinux\nVERSION_ID=9.6\nID_LIKE=\"rhel centos fedora\"\n")
+	f := newSiteFixture(t)
+	f.installedPHP("8.5")
+	dir := "/etc/opt/remi/php85/php.d"
+	f.agent.DirEntries[dir] = []string{"10-opcache.ini", "40-imagick.ini", "90-tuning.ini", "99-monopanel.ini"}
+	f.agent.ReadFile[dir+"/10-opcache.ini"] = "; Enable Zend OPcache\nopcache.enable=1\nopcache.memory_consumption=128\n"
+	f.agent.ReadFile[dir+"/40-imagick.ini"] = "extension = imagick.so\n"
+	f.agent.ReadFile[dir+"/90-tuning.ini"] = "apc.shm_size=64M\n"
+
+	var out apitypes.PHPExtensions
+	f.call(http.MethodGet, "/php/versions/8.5/extensions", nil, http.StatusOK, &out)
+	got := map[string]apitypes.PHPExtension{}
+	for _, e := range out.Extensions {
+		got[e.Name] = e
+	}
+	if e := got["opcache"]; !e.Enabled || !e.BuiltIn || !e.Installed || e.Critical {
+		t.Errorf("opcache on 8.5: %+v", e)
+	}
+	if _, ok := got["tuning"]; ok {
+		t.Errorf("an ini of settings is listed as an extension: %+v", out.Extensions)
+	}
+	if e := got["imagick"]; !e.Enabled || e.BuiltIn {
+		t.Errorf("imagick: %+v", e)
+	}
+	var problem struct{ Detail string }
+	f.call(http.MethodPost, "/php/versions/8.5/extensions", map[string]any{"name": "opcache", "enabled": false}, http.StatusUnprocessableEntity, &problem)
+	if !strings.Contains(problem.Detail, "opcache is built into PHP 8.5 and always on") || !strings.Contains(problem.Detail, "--ini opcache.enable=0") {
+		t.Errorf("the refusal: %q", problem.Detail)
+	}
+	if act := f.agent.UnitAction("php85-php-fpm.service"); act != "" {
+		t.Errorf("FPM restarted for a built-in extension: %q", act)
+	}
+	if _, wrote := f.agent.File(dir + "/10-opcache.ini"); wrote {
+		t.Error("the opcache ini was rewritten")
+	}
+
+	// Before 8.5 opcache is an extension like the others.
+	f.installedPHP("8.4")
+	f.agent.DirEntries["/etc/opt/remi/php84/php.d"] = []string{"10-opcache.ini"}
+	f.agent.ReadFile["/etc/opt/remi/php84/php.d/10-opcache.ini"] = "zend_extension=opcache\n"
+	var older apitypes.PHPExtensions
+	f.call(http.MethodGet, "/php/versions/8.4/extensions", nil, http.StatusOK, &older)
+	for _, e := range older.Extensions {
+		if e.Name == "opcache" && (e.BuiltIn || !e.Enabled || !e.Critical) {
+			t.Errorf("opcache on 8.4: %+v", e)
+		}
+	}
+}
+
+// Debian: Sury builds no php8.5-opcache, opcache is in PHP itself; it is listed
+// on and built in whatever mods-available holds, and phpdismod never runs for
+// it.
+func TestPHPBuiltInOpcacheOnDebian(t *testing.T) {
+	f := newSiteFixture(t)
+	f.installedPHP("8.5")
+	f.agent.DirEntries["/etc/php/8.5/mods-available"] = []string{"imagick.ini"}
+	f.agent.DirEntries["/etc/php/8.5/fpm/conf.d"] = []string{"20-imagick.ini"}
+	var out apitypes.PHPExtensions
+	f.call(http.MethodGet, "/php/versions/8.5/extensions", nil, http.StatusOK, &out)
+	found := false
+	for _, e := range out.Extensions {
+		if e.Name == "opcache" {
+			found = e.Enabled && e.BuiltIn && e.Installed && e.Package == ""
+		}
+	}
+	if !found {
+		t.Errorf("opcache on Debian 8.5: %+v", out.Extensions)
+	}
+	f.call(http.MethodPost, "/php/versions/8.5/extensions", map[string]any{"name": "opcache", "enabled": false}, http.StatusUnprocessableEntity, nil)
+	for _, c := range f.agent.Calls() {
+		if c.Path == "/v1/tool" && strings.Contains(string(c.Body), "opcache") {
+			t.Errorf("a tool ran for the built-in opcache: %s", c.Body)
+		}
+	}
+}

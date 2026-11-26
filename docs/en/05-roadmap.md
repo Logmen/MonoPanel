@@ -42,7 +42,7 @@ This is the project log by stage and date: what is done, what is verified and wh
 - [x] CI: parallel jobs go / lint / templates / web, module and pnpm cache, `-race` with coverage in the summary, amd64 + arm64 builds, e2e via `workflow_dispatch`.
 
 ### Managing PHP extensions (2026-09-06)
-- [x] `GET|POST /php/versions/{v}/extensions`, `mp php ext list|enable|disable`, toggles in the branch card on the PHP page. The state is read from the branch's `conf.d` (phpquery answers from the Debian registry and keeps showing a module after `phpdismod`), the list of available ones from `mods-available`. After a toggle the branch's php-fpm is restarted.
+- [x] `GET|POST /php/versions/{v}/extensions`, `mp php ext list|enable|disable`, toggles in the branch card on the PHP page. The state is read from the branch's `conf.d` (phpquery answers from the Debian registry and keeps showing a module after `phpdismod`), the list of available ones from `mods-available`. After a toggle the branch's php-fpm is restarted. From 8.5 opcache is built into PHP: the list shows it on and built in, a toggle is refused (422) and leaves php-fpm alone; on EL an ini in `php.d` with settings and no `extension=` line is not taken for an extension.
 - [x] Only for a whole branch: php-fpm is one master per version, pools inherit its extensions, an extension cannot be disabled for a single site. The interface says so plainly.
 - [x] Extensions a typical site does not work without are marked and need confirmation; nothing is forbidden — the administrator is root anyway.
 - [x] The agent gained a `dir/list` operation with an allow-list of directories (`/etc/php/*/mods-available`, `*/conf.d`, `/etc/opt/remi/php*/php.d`): without it the panel sees only the loaded modules, not the disabled ones.

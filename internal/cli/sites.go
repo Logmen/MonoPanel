@@ -424,6 +424,9 @@ func phpExtCmd() *cobra.Command {
 			if e.Critical {
 				note = T("нужен типовому сайту", "needed by a typical site")
 			}
+			if e.BuiltIn {
+				note = T("встроено в PHP, не переключается", "built into PHP, cannot be switched")
+			}
 			rows = append(rows, []string{e.Name, state, note})
 		}
 		table([]string{T("РАСШИРЕНИЕ", "EXTENSION"), T("СОСТОЯНИЕ", "STATE"), ""}, rows)

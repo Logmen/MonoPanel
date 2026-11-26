@@ -181,10 +181,11 @@
                 <p class="text-xs text-muted mb-2">{t('php.extHint', { version: a.version })}</p>
                 <div class="flex flex-wrap gap-1.5">
                   {#each exts[a.version] as e}
+                    <!-- What PHP has compiled in (opcache from 8.5) has no switch. -->
                     <button
-                      class="tag {e.enabled ? 'tag-ok' : 'tag-muted'} cursor-pointer transition-opacity {extBusy === a.version + e.name ? 'opacity-50' : ''} {e.installed ? '' : 'border-dashed opacity-70'}"
-                      disabled={!!extBusy}
-                      title={!e.installed ? t('php.extInstallTitle', { package: e.package }) : e.critical ? t('php.extCriticalTitle') : e.enabled ? t('php.extDisableTitle') : t('php.extEnableTitle')}
+                      class="tag {e.enabled ? 'tag-ok' : 'tag-muted'} {e.built_in ? 'cursor-default' : 'cursor-pointer'} transition-opacity {extBusy === a.version + e.name ? 'opacity-50' : ''} {e.installed ? '' : 'border-dashed opacity-70'}"
+                      disabled={!!extBusy || e.built_in}
+                      title={e.built_in ? t('php.extBuiltInTitle') : !e.installed ? t('php.extInstallTitle', { package: e.package }) : e.critical ? t('php.extCriticalTitle') : e.enabled ? t('php.extDisableTitle') : t('php.extEnableTitle')}
                       onclick={() => (e.enabled ? (ask = askExt(a.version, e)) : setExt(a.version, e.name, true))}
                     >
                       <Icon name={e.enabled ? 'check' : e.installed ? 'x' : 'plus'} size={11} />

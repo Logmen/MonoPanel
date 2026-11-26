@@ -74,7 +74,7 @@ mp cms install <domain> wordpress|joomla|opencart|bitrix [--title …] [--admin-
 
 mp php list [--available]            # PACKAGE — установленная сейчас версия пакета FPM, как в mp stack list
 mp php install <версия> | remove <версия>
-mp php ext list <версия> | enable <версия> <расширение> | disable <версия> <расширение>
+mp php ext list <версия> | enable <версия> <расширение> | disable <версия> <расширение>   # opcache с 8.5 встроен в PHP: всегда включён, не переключается
 mp php ini [set key=value … | unset key …]   # PHP-параметры для всех сайтов
 
 mp stack list                        # у apache — «запущено N из M»: по Apache на аккаунт с сайтами в этом режиме; UPDATE — что
