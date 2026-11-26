@@ -631,6 +631,10 @@ func (a *Agent) respond(path string, body []byte) any {
 	case "/v1/sitelogs/remove":
 		var req agent.RemoveSiteLogsRequest
 		json.Unmarshal(body, &req) //nolint:errcheck // test double
+		if req.Domain != "" {
+			a.siteLogsGone = append(a.siteLogsGone, req.Login+"/"+req.Domain)
+			return agent.RemoveSiteLogsResponse{Removed: true, Files: []string{req.Domain + ".access.log", req.Domain + ".error.log"}}
+		}
 		a.siteLogsGone = append(a.siteLogsGone, req.Login)
 		_, had := a.siteLogs[req.Login]
 		delete(a.siteLogs, req.Login)
@@ -1288,7 +1292,7 @@ func (a *Agent) SiteLogs(login string) []string {
 }
 
 // SiteLogsRemoved returns the logins whose log directory the panel had the
-// agent remove.
+// agent remove, and "<login>/<domain>" for one site's logs.
 func (a *Agent) SiteLogsRemoved() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()

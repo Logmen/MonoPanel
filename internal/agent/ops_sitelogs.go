@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"golang.org/x/sys/unix"
@@ -368,6 +369,19 @@ func (s *Server) removeSiteLogs(_ context.Context, req *RemoveSiteLogsRequest) (
 	if !nameRe.MatchString(req.Login) || req.Login == "root" {
 		return nil, &Error{Status: http.StatusBadRequest, Message: "invalid login"}
 	}
+	if req.Domain != "" {
+		if !apacheLegacyDomainRe.MatchString(req.Domain) {
+			return nil, &Error{Status: http.StatusBadRequest, Message: "invalid domain"}
+		}
+		files, err := removeSiteLogFiles(filepath.Clean(s.cfg.LogDir), req.Login, req.Domain, 0)
+		if err != nil {
+			if errors.Is(err, errSymlinkInPath) || errors.Is(err, errNotRootsAlone) {
+				return nil, &Error{Status: http.StatusForbidden, Message: err.Error()}
+			}
+			return nil, &Error{Message: "site logs of " + req.Domain, Output: err.Error()}
+		}
+		return &RemoveSiteLogsResponse{Removed: len(files) > 0, Files: files}, nil
+	}
 	removed, err := removeSiteLogTree(filepath.Clean(s.cfg.LogDir), req.Login, 0)
 	if err != nil {
 		if errors.Is(err, errSymlinkInPath) || errors.Is(err, errNotRootsAlone) {
@@ -382,33 +396,93 @@ func (s *Server) removeSiteLogs(_ context.Context, req *RemoveSiteLogsRequest) (
 // through <logDir>/sites opened without following a symlink and found to be
 // root's alone.
 func removeSiteLogTree(logDir, login string, rootUID int) (bool, error) {
+	sites, sitesPath, err := openSiteLogsDir(logDir, rootUID)
+	if err != nil || sites < 0 {
+		return false, err
+	}
+	defer unix.Close(sites) //nolint:errcheck // a directory opened for reading
+	return removeAt(sites, login, filepath.Join(sitesPath, login))
+}
+
+// siteLogFileRe is what follows "<domain>." in the name of a site's log:
+// nginx's, Apache's, PHP's error log and php-fpm's slow log
+// (internal/api/logrotate.go siteLogNames), rotated (.1, .2.gz) or not.
+var siteLogFileRe = regexp.MustCompile(`^(access|error|apache\.access|apache\.error|php\.error|php\.slow)\.log(\.[0-9]{1,4})?(\.gz)?$`)
+
+// removeSiteLogFiles removes the logs of one site from <logDir>/sites/<login>
+// — the names alone, each unlinked in the directory opened without following
+// a symlink: a link the account put there goes itself, never what it points
+// to. The account's other sites' logs and its Apache's log stay.
+func removeSiteLogFiles(logDir, login, domain string, rootUID int) ([]string, error) {
+	sites, sitesPath, err := openSiteLogsDir(logDir, rootUID)
+	if err != nil || sites < 0 {
+		return nil, err
+	}
+	defer unix.Close(sites) //nolint:errcheck // a directory opened for reading
+	p := filepath.Join(sitesPath, login)
+	fd, err := unix.Openat(sites, login, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	switch {
+	case errors.Is(err, unix.ENOENT):
+		return nil, nil
+	case errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR):
+		return nil, fmt.Errorf("%w: refusing %s", errSymlinkInPath, p)
+	case err != nil:
+		return nil, &os.PathError{Op: "open", Path: p, Err: err}
+	}
+	f := os.NewFile(uintptr(fd), p)
+	defer f.Close()
+	names, err := f.Readdirnames(-1)
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(names)
+	var gone []string
+	for _, n := range names {
+		if rest, ok := strings.CutPrefix(n, domain+"."); !ok || !siteLogFileRe.MatchString(rest) {
+			continue
+		}
+		switch err := unix.Unlinkat(int(f.Fd()), n, 0); {
+		case err == nil:
+			gone = append(gone, n)
+		case errors.Is(err, unix.ENOENT) || errors.Is(err, unix.EISDIR):
+		default:
+			return gone, &os.PathError{Op: "unlink", Path: filepath.Join(p, n), Err: err}
+		}
+	}
+	return gone, nil
+}
+
+// openSiteLogsDir opens <logDir>/sites without following a symlink and
+// checks that it is root's alone; -1 when there is none.
+func openSiteLogsDir(logDir string, rootUID int) (int, string, error) {
 	top, err := unix.Open(logDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if errors.Is(err, unix.ENOENT) {
-		return false, nil
+		return -1, "", nil
 	}
 	if err != nil {
-		return false, &os.PathError{Op: "open", Path: logDir, Err: err}
+		return -1, "", &os.PathError{Op: "open", Path: logDir, Err: err}
 	}
 	defer unix.Close(top) //nolint:errcheck // a directory opened for reading
 	sitesPath := filepath.Join(logDir, "sites")
 	sites, err := unix.Openat(top, "sites", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	switch {
 	case errors.Is(err, unix.ENOENT):
-		return false, nil
+		return -1, sitesPath, nil
 	case errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR):
-		return false, fmt.Errorf("%w: refusing %s", errSymlinkInPath, sitesPath)
+		return -1, sitesPath, fmt.Errorf("%w: refusing %s", errSymlinkInPath, sitesPath)
 	case err != nil:
-		return false, &os.PathError{Op: "open", Path: sitesPath, Err: err}
+		return -1, sitesPath, &os.PathError{Op: "open", Path: sitesPath, Err: err}
 	}
-	defer unix.Close(sites) //nolint:errcheck // a directory opened for reading
 	var st unix.Stat_t
 	if err := unix.Fstat(sites, &st); err != nil {
-		return false, &os.PathError{Op: "stat", Path: sitesPath, Err: err}
+		unix.Close(sites) //nolint:errcheck // a directory opened for reading
+		return -1, sitesPath, &os.PathError{Op: "stat", Path: sitesPath, Err: err}
 	}
 	if int(st.Uid) != rootUID || st.Mode&0o022 != 0 {
-		return false, fmt.Errorf("%w: %s (owner uid %d, mode %#o)", errNotRootsAlone, sitesPath, st.Uid, st.Mode&0o7777)
+		unix.Close(sites) //nolint:errcheck // a directory opened for reading
+		return -1, sitesPath, fmt.Errorf("%w: %s (owner uid %d, mode %#o)", errNotRootsAlone, sitesPath, st.Uid, st.Mode&0o7777)
 	}
-	return removeAt(sites, login, filepath.Join(sitesPath, login))
+	return sites, sitesPath, nil
 }
 
 // removeAt removes the entry name of the directory dir, a directory with

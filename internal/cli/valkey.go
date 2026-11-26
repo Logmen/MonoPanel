@@ -32,6 +32,7 @@ func valkeyHint(st *apitypes.ValkeyStatus) string {
 func valkeyCmd() *cobra.Command {
 	c := &cobra.Command{Use: "valkey", Short: T("Valkey аккаунта: отдельные экземпляры для кеша и для PHP-сессий (unix-сокет, только для владельца)", "the account's Valkey: separate instances for the cache and for PHP sessions (a unix socket, for the owner only)")}
 	var login string
+	var force bool
 	c.PersistentFlags().StringVar(&login, "user", "", T("логин владельца (по умолчанию свой аккаунт; root на сервере указывает всегда; list без него у администратора — все аккаунты)", "the owner's login (your own account by default; root on the server always gives it; without it list shows every account to an administrator)"))
 
 	list := &cobra.Command{Use: "list", Short: T("экземпляры (администратор без --user видит экземпляры всех аккаунтов)", "list instances (an administrator without --user sees every account's)"), RunE: func(cmd *cobra.Command, _ []string) error {
@@ -146,13 +147,14 @@ func valkeyCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		if err := cl.ValkeyDelete(cmd.Context(), owner, purpose); err != nil {
+		if err := cl.ValkeyDelete(cmd.Context(), owner, purpose, force); err != nil {
 			return err
 		}
 		fmt.Printf(T("%s-%s удалён\n", "%s-%s deleted\n"), owner, purpose)
 		return nil
 	}}
 
+	rm.Flags().BoolVar(&force, "force", false, T("удалить, даже если к экземпляру подключены клиенты или в нём есть ключи (приложение может пользоваться им напрямую)", "remove it even when clients are connected or it holds keys (an application may use it directly)"))
 	c.AddCommand(list, add, restart, rm)
 	return c
 }

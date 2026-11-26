@@ -61,7 +61,7 @@ mp site set <domain> [the flags of site add but --user and --no-https-redirect] 
             [--default-tls[=false]]                                           # TLS clients without SNI on the site's address (a reverse proxy by IP) get its certificate; one site per address (administrators)
 mp site list | show <domain> | presets
 mp site apply | fix | suspend | unsuspend <domain>   # fix — owner, permissions, ACLs and SELinux labels of the site's files
-mp site rm <domain> [--purge]
+mp site rm <domain> [--purge]                     # --purge takes the site's directory and its logs (/var/log/monopanel/sites/<login>/<domain>.*); without it the logs stay, and the job says where
 mp site logs <domain> [--type access|error|php|slow|apache-access|apache-error] [-n 100]
 mp site nginx <domain> [--set file | --clear | --generated]   # custom directives in server {}: the agent's check, nginx -t, rollback
 mp site php <domain>                 # effective PHP settings and where each one comes from
@@ -107,7 +107,7 @@ mp stack auto-upgrade [--on|--off] [--hour 4]   # the daily upgrade of nginx, PH
                                      # time), once a day; without flags — show it, the next and the last run (an error in one
                                      # line, all of it in mp job show <id>)
 mp valkey add cache|sessions [--user <login>] [--memory 128]   # the account's instance: create it or change its memory (restarts it)
-mp valkey list [--user <login>] | restart cache|sessions | rm cache|sessions   # restart empties the cache
+mp valkey list [--user <login>] | restart cache|sessions | rm cache|sessions [--force]   # restart empties the cache; rm refuses an instance with clients connected or keys in it (an application may use it directly) unless --force
 
 mp db create <name> --user <login> [--password …|--password-stdin] [--legacy-auth] [--remote]   # database and user <login>_<name>; the password is generated if omitted; the API refuses --remote for now
 mp db list | passwd <name> [--password …|--password-stdin] | rm <name>

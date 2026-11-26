@@ -263,11 +263,16 @@ type SiteLogsResponse struct {
 // everything in it (the account is purged).
 type RemoveSiteLogsRequest struct {
 	Login string `json:"login"`
+	// Domain narrows the removal to the logs of one site of the account,
+	// rotated copies included; the directory and the other sites' stay.
+	Domain string `json:"domain,omitempty"`
 }
 
-// RemoveSiteLogsResponse tells whether there was a directory to remove.
+// RemoveSiteLogsResponse tells whether there was a directory to remove, or
+// which files of a site's went (Domain).
 type RemoveSiteLogsResponse struct {
-	Removed bool `json:"removed"`
+	Removed bool     `json:"removed"`
+	Files   []string `json:"files,omitempty"`
 }
 
 // EnsureSymlinkRequest creates or updates a symlink (below WWWRoot).

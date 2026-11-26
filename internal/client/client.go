@@ -959,8 +959,12 @@ func (c *Client) ValkeyRestart(ctx context.Context, login, purpose string) (*api
 }
 
 // ValkeyDelete removes an instance with its data.
-func (c *Client) ValkeyDelete(ctx context.Context, login, purpose string) error {
-	return c.do(ctx, http.MethodDelete, "/users/"+login+"/valkey/"+purpose, nil, nil)
+func (c *Client) ValkeyDelete(ctx context.Context, login, purpose string, force bool) error {
+	p := "/users/" + login + "/valkey/" + purpose
+	if force {
+		p += "?force=true"
+	}
+	return c.do(ctx, http.MethodDelete, p, nil, nil)
 }
 
 // RealIP returns the trusted-proxy settings of nginx.

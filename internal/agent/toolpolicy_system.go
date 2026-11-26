@@ -445,3 +445,21 @@ func (s *Server) planPostconf(c *toolCall) (*toolPlan, error) {
 func (s *Server) planNewaliases(c *toolCall) (*toolPlan, error) {
 	return exactShapes(c, []string{})
 }
+
+// valkeySocketRe is the socket of an account's Valkey instance
+// (internal/api/ops_valkey.go valkeySocketFor).
+var valkeySocketRe = regexp.MustCompile(`^/run/monopanel-valkey/[a-z_][a-z0-9_-]{0,31}-(cache|sessions)/valkey\.sock$`)
+
+// planValkeyCLI: what an account's instance holds before its removal — its
+// clients and its keys (INFO clients, INFO keyspace), on its own socket and
+// nothing else: no command that reads or changes a key.
+func (s *Server) planValkeyCLI(c *toolCall) (*toolPlan, error) {
+	if err := onlyTool(c); err != nil {
+		return nil, err
+	}
+	a := c.args
+	if len(a) == 4 && a[0] == "-s" && valkeySocketRe.MatchString(a[1]) && a[2] == "INFO" && (a[3] == "clients" || a[3] == "keyspace") {
+		return &toolPlan{args: a}, nil
+	}
+	return nil, refuseArgs("valkey-cli", a, "the panel only asks an instance's socket for INFO clients or keyspace")
+}

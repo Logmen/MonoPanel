@@ -9,6 +9,9 @@ index {{ .Index }}
     morphology = stem_enru, soundex
     # used by the bitrix:search.title component
     min_prefix_len = 2
+    # Without a table Sphinx 3 splits words on every letter beyond basic Cyrillic ("Қазақстан"
+    # into "аза" + "стан"): Russian, then Kazakh (Ә Ғ Қ Ң Ө Ұ Ү Һ І), Ukrainian (Є Ї Ґ) and Belarusian (Ў).
+    charset_table = 0..9, A..Z->a..z, _, a..z, U+410..U+42F->U+430..U+44F, U+430..U+44F, U+401->U+451, U+451, U+4D8->U+4D9, U+4D9, U+492->U+493, U+493, U+49A->U+49B, U+49B, U+4A2->U+4A3, U+4A3, U+4E8->U+4E9, U+4E9, U+4B0->U+4B1, U+4B1, U+4AE->U+4AF, U+4AF, U+4BA->U+4BB, U+4BB, U+406->U+456, U+456, U+404->U+454, U+454, U+407->U+457, U+457, U+490->U+491, U+491, U+40E->U+45E, U+45E
     # all fields exactly as Bitrix expects them
     field = title
     field = body
@@ -16,6 +19,12 @@ index {{ .Index }}
     attr_string = module
     attr_uint = item_id
     attr_string = item
+    # the search module of Bitrix 26 checks these too: without them it will not connect
+    attr_uint = user_id
+    attr_string = entity_type
+    attr_uint = entity_type_id
+    attr_string = entity
+    attr_uint = entity_id
     attr_uint = param1_id
     attr_string = param1
     attr_uint = param2_id

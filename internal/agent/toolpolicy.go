@@ -75,6 +75,7 @@ var toolBinaries = map[string][]string{
 	"postmap":         {"/usr/sbin/postmap"},
 	"postconf":        {"/usr/sbin/postconf"},
 	"newaliases":      {"/usr/bin/newaliases", "/usr/sbin/newaliases"},
+	"valkey-cli":      {"/usr/bin/valkey-cli", "/usr/bin/redis-cli"},
 }
 
 func resolveTool(name string) (string, error) {
@@ -193,6 +194,7 @@ func init() {
 		"postmap":         (*Server).planPostmap,
 		"postconf":        (*Server).planPostconf,
 		"newaliases":      (*Server).planNewaliases,
+		"valkey-cli":      (*Server).planValkeyCLI,
 	}
 }
 

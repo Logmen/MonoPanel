@@ -648,3 +648,28 @@ func TestRelabelOnEL(t *testing.T) {
 		t.Fatalf("restorecon -R expected: %v", f.agent.Tools())
 	}
 }
+
+// A site's removal with --purge takes its logs along, as an account's purge
+// does; without, the job says where they stay.
+func TestSiteDeleteTakesItsLogsWithPurge(t *testing.T) {
+	f := newSiteFixture(t)
+	f.createSite(map[string]any{"domain": "kept.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	f.createSite(map[string]any{"domain": "gone.example.com", "user": "alex", "php_version": "8.4", "ssl": "none"})
+	f.deleteSite("kept.example.com")
+	if log := f.lastJobLog("site.delete"); !strings.Contains(log, "site logs, if any, kept in /var/log/monopanel/sites/alex (kept.example.com.*.log)") {
+		t.Errorf("without purge:\n%s", log)
+	}
+	var out struct {
+		JobID int64 `json:"job_id"`
+	}
+	f.call(http.MethodDelete, "/sites/gone.example.com?purge=true", nil, http.StatusAccepted, &out)
+	if job := f.waitJob(out.JobID); job.Status != store.JobDone {
+		t.Fatalf("purge: %s %s", job.Status, job.Error)
+	}
+	if got := f.agent.SiteLogsRemoved(); len(got) != 1 || got[0] != "alex/gone.example.com" {
+		t.Errorf("removed %v", got)
+	}
+	if log := f.lastJobLog("site.delete"); !strings.Contains(log, "site logs removed from /var/log/monopanel/sites/alex: gone.example.com.access.log, gone.example.com.error.log") {
+		t.Errorf("with purge:\n%s", log)
+	}
+}

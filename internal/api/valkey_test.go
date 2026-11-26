@@ -150,7 +150,26 @@ func TestValkeyInstances(t *testing.T) {
 		t.Fatalf("the server must stay while instances run on it: %s %s", job.Status, job.Error)
 	}
 
-	f.call(http.MethodDelete, "/users/alex/valkey/cache", nil, http.StatusNoContent, nil)
+	// An application that uses the instance directly — clients connected,
+	// keys in it — keeps it unless the removal is forced.
+	f.agent.ToolHook = func(req agentReq) *agentRes {
+		if req.Name != "valkey-cli" || len(req.Args) != 4 || req.Args[1] != "/run/monopanel-valkey/alex-cache/valkey.sock" {
+			return nil
+		}
+		if req.Args[3] == "clients" {
+			return &agentRes{Output: "# Clients\r\nconnected_clients:3\r\nblocked_clients:0\r\n"}
+		}
+		return &agentRes{Output: "# Keyspace\r\ndb0:keys=120,expires=100,avg_ttl=0\r\ndb1:keys=5,expires=0,avg_ttl=0\r\n"}
+	}
+	var refused struct {
+		Detail string `json:"detail"`
+	}
+	f.call(http.MethodDelete, "/users/alex/valkey/cache", nil, http.StatusConflict, &refused)
+	if !strings.Contains(refused.Detail, "alex-cache is in use: 2 client(s) connected, 125 key(s) stored") {
+		t.Fatalf("refusal: %q", refused.Detail)
+	}
+	f.call(http.MethodDelete, "/users/alex/valkey/cache?force=true", nil, http.StatusNoContent, nil)
+	f.agent.ToolHook = nil
 	removed := f.agent.Removed()
 	if !slices.Contains(removed, "/etc/systemd/system/monopanel-valkey-alex-cache.service") || !slices.Contains(removed, "/var/lib/monopanel-valkey/alex-cache") {
 		t.Fatalf("the unit and the snapshots must go: %v", removed)

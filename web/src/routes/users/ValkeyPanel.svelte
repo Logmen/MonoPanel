@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { api } from '$lib/api';
+  import { api, ApiError } from '$lib/api';
   import { auth, notify } from '$lib/state.svelte';
   import { t } from '$lib/i18n/index.svelte';
   import Icon from '$lib/components/Icon.svelte';
@@ -64,9 +64,18 @@
     busy = owner + '-' + purpose; error = '';
     try { await api(`/users/${owner}/valkey/${purpose}/restart`, { method: 'POST' }); notify(t('users.vkRestarted', { name: all ? `${owner}: ${title(purpose)}` : title(purpose) })); await reload(); } catch (e) { fail(e); } finally { busy = ''; }
   }
-  async function rm(owner: string, purpose: Purpose) {
+  // An instance an application uses directly (clients connected, keys in
+  // it) is refused without force: the server says what it holds, and a
+  // second confirmation removes it anyway.
+  async function rm(owner: string, purpose: Purpose, force = false) {
     error = '';
-    try { await api(`/users/${owner}/valkey/${purpose}`, { method: 'DELETE' }); await reload(); } catch (e) { fail(e); }
+    try { await api(`/users/${owner}/valkey/${purpose}${force ? '?force=true' : ''}`, { method: 'DELETE' }); await reload(); } catch (e) {
+      if (!force && e instanceof ApiError && e.status === 409 && e.message.includes('is in use')) {
+        ask = { title: t('users.askVkInUseTitle', { name: `${owner}-${purpose}` }), note: e.message, danger: true, action: t('common.delete'), run: () => rm(owner, purpose, true) };
+        return;
+      }
+      fail(e);
+    }
   }
   const askRm = (owner: string, purpose: Purpose): Ask => ({
     title: purpose === 'cache' ? t('users.askVkCacheTitle', { login: owner }) : t('users.askVkSessionsTitle', { login: owner }),

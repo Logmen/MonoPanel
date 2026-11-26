@@ -252,6 +252,8 @@ func TestToolPolicyAcceptsThePanelsCallsDebian(t *testing.T) {
 		{"firewalld query permanent port", tc(modeTool, "firewall-cmd", "-q", "--permanent", "--query-port=443/udp")},
 		{"firewalld close http3", tc(modeTool, "firewall-cmd", "-q", "--permanent", "--remove-port=443/udp")},
 		{"firewalld close http3 at runtime", tc(modeTool, "firewall-cmd", "-q", "--remove-port=443/udp")},
+		{"valkey clients", tc(modeTool, "valkey-cli", "-s", "/run/monopanel-valkey/bitrix-sessions/valkey.sock", "INFO", "clients")},
+		{"valkey keyspace", tc(modeTool, "valkey-cli", "-s", "/run/monopanel-valkey/alex-cache/valkey.sock", "INFO", "keyspace")},
 		// metrics.go, ops_apps.go
 		{"journal", tc(modeTool, "journalctl", "-u", "nginx.service", "-n", "200", "--no-pager", "-o", "short-iso")},
 		{"journal app", tc(modeTool, "journalctl", "-u", "monopanel-app-alex-web.service", "-n", "5000", "--no-pager", "-o", "short-iso")},
@@ -539,6 +541,13 @@ func TestToolPolicyRefusesTheRest(t *testing.T) {
 		{"firewalld close ssh", tc(modeTool, "firewall-cmd", "-q", "--permanent", "--remove-port=22/tcp")},
 		{"firewalld close https tcp", tc(modeTool, "firewall-cmd", "-q", "--permanent", "--remove-port=443/tcp")},
 		{"firewalld close ssh at runtime", tc(modeTool, "firewall-cmd", "-q", "--remove-port=22/tcp")},
+		// valkey-cli asks an instance's socket for INFO, nothing else.
+		{"valkey other socket", tc(modeTool, "valkey-cli", "-s", "/run/other/valkey.sock", "INFO", "clients")},
+		{"valkey dotdot", tc(modeTool, "valkey-cli", "-s", "/run/monopanel-valkey/../x-cache/valkey.sock", "INFO", "clients")},
+		{"valkey tcp", tc(modeTool, "valkey-cli", "-h", "127.0.0.1", "INFO", "clients")},
+		{"valkey keys", tc(modeTool, "valkey-cli", "-s", "/run/monopanel-valkey/alex-cache/valkey.sock", "KEYS", "*")},
+		{"valkey flushall", tc(modeTool, "valkey-cli", "-s", "/run/monopanel-valkey/alex-cache/valkey.sock", "FLUSHALL")},
+		{"valkey info all", tc(modeTool, "valkey-cli", "-s", "/run/monopanel-valkey/alex-cache/valkey.sock", "INFO")},
 		{"firewalld reload", tc(modeTool, "firewall-cmd", "-q", "--reload")},
 		{"firewalld complete reload", tc(modeTool, "firewall-cmd", "-q", "--complete-reload")},
 		{"firewalld runtime no ports", tc(modeTool, "firewall-cmd", "-q")},

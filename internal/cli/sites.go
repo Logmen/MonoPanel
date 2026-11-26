@@ -375,7 +375,7 @@ func siteCmd() *cobra.Command {
 		}
 		return followJob(cmd, cl, ref.JobID)
 	}}
-	rm.Flags().BoolVar(&purge, "purge", false, T("удалить каталог сайта", "delete the site directory"))
+	rm.Flags().BoolVar(&purge, "purge", false, T("удалить каталог сайта и его журналы", "delete the site directory and its logs"))
 
 	presets := &cobra.Command{Use: "presets", Short: T("пресеты CMS для новых сайтов", "CMS presets for new sites"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()

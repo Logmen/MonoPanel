@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"testing"
@@ -370,5 +371,55 @@ func TestReadFileInLogDir(t *testing.T) {
 	var st syscall.Stat_t
 	if err := syscall.Stat(secret, &st); err != nil || st.Nlink != 2 {
 		t.Fatalf("the test's hard link: %v %d", err, st.Nlink)
+	}
+}
+
+// A site's removal takes its logs alone: rotated copies of them too, never
+// the account's other sites' (one whose name only begins with the domain
+// among them), its Apache's log, or what a link the account put there points
+// to.
+func TestRemoveSiteLogFilesTakesOneSite(t *testing.T) {
+	base := t.TempDir()
+	logDir := filepath.Join(base, "log")
+	dir := filepath.Join(logDir, "sites", "alex")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(logDir, "sites"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(base, "outside")
+	if err := os.WriteFile(outside, []byte("keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gone := []string{"a.example.com.access.log", "a.example.com.access.log.1", "a.example.com.error.log.2.gz", "a.example.com.php.error.log", "a.example.com.php.slow.log", "a.example.com.apache.access.log"}
+	stay := []string{"a.example.com.kz.access.log", "b.example.com.access.log", "apache.log", "a.example.com.notes.txt"}
+	for _, n := range append(append([]string{}, gone...), stay...) {
+		if err := os.WriteFile(filepath.Join(dir, n), nil, 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "a.example.com.error.log")); err != nil {
+		t.Fatal(err)
+	}
+	files, err := removeSiteLogFiles(logDir, "alex", "a.example.com", os.Getuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append(append([]string{}, gone...), "a.example.com.error.log")
+	sort.Strings(want)
+	if strings.Join(files, " ") != strings.Join(want, " ") {
+		t.Fatalf("removed %v, want %v", files, want)
+	}
+	for _, n := range stay {
+		if _, err := os.Stat(filepath.Join(dir, n)); err != nil {
+			t.Errorf("%s went: %v", n, err)
+		}
+	}
+	if b, _ := os.ReadFile(outside); string(b) != "keep\n" {
+		t.Fatal("the removal went through the link")
+	}
+	if files, err := removeSiteLogFiles(logDir, "nobody", "a.example.com", os.Getuid()); err != nil || len(files) != 0 {
+		t.Fatalf("no directory: %v %v", files, err)
 	}
 }

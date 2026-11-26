@@ -185,6 +185,14 @@ func (s *Server) installSphinx(ctx context.Context, jc *jobs.Context) error {
 	if err != nil {
 		return err
 	}
+	// The file is the template's every time: a change made in it by hand
+	// goes (the agent keeps the previous version in its history). A copy of
+	// the template under the override directory is what stays.
+	if _, override, _ := s.render.Source(sx.Template); override {
+		jc.Logf("%s: from %s", sx.ConfFile, path.Join(s.cfg.TemplatesDir, sx.Template))
+	} else {
+		jc.Logf("%s: written from the panel's template; changes of your own go into a copy of it, %s (mp stack install sphinx renders that one)", sx.ConfFile, path.Join(s.cfg.TemplatesDir, sx.Template))
+	}
 	files := []agent.FileSpec{{Path: sx.ConfFile, Content: conf, Mode: 0o644}}
 	if sx.DefaultsFile != "" {
 		// Debian ships the daemon switched off until START=yes.
@@ -249,8 +257,10 @@ func (s *Server) installSphinx(ctx context.Context, jc *jobs.Context) error {
 
 // sphinxColumns are the fields and attributes Bitrix's search module checks
 // in the index (search/tools/sphinx.php); the id comes on its own.
-var sphinxColumns = []string{"title", "body", "module_id", "module", "item_id", "item", "param1_id", "param1", "param2_id", "param2",
-	"date_change", "date_to", "date_from", "custom_rank", "tags", "right", "site", "param"}
+// The module of Bitrix 26 added user_id and the entity_* five: CSearchSphinx
+// ::connect refuses an index without them ("fields missing").
+var sphinxColumns = []string{"title", "body", "module_id", "module", "item_id", "item", "user_id", "entity_type", "entity_type_id", "entity", "entity_id",
+	"param1_id", "param1", "param2_id", "param2", "date_change", "date_to", "date_from", "custom_rank", "tags", "right", "site", "param"}
 
 var errNoSphinxProbe = errors.New("no mysql client to probe SphinxQL with")
 

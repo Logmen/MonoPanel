@@ -61,7 +61,7 @@ mp site set <domain> [флаги site add, кроме --user и --no-https-redir
             [--default-tls[=false]]                                           # клиенты TLS без SNI на адресе сайта (обратный прокси по IP) получают его сертификат; один сайт на адрес (администратор)
 mp site list | show <domain> | presets
 mp site apply | fix | suspend | unsuspend <domain>   # fix — владелец, права, ACL и метки SELinux файлов сайта
-mp site rm <domain> [--purge]
+mp site rm <domain> [--purge]                     # --purge удаляет и каталог сайта, и его журналы (/var/log/monopanel/sites/<логин>/<домен>.*); без него журналы остаются, задача пишет где
 mp site logs <domain> [--type access|error|php|slow|apache-access|apache-error] [-n 100]
 mp site nginx <domain> [--set файл | --clear | --generated]   # свои директивы в server {}: проверка агентом, nginx -t и откат
 mp site php <domain>                 # действующие PHP-параметры и откуда каждый взялся
@@ -106,7 +106,7 @@ mp stack auto-upgrade [--on|--off] [--hour 4]   # ежедневное обно�
                                      # времени сервера), раз в сутки; без флагов — показать его, следующий и последний запуск
                                      # (ошибка — одной строкой, целиком — mp job show <id>)
 mp valkey add cache|sessions [--user <login>] [--memory 128]   # экземпляр аккаунта: создать или сменить память (с перезапуском)
-mp valkey list [--user <login>] | restart cache|sessions | rm cache|sessions   # restart опустошает кеш
+mp valkey list [--user <login>] | restart cache|sessions | rm cache|sessions [--force]   # restart опустошает кеш; rm не удаляет экземпляр, к которому подключены клиенты или в котором есть ключи (им может пользоваться приложение напрямую), без --force
 
 mp db create <name> --user <login> [--password …|--password-stdin] [--legacy-auth] [--remote]   # база и пользователь <login>_<name>; пароль сгенерируется; --remote API пока отклоняет
 mp db list | passwd <name> [--password …|--password-stdin] | rm <name>

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"path"
+	"strconv"
 	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -45,6 +46,12 @@ var valkeyDefaultMemory = map[string]int{store.ValkeyCache: 128, store.ValkeySes
 type valkeyPurposeInput struct {
 	Login   string `path:"login" pattern:"^[a-z_][a-z0-9_-]{0,31}$"`
 	Purpose string `path:"purpose" enum:"cache,sessions"`
+}
+
+type valkeyDeleteInput struct {
+	Login   string `path:"login" pattern:"^[a-z_][a-z0-9_-]{0,31}$"`
+	Purpose string `path:"purpose" enum:"cache,sessions"`
+	Force   bool   `query:"force" doc:"remove it although clients are connected or it holds keys"`
 }
 
 type valkeyPutInput struct {
@@ -428,11 +435,20 @@ func (s *Server) registerValkey() {
 
 	huma.Register(s.api, huma.Operation{
 		OperationID: "valkey-delete", Method: http.MethodDelete, Path: "/users/{login}/valkey/{purpose}", Summary: "Stop and remove an instance with its data", Tags: []string{"valkey"}, Security: secured, DefaultStatus: http.StatusNoContent,
-	}, func(ctx context.Context, in *valkeyPurposeInput) (*struct{}, error) {
+	}, func(ctx context.Context, in *valkeyDeleteInput) (*struct{}, error) {
 		p := principalFrom(ctx)
 		_, v, err := s.loadValkeyFor(ctx, in.Login, in.Purpose)
 		if err != nil {
 			return nil, err
+		}
+		// An application may use the instance through its socket by itself,
+		// with no site's sessions in the panel naming it: 1C-Bitrix keeps its
+		// sessions there from .settings.php (new.qaj.kz, 26.11.2026). What the
+		// instance holds says so; without --force it stays.
+		if !in.Force {
+			if clients, keys, ok := s.valkeyUsage(ctx, v); ok && (clients > 0 || keys > 0) {
+				return nil, huma.Error409Conflict(fmt.Sprintf("%s is in use: %d client(s) connected, %d key(s) stored — an application may use it directly (as 1C-Bitrix does with sessions in .settings.php), and removing it loses them; --force removes it anyway", v.Name(), clients, keys))
+			}
 		}
 		if v.Purpose == store.ValkeySessions {
 			sites, err := s.valkeySessionSites(ctx, v.UserID)
@@ -452,4 +468,39 @@ func (s *Server) registerValkey() {
 		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "valkey.delete", Target: v.Name(), IP: requestInfo(ctx).IP})
 		return nil, nil
 	})
+}
+
+// valkeyUsage is what an instance holds: its clients besides the one asking
+// and its keys. ok is false when the instance does not answer — stopped, it
+// has nobody connected, and its snapshot is what goes.
+func (s *Server) valkeyUsage(ctx context.Context, v *store.ValkeyInstance) (clients, keys int, ok bool) {
+	info := func(section string) (string, bool) {
+		res, err := s.agent.Tool(ctx, &agent.ToolRequest{Name: "valkey-cli", Args: []string{"-s", valkeySocket(v), "INFO", section}, TimeoutSeconds: 10})
+		if err != nil || res.ExitCode != 0 || !strings.Contains(res.Output, "# ") {
+			return "", false
+		}
+		return res.Output, true
+	}
+	out, ok := info("clients")
+	if !ok {
+		return 0, 0, false
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if n, found := strings.CutPrefix(strings.TrimSpace(line), "connected_clients:"); found {
+			clients, _ = strconv.Atoi(n)
+			clients-- // the valkey-cli asking
+		}
+	}
+	if out, ok := info("keyspace"); ok {
+		for _, line := range strings.Split(out, "\n") {
+			_, rest, found := strings.Cut(strings.TrimSpace(line), ":keys=")
+			if !found {
+				continue
+			}
+			n, _, _ := strings.Cut(rest, ",")
+			k, _ := strconv.Atoi(n)
+			keys += k
+		}
+	}
+	return max(clients, 0), keys, true
 }

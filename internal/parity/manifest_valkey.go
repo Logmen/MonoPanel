@@ -10,6 +10,7 @@ func init() {
 		op("valkey-put", cli("valkey add"), web(page), purpose,
 			field("memory_mb", flag("memory"))),
 		op("valkey-restart", cli("valkey restart"), web(page), purpose),
-		op("valkey-delete", cli("valkey rm"), web(page), purpose),
+		op("valkey-delete", cli("valkey rm"), web(page), purpose,
+			field("force", flag("force"))),
 	)
 }

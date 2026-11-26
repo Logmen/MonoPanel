@@ -1683,6 +1683,18 @@ func (s *Server) jobSiteDelete(ctx context.Context, jc *jobs.Context) error {
 	if err := s.db.DeleteSite(context.WithoutCancel(ctx), site.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
 		return err
 	}
+	// The site's logs are not in its tree: a purge takes them along, as an
+	// account's purge takes its log directory; else they stay, and the job
+	// says where (t3a.qaj.kz, 26.11.2026: its four logs kept rotating).
+	if dir := s.siteLogDir(user.Login); p.Purge {
+		if res, err := s.agent.RemoveSiteLogs(ctx, &agent.RemoveSiteLogsRequest{Login: user.Login, Domain: site.Domain}); err != nil {
+			jc.Logf("warning: logs of %s in %s not removed: %v", site.Domain, dir, err)
+		} else if len(res.Files) > 0 {
+			jc.Logf("site logs removed from %s: %s", dir, strings.Join(res.Files, ", "))
+		}
+	} else {
+		jc.Logf("site logs, if any, kept in %s (%s.*.log); mp site rm --purge takes them along", dir, site.Domain)
+	}
 	s.refreshFail2ban(ctx)
 	// The last site with HTTP/3 gone: its QUIC sockets and udp/443 go too.
 	s.syncHTTP3(ctx, jc.Logf)
