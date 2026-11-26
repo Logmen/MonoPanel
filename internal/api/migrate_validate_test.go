@@ -229,6 +229,11 @@ func testMigrateTar(t *testing.T) {
 	add(&tar.Header{Name: "./data/fifo", Typeflag: tar.TypeFifo, Mode: 0o644}, "")
 	add(&tar.Header{Name: "./data/suid", Typeflag: tar.TypeReg, Mode: 0o4755}, "#!/bin/sh\n")
 	add(&tar.Header{Name: "./data/link", Typeflag: tar.TypeSymlink, Linkname: "/etc", Mode: 0o777}, "")
+	// The source rewrote these targets to the home here: one inside it
+	// arrives relative, one that only starts like it or climbs out does not.
+	add(&tar.Header{Name: "./data/www/shop/bitrix", Typeflag: tar.TypeSymlink, Linkname: "/var/www/u/data/www/site/bitrix", Mode: 0o777}, "")
+	add(&tar.Header{Name: "./data/near", Typeflag: tar.TypeSymlink, Linkname: "/var/www/uu/data", Mode: 0o777}, "")
+	add(&tar.Header{Name: "./data/climb", Typeflag: tar.TypeSymlink, Linkname: "/var/www/u/../../../etc", Mode: 0o777}, "")
 	add(&tar.Header{Name: "./data/link/cron.d/x", Typeflag: tar.TypeReg, Mode: 0o644}, "* * * * * root id\n")
 	add(&tar.Header{Name: "./data/hard", Typeflag: tar.TypeLink, Linkname: "../../etc/shadow"}, "")
 	add(&tar.Header{Name: "./data/hard2", Typeflag: tar.TypeLink, Linkname: "./data/www/site/index.php"}, "")
@@ -237,7 +242,7 @@ func testMigrateTar(t *testing.T) {
 	add(&tar.Header{Name: "./data/after", Typeflag: tar.TypeReg, Mode: 0o644}, "kept")
 	tw.Close()
 
-	clean, st, done := migrateTar(bytes.NewReader(buf.Bytes()), false)
+	clean, st, done := migrateTar(bytes.NewReader(buf.Bytes()), false, "/var/www/u")
 	out, err := io.ReadAll(clean)
 	<-done
 	if err != nil {
@@ -260,14 +265,14 @@ func testMigrateTar(t *testing.T) {
 		}
 		got[h.Name] = h
 	}
-	for _, kept := range []string{"./", "./data/www/site/index.php", "./data/suid", "./data/hard2", "./data/after"} {
+	for _, kept := range []string{"./", "./data/www/site/index.php", "./data/suid", "./data/hard2", "./data/after", "./data/www/shop/bitrix"} {
 		if got[kept] == nil {
 			t.Errorf("%s was left out", kept)
 		}
 	}
 	// ./data/link leads out of the tree (to /etc): a later pass of tar -x,
 	// root's, would write through it.
-	for _, gone := range []string{"./data/mem", "./data/sda", "./data/fifo", "./data/link", "./data/link/cron.d/x", "./data/hard", "../escape", "/etc/cron.d/abs"} {
+	for _, gone := range []string{"./data/mem", "./data/sda", "./data/fifo", "./data/link", "./data/link/cron.d/x", "./data/hard", "../escape", "/etc/cron.d/abs", "./data/near", "./data/climb"} {
 		if got[gone] != nil {
 			t.Errorf("%s passed the filter", gone)
 		}
@@ -275,7 +280,10 @@ func testMigrateTar(t *testing.T) {
 	if h := got["./data/suid"]; h != nil && h.Mode != 0o755 {
 		t.Errorf("setuid kept: %o", h.Mode)
 	}
-	if st.dropped != 8 || !strings.Contains(st.first, "data/mem") {
+	if h := got["./data/www/shop/bitrix"]; h != nil && h.Linkname != "../site/bitrix" {
+		t.Errorf("a link into the home arrives as %q, want ../site/bitrix", h.Linkname)
+	}
+	if st.dropped != 10 || !strings.Contains(st.first, "data/mem") {
 		t.Errorf("stats: %+v", st)
 	}
 	for name, want := range map[string]bool{"data/x": true, "./data/x": true, "../x": false, "/etc/x": false, "a/../../x": false, "a/../b": false, "": false} {
@@ -284,7 +292,7 @@ func testMigrateTar(t *testing.T) {
 		}
 	}
 	// A broken archive fails the stream instead of ending it quietly.
-	bad, _, badDone := migrateTar(strings.NewReader(strings.Repeat("x", 1024)), false)
+	bad, _, badDone := migrateTar(strings.NewReader(strings.Repeat("x", 1024)), false, "/var/www/u")
 	if _, err := io.ReadAll(bad); err == nil {
 		t.Error("a broken archive must fail the stream")
 	}
@@ -330,7 +338,7 @@ func TestMigrateTarMailLinksStayInside(t *testing.T) {
 		// An account's tree keeps links that stay inside it, mail or not.
 		false: {"info/", "info/.dovecot.sieve"},
 	} {
-		clean, st, done := migrateTar(bytes.NewReader(buf.Bytes()), confined)
+		clean, st, done := migrateTar(bytes.NewReader(buf.Bytes()), confined, "/var/www/u")
 		out, err := io.ReadAll(clean)
 		<-done
 		if err != nil {
@@ -421,7 +429,7 @@ func TestMigrateTarSparseBudget(t *testing.T) {
 	t.Cleanup(func() { migrateTarHoleBudget = was })
 	data := []byte("the end of a sparse file")
 	run := func(archive []byte) ([]byte, *migrateTarStats, error) {
-		clean, st, done := migrateTar(bytes.NewReader(archive), false)
+		clean, st, done := migrateTar(bytes.NewReader(archive), false, "/var/www/u")
 		out, err := io.ReadAll(clean)
 		<-done
 		return out, st, err
@@ -503,7 +511,7 @@ func TestMigrateTarKeepsLinksInsideTheTree(t *testing.T) {
 		tw.WriteHeader(&tar.Header{Name: l.name, Typeflag: tar.TypeSymlink, Linkname: l.target, Mode: 0o777}) //nolint:errcheck // test
 	}
 	tw.Close()
-	clean, st, done := migrateTar(bytes.NewReader(buf.Bytes()), false)
+	clean, st, done := migrateTar(bytes.NewReader(buf.Bytes()), false, "/var/www/u")
 	out, err := io.ReadAll(clean)
 	<-done
 	if err != nil || st.err != nil {

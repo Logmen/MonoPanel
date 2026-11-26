@@ -22,6 +22,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"monopanel/internal/agent"
+	"monopanel/internal/agent/agenttest"
 	"monopanel/internal/store"
 )
 
@@ -227,6 +228,54 @@ func tarOf(t *testing.T, entries map[string]string) string {
 	return buf.String()
 }
 
+// tarWithSymlink appends a symlink member to an archive tarOf built.
+func tarWithSymlink(t *testing.T, archive, name, target string) string {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	tr := tar.NewReader(strings.NewReader(archive))
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := tw.WriteHeader(h); err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(tw, tr) //nolint:errcheck // тест
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeSymlink, Linkname: target, Mode: 0o777}); err != nil {
+		t.Fatal(err)
+	}
+	tw.Close()
+	return buf.String()
+}
+
+// tarSymlinks reads the symlinks of the archives tar -x got here.
+func tarSymlinks(t *testing.T, streams []agenttest.Stream) map[string]string {
+	t.Helper()
+	links := map[string]string{}
+	for _, st := range streams {
+		if st.Direction != "in" || st.Name != "tar" {
+			continue
+		}
+		tr := tar.NewReader(bytes.NewReader(st.Head))
+		for {
+			h, err := tr.Next()
+			if err != nil {
+				break
+			}
+			if h.Typeflag == tar.TypeSymlink {
+				links[path.Clean(h.Name)] = h.Linkname
+			}
+		}
+	}
+	return links
+}
+
 // mysqlAnswers gives the old server's MySQL the answers information_schema
 // and mysql.user would give.
 func mysqlAnswers(f *fakeSSH, size string) {
@@ -421,14 +470,19 @@ func TestMigrationFromBitrixVM(t *testing.T) {
 	remote.answers["cd '/home/bitrix/www' && { find "] = "./export/export-csv.php\n"
 	mysqlAnswers(remote, "2048")
 	inner := remote.handler
+	// The link site's bitrix/ is an absolute symlink into the main site; tar
+	// on the source rewrote its target to the home here (flag R).
+	var coreLink string
 	remote.handler = func(cmd string) (string, int) {
 		if strings.HasPrefix(cmd, "tar -C '/home/bitrix'") {
-			return tarOf(t, map[string]string{"data/www/main.example.com/": "", "data/www/main.example.com/index.php": "<?php\n"}), 0
+			archive := tarOf(t, map[string]string{"data/www/main.example.com/": "", "data/www/main.example.com/index.php": "<?php\n", "data/www/main.example.com/bitrix/": ""})
+			return tarWithSymlink(t, archive, "data/www/shop.example.com/bitrix", coreLink), 0
 		}
 		return inner(cmd)
 	}
 
 	target := newSiteFixture(t)
+	coreLink = target.s.cfg.WWWRoot + "/bitrix/data/www/main.example.com/bitrix"
 	target.installDB()
 	var mysqlSQL []string
 	target.agent.ToolHook = func(req agent.ToolRequest) *agent.ToolResponse {
@@ -591,6 +645,11 @@ func TestMigrationFromBitrixVM(t *testing.T) {
 	}
 	if !tarIn || !mysqlIn {
 		t.Errorf("потоки: tar=%v mysql=%v", tarIn, mysqlIn)
+	}
+	// The kernel link of the link site arrives, as a relative link to the
+	// main site's bitrix/ (an absolute one would be refused as leading out).
+	if link := tarSymlinks(t, target.agent.Streams())["data/www/shop.example.com/bitrix"]; link != "../main.example.com/bitrix" {
+		t.Errorf("симлинк ядра сайта-ссылки: %q, ожидалось ../main.example.com/bitrix", link)
 	}
 	if got := written["data/www/main.example.com/bitrix/php_interface/dbconn.php"]; !strings.Contains(got, target.s.cfg.WWWRoot+"/bitrix/.bx_temp/sitemanager") {
 		t.Errorf("dbconn.php не переписан: %q", got)

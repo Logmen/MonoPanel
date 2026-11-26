@@ -28,7 +28,9 @@ import (
 //
 // Сайты типа link делят ядро основного сайта через абсолютные симлинки
 // (/home/bitrix/www/bitrix); tar переписывает их цели под новый домашний
-// каталог, а settle правит те же пути в dbconn.php и .settings*.php.
+// каталог, импорт делает такие цели относительными (migrateTar: абсолютную
+// он отбросил бы как ведущую из дерева), а settle правит те же пути в
+// dbconn.php и .settings*.php.
 
 const bitrixHome = "/home/bitrix"
 

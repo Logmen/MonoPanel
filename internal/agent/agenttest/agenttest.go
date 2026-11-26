@@ -8,6 +8,7 @@
 package agenttest
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -311,13 +312,33 @@ type Stream struct {
 	Name      string
 	Args      []string
 	Bytes     int
+	// Head is the start of what came in (streamHeadMax bytes at most): a
+	// test reads the archive the panel unpacked from it.
+	Head []byte
 }
+
+// streamHeadMax bounds what a recorded incoming stream keeps.
+const streamHeadMax = 1 << 20
 
 // Streams returns the recorded streaming calls.
 func (a *Agent) Streams() []Stream {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]Stream{}, a.streams...)
+}
+
+// limitedWriter keeps the first left bytes and swallows the rest.
+type limitedWriter struct {
+	w    io.Writer
+	left int
+}
+
+func (l *limitedWriter) Write(p []byte) (int, error) {
+	if keep := min(len(p), l.left); keep > 0 {
+		l.w.Write(p[:keep]) //nolint:errcheck // a bytes.Buffer
+		l.left -= keep
+	}
+	return len(p), nil
 }
 
 // Client returns an agent client wired to this fake.
@@ -340,13 +361,14 @@ func (a *Agent) handle(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(out)) //nolint:errcheck // test double
 		return
 	case "/v1/stream/in":
-		n, _ := io.Copy(io.Discard, r.Body)
+		var head bytes.Buffer
+		n, _ := io.Copy(io.Discard, io.TeeReader(r.Body, &limitedWriter{w: &head, left: streamHeadMax}))
 		spec, _ := base64.StdEncoding.DecodeString(r.Header.Get("X-Stream-Spec"))
 		var req agent.StreamRequest
 		json.Unmarshal(spec, &req) //nolint:errcheck // test double
 		a.mu.Lock()
 		a.calls = append(a.calls, Call{Path: r.URL.Path, Body: spec})
-		a.streams = append(a.streams, Stream{Direction: "in", Name: req.Name, Args: req.Args, Bytes: int(n)})
+		a.streams = append(a.streams, Stream{Direction: "in", Name: req.Name, Args: req.Args, Bytes: int(n), Head: head.Bytes()})
 		// A failing tool answers as the agent does: the stream was read,
 		// the tool's exit code and output come back.
 		msg, failing := a.Fail[r.URL.Path]

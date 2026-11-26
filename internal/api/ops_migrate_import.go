@@ -676,8 +676,9 @@ func (s *Server) migrateFiles(ctx context.Context, jc *jobs.Context, src migrate
 	args := []string{"--extract", "--file", "-", "--directory", dest, "--no-same-owner", "--warning=no-timestamp"}
 	// tar -x runs as root: only files, directories and links reach it, and
 	// in the mail store, where every Maildir is vmail's, no link leads out of
-	// its directory (see migrate_tar.go).
-	clean, st, done := migrateTar(body, part == "mail")
+	// its directory (see migrate_tar.go). An absolute link target the source
+	// rewrote to this home stays as a relative one.
+	clean, st, done := migrateTar(body, part == "mail", dest)
 	out, err := s.agent.StreamIn(ctx, &agent.StreamRequest{Name: "tar", Args: args}, clean)
 	clean.Close()
 	body.Close()

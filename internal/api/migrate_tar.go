@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"path/filepath"
 	"strings"
 )
 
@@ -26,6 +27,13 @@ import (
 // password. GNU tar only delays such links, it still makes them. There
 // (confined) a symlink must stay below its own directory: a relative target
 // without "..", like the .dovecot.sieve → sieve/… link managesieve keeps.
+//
+// The adapters of other panels rewrite absolute symlink targets on the source
+// (tar --transform) to the account's home here: a Bitrix link site's bitrix/
+// and upload/ arrive as links to /var/www/<login>/data/www/<main>/…. Such a
+// target is inside the tree, only spelled from the root of the file system;
+// it is made relative before the check, and an absolute target anywhere else
+// is still refused.
 
 // migrateTarHoleBudget is how many zero bytes the holes of sparse files may
 // expand to in one archive. Go's tar writer cannot write a sparse member, so a
@@ -41,17 +49,21 @@ type migrateTarStats struct {
 	first   string // the first member left out, for the job log
 	// confined keeps symlinks below their own directory (the mail store).
 	confined bool
+	// home is where the tree is unpacked: an absolute symlink target below it
+	// becomes relative (see tarHomeLink).
+	home string
 	// holes counts the zeros sparse members expanded to so far.
 	holes int64
 	// err is why the filter stopped early; final once done is closed.
 	err error
 }
 
-// migrateTar starts filtering src; the returned reader is the clean stream.
-// done is closed once the filter is finished with src and the stats are final.
-func migrateTar(src io.Reader, confined bool) (out io.ReadCloser, stats *migrateTarStats, done <-chan struct{}) {
+// migrateTar starts filtering src, a tree to unpack into home; the returned
+// reader is the clean stream. done is closed once the filter is finished with
+// src and the stats are final.
+func migrateTar(src io.Reader, confined bool, home string) (out io.ReadCloser, stats *migrateTarStats, done <-chan struct{}) {
 	pr, pw := io.Pipe()
-	st := &migrateTarStats{confined: confined}
+	st := &migrateTarStats{confined: confined, home: home}
 	fin := make(chan struct{})
 	go func() {
 		defer close(fin)
@@ -124,12 +136,16 @@ func (st *migrateTarStats) copy(src io.Reader, dst io.Writer) error {
 			// one pass that leads out of the tree (data/x -> /etc) would
 			// have the next one write /etc/cron.d/… through it. Only links
 			// that stay inside the tree are made.
-			if !st.confined && !tarTreeLink(name, h.Linkname) {
-				st.drop(h.Name, "a symlink to "+shown(h.Linkname)+", outside the tree")
-				links[name] = true // what was meant to go through it stays out too
-				continue
+			target := h.Linkname
+			if !st.confined {
+				target = tarHomeLink(st.home, name, target)
+				if !tarTreeLink(name, target) {
+					st.drop(h.Name, "a symlink to "+shown(h.Linkname)+", outside the tree")
+					links[name] = true // what was meant to go through it stays out too
+					continue
+				}
 			}
-			out.Typeflag, out.Linkname = tar.TypeSymlink, h.Linkname
+			out.Typeflag, out.Linkname = tar.TypeSymlink, target
 			links[name] = true
 		case tar.TypeLink:
 			target, ok := tarMemberPath(h.Linkname)
@@ -223,6 +239,27 @@ func tarTreeLink(name, target string) bool {
 	}
 	p := path.Clean(path.Join(path.Dir(name), target))
 	return p != ".." && !strings.HasPrefix(p, "../")
+}
+
+// tarHomeLink spells an absolute symlink target that lies inside home (where
+// the tree is unpacked) relative to the link at name, a cleaned member path:
+// /var/www/u/data/www/main/bitrix for data/www/shop/bitrix becomes
+// ../main/bitrix. Any other target comes back as it was, for tarTreeLink to
+// judge; the target is cleaned first, so /var/www/u/../../etc is not inside.
+func tarHomeLink(home, name, target string) string {
+	home = path.Clean(home)
+	if !path.IsAbs(home) || home == "/" || !strings.HasPrefix(target, "/") || strings.ContainsRune(target, 0) {
+		return target
+	}
+	abs := path.Clean(target)
+	if abs != home && !strings.HasPrefix(abs, home+"/") {
+		return target
+	}
+	rel, err := filepath.Rel(path.Join(home, path.Dir(name)), abs)
+	if err != nil {
+		return target
+	}
+	return filepath.ToSlash(rel)
 }
 
 // tarUnderLink names the symlink a path would be extracted through, if any.
