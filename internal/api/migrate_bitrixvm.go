@@ -8,6 +8,7 @@ import (
 	"path"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,6 +57,9 @@ type bxSite struct {
 	cache string
 	// hardcoded lists files (old absolute paths) that name /home/bitrix.
 	hardcoded []string
+	// htaccess lists the Apache rules of the site's .htaccess files that
+	// nothing reads here ("file:line: rule").
+	htaccess []string
 }
 
 type bxDB struct {
@@ -153,6 +157,7 @@ func (b *bitrixVMSource) inventory(ctx context.Context) error {
 			site.cache = b.cacheEngine(ctx, root)
 		}
 		site.hardcoded = b.hardcodedPaths(ctx, site)
+		site.htaccess = b.htaccessRules(ctx, site)
 		b.sites = append(b.sites, site)
 	}
 	// Main site first: link sites point into it.
@@ -209,6 +214,72 @@ func (b *bitrixVMSource) hardcodedPaths(ctx context.Context, site *bxSite) []str
 // maxHardcoded caps the files rewritten per site: more than that is a copy
 // of something (a backup, a vendor tree) rather than the site's own scripts.
 const maxHardcoded = 200
+
+// htaccessGrep picks the .htaccess directives that did something under the
+// source's Apache and do nothing under nginx and php-fpm: rewrites,
+// redirects, error pages and PHP settings.
+const htaccessGrep = `^[[:space:]]*(RewriteRule|RewriteCond|Redirect|RedirectMatch|RedirectPermanent|RedirectTemp|ErrorDocument|php_value|php_flag|php_admin_value|php_admin_flag)[[:space:]]`
+
+// maxHtaccessRead caps the rule lines read per site, maxHtaccessShown what
+// the plan lists of them.
+const (
+	maxHtaccessRead  = 200
+	maxHtaccessShown = 20
+)
+
+// htaccessRules finds the Apache rules in the site's .htaccess files:
+// BitrixVM runs Apache behind nginx, and here nginx and php-fpm read none of
+// them, so a redirect or a rewrite of the site would be lost without a word.
+// The kernel (bitrix/) and upload/ hold Bitrix's own deny files, which the
+// bitrix preset covers; they are left out.
+func (b *bitrixVMSource) htaccessRules(ctx context.Context, site *bxSite) []string {
+	cmd := "cd " + shq(site.root) + " && find . \\( -path ./bitrix -o -path ./upload -o -name .git \\) -prune -o -type f -name .htaccess -size -1024k -print0 2>/dev/null" +
+		" | xargs -0 -r grep -HnIiE -e " + shq(htaccessGrep) + " -- 2>/dev/null | head -n " + fmt.Sprint(maxHtaccessRead)
+	out, _, _ := b.conn.exec(ctx, cmd)
+	return htaccessLines(out)
+}
+
+// bxStockHtaccess are the rule lines of the .htaccess Bitrix installs, in
+// lower case with single blanks. The rewrite to urlrewrite.php is what the
+// bitrix preset does in nginx, the 404 page is urlrewrite.php's own, the
+// Authorization header reaches PHP under php-fpm by itself, and the two
+// flags sit in an <IfModule mod_php5.c> that never applied.
+var bxStockHtaccess = map[string]bool{
+	"rewritecond %{request_filename} !-f":                      true,
+	"rewritecond %{request_filename} !-l":                      true,
+	"rewritecond %{request_filename} !-d":                      true,
+	"rewritecond %{request_filename} !/bitrix/urlrewrite.php$": true,
+	"rewriterule ^(.*)$ /bitrix/urlrewrite.php [l]":            true,
+	"rewriterule .* - [e=remote_user:%{http:authorization}]":   true,
+	"errordocument 404 /404.php":                               true,
+	"php_flag allow_call_time_pass_reference 1":                true,
+	"php_flag session.use_trans_sid off":                       true,
+}
+
+// htaccessLines turns the output of grep -Hn into "file:line: rule"
+// entries, Bitrix's stock lines left out. The text is the source's: control
+// characters go and a long line is cut.
+func htaccessLines(out string) []string {
+	var rules []string
+	for _, l := range strings.Split(out, "\n") {
+		parts := strings.SplitN(l, ":", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		if _, err := strconv.Atoi(parts[1]); err != nil {
+			continue
+		}
+		text := strings.TrimSpace(cleanText(parts[2], false))
+		if text == "" || bxStockHtaccess[strings.ToLower(strings.Join(strings.Fields(text), " "))] {
+			continue
+		}
+		if r := []rune(text); len(r) > 200 {
+			text = string(r[:199]) + "…"
+		}
+		rules = append(rules, shown(strings.TrimPrefix(parts[0], "./"))+":"+parts[1]+": "+text)
+	}
+	return rules
+}
 
 var (
 	bxCacheBlockRe = regexp.MustCompile(`'cache'\s*=>`)
@@ -421,10 +492,13 @@ func (b *bitrixVMSource) bundle(ctx context.Context, _ string, withSecrets bool)
 	out.Cron = b.crontab(ctx, "bitrix")
 	rootJobs, rootNotes := b.rootCron(ctx, out.Cron)
 	out.Cron = append(out.Cron, rootJobs...)
+	sysJobs, sysNotes := b.systemCron(ctx, out.Cron)
+	out.Cron = append(out.Cron, sysJobs...)
 	for _, j := range out.Cron {
 		j.Command = bxCronPHP(j.Command)
 	}
 	out.Notes = append(out.Notes, rootNotes...)
+	out.Notes = append(out.Notes, sysNotes...)
 	out.Notes = append(out.Notes, cronNotes(out.Cron)...)
 	for _, site := range b.sites {
 		if site.cache != "" {
@@ -445,10 +519,27 @@ func (b *bitrixVMSource) bundle(ctx context.Context, _ string, withSecrets bool)
 			// One path per line: a run of five paths in a sentence is unreadable.
 			out.Notes = append(out.Notes, fmt.Sprintf("site %s: %s is hard-coded in the site's files (%d), it will be rewritten to the new path:\n    %s%s", site.domain, bitrixHome, n, strings.Join(list, "\n    "), more))
 		}
+		if n := len(site.htaccess); n > 0 {
+			list, more := site.htaccess, ""
+			if n > maxHtaccessShown {
+				list, more = list[:maxHtaccessShown], fmt.Sprintf("\n    … and %d more", n-maxHtaccessShown)
+			}
+			// The rules first, one per line, then what to do with them.
+			d := site.domain
+			out.Notes = append(out.Notes, fmt.Sprintf("site %s: Apache on the source ran these .htaccess rules, nginx and php-fpm here do not read them (Bitrix's own rewrite to urlrewrite.php is left out, the bitrix preset does it):\n    %s%s\n  recreate them as nginx directives (mp site nginx %s --set <file>), PHP settings with mp site set %s --ini key=value, or keep Apache for the site (mp site set %s --mode apache)", d, strings.Join(list, "\n    "), more, d, d, d))
+		}
+	}
+	out.Notes = append(out.Notes, b.msmtpNotes(ctx, home)...)
+	mainDomain := "<main domain>"
+	for _, site := range b.sites {
+		if site.root == bitrixHome+"/www" {
+			mainDomain = site.domain
+		}
 	}
 	out.Notes = append(out.Notes,
 		"the Bitrix cache (bitrix/cache, managed_cache, stack_cache) is not moved: it will be rebuilt",
-		"the push server, memcached and msmtp of the BitrixVM environment do not move: set them up here separately (mp stack install memcached)",
+		"the push server and memcached of the BitrixVM environment do not move: set them up here separately (mp stack install memcached)",
+		"BitrixVM's default server answers TLS clients without SNI with its certificate, here they get a refused handshake: if the sites sit behind a reverse proxy that connects by IP, run mp site set "+mainDomain+" --default-tls after the move",
 		"the account has no web-panel password: mp user set "+b.login+" --generate")
 	if withSecrets {
 		out.Secrets = &apitypes.MigrationSecrets{UnixShadow: hash, DBUsers: plain, Mailboxes: map[string]string{}, DKIM: map[string]string{}}
@@ -492,6 +583,161 @@ func (b *bitrixVMSource) rootCron(ctx context.Context, have []*store.CronJob) ([
 		notes = append(notes, fmt.Sprintf("jobs in root's crontab without %s paths are not moved: %s", bitrixHome, strings.Join(left, "; ")))
 	}
 	return jobs, notes
+}
+
+// systemCron picks the jobs of /etc/crontab and /etc/cron.d that are the
+// sites': lines run as bitrix, and lines run as root that name /home/bitrix/.
+// They move to the account like root's jobs (paths rewritten, marked with the
+// file they came from); the system's own maintenance stays behind unlisted.
+// A line that looks planted gets its note whoever it runs as: it points at a
+// break-in on the source even when it does not move.
+func (b *bitrixVMSource) systemCron(ctx context.Context, have []*store.CronJob) ([]*store.CronJob, []string) {
+	files := []string{"/etc/crontab"}
+	for _, p := range b.conn.glob(ctx, "/etc/cron.d/*") {
+		if !cronDSkipped(path.Base(p)) {
+			files = append(files, p)
+		}
+	}
+	seen := map[string]bool{}
+	for _, j := range have {
+		seen[j.Schedule+" "+j.Command] = true
+	}
+	var jobs []*store.CronJob
+	var moved, notes []string
+	for _, file := range files {
+		text, err := b.conn.readFile(ctx, file)
+		if err != nil {
+			continue
+		}
+		for _, e := range systemCronEntries(text) {
+			if e.user != "bitrix" && (e.user != "root" || !strings.Contains(e.command, bitrixHome+"/")) {
+				if suspiciousCron(e.command) {
+					notes = append(notes, fmt.Sprintf("%s: the job \"%s %s\" of %s looks like a planted backdoor (runs something from /tmp or pipes a downloaded script into a shell): it does not move; check the source for a break-in", file, e.schedule, e.command, e.user))
+				}
+				continue
+			}
+			j := b.cronJob(e)
+			if seen[j.Schedule+" "+j.Command] {
+				continue
+			}
+			seen[j.Schedule+" "+j.Command] = true
+			j.Comment = cronComment("from "+file, j.Comment)
+			jobs = append(jobs, j)
+			moved = append(moved, fmt.Sprintf("%s (%s): %s %s", file, e.user, j.Schedule, bxCronPHP(j.Command)))
+		}
+	}
+	if len(jobs) > 0 {
+		notes = append([]string{fmt.Sprintf("cron jobs moved from /etc/crontab and /etc/cron.d: %d; they run as the account here:\n    %s", len(jobs), strings.Join(moved, "\n    "))}, notes...)
+	}
+	return jobs, notes
+}
+
+// cronDSkipped says whether cron itself passes a file of /etc/cron.d by: a
+// hidden file, an editor's backup, what rpm leaves next to a changed one.
+func cronDSkipped(name string) bool {
+	if strings.HasPrefix(name, ".") || strings.HasSuffix(name, "~") {
+		return true
+	}
+	for _, suffix := range []string{".rpmsave", ".rpmorig", ".rpmnew", ".swp"} {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// msmtpAccount is one account of an msmtprc: where msmtp relays the mail.
+type msmtpAccount struct {
+	name, host, port, from string
+}
+
+// parseMsmtprc reads the relay of each account of an msmtprc; an account
+// starts from the defaults section and from the account it names after a
+// colon (account default : site1). The password and the rest are not kept.
+func parseMsmtprc(text string) []msmtpAccount {
+	var defaults msmtpAccount
+	var accounts []*msmtpAccount
+	byName := map[string]*msmtpAccount{}
+	cur := &defaults
+	for _, l := range strings.Split(text, "\n") {
+		fields := strings.Fields(l)
+		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
+			continue
+		}
+		val := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(l), fields[0]))
+		switch fields[0] {
+		case "defaults":
+			cur = &defaults
+		case "account":
+			name, parent, _ := strings.Cut(val, ":")
+			acc := defaults
+			if p := byName[strings.TrimSpace(parent)]; p != nil {
+				acc = *p
+			}
+			acc.name = strings.TrimSpace(name)
+			cur = &acc
+			accounts = append(accounts, cur)
+			byName[acc.name] = cur
+		case "host":
+			cur.host = val
+		case "port":
+			cur.port = val
+		case "from":
+			cur.from = val
+		}
+	}
+	var out []msmtpAccount
+	for _, a := range accounts {
+		if a.host != "" {
+			out = append(out, *a)
+		}
+	}
+	return out
+}
+
+// msmtpNotes says where mail of the sites went on the source: BitrixVM points
+// PHP's sendmail_path at msmtp, which relays every message through an SMTP
+// server of each site's settings (~bitrix/.msmtprc or /etc/msmtprc). Here
+// mail() hands the message to /usr/sbin/sendmail, and the relay does not
+// move: the plan names it (host, port, from; never the password) so the
+// administrator can decide.
+func (b *bitrixVMSource) msmtpNotes(ctx context.Context, home string) []string {
+	if home == "" {
+		home = bitrixHome
+	}
+	sendmail, _, _ := b.conn.exec(ctx, "php -i 2>/dev/null | grep -i '^sendmail_path'")
+	viaPHP := strings.Contains(sendmail, "msmtp")
+	var relays []string
+	found := ""
+	for _, file := range []string{path.Join(home, ".msmtprc"), "/etc/msmtprc"} {
+		text, err := b.conn.readFile(ctx, file)
+		if err != nil {
+			continue
+		}
+		if found == "" {
+			found = file
+		}
+		for _, a := range parseMsmtprc(text) {
+			relay := shown(a.host)
+			if a.port != "" {
+				relay += ":" + shown(a.port)
+			}
+			if a.from != "" {
+				relay += ", from " + shown(a.from)
+			}
+			relays = append(relays, fmt.Sprintf("%s (account %s): %s", file, shown(a.name), relay))
+		}
+	}
+	const here = "here mail() of the sites goes to /usr/sbin/sendmail, the panel's mail stack (mp mail install), and the relay does not move: set it up in this server's MTA if the mail has to keep leaving through it"
+	switch {
+	case len(relays) > 0:
+		return []string{fmt.Sprintf("mail of the sites leaves the source through msmtp and these relays:\n    %s\n  %s", strings.Join(relays, "\n    "), here)}
+	case found != "":
+		return []string{fmt.Sprintf("the source has %s, but no account in it names a relay host; %s", found, here)}
+	case viaPHP:
+		return []string{"PHP on the source sends mail through msmtp (sendmail_path), but neither " + path.Join(home, ".msmtprc") + " nor /etc/msmtprc is there; " + here}
+	}
+	return nil
 }
 
 // bxCronPHPRe matches the system PHP a BitrixVM crontab names by path.

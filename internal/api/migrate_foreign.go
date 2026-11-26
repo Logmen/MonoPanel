@@ -287,16 +287,29 @@ func (f *foreignSource) crontab(ctx context.Context, login string) []*store.Cron
 	return f.parseCrontab(out)
 }
 
-var cronLineRe = regexp.MustCompile(`^(@\w+|(?:\S+\s+){4}\S+)\s+(.+)$`)
+var (
+	cronLineRe = regexp.MustCompile(`^(@\w+|(?:\S+\s+){4}\S+)\s+(.+)$`)
+	// A line of /etc/crontab or /etc/cron.d names the user between the
+	// schedule and the command.
+	sysCronLineRe = regexp.MustCompile(`^(@\w+|(?:\S+\s+){4}\S+)\s+(\S+)\s+(.+)$`)
+)
 
 // cronEntry is one job line of a crontab as the old server has it.
 type cronEntry struct {
 	schedule, command, comment string
+	// user runs the job: only the system crontabs say it.
+	user string
 }
 
-// cronEntries splits a crontab into jobs; the comment right above a line
-// belongs to it, variable assignments are dropped.
-func cronEntries(text string) []cronEntry {
+// cronEntries splits a user's crontab into jobs; the comment right above a
+// line belongs to it, variable assignments are dropped.
+func cronEntries(text string) []cronEntry { return parseCronText(text, false) }
+
+// systemCronEntries splits /etc/crontab or a file of /etc/cron.d into jobs,
+// each with the user it runs as.
+func systemCronEntries(text string) []cronEntry { return parseCronText(text, true) }
+
+func parseCronText(text string, system bool) []cronEntry {
 	var out []cronEntry
 	comment := ""
 	for _, l := range strings.Split(text, "\n") {
@@ -310,6 +323,13 @@ func cronEntries(text string) []cronEntry {
 			continue
 		case strings.Contains(l, "=") && !strings.ContainsAny(strings.SplitN(l, "=", 2)[0], " \t*"):
 			continue // PATH=… and friends
+		}
+		if system {
+			if m := sysCronLineRe.FindStringSubmatch(l); m != nil {
+				out = append(out, cronEntry{schedule: m[1], user: m[2], command: m[3], comment: comment})
+			}
+			comment = ""
+			continue
 		}
 		m := cronLineRe.FindStringSubmatch(l)
 		if m == nil {
