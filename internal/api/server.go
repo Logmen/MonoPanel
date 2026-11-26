@@ -190,6 +190,9 @@ type Server struct {
 	// own DNS servers): the doctor tells an internal panel name from a
 	// missing record with it. Tests answer themselves.
 	localLookup func(ctx context.Context, name string) ([]string, error)
+	// machineName is the host's own name (os.Hostname); tests answer
+	// themselves.
+	machineName func() (string, error)
 	// resolvConf is the host's resolver configuration: nginx's resolver in
 	// the TLS snippet comes from its name servers (sslSnippet). Tests point
 	// it at a file of their own.
@@ -300,6 +303,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	s.hostIPv6s = localIPv6s
 	s.lookup = publicLookup
 	s.localLookup = net.DefaultResolver.LookupHost
+	s.machineName = os.Hostname
 	s.resolvConf = "/etc/resolv.conf"
 	s.tls = newCertHolder(cfg, log)
 	s.tls.find = s.panelCoverFiles

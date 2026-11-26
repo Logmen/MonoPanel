@@ -140,9 +140,16 @@ func (s *Server) phpCLICheck(ctx context.Context) *apitypes.Check {
 // line is ok and says what it costs. Anything else, a loopback address of
 // /etc/hosts ("127.0.1.1 <hostname>" of Debian) among it, keeps the warning:
 // such an entry is no answer anybody else gets.
+//
+// The server's own hostname is internal too: systemd's nss-myhostname answers
+// it with the link-local addresses of the host (getent), which the Go
+// resolver never asks, and nothing else knows it (new.qaj.kz, 26.11.2026).
 func (s *Server) internalNameCheck(ctx context.Context, name string, public error) apitypes.Check {
 	addrs, err := s.localLookup(ctx, name)
 	if err != nil || len(addrs) == 0 {
+		if own, herr := s.machineName(); herr == nil && strings.EqualFold(strings.TrimSuffix(own, "."), strings.TrimSuffix(name, ".")) {
+			return check("dns "+name, "ok", "internal name (not in public DNS): the server's own hostname; Let's Encrypt cannot issue for it — should the panel open by this name from outside, it needs an A record")
+		}
 		return check("dns "+name, "warn", public.Error())
 	}
 	own := map[string]bool{}

@@ -48,6 +48,18 @@ func TestDoctorDNSInternalName(t *testing.T) {
 		}
 	}
 
+	// The server's own hostname, which only nss-myhostname answers (the Go
+	// resolver does not ask it): internal, with what it costs.
+	delete(local, "panel.corp.lan")
+	f.s.machineName = func() (string, error) { return "Panel.corp.lan", nil }
+	if got := f.doctorCheck("dns panel.corp.lan"); got != "ok: internal name (not in public DNS): the server's own hostname; Let's Encrypt cannot issue for it — should the panel open by this name from outside, it needs an A record" {
+		t.Errorf("own hostname: %q", got)
+	}
+	f.s.machineName = func() (string, error) { return "other.corp.lan", nil }
+	if got := f.doctorCheck("dns panel.corp.lan"); got != nx {
+		t.Errorf("another hostname: %q", got)
+	}
+
 	// Another failure of public DNS is no question for the local resolver.
 	local["panel.corp.lan"] = []string{"10.20.0.5"}
 	f.s.SetLookup(func(context.Context, string) ([]string, error) { return nil, errors.New("i/o timeout") })
