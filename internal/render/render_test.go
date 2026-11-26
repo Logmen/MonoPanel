@@ -94,7 +94,7 @@ func TestGolden(t *testing.T) {
 			p := examplePool()
 			p.SessionSocket = "/run/monopanel-valkey/alex-sessions/valkey.sock"
 			return p
-		}(), []string{"php_admin_value[session.save_handler] = redis", "php_admin_value[session.save_path] = \"unix:///run/monopanel-valkey/alex-sessions/valkey.sock\""}},
+		}(), []string{"php_value[session.save_handler] = redis", "php_value[session.save_path] = \"unix:///run/monopanel-valkey/alex-sessions/valkey.sock\""}},
 		{"logrotate-sites", "logrotate/sites.tmpl", SiteLogrotate{NginxPID: "/run/nginx.pid", Accounts: []LogrotateAccount{
 			{Login: "alex", LogDir: "/var/log/monopanel/sites/alex", ApachePID: "/run/monopanel-apache/alex/httpd.pid"},
 			{Login: "shop", LogDir: "/var/log/monopanel/sites/shop", ApachePID: "/run/monopanel-apache/shop/httpd.pid"}}}, []string{

@@ -207,7 +207,7 @@ func TestSiteSessionsInValkey(t *testing.T) {
 	f.agent.DirEntries["/etc/php/8.4/fpm/conf.d"] = []string{"10-opcache.ini", "20-redis.ini"}
 	patch("valkey", http.StatusAccepted)
 	pool, _ := f.agent.File("/etc/php/8.4/fpm/pool.d/example.com.conf")
-	if !strings.Contains(pool, "php_admin_value[session.save_handler] = redis") || !strings.Contains(pool, `php_admin_value[session.save_path] = "unix:///run/monopanel-valkey/alex-sessions/valkey.sock"`) {
+	if !strings.Contains(pool, "php_value[session.save_handler] = redis") || !strings.Contains(pool, `php_value[session.save_path] = "unix:///run/monopanel-valkey/alex-sessions/valkey.sock"`) {
 		t.Fatalf("pool does not send sessions to valkey:\n%s", pool)
 	}
 	// Sessions in Valkey are locked like files are: without it parallel AJAX
@@ -240,7 +240,7 @@ func TestSiteSessionsInValkey(t *testing.T) {
 	f.call(http.MethodDelete, "/users/alex/valkey/sessions", nil, http.StatusConflict, nil)
 
 	patch("files", http.StatusAccepted)
-	if pool, _ := f.agent.File("/etc/php/8.4/fpm/pool.d/example.com.conf"); !strings.Contains(pool, "php_admin_value[session.save_path] = /var/www/alex/data/tmp/sess") || strings.Contains(pool, "save_handler") || strings.Contains(pool, "locking_enabled") {
+	if pool, _ := f.agent.File("/etc/php/8.4/fpm/pool.d/example.com.conf"); !strings.Contains(pool, "php_value[session.save_path] = /var/www/alex/data/tmp/sess") || strings.Contains(pool, "save_handler") || strings.Contains(pool, "locking_enabled") {
 		t.Fatalf("back to files:\n%s", pool)
 	}
 

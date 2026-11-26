@@ -244,7 +244,7 @@ env[PATH]   = /var/www/alex/data/bin:/usr/local/bin:/usr/bin:/bin
 env[TMPDIR] = /var/www/alex/data/tmp
 php_admin_value[open_basedir]      = /var/www/alex/data
 php_admin_value[upload_tmp_dir]    = /var/www/alex/data/tmp
-php_admin_value[session.save_path] = /var/www/alex/data/tmp/sess
+php_value[session.save_path]       = /var/www/alex/data/tmp/sess
 php_admin_value[sys_temp_dir]      = /var/www/alex/data/tmp
 php_admin_value[error_log]         = /var/log/monopanel/sites/alex/example.com.php.error.log
 php_admin_value[sendmail_path]     = /usr/sbin/sendmail -t -i -f noreply@example.com
@@ -269,11 +269,13 @@ The default `disable_functions` are listed above; the per-site `allow_exec` swit
 By default PHP sessions are files in the account's `tmp/sess`. A site can be switched to the `sessions` Valkey instance of its account (`mp site set <domain> --sessions valkey`, the "PHP sessions" field in the site settings), and then, instead of a `session.save_path` pointing to files, the pool gets:
 
 ```ini
-php_admin_value[session.save_handler] = redis
-php_admin_value[session.save_path]    = "unix:///run/monopanel-valkey/alex-sessions/valkey.sock"
+php_value[session.save_handler] = redis
+php_value[session.save_path]    = "unix:///run/monopanel-valkey/alex-sessions/valkey.sock"
 ```
 
 The site's PHP branch needs the redis extension. The socket, with mode 600, belongs to the account: the site's pool runs as the account and can connect, the pools of other accounts cannot ([02](02-platform-matrix.md#9-valkey-per-account)).
+
+The pool's session lines are `php_value`, not `php_admin_value`: an application cannot change an administrator's value, and a CMS with a session handler of its own (1C-Bitrix, `session.handlers` in `bitrix/.settings.php`) would break. Such a site keeps `--sessions files`, and the CMS connects to the account's Valkey instance itself, in its own settings (`mp valkey list` shows the socket).
 
 `pm.max_children` is 8 by default; the bitrix preset gets one worker per 256 MB of RAM, from 8 to 48 (the number is chosen when the site gets the preset: on creation, on a preset change or on a move): Bitrix templates make HTTP requests to their own site from inside a request, and eight busy workers end up waiting for each other. The branch's global `99-monopanel.ini` keeps `short_open_tag = Off`, but the copy the CLI reads turns short tags on while the branch has a site with the bitrix preset: Bitrix's cron scripts and prolog start with `<?`, and otherwise PHP prints them as text and exits with code 0. Pools set `short_open_tag` themselves, so on Remi, where the CLI and FPM read the same directory, this does not affect sites. `max_children` can be set by hand for any site; with `pm=ondemand` idle sites hold no workers — the main mode for a shared server with hundreds of sites. For busy sites — `dynamic`/`static`, set by hand.
 

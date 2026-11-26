@@ -244,7 +244,7 @@ env[PATH]   = /var/www/alex/data/bin:/usr/local/bin:/usr/bin:/bin
 env[TMPDIR] = /var/www/alex/data/tmp
 php_admin_value[open_basedir]      = /var/www/alex/data
 php_admin_value[upload_tmp_dir]    = /var/www/alex/data/tmp
-php_admin_value[session.save_path] = /var/www/alex/data/tmp/sess
+php_value[session.save_path]       = /var/www/alex/data/tmp/sess
 php_admin_value[sys_temp_dir]      = /var/www/alex/data/tmp
 php_admin_value[error_log]         = /var/log/monopanel/sites/alex/example.com.php.error.log
 php_admin_value[sendmail_path]     = /usr/sbin/sendmail -t -i -f noreply@example.com
@@ -269,11 +269,13 @@ php_value[opcache.enable]       = 1
 PHP-сессии по умолчанию — файлы в `tmp/sess` аккаунта. Сайт можно перевести в экземпляр Valkey `sessions` своего аккаунта (`mp site set <домен> --sessions valkey`, поле «PHP-сессии» в настройках сайта), и тогда вместо `session.save_path` на файлы пул получает:
 
 ```ini
-php_admin_value[session.save_handler] = redis
-php_admin_value[session.save_path]    = "unix:///run/monopanel-valkey/alex-sessions/valkey.sock"
+php_value[session.save_handler] = redis
+php_value[session.save_path]    = "unix:///run/monopanel-valkey/alex-sessions/valkey.sock"
 ```
 
 Нужно расширение redis у ветки PHP сайта. Сокет с правами 600 принадлежит аккаунту: пул сайта работает от его имени и подключается, пулы других аккаунтов — нет ([02](02-platform-matrix.md#9-valkey-на-аккаунт)).
+
+Строки сессий в пуле — `php_value`, а не `php_admin_value`: значение администратора приложение не может поменять, и CMS со своим обработчиком сессий (1С-Битрикс, `session.handlers` в `bitrix/.settings.php`) ломалась бы. Такому сайту оставляют `--sessions files`, а к экземпляру Valkey аккаунта (`mp valkey list` показывает сокет) CMS подключается сама, в своих настройках.
 
 `pm.max_children` по умолчанию 8; пресету bitrix — по воркеру на 256 МБ RAM, от 8 до 48 (число выбирается, когда сайт получает пресет: при создании, смене пресета или переносе). Причина в том, что шаблоны Битрикса ходят по HTTP на свой же сайт прямо из запроса, и восемь занятых воркеров ждут друг друга. Задать `max_children` вручную можно для любого сайта. При `pm=ondemand` неактивные сайты не держат воркеров — это основной режим для общего сервера с сотнями сайтов; нагруженным сайтам вручную ставят `dynamic` или `static`.
 

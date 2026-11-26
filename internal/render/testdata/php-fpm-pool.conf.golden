@@ -23,7 +23,10 @@ env[HOME]   = /var/www/alex
 env[TMPDIR] = /var/www/alex/data/tmp
 php_admin_value[open_basedir]      = /var/www/alex/data
 php_admin_value[upload_tmp_dir]    = /var/www/alex/data/tmp
-php_admin_value[session.save_path] = /var/www/alex/data/tmp/sess
+;; Sessions are php_value, not php_admin_value: a CMS with a session handler
+;; of its own (1C-Bitrix's session.handlers in .settings.php) sets them at
+;; run time, and an admin value would refuse it.
+php_value[session.save_path] = /var/www/alex/data/tmp/sess
 php_admin_value[sys_temp_dir]      = /var/www/alex/data/tmp
 php_admin_value[error_log]         = /var/log/monopanel/sites/alex/example.com.php.error.log
 php_admin_flag[log_errors]         = on
