@@ -785,8 +785,18 @@ func (s *Server) migrateDatabase(ctx context.Context, jc *jobs.Context, src migr
 			// No IF NOT EXISTS: an account that is not ours is never changed.
 			sql = fmt.Sprintf("CREATE USER '%s'@'%s' %s;\n", acc.Name, acc.Host, a.clause(legacy))
 		}
-		sql += fmt.Sprintf("GRANT ALL PRIVILEGES ON %s.* TO '%s'@'%s';\n", grantDB(d.Name), acc.Name, acc.Host)
-		if _, err := s.mysqlExec(ctx, sql); err != nil {
+		grant := fmt.Sprintf("GRANT ALL PRIVILEGES ON %s.* TO '%s'@'%s';\n", grantDB(d.Name), acc.Name, acc.Host)
+		_, err := s.mysqlExec(ctx, sql+grant)
+		if passwordPolicyRefused(err) && acc != loader && !created[key] {
+			if hashed, ok, herr := a.hashedClause(legacy); herr != nil {
+				err = herr
+			} else if ok {
+				if _, err = s.mysqlExec(ctx, fmt.Sprintf("CREATE USER '%s'@'%s' %s;\n", acc.Name, acc.Host, hashed)+grant); err == nil {
+					s.logPolicyBypass(jc, acc.Name, acc.Host)
+				}
+			}
+		}
+		if err != nil {
 			return fmt.Errorf("account %s@%s: %w", acc.Name, acc.Host, err)
 		}
 		created[key] = true
@@ -807,7 +817,18 @@ func (s *Server) migrateDatabase(ctx context.Context, jc *jobs.Context, src migr
 	}
 	filter, loadErr := s.loadDump(ctx, src, p, d.Name, name)
 	if loader != nil {
-		if _, err := s.mysqlExec(ctx, fmt.Sprintf("ALTER USER '%s'@'localhost' %s;", loader.Name, v.auth[loader.Name+"@localhost"].clause(legacy))); err != nil {
+		a := v.auth[loader.Name+"@localhost"]
+		_, err := s.mysqlExec(ctx, fmt.Sprintf("ALTER USER '%s'@'localhost' %s;", loader.Name, a.clause(legacy)))
+		if passwordPolicyRefused(err) {
+			if hashed, ok, herr := a.hashedClause(legacy); herr != nil {
+				err = herr
+			} else if ok {
+				if _, err = s.mysqlExec(ctx, fmt.Sprintf("ALTER USER '%s'@'localhost' %s;", loader.Name, hashed)); err == nil {
+					s.logPolicyBypass(jc, loader.Name, "localhost")
+				}
+			}
+		}
+		if err != nil {
 			return fmt.Errorf("account %s@localhost did not get its password back after the load: %w", loader.Name, err)
 		}
 	} else if err := s.keepImportAccount(ctx, jc, u, row, name, legacy); err != nil {
@@ -1121,4 +1142,10 @@ func (s *Server) saveMigratedNginx(ctx context.Context, site *store.Site, u *sto
 		Origin: "migrate:" + site.Domain,
 	})
 	return file, err
+}
+
+// logPolicyBypass tells that an account's password, which the server's
+// validate_password policy refuses in plain text, came as its hash.
+func (s *Server) logPolicyBypass(jc *jobs.Context, name, host string) {
+	jc.Logf("account %s@%s: its password does not pass this server's validate_password policy, so it is set from its hash — unchanged, the site connects as before; a stronger one is advisable (mp db passwd, then the site's settings)", name, host)
 }

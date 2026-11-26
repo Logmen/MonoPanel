@@ -1102,6 +1102,36 @@ func (a dbAuth) clause(legacy bool) string {
 	return c
 }
 
+// hashedClause is clause for a password known in plain text, given as the
+// hash the server stores instead (mysql_hash.go): the server's
+// validate_password judges IDENTIFIED BY only, and refuses a password the
+// source took (error 1819). ok is false when there is no plain password.
+func (a dbAuth) hashedClause(legacy bool) (string, bool, error) {
+	if a.plain == "" {
+		return "", false, nil
+	}
+	var c string
+	if a.effectivePlugin(legacy) == "mysql_native_password" {
+		c = fmt.Sprintf("IDENTIFIED WITH mysql_native_password AS '%s'", mysqlNativeHash(a.plain))
+	} else {
+		h, err := mysqlCachingSHA2Hash(a.plain)
+		if err != nil {
+			return "", false, err
+		}
+		c = fmt.Sprintf("IDENTIFIED WITH caching_sha2_password AS 0x%X", h)
+	}
+	if a.locked {
+		c += " ACCOUNT LOCK"
+	}
+	return c, true, nil
+}
+
+// passwordPolicyRefused says whether MySQL refused a password by its
+// validate_password policy.
+func passwordPolicyRefused(err error) bool {
+	return err != nil && (strings.Contains(err.Error(), "ERROR 1819") || strings.Contains(err.Error(), "does not satisfy the current policy requirements"))
+}
+
 // ------------------------------------------------------ cron, apps, valkey ----
 
 // migrateRebase maps the home of an account on a MonoPanel source to its home

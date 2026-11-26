@@ -55,7 +55,17 @@ func (c *Client) call(ctx context.Context, path string, req, resp any) error {
 	hreq.Header.Set("Content-Type", "application/json")
 	res, err := c.http.Do(hreq)
 	if err != nil {
-		return &Error{Message: "agent unreachable at " + c.socket, Output: err.Error(), gone: wrote.Load() && ctx.Err() == nil}
+		// The caller's time ran out, or it gave up: the agent may well be
+		// there and busy — "unreachable" would send one looking for a dead
+		// agent (mp doctor during a network outage, 26.11.2026).
+		if cerr := ctx.Err(); cerr != nil {
+			what := "timed out"
+			if errors.Is(cerr, context.Canceled) {
+				what = "cancelled"
+			}
+			return &Error{Message: "agent call " + path + " " + what, Output: err.Error()}
+		}
+		return &Error{Message: "agent unreachable at " + c.socket, Output: err.Error(), gone: wrote.Load()}
 	}
 	defer res.Body.Close()
 	if res.StatusCode >= 400 {

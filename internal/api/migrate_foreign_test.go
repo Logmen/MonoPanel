@@ -15,6 +15,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -529,6 +530,15 @@ func TestMigrationFromBitrixVM(t *testing.T) {
 	target.agent.ToolHook = func(req agent.ToolRequest) *agent.ToolResponse {
 		if req.Name == "mysql" {
 			mysqlSQL = append(mysqlSQL, req.Stdin)
+			// The server's validate_password refuses the source's password in
+			// plain text (new.qaj.kz): the account gets it as a hash.
+			if strings.Contains(req.Stdin, "ALTER USER 'shop_u'@'localhost' IDENTIFIED WITH caching_sha2_password BY ") {
+				return &agent.ToolResponse{ExitCode: 1, Output: "ERROR 1819 (HY000) at line 1: Your password does not satisfy the current policy requirements\n"}
+			}
+			// The sites of a multisite Bitrix, their roots on the old server.
+			if strings.Contains(req.Stdin, "SELECT LID, DOC_ROOT FROM `sitemanager`.b_lang") {
+				return &agent.ToolResponse{Output: "s1\t/home/bitrix/www\ns2\t/home/bitrix/ext_www/shop.example.com\n"}
+			}
 		}
 		return nil
 	}
@@ -665,8 +675,10 @@ func TestMigrationFromBitrixVM(t *testing.T) {
 		t.Errorf("сайт: %+v %v", site, err)
 	}
 	// The dump is loaded as the database's own account (auth_socket for root
-	// while it loads), which then gets its plain password, not a hash.
-	var loader, restored bool
+	// while it loads), which then gets its plain password, not a hash — and,
+	// when the server's policy refuses that, the same password as its hash
+	// ("$A$005$…" in hex).
+	var loader, restored, hashed bool
 	for _, sql := range mysqlSQL {
 		if strings.Contains(sql, "CREATE USER 'shop_u'@'localhost' IDENTIFIED WITH auth_socket AS 'root'") && strings.Contains(sql, "GRANT ALL PRIVILEGES ON `sitemanager`.*") {
 			loader = true
@@ -674,9 +686,29 @@ func TestMigrationFromBitrixVM(t *testing.T) {
 		if strings.Contains(sql, "ALTER USER 'shop_u'@'localhost' IDENTIFIED WITH caching_sha2_password BY 'pl4in-P@ss'") {
 			restored = true
 		}
+		if strings.Contains(sql, "ALTER USER 'shop_u'@'localhost' IDENTIFIED WITH caching_sha2_password AS 0x24412430303524") {
+			hashed = true
+		}
+		if strings.Contains(sql, " AS 0x") && strings.Contains(sql, "pl4in") {
+			t.Errorf("the password in its hash statement: %s", sql)
+		}
 	}
-	if !loader || !restored {
+	if !loader || !restored || !hashed {
 		t.Errorf("аккаунт базы не заведён паролем: %q", mysqlSQL)
+	}
+	if !target.db.JobLogContains(target.ctx, "account shop_u@localhost: its password does not pass this server's validate_password policy, so it is set from its hash") {
+		t.Error("the hash is not in the job's log")
+	}
+	// b_lang.DOC_ROOT, where a multisite Bitrix takes each site's root from,
+	// names the new home.
+	home := target.s.cfg.WWWRoot + "/bitrix/data/www/"
+	for _, want := range []string{
+		"UPDATE `sitemanager`.b_lang SET DOC_ROOT='" + home + "main.example.com' WHERE LID='s1' AND DOC_ROOT='/home/bitrix/www';",
+		"UPDATE `sitemanager`.b_lang SET DOC_ROOT='" + home + "shop.example.com' WHERE LID='s2' AND DOC_ROOT='/home/bitrix/ext_www/shop.example.com';",
+	} {
+		if !slices.Contains(mysqlSQL, want) {
+			t.Errorf("no %s in %q", want, mysqlSQL)
+		}
 	}
 	tarCmd := remote.command("tar -C '/home/bitrix'")
 	for _, want := range []string{"'www' 'ext_www/shop.example.com'", `s|^www\(/\|$\)|data/www/main.example.com\1|S`, `s|^ext_www/shop\.example\.com\(/\|$\)|data/www/shop.example.com\1|S`, `s|^/home/bitrix/www\(/\|$\)|` + target.s.cfg.WWWRoot + `/bitrix/data/www/main.example.com\1|R`, "--exclude='*/bitrix/cache/*'", "|| [ $? -eq 1 ]"} {

@@ -230,6 +230,9 @@ func sedReplacement(s string) string {
 // with the sites. Runs as the client through fsop, so nothing outside the
 // home can be touched.
 func (f *foreignSource) settle(ctx context.Context, jc *jobs.Context, u *store.User) error {
+	if f.req.Panel == "bitrixvm" {
+		f.settleDocRoots(ctx, jc, u)
+	}
 	if len(f.rewrites) == 0 || len(f.configs) == 0 {
 		return nil
 	}
@@ -255,6 +258,44 @@ func (f *foreignSource) settle(ctx context.Context, jc *jobs.Context, u *store.U
 		jc.Logf("old server paths rewritten in: %s", strings.Join(fixed, ", "))
 	}
 	return nil
+}
+
+// bitrixLangRe is a site id of 1C-Bitrix (b_lang.LID: two characters, s1).
+var bitrixLangRe = regexp.MustCompile(`^[A-Za-z0-9_]{1,8}$`)
+
+// settleDocRoots rewrites the old server's paths in b_lang.DOC_ROOT of the
+// account's databases. A multisite 1C-Bitrix takes the document root of each
+// site from there, and /home/bitrix/ext_www/<site> is nowhere on this server
+// (new.qaj.kz, 25.11.2026). A database without b_lang is not a Bitrix one and
+// is left alone; the values are plain paths, rewritten as in the config files.
+func (f *foreignSource) settleDocRoots(ctx context.Context, jc *jobs.Context, u *store.User) {
+	dbs, err := f.s.db.ListDatabases(ctx, u.ID)
+	if err != nil || len(f.rewrites) == 0 {
+		return
+	}
+	for _, d := range dbs {
+		table := "`" + strings.ReplaceAll(d.Name, "`", "``") + "`.b_lang"
+		out, err := f.s.mysqlExec(ctx, "SELECT LID, DOC_ROOT FROM "+table+" WHERE DOC_ROOT LIKE '"+bitrixHome+"%';")
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+			lid, root, ok := strings.Cut(line, "\t")
+			if !ok || !bitrixLangRe.MatchString(lid) {
+				continue
+			}
+			to := rewritePaths(root, f.rewrites)
+			if to == root {
+				continue
+			}
+			sql := fmt.Sprintf("UPDATE %s SET DOC_ROOT='%s' WHERE LID='%s' AND DOC_ROOT='%s';", table, sqlLiteralEscaper.Replace(to), lid, sqlLiteralEscaper.Replace(root))
+			if _, err := f.s.mysqlExec(ctx, sql); err != nil {
+				jc.Logf("warning: database %s: b_lang.DOC_ROOT of site %s stays %s: %v", d.Name, lid, shown(root), err)
+				continue
+			}
+			jc.Logf("database %s: b_lang.DOC_ROOT of site %s: %s → %s", d.Name, lid, shown(root), shown(to))
+		}
+	}
 }
 
 // ------------------------------------------------------------ system ----

@@ -392,9 +392,12 @@ func resticSandboxState(sb *agent.SandboxInfo) apitypes.Check {
 	return check(name, "ok", fmt.Sprintf("Landlock ABI %d", sb.Landlock))
 }
 
-// doctor runs the health checks.
+// doctor runs the health checks. They share one budget (actx), and each
+// configuration check has its own besides: nginx -t that hangs — on DNS for
+// the OCSP responders while the network is down — used to take the whole
+// minute, and every check after it failed at once.
 func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
-	actx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	actx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	var out apitypes.Doctor
 	add := func(c apitypes.Check) { out.Checks = append(out.Checks, c) }
@@ -473,10 +476,16 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 		if login, ok := confcheck.ApacheInstanceCheckLogin(v); ok {
 			name = "config " + confcheck.ApacheInstanceUnit(login)
 		}
-		if _, err := s.agent.ApplyConfigSet(actx, &agent.ApplyConfigSetRequest{Validate: [][]string{v}, Origin: "doctor"}); err != nil {
-			add(check(name, "fail", err.Error()))
-		} else {
+		vctx, vcancel := context.WithTimeout(actx, s.doctorCheckLimit)
+		_, err := s.agent.ApplyConfigSet(vctx, &agent.ApplyConfigSetRequest{Validate: [][]string{v}, Origin: "doctor"})
+		vcancel()
+		switch {
+		case err == nil:
 			add(check(name, "ok", "syntax ok"))
+		case vctx.Err() != nil && actx.Err() == nil:
+			add(check(name, "warn", fmt.Sprintf("the check did not finish in %s (DNS of the hosts it names, such as OCSP responders, may be unreachable): %v", s.doctorCheckLimit, err)))
+		default:
+			add(check(name, "fail", err.Error()))
 		}
 	}
 	container := ""

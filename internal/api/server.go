@@ -69,8 +69,11 @@ type Server struct {
 	// defaultWith is what the default servers nginx has were last written
 	// with, nil while not known (syncDefaultServers).
 	defaultWith atomic.Pointer[defaultInputs]
-	acme        *acme.Manager
-	secrets     *secrets.Box
+	// doctorCheckLimit is how long one configuration check of the doctor
+	// may take (doctor).
+	doctorCheckLimit time.Duration
+	acme             *acme.Manager
+	secrets          *secrets.Box
 	// Readiness waits after a reload: systemd returns before php-fpm opens the
 	// pool socket and nginx drains its old workers. Zero skips the wait, which
 	// is what tests with a fake agent want.
@@ -265,7 +268,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 	if log == nil {
 		log = slog.Default()
 	}
-	s := &Server{cfg: cfg, db: db, agent: ag, jobs: runner, profile: profile, render: render.New(cfg.TemplatesDir), log: log, started: time.Now(), limiter: newLoginLimiter(8, time.Minute)}
+	s := &Server{cfg: cfg, db: db, agent: ag, jobs: runner, profile: profile, render: render.New(cfg.TemplatesDir), log: log, started: time.Now(), limiter: newLoginLimiter(8, time.Minute), doctorCheckLimit: 20 * time.Second}
 	if cfg.Log.AuditFile != "" {
 		db.SetAuditSink(s.auditFile(cfg.Log.AuditFile))
 	}
