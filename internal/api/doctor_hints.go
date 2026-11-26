@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"net"
 	"slices"
 	"strings"
 
@@ -130,6 +131,31 @@ func (s *Server) phpCLICheck(ctx context.Context) *apitypes.Check {
 	}
 	c := check("php cli", "ok", "the command line and cron read the sites' server-wide values")
 	return &c
+}
+
+// internalNameCheck is the doctor's "dns <panel name>" line when public DNS
+// has no such name: a panel on an internal name (panel.corp.lan) used to warn
+// for good. This host's own resolver is asked then; a name that resolves
+// there to an address of this host or to a private one is internal, and the
+// line is ok and says what it costs. Anything else, a loopback address of
+// /etc/hosts ("127.0.1.1 <hostname>" of Debian) among it, keeps the warning:
+// such an entry is no answer anybody else gets.
+func (s *Server) internalNameCheck(ctx context.Context, name string, public error) apitypes.Check {
+	addrs, err := s.localLookup(ctx, name)
+	if err != nil || len(addrs) == 0 {
+		return check("dns "+name, "warn", public.Error())
+	}
+	own := map[string]bool{}
+	for _, ip := range append(s.hostIPs(), s.hostIPv6s()...) {
+		own[ip] = true
+	}
+	for _, a := range addrs {
+		ip := net.ParseIP(a)
+		if ip == nil || !(own[ip.String()] || ip.IsPrivate()) {
+			return check("dns "+name, "warn", public.Error()+"; this host resolves it to "+strings.Join(addrs, ", "))
+		}
+	}
+	return check("dns "+name, "ok", fmt.Sprintf("internal name (not in public DNS): %s resolves to %s here; Let's Encrypt cannot issue for it", name, strings.Join(addrs, ", ")))
 }
 
 // iniValues reads the key = value lines of an ini file; the last one wins,

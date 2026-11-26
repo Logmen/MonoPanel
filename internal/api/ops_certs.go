@@ -426,6 +426,10 @@ func (s *Server) renewDue(ctx context.Context) {
 	}
 }
 
+// errNXDOMAIN is public DNS saying the name does not exist: the doctor then
+// asks this host's own resolver whether it is an internal name.
+var errNXDOMAIN = errors.New("NXDOMAIN (no such name in public DNS)")
+
 // publicLookup resolves a name with real DNS queries to public resolvers (what
 // the CA sees). The system resolver is only a fallback: /etc/hosts entries such
 // as "127.0.1.1 <hostname>" must not mask a missing public record.
@@ -459,7 +463,7 @@ func publicLookup(ctx context.Context, name string) ([]string, error) {
 			}
 		}
 		if nxdomain {
-			return nil, fmt.Errorf("NXDOMAIN (no such name in public DNS)")
+			return nil, errNXDOMAIN
 		}
 		if len(addrs) > 0 {
 			return addrs, nil

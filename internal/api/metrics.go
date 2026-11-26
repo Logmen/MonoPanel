@@ -617,6 +617,8 @@ func (s *Server) doctor(ctx context.Context) apitypes.Doctor {
 			}
 		}
 		switch {
+		case errors.Is(err, errNXDOMAIN):
+			add(s.internalNameCheck(actx, h, err))
 		case err != nil:
 			add(check("dns "+h, "warn", err.Error()))
 		case ok:
