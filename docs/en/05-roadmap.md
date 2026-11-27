@@ -261,6 +261,10 @@ This is the project log by stage and date: what is done, what is verified and wh
 ### Mail policy (2026-11-22)
 - [x] No account sends mail as another account's domain: the milter `monopanel-mailpolicy` (the same binary, a user of its own without privileges, a socket systemd holds) answers postfix before opendkim and refuses a message whose envelope or From is in another account's domain (550 5.7.1); it checks mailboxes on 587/465, sendmail by the sender's uid and SMTP from the server's addresses by the socket's uid; while the policy does not answer, mail waits (`default_action=tempfail`). Before 0.9.0 such a message left, and opendkim signed it with the other domain's key. On EL `monopanel-mailguard` closes the milter ports 8890 and 8891 to everyone but root and postfix. Sieve redirects leave with the forwarding mailbox as envelope sender, vacation replies with the mailbox; a mail domain cannot be taken as a site or an alias of another account; opendkim's `TrustedHosts` are the server's addresses only. The `mail policy` line of `mp doctor`; on a downgrade below 0.9.0 the package's script takes the policy out of `main.cf` ([06 §11](06-mail.md#11-mail-policy)).
 
+### Backup schedules with a time (0.9.10, 2026-11-27)
+- [x] A repository's schedule: daily or weekly at a set time of the server's clock (`daily 03:00`, `weekly sun 04:30`), or by hand only; the old `daily` is 03:00. A run by hand does not move the planned one, one missed while the server was down runs after the start; the next run shows in the list.
+- [x] The schedule and the retention change on an existing repository: `mp backup target set`, the pencil button on the Backups page, `PATCH /backups/targets/{ref}`.
+
 ### The server's own name (0.9.9, 2026-11-26)
 - [x] `mp doctor`: a panel name public DNS does not have that is the server's hostname is internal (ok, with a reminder that coming in by it from outside needs an A record); only nss-myhostname knows such a name, and in 0.9.8 the NXDOMAIN warning stayed.
 
