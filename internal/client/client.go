@@ -678,6 +678,12 @@ func (c *Client) BackupTargetCreate(ctx context.Context, req apitypes.BackupTarg
 	return &out, c.do(ctx, http.MethodPost, "/backups/targets", req, &out)
 }
 
+// BackupTargetUpdate changes a target's schedule and retention.
+func (c *Client) BackupTargetUpdate(ctx context.Context, ref string, req apitypes.BackupTargetUpdate) (*apitypes.BackupTargetResponse, error) {
+	var out apitypes.BackupTargetResponse
+	return &out, c.do(ctx, http.MethodPatch, "/backups/targets/"+url.PathEscape(ref), req, &out)
+}
+
 // BackupTargetDelete forgets a target.
 func (c *Client) BackupTargetDelete(ctx context.Context, ref string) error {
 	return c.do(ctx, http.MethodDelete, "/backups/targets/"+ref, nil, nil)

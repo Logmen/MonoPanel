@@ -163,6 +163,19 @@ func (s *Server) Serve(ctx context.Context, l *Listeners) error {
 		return nil
 	})
 	g.Go(func() error {
+		// A backup's schedule has a minute of its own (backup_schedule.go).
+		t := time.NewTicker(time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-gctx.Done():
+				return nil
+			case <-t.C:
+				s.scheduledBackups(gctx)
+			}
+		}
+	})
+	g.Go(func() error {
 		// phpMyAdmin's temporary accounts end with their sessions: a
 		// sign-out is picked up within ten minutes.
 		t := time.NewTicker(10 * time.Minute)
@@ -187,7 +200,6 @@ func (s *Server) Serve(ctx context.Context, l *Listeners) error {
 				return nil
 			case <-t.C:
 				s.db.DeleteExpiredSessions(context.Background()) //nolint:errcheck // best effort; the caller reports the real failure
-				s.scheduledBackups(gctx)
 				s.retryMoves(gctx)
 				// An expired certificate of the mail name has no event of
 				// its own.

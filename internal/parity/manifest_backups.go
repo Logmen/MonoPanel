@@ -7,6 +7,8 @@ func init() {
 		op("backup-targets-list", cli("backup target list"), web(page)),
 		op("backup-targets-create", cli("backup target add"), web(page),
 			field("repository", flag("repo"))),
+		op("backup-targets-update", cli("backup target set"), web(page),
+			field("ref", arg("name"))),
 		op("backup-targets-delete", cli("backup target rm"), web(page),
 			field("ref", arg("name"))),
 		op("backup-snapshots", cli("backup snapshots"), web(page),

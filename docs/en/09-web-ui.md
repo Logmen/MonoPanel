@@ -307,8 +307,9 @@ The page is for administrators.
 ![Backups: a restic repository and snapshots](img/backups.webp)
 
 Backups go to restic repositories — a local directory, SFTP, S3, B2 or a REST server —
-with a daily schedule (the whole server) or manual runs and retention by days, weeks and
-months; the repository password is generated and shown once, and the S3, B2 and REST
+with a schedule (the whole server daily or weekly at a set time of the server's clock; the
+pencil button changes it and the retention on an existing repository) or manual runs and
+retention by days, weeks and months; the repository password is generated and shown once, and the S3, B2 and REST
 credentials are stored encrypted. A backup can be run for the whole server, an account, a
 site or a database; a snapshot is restored alongside, into `/var/lib/monopanel-agent/restore/<snapshot>`
 (root's alone), or in place — for the chosen paths in the web root, the panel's

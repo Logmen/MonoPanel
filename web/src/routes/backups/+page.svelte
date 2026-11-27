@@ -30,8 +30,27 @@
   let showForm = $state(false);
   // Сюда (в <каталог>/<снимок>) агент кладёт восстановление «рядом»: каталог только для root.
   const restoreDir = '/var/lib/monopanel-agent/restore';
-  const blank = () => ({ name: '', type: 'local', repository: repoExample.local, password: '', env: '', keep_daily: 7, keep_weekly: 4, keep_monthly: 3, schedule: 'daily' });
+  const blank = () => ({ name: '', type: 'local', repository: repoExample.local, password: '', env: '', keep_daily: 7, keep_weekly: 4, keep_monthly: 3, kind: 'daily', at: '03:00', day: 'sun' });
   let form = $state(blank());
+  // The name of the repository being edited: then only the schedule and the
+  // retention change (PATCH), the rest of the form is shown as it is.
+  let editing = $state<string | null>(null);
+  const dayKeys = { mon: 'backups.day_mon', tue: 'backups.day_tue', wed: 'backups.day_wed', thu: 'backups.day_thu', fri: 'backups.day_fri', sat: 'backups.day_sat', sun: 'backups.day_sun' } as const;
+  type Day = keyof typeof dayKeys;
+  const weekdays = Object.keys(dayKeys) as Day[];
+  const dayText = (d: string) => (d in dayKeys ? t(dayKeys[d as Day]) : d);
+  const dayShort = { mon: 'backups.dshort_mon', tue: 'backups.dshort_tue', wed: 'backups.dshort_wed', thu: 'backups.dshort_thu', fri: 'backups.dshort_fri', sat: 'backups.dshort_sat', sun: 'backups.dshort_sun' } as const;
+  // "daily HH:MM" / "weekly <day> HH:MM" / "" — as the API writes them.
+  const scheduleOf = (f: { kind: string; at: string; day: string }) => (f.kind === 'daily' ? `daily ${f.at}` : f.kind === 'weekly' ? `weekly ${f.day} ${f.at}` : '');
+  function parseSchedule(s: string) {
+    const m = /^(daily|weekly (\w{3})) (\d{2}:\d{2})$/.exec(s || '');
+    if (!m) return { kind: 'manual', at: '03:00', day: 'sun' };
+    return { kind: m[2] ? 'weekly' : 'daily', at: m[3], day: m[2] || 'sun' };
+  }
+  const scheduleText = (s: string) => {
+    const p = parseSchedule(s);
+    return p.kind === 'daily' ? t('backups.dailyAt', { at: p.at }) : p.kind === 'weekly' ? t('backups.weeklyAt', { day: dayText(p.day), at: p.at }) : t('backups.manual');
+  };
   let run = $state<{ target: string; kind: ScopeKind; arg: string }>({ target: '', kind: 'server', arg: '' });
   let scopeOptions = $state<Partial<Record<ScopeKind, string[]>>>({});
   const errText = (e: unknown) => (e instanceof ApiError ? e.text : String(e));
@@ -52,8 +71,19 @@
     if (form.repository === '' || Object.values(repoExample).includes(form.repository)) form.repository = type === 'local' ? repoExample.local : '';
     form.type = type;
   }
+  function edit(tg: any) {
+    editing = tg.name;
+    form = { ...blank(), name: tg.name, type: tg.type, repository: tg.repository, keep_daily: tg.keep_daily, keep_weekly: tg.keep_weekly, keep_monthly: tg.keep_monthly, ...parseSchedule(tg.schedule) };
+    showForm = true;
+  }
+  function closeForm() { showForm = false; editing = null; form = blank(); }
   async function create(e: Event) {
     e.preventDefault(); error = '';
+    if (editing) {
+      const body = { schedule: scheduleOf(form) || 'none', keep_daily: Number(form.keep_daily) || 0, keep_weekly: Number(form.keep_weekly) || 0, keep_monthly: Number(form.keep_monthly) || 0 };
+      try { const r: any = await api(`/backups/targets/${encodeURIComponent(editing)}`, { method: 'PATCH', json: body }); notify(t('backups.updated', { name: r.target.name, schedule: scheduleText(r.target.schedule) })); closeForm(); await loadTargets(); } catch (e) { fail(e); }
+      return;
+    }
     const env: Record<string, string> = {};
     for (const raw of form.env.split('\n')) {
       const l = raw.trim(); if (!l) continue;
@@ -61,10 +91,10 @@
       if (i < 1) { fail(t('backups.envBad', { line: l })); return; }
       env[l.slice(0, i).trim()] = l.slice(i + 1).trim();
     }
-    const body: Record<string, unknown> = { name: form.name.trim(), type: form.type, repository: form.repository.trim(), schedule: form.schedule, keep_daily: Number(form.keep_daily) || 0, keep_weekly: Number(form.keep_weekly) || 0, keep_monthly: Number(form.keep_monthly) || 0 };
+    const body: Record<string, unknown> = { name: form.name.trim(), type: form.type, repository: form.repository.trim(), schedule: scheduleOf(form), keep_daily: Number(form.keep_daily) || 0, keep_weekly: Number(form.keep_weekly) || 0, keep_monthly: Number(form.keep_monthly) || 0 };
     if (form.password) body.password = form.password;
     if (Object.keys(env).length) body.env = env;
-    try { created = await api('/backups/targets', { method: 'POST', json: body }); form = blank(); showForm = false; await loadTargets(); } catch (e) { fail(e); }
+    try { created = await api('/backups/targets', { method: 'POST', json: body }); closeForm(); await loadTargets(); } catch (e) { fail(e); }
   }
   const askForget = (tg: any): Ask => ({
     title: t('backups.forgetTitle', { name: tg.name }),
@@ -115,19 +145,20 @@
 </script>
 
 <PageHead title={t('backups.title')} sub={t('backups.sub')}>
-  <button class="btn btn-primary" onclick={() => (showForm = !showForm)}><Icon name="plus" size={15} /> {t('backups.repository')}</button>
+  <button class="btn btn-primary" onclick={() => (showForm && !editing ? closeForm() : (closeForm(), (showForm = true)))}><Icon name="plus" size={15} /> {t('backups.repository')}</button>
 </PageHead>
 {#if error}<p class="text-danger text-sm mb-3">{error}</p>{/if}
 {#if showForm}
   <form class="card grid md:grid-cols-4 gap-3 items-start mb-4 rise" onsubmit={create}>
-    <div><label class="label" for="n">{t('common.name')}</label><input id="n" class="input font-mono" bind:value={form.name} pattern="[a-z0-9][a-z0-9_\-]{'{'}0,31{'}'}" maxlength="32" required /></div>
-    <div><label class="label" for="t">{t('backups.type')}</label><select id="t" class="input" value={form.type} onchange={(e) => setType(e.currentTarget.value)}><option value="local">local</option><option value="sftp">sftp</option><option value="s3">s3</option><option value="b2">b2</option><option value="rest">rest</option></select></div>
-    <div class="md:col-span-2"><label class="label" for="r">{t('backups.repository')}</label><input id="r" class="input font-mono" bind:value={form.repository} placeholder={repoExample[form.type]} required /><p class="text-[11px] text-muted mt-1">{form.type === 'local' ? t('backups.repoLocalHint') : t('backups.repoPrefixHint', { prefix: form.type + ':' })}</p></div>
-    <div><label class="label" for="p">{t('backups.repoPassword')}</label><input id="p" class="input" type="password" autocomplete="new-password" bind:value={form.password} placeholder={t('backups.generated')} /></div>
-    <div><label class="label" for="s">{t('backups.schedule')}</label><select id="s" class="input" bind:value={form.schedule}><option value="daily">{t('backups.scheduleDaily')}</option><option value="">{t('backups.manual')}</option></select></div>
+    <div><label class="label" for="n">{t('common.name')}</label><input id="n" class="input font-mono" bind:value={form.name} pattern="[a-z0-9][a-z0-9_\-]{'{'}0,31{'}'}" maxlength="32" required disabled={!!editing} /></div>
+    <div><label class="label" for="t">{t('backups.type')}</label><select id="t" class="input" value={form.type} disabled={!!editing} onchange={(e) => setType(e.currentTarget.value)}><option value="local">local</option><option value="sftp">sftp</option><option value="s3">s3</option><option value="b2">b2</option><option value="rest">rest</option></select></div>
+    <div class="md:col-span-2"><label class="label" for="r">{t('backups.repository')}</label><input id="r" class="input font-mono" bind:value={form.repository} placeholder={repoExample[form.type]} required disabled={!!editing} /><p class="text-[11px] text-muted mt-1">{form.type === 'local' ? t('backups.repoLocalHint') : t('backups.repoPrefixHint', { prefix: form.type + ':' })}</p></div>
+    {#if !editing}<div><label class="label" for="p">{t('backups.repoPassword')}</label><input id="p" class="input" type="password" autocomplete="new-password" bind:value={form.password} placeholder={t('backups.generated')} /></div>{/if}
+    <div><label class="label" for="s">{t('backups.schedule')}</label><select id="s" class="input" bind:value={form.kind}><option value="daily">{t('backups.kindDaily')}</option><option value="weekly">{t('backups.kindWeekly')}</option><option value="manual">{t('backups.manual')}</option></select>
+      {#if form.kind !== 'manual'}<div class="flex gap-1 mt-1">{#if form.kind === 'weekly'}<select class="input" bind:value={form.day} aria-label={t('backups.weekday')}>{#each weekdays as d}<option value={d}>{t(dayShort[d])}</option>{/each}</select>{/if}<input class="input" type="time" required bind:value={form.at} aria-label={t('backups.at')} /></div><p class="text-[11px] text-muted mt-1">{t('backups.serverTime')}</p>{/if}</div>
     <div class="md:col-span-2"><span class="label">{t('backups.keep')}</span><div class="grid grid-cols-3 gap-1"><input class="input" type="number" min="0" max="365" bind:value={form.keep_daily} aria-label={t('backups.keepDaily')} title={t('backups.keepDaily')} /><input class="input" type="number" min="0" max="104" bind:value={form.keep_weekly} aria-label={t('backups.keepWeekly')} title={t('backups.keepWeekly')} /><input class="input" type="number" min="0" max="120" bind:value={form.keep_monthly} aria-label={t('backups.keepMonthly')} title={t('backups.keepMonthly')} /></div><p class="text-[11px] text-muted mt-1">{t('backups.keepHint')}</p></div>
-    <div class="md:col-span-3"><label class="label" for="e">{t('backups.envVars')}</label><textarea id="e" class="input font-mono h-16" bind:value={form.env} placeholder={envExample[form.type] || 'KEY=VALUE'}></textarea><p class="text-[11px] text-muted mt-1">{t('backups.envHint')}</p></div>
-    <div class="md:pt-5"><button class="btn btn-primary">{t('common.add')}</button></div>
+    {#if !editing}<div class="md:col-span-3"><label class="label" for="e">{t('backups.envVars')}</label><textarea id="e" class="input font-mono h-16" bind:value={form.env} placeholder={envExample[form.type] || 'KEY=VALUE'}></textarea><p class="text-[11px] text-muted mt-1">{t('backups.envHint')}</p></div>{/if}
+    <div class="md:pt-5 flex gap-2">{#if editing}<button class="btn btn-primary">{t('common.save')}</button><button type="button" class="btn" onclick={closeForm}>{t('common.cancel')}</button>{:else}<button class="btn btn-primary">{t('common.add')}</button>{/if}</div>
   </form>
 {/if}
 {#if created}
@@ -138,7 +169,7 @@
 {/if}
 <div class="card overflow-x-auto p-0 mb-4 rise">
   <table class="tbl"><thead><tr><th>{t('backups.target')}</th><th>{t('backups.type')}</th><th>{t('backups.repository')}</th><th>{t('backups.keep')}</th><th>{t('backups.schedule')}</th><th>{t('backups.lastRun')}</th><th></th></tr></thead><tbody>
-    {#each targets as tg, i (tg.id)}<tr class="rise" style="--i:{i}"><td data-label={t('backups.target')} class="font-medium">{tg.name} <span class="text-xs text-muted font-mono">#{tg.id}</span></td><td data-label={t('backups.type')}>{tg.type}</td><td data-label={t('backups.repository')} class="font-mono text-xs break-all">{tg.repository}</td><td data-label={t('backups.keep')} class="tabular-nums text-xs">{tg.keep_daily}/{tg.keep_weekly}/{tg.keep_monthly}</td><td data-label={t('backups.schedule')} class="text-muted">{tg.schedule || t('backups.manual')}</td><td data-label={t('backups.lastRun')} class="text-xs">{#if tg.last_run_at}{when(tg.last_run_at)} · <span class="tag {tg.last_status === 'done' ? 'tag-ok' : tg.last_status === 'partial' ? 'tag-warn' : 'tag-err'}">{tg.last_status}</span>{:else}—{/if}{#if tg.last_error}<div class="text-danger">{tg.last_error}</div>{/if}</td><td data-label=""><div class="row-actions"><button class="btn btn-sm" disabled={!!snapsBusy} onclick={() => showSnaps(tg.name)}><Icon name="archive" size={13} /> {snapsBusy === tg.name ? t('backups.snapshotsBusy') : t('backups.snapshots')}</button><button class="btn btn-danger btn-sm" title={t('backups.forget')} aria-label={t('backups.forget')} onclick={() => (ask = askForget(tg))}><Icon name="trash" size={13} /></button></div></td></tr>{/each}
+    {#each targets as tg, i (tg.id)}<tr class="rise" style="--i:{i}"><td data-label={t('backups.target')} class="font-medium">{tg.name} <span class="text-xs text-muted font-mono">#{tg.id}</span></td><td data-label={t('backups.type')}>{tg.type}</td><td data-label={t('backups.repository')} class="font-mono text-xs break-all">{tg.repository}</td><td data-label={t('backups.keep')} class="tabular-nums text-xs">{tg.keep_daily}/{tg.keep_weekly}/{tg.keep_monthly}</td><td data-label={t('backups.schedule')} class="text-muted">{scheduleText(tg.schedule)}{#if tg.next_run_at}<div class="text-xs">{t('backups.nextRun', { at: when(tg.next_run_at) })}</div>{/if}</td><td data-label={t('backups.lastRun')} class="text-xs">{#if tg.last_run_at}{when(tg.last_run_at)} · <span class="tag {tg.last_status === 'done' ? 'tag-ok' : tg.last_status === 'partial' ? 'tag-warn' : 'tag-err'}">{tg.last_status}</span>{:else}—{/if}{#if tg.last_error}<div class="text-danger">{tg.last_error}</div>{/if}</td><td data-label=""><div class="row-actions"><button class="btn btn-sm" onclick={() => edit(tg)} title={t('backups.edit')} aria-label={t('backups.edit')}><Icon name="pencil" size={13} /></button><button class="btn btn-sm" disabled={!!snapsBusy} onclick={() => showSnaps(tg.name)}><Icon name="archive" size={13} /> {snapsBusy === tg.name ? t('backups.snapshotsBusy') : t('backups.snapshots')}</button><button class="btn btn-danger btn-sm" title={t('backups.forget')} aria-label={t('backups.forget')} onclick={() => (ask = askForget(tg))}><Icon name="trash" size={13} /></button></div></td></tr>{/each}
     {#if !targets.length}<Empty text={t('backups.noRepos')} cols={7} />{/if}
   </tbody></table>
 </div>

@@ -69,6 +69,8 @@ type Server struct {
 	// defaultWith is what the default servers nginx has were last written
 	// with, nil while not known (syncDefaultServers).
 	defaultWith atomic.Pointer[defaultInputs]
+	// backupsQueued is what scheduledBackups last queued, by target.
+	backupsQueued backupsQueued
 	// doctorCheckLimit is how long one configuration check of the doctor
 	// may take (doctor).
 	doctorCheckLimit time.Duration

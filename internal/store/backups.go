@@ -9,22 +9,27 @@ import (
 
 // BackupTarget is a restic repository with credentials (encrypted at rest).
 type BackupTarget struct {
-	ID          int64      `json:"id"`
-	Name        string     `json:"name"`
-	Type        string     `json:"type"`
-	Repository  string     `json:"repository"`
-	PasswordEnc string     `json:"-"`
-	EnvEnc      string     `json:"-"`
-	KeepDaily   int        `json:"keep_daily"`
-	KeepWeekly  int        `json:"keep_weekly"`
-	KeepMonthly int        `json:"keep_monthly"`
-	Schedule    string     `json:"schedule"`
-	Enabled     bool       `json:"enabled"`
-	LastRunAt   *time.Time `json:"last_run_at,omitempty"`
-	LastStatus  string     `json:"last_status,omitempty"`
-	LastError   string     `json:"last_error,omitempty"`
-	CreatedAt   Time       `json:"created_at"`
-	UpdatedAt   Time       `json:"updated_at"`
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Repository  string `json:"repository"`
+	PasswordEnc string `json:"-"`
+	EnvEnc      string `json:"-"`
+	KeepDaily   int    `json:"keep_daily"`
+	KeepWeekly  int    `json:"keep_weekly"`
+	KeepMonthly int    `json:"keep_monthly"`
+	// Schedule is "" (by hand), "daily HH:MM" or "weekly <day> HH:MM" in the
+	// server's time; ScheduleAt is when it was set, NextRunAt when it comes
+	// next (the API fills it in).
+	Schedule   string     `json:"schedule"`
+	ScheduleAt *time.Time `json:"schedule_at,omitempty"`
+	NextRunAt  *time.Time `json:"next_run_at,omitempty"`
+	Enabled    bool       `json:"enabled"`
+	LastRunAt  *time.Time `json:"last_run_at,omitempty"`
+	LastStatus string     `json:"last_status,omitempty"`
+	LastError  string     `json:"last_error,omitempty"`
+	CreatedAt  Time       `json:"created_at"`
+	UpdatedAt  Time       `json:"updated_at"`
 }
 
 // Backup is one run.
@@ -41,14 +46,14 @@ type Backup struct {
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 }
 
-const targetCols = `id, name, type, repository, password_enc, env_enc, keep_daily, keep_weekly, keep_monthly, schedule, enabled, last_run_at, last_status, last_error, created_at, updated_at`
+const targetCols = `id, name, type, repository, password_enc, env_enc, keep_daily, keep_weekly, keep_monthly, schedule, enabled, last_run_at, last_status, last_error, created_at, updated_at, schedule_at`
 
 func scanTarget(s scanner) (*BackupTarget, error) {
 	var t BackupTarget
 	var enabled int
 	var last sql.NullString
-	var created, updated string
-	if err := s.Scan(&t.ID, &t.Name, &t.Type, &t.Repository, &t.PasswordEnc, &t.EnvEnc, &t.KeepDaily, &t.KeepWeekly, &t.KeepMonthly, &t.Schedule, &enabled, &last, &t.LastStatus, &t.LastError, &created, &updated); err != nil {
+	var created, updated, scheduleAt string
+	if err := s.Scan(&t.ID, &t.Name, &t.Type, &t.Repository, &t.PasswordEnc, &t.EnvEnc, &t.KeepDaily, &t.KeepWeekly, &t.KeepMonthly, &t.Schedule, &enabled, &last, &t.LastStatus, &t.LastError, &created, &updated, &scheduleAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -56,6 +61,9 @@ func scanTarget(s scanner) (*BackupTarget, error) {
 	}
 	t.Enabled = enabled != 0
 	t.LastRunAt = parseTimePtr(last)
+	if scheduleAt != "" {
+		t.ScheduleAt = parseTimePtr(sql.NullString{String: scheduleAt, Valid: true})
+	}
 	t.CreatedAt, t.UpdatedAt = Time(parseTime(created)), Time(parseTime(updated))
 	return &t, nil
 }
@@ -63,8 +71,8 @@ func scanTarget(s scanner) (*BackupTarget, error) {
 // CreateBackupTarget inserts a target.
 func (d *DB) CreateBackupTarget(ctx context.Context, t *BackupTarget) error {
 	ts := now()
-	err := d.sql.QueryRowContext(ctx, `INSERT INTO backup_targets(name, type, repository, password_enc, env_enc, keep_daily, keep_weekly, keep_monthly, schedule, enabled, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
-		t.Name, t.Type, t.Repository, t.PasswordEnc, t.EnvEnc, t.KeepDaily, t.KeepWeekly, t.KeepMonthly, t.Schedule, boolInt(t.Enabled), ts, ts).Scan(&t.ID)
+	err := d.sql.QueryRowContext(ctx, `INSERT INTO backup_targets(name, type, repository, password_enc, env_enc, keep_daily, keep_weekly, keep_monthly, schedule, enabled, created_at, updated_at, schedule_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+		t.Name, t.Type, t.Repository, t.PasswordEnc, t.EnvEnc, t.KeepDaily, t.KeepWeekly, t.KeepMonthly, t.Schedule, boolInt(t.Enabled), ts, ts, ts).Scan(&t.ID)
 	if err != nil {
 		if isUnique(err) {
 			return ErrExists
@@ -73,6 +81,33 @@ func (d *DB) CreateBackupTarget(ctx context.Context, t *BackupTarget) error {
 	}
 	t.CreatedAt = Time(parseTime(ts))
 	t.UpdatedAt = t.CreatedAt
+	at := parseTime(ts)
+	t.ScheduleAt = &at
+	return nil
+}
+
+// UpdateBackupTargetSettings writes a target's schedule and retention; a
+// schedule that changes gets a new schedule_at.
+func (d *DB) UpdateBackupTargetSettings(ctx context.Context, t *BackupTarget, scheduleChanged bool) error {
+	ts := now()
+	q := `UPDATE backup_targets SET schedule=?, keep_daily=?, keep_weekly=?, keep_monthly=?, updated_at=? WHERE id=?`
+	args := []any{t.Schedule, t.KeepDaily, t.KeepWeekly, t.KeepMonthly, ts, t.ID}
+	if scheduleChanged {
+		q = `UPDATE backup_targets SET schedule=?, keep_daily=?, keep_weekly=?, keep_monthly=?, updated_at=?, schedule_at=? WHERE id=?`
+		args = []any{t.Schedule, t.KeepDaily, t.KeepWeekly, t.KeepMonthly, ts, ts, t.ID}
+	}
+	res, err := d.sql.ExecContext(ctx, q, args...)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	if scheduleChanged {
+		at := parseTime(ts)
+		t.ScheduleAt = &at
+	}
+	t.UpdatedAt = Time(parseTime(ts))
 	return nil
 }
 

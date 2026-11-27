@@ -132,8 +132,10 @@ mp dns-provider types | list
 mp dns-provider add <name> --type cloudflare --cred CLOUDFLARE_DNS_API_TOKEN=…|--cred-stdin | rm <name>
 
 mp backup target add <name> --type local|sftp|s3|b2|rest --repo … [--password …|--password-stdin] [--env KEY=…|--env-stdin]
-                   [--schedule daily] [--keep-daily 7] [--keep-weekly 4] [--keep-monthly 3]
-mp backup target list | rm <name>
+                   [--schedule "daily 03:00"|"weekly sun 03:00"] [--keep-daily 7] [--keep-weekly 4] [--keep-monthly 3]
+mp backup target set <name> [--schedule "daily HH:MM"|"weekly <mon…sun> HH:MM"|none] [--keep-daily N] [--keep-weekly N] [--keep-monthly N]
+                                     # the schedule is in the server's time; daily alone is 03:00; a run by hand does not move the planned one,
+                                     # one missed while the server was down runs once it is up; list shows the next run
 mp backup run [--target …] [--scope server|user:<login>|site:<domain>|db:<name>]
 mp backup list [--target …] [-n 50] | snapshots [--target …]   # status: running, done, partial (a snapshot without some files), failed
 mp backup restore <snapshot> [--target …] [--include path…] [--in-place]   # a snapshot with device files, FIFOs, sockets or

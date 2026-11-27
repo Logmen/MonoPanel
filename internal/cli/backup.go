@@ -65,7 +65,7 @@ func backupCmd() *cobra.Command {
 	add.Flags().IntVar(&req.KeepDaily, "keep-daily", 7, T("хранить дневных снимков", "daily snapshots to keep"))
 	add.Flags().IntVar(&req.KeepWeekly, "keep-weekly", 4, T("хранить недельных снимков", "weekly snapshots to keep"))
 	add.Flags().IntVar(&req.KeepMonthly, "keep-monthly", 3, T("хранить месячных снимков", "monthly snapshots to keep"))
-	add.Flags().StringVar(&req.Schedule, "schedule", "", T("daily — ежедневный бэкап всего сервера", "daily — a backup of the whole server every day"))
+	add.Flags().StringVar(&req.Schedule, "schedule", "", backupScheduleHelp())
 	add.MarkFlagRequired("repo")
 	list := &cobra.Command{Use: "list", Short: T("список репозиториев", "list repositories"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
@@ -85,9 +85,16 @@ func backupCmd() *cobra.Command {
 			if t.LastRunAt != nil {
 				last = t.LastRunAt.Local().Format("2006-01-02 15:04") + " " + t.LastStatus
 			}
-			rows = append(rows, []string{strconv.FormatInt(t.ID, 10), t.Name, t.Type, t.Repository, fmt.Sprintf("%d/%d/%d", t.KeepDaily, t.KeepWeekly, t.KeepMonthly), t.Schedule, last})
+			schedule, next := t.Schedule, "-"
+			if schedule == "" {
+				schedule = T("вручную", "by hand")
+			}
+			if t.NextRunAt != nil {
+				next = t.NextRunAt.Local().Format("2006-01-02 15:04")
+			}
+			rows = append(rows, []string{strconv.FormatInt(t.ID, 10), t.Name, t.Type, t.Repository, fmt.Sprintf("%d/%d/%d", t.KeepDaily, t.KeepWeekly, t.KeepMonthly), schedule, next, last})
 		}
-		table([]string{"ID", "NAME", "TYPE", "REPOSITORY", "KEEP D/W/M", "SCHEDULE", "LAST RUN"}, rows)
+		table([]string{"ID", "NAME", "TYPE", "REPOSITORY", "KEEP D/W/M", "SCHEDULE", "NEXT RUN", "LAST RUN"}, rows)
 		return nil
 	}}
 	rm := &cobra.Command{Use: "rm <name>", Short: T("забыть репозиторий (данные не удаляются)", "forget a repository (its data is not deleted)"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
@@ -97,7 +104,52 @@ func backupCmd() *cobra.Command {
 		}
 		return cl.BackupTargetDelete(cmd.Context(), args[0])
 	}}
-	target.AddCommand(add, list, rm)
+	var upd apitypes.BackupTargetUpdate
+	var updSchedule string
+	var updKeep [3]int
+	set := &cobra.Command{Use: "set <name>", Short: T("изменить расписание и сколько снимков хранить", "change the schedule and how many snapshots to keep"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		if cmd.Flags().Changed("schedule") {
+			upd.Schedule = &updSchedule
+		}
+		for i, f := range []struct {
+			name string
+			dst  **int
+		}{{"keep-daily", &upd.KeepDaily}, {"keep-weekly", &upd.KeepWeekly}, {"keep-monthly", &upd.KeepMonthly}} {
+			if cmd.Flags().Changed(f.name) {
+				*f.dst = &updKeep[i]
+			}
+		}
+		if upd.Schedule == nil && upd.KeepDaily == nil && upd.KeepWeekly == nil && upd.KeepMonthly == nil {
+			return fmt.Errorf("%s", T("нечего менять: --schedule, --keep-daily, --keep-weekly или --keep-monthly", "nothing to change: --schedule, --keep-daily, --keep-weekly or --keep-monthly"))
+		}
+		cl, err := newClient()
+		if err != nil {
+			return err
+		}
+		res, err := cl.BackupTargetUpdate(cmd.Context(), args[0], upd)
+		if err != nil {
+			return err
+		}
+		if g.json {
+			return printJSON(res)
+		}
+		t := res.Target
+		schedule := t.Schedule
+		if schedule == "" {
+			schedule = T("вручную", "by hand")
+		}
+		fmt.Printf(T("%s: расписание %s, хранить %d/%d/%d", "%s: schedule %s, keep %d/%d/%d"), t.Name, schedule, t.KeepDaily, t.KeepWeekly, t.KeepMonthly)
+		if t.NextRunAt != nil {
+			fmt.Printf(T(", следующий бэкап %s", ", next backup %s"), t.NextRunAt.Local().Format("2006-01-02 15:04"))
+		}
+		fmt.Println()
+		return nil
+	}}
+	set.Flags().StringVar(&updSchedule, "schedule", "", backupScheduleHelp())
+	set.Flags().IntVar(&updKeep[0], "keep-daily", 0, T("хранить дневных снимков", "daily snapshots to keep"))
+	set.Flags().IntVar(&updKeep[1], "keep-weekly", 0, T("хранить недельных снимков", "weekly snapshots to keep"))
+	set.Flags().IntVar(&updKeep[2], "keep-monthly", 0, T("хранить месячных снимков", "monthly snapshots to keep"))
+	target.AddCommand(add, list, set, rm)
 
 	var tref, scope string
 	run := &cobra.Command{Use: "run", Short: T("выполнить бэкап сейчас", "run a backup now"), RunE: func(cmd *cobra.Command, _ []string) error {
@@ -186,4 +238,10 @@ func backupCmd() *cobra.Command {
 	restore.MarkFlagRequired("target")
 	c.AddCommand(target, run, runs, snaps, restore)
 	return c
+}
+
+// backupScheduleHelp is what --schedule takes.
+func backupScheduleHelp() string {
+	return T("«daily ЧЧ:ММ» — каждый день, «weekly sun ЧЧ:ММ» — раз в неделю (mon…sun), по времени сервера; none — только вручную; daily без времени — 03:00",
+		"\"daily HH:MM\" — every day, \"weekly sun HH:MM\" — once a week (mon…sun), in the server's time; none — by hand only; daily alone is 03:00")
 }

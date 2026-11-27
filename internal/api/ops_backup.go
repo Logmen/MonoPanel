@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -40,6 +39,11 @@ type targetOutput struct {
 
 type targetRefInput struct {
 	Ref string `path:"ref"`
+}
+
+type targetUpdateInput struct {
+	Ref  string `path:"ref"`
+	Body apitypes.BackupTargetUpdate
 }
 
 type backupsListInput struct {
@@ -121,6 +125,7 @@ func (s *Server) registerBackups() {
 		if err != nil {
 			return nil, err
 		}
+		withNextRun(list...)
 		return &targetsOutput{Body: list}, nil
 	})
 
@@ -132,6 +137,10 @@ func (s *Server) registerBackups() {
 			return nil, huma.Error422UnprocessableEntity("secret key unavailable; run mp setup")
 		}
 		b := in.Body
+		schedule, err := normalizeBackupSchedule(b.Schedule)
+		if err != nil {
+			return nil, huma.Error422UnprocessableEntity(err.Error())
+		}
 		switch b.Type {
 		case "local":
 			if !filepath.IsAbs(b.Repository) || strings.HasPrefix(filepath.Clean(b.Repository), s.cfg.WWWRoot+"/") {
@@ -164,7 +173,7 @@ func (s *Server) registerBackups() {
 				return nil, err
 			}
 		}
-		t := &store.BackupTarget{Name: b.Name, Type: b.Type, Repository: b.Repository, PasswordEnc: pwEnc, EnvEnc: envEnc, KeepDaily: b.KeepDaily, KeepWeekly: b.KeepWeekly, KeepMonthly: b.KeepMonthly, Schedule: b.Schedule, Enabled: true}
+		t := &store.BackupTarget{Name: b.Name, Type: b.Type, Repository: b.Repository, PasswordEnc: pwEnc, EnvEnc: envEnc, KeepDaily: b.KeepDaily, KeepWeekly: b.KeepWeekly, KeepMonthly: b.KeepMonthly, Schedule: schedule, Enabled: true}
 		if t.KeepDaily == 0 && t.KeepWeekly == 0 && t.KeepMonthly == 0 {
 			t.KeepDaily, t.KeepWeekly, t.KeepMonthly = 7, 4, 3
 		}
@@ -175,11 +184,49 @@ func (s *Server) registerBackups() {
 			return nil, err
 		}
 		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "backup.target.create", Target: t.Name, IP: requestInfo(ctx).IP})
+		withNextRun(t)
 		out := &targetOutput{Status: http.StatusCreated, Body: apitypes.BackupTargetResponse{Target: t}}
 		if generated {
 			out.Body.Password = password
 		}
 		return out, nil
+	})
+
+	huma.Register(s.api, huma.Operation{
+		OperationID: "backup-targets-update", Method: http.MethodPatch, Path: "/backups/targets/{ref}", Summary: "Change a target's schedule and retention", Tags: []string{"backups"}, Security: secured, Metadata: adminOnly,
+	}, func(ctx context.Context, in *targetUpdateInput) (*targetOutput, error) {
+		p := principalFrom(ctx)
+		t, err := s.loadTarget(ctx, in.Ref)
+		if err != nil {
+			return nil, err
+		}
+		b := in.Body
+		changed := false
+		if b.Schedule != nil {
+			schedule, err := normalizeBackupSchedule(*b.Schedule)
+			if err != nil {
+				return nil, huma.Error422UnprocessableEntity(err.Error())
+			}
+			changed = schedule != t.Schedule
+			t.Schedule = schedule
+		}
+		for _, k := range []struct {
+			v   *int
+			dst *int
+		}{{b.KeepDaily, &t.KeepDaily}, {b.KeepWeekly, &t.KeepWeekly}, {b.KeepMonthly, &t.KeepMonthly}} {
+			if k.v != nil {
+				*k.dst = *k.v
+			}
+		}
+		if t.KeepDaily == 0 && t.KeepWeekly == 0 && t.KeepMonthly == 0 {
+			return nil, huma.Error422UnprocessableEntity("keep at least one snapshot: a retention of 0/0/0 would forget them all")
+		}
+		if err := s.db.UpdateBackupTargetSettings(ctx, t, changed); err != nil {
+			return nil, err
+		}
+		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "backup.target.update", Target: t.Name, IP: requestInfo(ctx).IP, Details: map[string]any{"schedule": t.Schedule, "keep": fmt.Sprintf("%d/%d/%d", t.KeepDaily, t.KeepWeekly, t.KeepMonthly)}})
+		withNextRun(t)
+		return &targetOutput{Status: http.StatusOK, Body: apitypes.BackupTargetResponse{Target: t}}, nil
 	})
 
 	huma.Register(s.api, huma.Operation{
@@ -792,24 +839,4 @@ func humanBytes(b int64) string {
 		f /= unit
 	}
 	return fmt.Sprintf("%.1f PB", f)
-}
-
-// scheduledBackups enqueues daily backups for targets that are due.
-func (s *Server) scheduledBackups(ctx context.Context) {
-	targets, err := s.db.ListBackupTargets(ctx)
-	if err != nil {
-		return
-	}
-	for _, t := range targets {
-		if !t.Enabled || t.Schedule != "daily" {
-			continue
-		}
-		if t.LastRunAt != nil && time.Since(*t.LastRunAt) < 23*time.Hour {
-			continue
-		}
-		key := fmt.Sprintf("backup:%d:%s", t.ID, time.Now().UTC().Format("2006-01-02"))
-		if _, err := s.jobs.Enqueue(ctx, "backup.run", backupPayload{TargetID: t.ID, Scope: "server"}, jobs.WithLockKey("backup:"+t.Name), jobs.WithRequestedBy("scheduler"), jobs.WithIdempotencyKey(key)); err == nil {
-			s.log.Info("scheduled backup", "target", t.Name)
-		}
-	}
 }

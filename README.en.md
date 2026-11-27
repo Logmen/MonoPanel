@@ -80,7 +80,7 @@ mp site add app.example.com --user alex --mode proxy --backend http://127.0.0.1:
 mp db create shop --user alex   # a password is generated and shown
 mp stack install valkey && mp valkey add cache --user alex   # the account's own Valkey
 mp firewall enable && mp stack install fail2ban
-mp backup target add local1 --repo /var/backups/monopanel --schedule daily
+mp backup target add local1 --repo /var/backups/monopanel --schedule "daily 03:00"
 
 mp mail install --hostname mail.example.com   # postfix + dovecot + opendkim
 mp mail domain add example.com --user alex    # with a DKIM key
@@ -185,7 +185,7 @@ Under each heading are that area's `mp` commands.
 `mp backup target add|list|rm`, `mp backup run|list|snapshots|restore`
 
 - restic in local, SFTP, S3, B2 or REST: files, MySQL dumps and a copy of panel.db.
-- Retention by days, weeks and months, a daily schedule; restore into `/var/lib/monopanel-agent/restore/<snapshot>` (root's alone) or in place.
+- Retention by days, weeks and months, a daily or weekly schedule at a set time (changeable on an existing repository); restore into `/var/lib/monopanel-agent/restore/<snapshot>` (root's alone) or in place.
 - restic runs in a Landlock sandbox: a backup reads only what it backs up and follows no symlink in the trees it saves (the web root, the panel's configuration, the data directory with certificates and dumps); the latter also holds on a kernel without Landlock; restic reads the system's files of `/etc` in a private `/etc`, so a host that replaces `resolv.conf` or `/etc/passwd` during a backup does not take DNS or owner names away from it; a restore writes only into its target and brings back no device file, FIFO, socket or set-user-ID / set-group-ID file (a snapshot with one in the paths chosen is refused); a run that could not read some files is marked `partial`. A local repository is a directory of restic's own.
 - An in-place restore stages the snapshot on the file system it goes back to (for the web root `<www_root>/.restore`, root's alone), a restore aside lands in `/var/lib/monopanel-agent/restore`; before restic starts the agent compares what the snapshot's listing selects with the free space and inodes there (the parts of one restore on one file system together) and refuses at once when they are short; it removes what an interrupted in-place restore left when it starts.
 - An in-place restore does not write into the home of an account being deleted or the tree of a site being deleted (refused when asked for and again when the job starts), and the deletion of an account or a site does not start while an in-place restore into its home or tree is queued or running (409 naming the job) — in whichever order they are asked for, even at the same moment.

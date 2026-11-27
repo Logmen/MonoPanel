@@ -495,7 +495,16 @@ type BackupTargetRequest struct {
 	KeepDaily   int               `json:"keep_daily,omitempty" minimum:"0" maximum:"365"`
 	KeepWeekly  int               `json:"keep_weekly,omitempty" minimum:"0" maximum:"104"`
 	KeepMonthly int               `json:"keep_monthly,omitempty" minimum:"0" maximum:"120"`
-	Schedule    string            `json:"schedule,omitempty" enum:",daily"`
+	Schedule    string            `json:"schedule,omitempty" maxLength:"32" doc:"daily HH:MM, weekly <mon…sun> HH:MM (the server's time; daily alone is daily 03:00), or empty for by hand only"`
+}
+
+// BackupTargetUpdate changes what a target keeps and when it runs; a field
+// left out stays.
+type BackupTargetUpdate struct {
+	Schedule    *string `json:"schedule,omitempty" maxLength:"32" doc:"daily HH:MM, weekly <mon…sun> HH:MM (the server's time), or none for by hand only"`
+	KeepDaily   *int    `json:"keep_daily,omitempty" minimum:"0" maximum:"365"`
+	KeepWeekly  *int    `json:"keep_weekly,omitempty" minimum:"0" maximum:"104"`
+	KeepMonthly *int    `json:"keep_monthly,omitempty" minimum:"0" maximum:"120"`
 }
 
 // BackupTargetResponse returns the target and, once, a generated password.
