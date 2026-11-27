@@ -141,13 +141,17 @@ func (s *Server) scheduledBackups(ctx context.Context) {
 			continue
 		}
 		key := fmt.Sprintf("backup:%d:%s", t.ID, due.UTC().Format(time.RFC3339))
-		job, err := s.jobs.Enqueue(ctx, "backup.run", backupPayload{TargetID: t.ID, Scope: "server"}, jobs.WithLockKey("backup:"+t.Name), jobs.WithRequestedBy("scheduler"), jobs.WithIdempotencyKey(key))
+		scope := t.ScheduleScope
+		if scope == "" {
+			scope = "server"
+		}
+		job, err := s.jobs.Enqueue(ctx, "backup.run", backupPayload{TargetID: t.ID, Scope: scope}, jobs.WithLockKey("backup:"+t.Name), jobs.WithRequestedBy("scheduler"), jobs.WithIdempotencyKey(key))
 		if err != nil {
 			continue
 		}
 		s.backupsQueued.due[t.ID] = due
 		if job.CreatedAt.Std().After(now.Add(-time.Minute)) {
-			s.log.Info("scheduled backup", "target", t.Name, "schedule", t.Schedule, "job", job.ID)
+			s.log.Info("scheduled backup", "target", t.Name, "schedule", t.Schedule, "scope", scope, "job", job.ID)
 		}
 	}
 }

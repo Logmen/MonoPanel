@@ -131,13 +131,17 @@ mp dns-provider types | list
 mp dns-provider add <имя> --type cloudflare --cred CLOUDFLARE_DNS_API_TOKEN=…|--cred-stdin | rm <имя>
 
 mp backup target add <имя> --type local|sftp|s3|b2|rest --repo … [--password …|--password-stdin] [--env KEY=…|--env-stdin]
-                   [--schedule "daily 03:00"|"weekly sun 03:00"] [--keep-daily 7] [--keep-weekly 4] [--keep-monthly 3]
-mp backup target set <имя> [--schedule "daily ЧЧ:ММ"|"weekly <mon…sun> ЧЧ:ММ"|none] [--keep-daily N] [--keep-weekly N] [--keep-monthly N]
+                   [--schedule "daily 03:00"|"weekly sun 03:00"] [--scope server|user:<логин>|site:<домен>|db:<имя>] [--keep-daily 7] [--keep-weekly 4] [--keep-monthly 3]
+mp backup target set <имя> [--schedule "daily ЧЧ:ММ"|"weekly <mon…sun> ЧЧ:ММ"|none] [--scope …] [--keep-daily N] [--keep-weekly N] [--keep-monthly N]
+                                     # --scope — что бэкапить по расписанию, как у mp backup run: весь сервер (по умолчанию), аккаунт, сайт или база
                                      # расписание — по времени сервера; daily без времени — 03:00; запуск вручную плановый не сдвигает,
                                      # пропущенный, пока сервер был выключен, выполняется, когда он поднялся; list показывает следующий запуск
 mp backup target list | rm <имя>
 mp backup run [--target …] [--scope server|user:<login>|site:<domain>|db:<name>]
 mp backup list [--target …] [-n 50] | snapshots [--target …]   # статус: running, done, partial (снимок без части файлов), failed
+mp backup restore <snapshot> [--target …] [--scope user:<логин>|site:<домен>|db:<имя>] [--in-place]   # по области: аккаунт — домашний каталог и его базы, сайт — файлы,
+                                     # база — на месте дамп заливается обратно её же учётной записью (таблицы заменяются), рядом — файлом .sql;
+                                     # пути и дампы панель находит в снимке сама; весь снимок — только рядом
 mp backup restore <snapshot> [--target …] [--include путь…] [--in-place]   # снимок с файлами устройств, FIFO, сокетами или
                                      # setuid/setgid в выбранных путях задача отклоняет, называя первый, — выберите пути без них
                                      # --in-place в дом удаляемого аккаунта или дерево удаляемого сайта — отказ; mp user rm и

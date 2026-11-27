@@ -73,6 +73,11 @@ type backupPayload struct {
 	Snapshot string   `json:"snapshot,omitempty"`
 	Include  []string `json:"include,omitempty"`
 	InPlace  bool     `json:"in_place,omitempty"`
+	// Databases are the dumps an in-place restore loads back, by database
+	// (restorePlan): the paths they are restored to.
+	Databases map[string]string `json:"databases,omitempty"`
+	// What names the part restored (RestoreRequest.Scope), for the log.
+	What string `json:"what,omitempty"`
 }
 
 func (s *Server) resticEnv(t *store.BackupTarget) ([]string, error) {
@@ -141,6 +146,10 @@ func (s *Server) registerBackups() {
 		if err != nil {
 			return nil, huma.Error422UnprocessableEntity(err.Error())
 		}
+		scope, err := s.scheduleScope(ctx, b.ScheduleScope)
+		if err != nil {
+			return nil, err
+		}
 		switch b.Type {
 		case "local":
 			if !filepath.IsAbs(b.Repository) || strings.HasPrefix(filepath.Clean(b.Repository), s.cfg.WWWRoot+"/") {
@@ -173,7 +182,7 @@ func (s *Server) registerBackups() {
 				return nil, err
 			}
 		}
-		t := &store.BackupTarget{Name: b.Name, Type: b.Type, Repository: b.Repository, PasswordEnc: pwEnc, EnvEnc: envEnc, KeepDaily: b.KeepDaily, KeepWeekly: b.KeepWeekly, KeepMonthly: b.KeepMonthly, Schedule: schedule, Enabled: true}
+		t := &store.BackupTarget{Name: b.Name, Type: b.Type, Repository: b.Repository, PasswordEnc: pwEnc, EnvEnc: envEnc, KeepDaily: b.KeepDaily, KeepWeekly: b.KeepWeekly, KeepMonthly: b.KeepMonthly, Schedule: schedule, ScheduleScope: scope, Enabled: true}
 		if t.KeepDaily == 0 && t.KeepWeekly == 0 && t.KeepMonthly == 0 {
 			t.KeepDaily, t.KeepWeekly, t.KeepMonthly = 7, 4, 3
 		}
@@ -210,6 +219,13 @@ func (s *Server) registerBackups() {
 			changed = schedule != t.Schedule
 			t.Schedule = schedule
 		}
+		if b.ScheduleScope != nil {
+			scope, err := s.scheduleScope(ctx, *b.ScheduleScope)
+			if err != nil {
+				return nil, err
+			}
+			t.ScheduleScope = scope
+		}
 		for _, k := range []struct {
 			v   *int
 			dst *int
@@ -224,7 +240,7 @@ func (s *Server) registerBackups() {
 		if err := s.db.UpdateBackupTargetSettings(ctx, t, changed); err != nil {
 			return nil, err
 		}
-		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "backup.target.update", Target: t.Name, IP: requestInfo(ctx).IP, Details: map[string]any{"schedule": t.Schedule, "keep": fmt.Sprintf("%d/%d/%d", t.KeepDaily, t.KeepWeekly, t.KeepMonthly)}})
+		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "backup.target.update", Target: t.Name, IP: requestInfo(ctx).IP, Details: map[string]any{"schedule": t.Schedule, "scope": t.ScheduleScope, "keep": fmt.Sprintf("%d/%d/%d", t.KeepDaily, t.KeepWeekly, t.KeepMonthly)}})
 		withNextRun(t)
 		return &targetOutput{Status: http.StatusOK, Body: apitypes.BackupTargetResponse{Target: t}}, nil
 	})
@@ -314,19 +330,39 @@ func (s *Server) registerBackups() {
 		if err != nil {
 			return nil, err
 		}
-		if in.Body.InPlace && len(in.Body.Include) == 0 {
-			return nil, huma.Error422UnprocessableEntity("in-place restore requires include paths")
+		b := in.Body
+		payload := backupPayload{TargetID: t.ID, Snapshot: b.Snapshot, Include: b.Include, InPlace: b.InPlace}
+		switch {
+		case b.Scope != "" && len(b.Include) > 0:
+			return nil, huma.Error422UnprocessableEntity("a scope or include paths, not both")
+		case b.Scope == "server" || b.Scope == "":
+			if b.InPlace && len(b.Include) == 0 {
+				return nil, huma.Error422UnprocessableEntity("the whole snapshot is restored aside; in place: an account, a site, a database (scope) or paths (include)")
+			}
+		default:
+			snap, err := s.snapshotOf(ctx, t, b.Snapshot)
+			if err != nil {
+				return nil, err
+			}
+			include, dumps, err := s.restorePlan(ctx, snap, b.Scope)
+			if err != nil {
+				return nil, err
+			}
+			payload.Include, payload.What = include, b.Scope
+			if b.InPlace {
+				payload.Databases = dumps
+			}
 		}
-		for _, inc := range in.Body.Include {
+		for _, inc := range payload.Include {
 			if !filepath.IsAbs(inc) {
 				return nil, huma.Error422UnprocessableEntity("include paths must be absolute")
 			}
 		}
-		job, err := s.enqueueRestore(ctx, t, backupPayload{TargetID: t.ID, Snapshot: in.Body.Snapshot, Include: in.Body.Include, InPlace: in.Body.InPlace}, p.Login)
+		job, err := s.enqueueRestore(ctx, t, payload, p.Login)
 		if err != nil {
 			return nil, err
 		}
-		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "backup.restore", Target: t.Name + " " + in.Body.Snapshot, IP: requestInfo(ctx).IP, Details: map[string]any{"in_place": in.Body.InPlace, "include": in.Body.Include}})
+		s.db.Audit(ctx, store.AuditEntry{Actor: p.Login, Action: "backup.restore", Target: t.Name + " " + b.Snapshot, IP: requestInfo(ctx).IP, Details: map[string]any{"in_place": b.InPlace, "include": payload.Include, "scope": b.Scope}})
 		return &jobRefOutput{Status: http.StatusAccepted, Body: apitypes.JobRef{JobID: job.ID}}, nil
 	})
 }
@@ -655,6 +691,15 @@ func (s *Server) jobBackupRestore(ctx context.Context, jc *jobs.Context) error {
 		return fmt.Errorf("restic restore (exit %d): %s", res.ExitCode, lastLinesJoin(res.Output, 5))
 	}
 	logTail(jc, res.Output, 3)
+	if p.What != "" {
+		jc.Logf("%s: %s", p.What, strings.Join(p.Include, ", "))
+	}
+	if p.InPlace && len(p.Databases) > 0 {
+		jc.Progress(80, "databases")
+		if err := s.restoreDatabases(ctx, jc, p.Databases); err != nil {
+			return err
+		}
+	}
 	jc.Progress(100, "restored to "+target)
 	return nil
 }
@@ -839,4 +884,19 @@ func humanBytes(b int64) string {
 		f /= unit
 	}
 	return fmt.Sprintf("%.1f PB", f)
+}
+
+// scheduleScope checks what a target's schedule is to back up: what a run
+// takes (validateScope), the whole server when empty.
+func (s *Server) scheduleScope(ctx context.Context, scope string) (string, error) {
+	if scope == "" {
+		return "server", nil
+	}
+	if err := s.validateScope(ctx, scope); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return "", huma.Error422UnprocessableEntity("schedule scope " + scope + ": no such account, site or database")
+		}
+		return "", huma.Error422UnprocessableEntity(err.Error())
+	}
+	return scope, nil
 }

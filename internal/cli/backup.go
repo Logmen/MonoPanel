@@ -66,6 +66,7 @@ func backupCmd() *cobra.Command {
 	add.Flags().IntVar(&req.KeepWeekly, "keep-weekly", 4, T("хранить недельных снимков", "weekly snapshots to keep"))
 	add.Flags().IntVar(&req.KeepMonthly, "keep-monthly", 3, T("хранить месячных снимков", "monthly snapshots to keep"))
 	add.Flags().StringVar(&req.Schedule, "schedule", "", backupScheduleHelp())
+	add.Flags().StringVar(&req.ScheduleScope, "scope", "", backupScheduleScopeHelp())
 	add.MarkFlagRequired("repo")
 	list := &cobra.Command{Use: "list", Short: T("список репозиториев", "list repositories"), RunE: func(cmd *cobra.Command, _ []string) error {
 		cl, err := newClient()
@@ -92,9 +93,13 @@ func backupCmd() *cobra.Command {
 			if t.NextRunAt != nil {
 				next = t.NextRunAt.Local().Format("2006-01-02 15:04")
 			}
-			rows = append(rows, []string{strconv.FormatInt(t.ID, 10), t.Name, t.Type, t.Repository, fmt.Sprintf("%d/%d/%d", t.KeepDaily, t.KeepWeekly, t.KeepMonthly), schedule, next, last})
+			scope := t.ScheduleScope
+			if scope == "" {
+				scope = "server"
+			}
+			rows = append(rows, []string{strconv.FormatInt(t.ID, 10), t.Name, t.Type, t.Repository, fmt.Sprintf("%d/%d/%d", t.KeepDaily, t.KeepWeekly, t.KeepMonthly), schedule, scope, next, last})
 		}
-		table([]string{"ID", "NAME", "TYPE", "REPOSITORY", "KEEP D/W/M", "SCHEDULE", "NEXT RUN", "LAST RUN"}, rows)
+		table([]string{"ID", "NAME", "TYPE", "REPOSITORY", "KEEP D/W/M", "SCHEDULE", "SCOPE", "NEXT RUN", "LAST RUN"}, rows)
 		return nil
 	}}
 	rm := &cobra.Command{Use: "rm <name>", Short: T("забыть репозиторий (данные не удаляются)", "forget a repository (its data is not deleted)"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
@@ -105,11 +110,14 @@ func backupCmd() *cobra.Command {
 		return cl.BackupTargetDelete(cmd.Context(), args[0])
 	}}
 	var upd apitypes.BackupTargetUpdate
-	var updSchedule string
+	var updSchedule, updScope string
 	var updKeep [3]int
 	set := &cobra.Command{Use: "set <name>", Short: T("изменить расписание и сколько снимков хранить", "change the schedule and how many snapshots to keep"), Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("schedule") {
 			upd.Schedule = &updSchedule
+		}
+		if cmd.Flags().Changed("scope") {
+			upd.ScheduleScope = &updScope
 		}
 		for i, f := range []struct {
 			name string
@@ -119,8 +127,8 @@ func backupCmd() *cobra.Command {
 				*f.dst = &updKeep[i]
 			}
 		}
-		if upd.Schedule == nil && upd.KeepDaily == nil && upd.KeepWeekly == nil && upd.KeepMonthly == nil {
-			return fmt.Errorf("%s", T("нечего менять: --schedule, --keep-daily, --keep-weekly или --keep-monthly", "nothing to change: --schedule, --keep-daily, --keep-weekly or --keep-monthly"))
+		if upd.Schedule == nil && upd.ScheduleScope == nil && upd.KeepDaily == nil && upd.KeepWeekly == nil && upd.KeepMonthly == nil {
+			return fmt.Errorf("%s", T("нечего менять: --schedule, --scope, --keep-daily, --keep-weekly или --keep-monthly", "nothing to change: --schedule, --scope, --keep-daily, --keep-weekly or --keep-monthly"))
 		}
 		cl, err := newClient()
 		if err != nil {
@@ -138,7 +146,7 @@ func backupCmd() *cobra.Command {
 		if schedule == "" {
 			schedule = T("вручную", "by hand")
 		}
-		fmt.Printf(T("%s: расписание %s, хранить %d/%d/%d", "%s: schedule %s, keep %d/%d/%d"), t.Name, schedule, t.KeepDaily, t.KeepWeekly, t.KeepMonthly)
+		fmt.Printf(T("%s: расписание %s (%s), хранить %d/%d/%d", "%s: schedule %s (%s), keep %d/%d/%d"), t.Name, schedule, t.ScheduleScope, t.KeepDaily, t.KeepWeekly, t.KeepMonthly)
 		if t.NextRunAt != nil {
 			fmt.Printf(T(", следующий бэкап %s", ", next backup %s"), t.NextRunAt.Local().Format("2006-01-02 15:04"))
 		}
@@ -146,6 +154,7 @@ func backupCmd() *cobra.Command {
 		return nil
 	}}
 	set.Flags().StringVar(&updSchedule, "schedule", "", backupScheduleHelp())
+	set.Flags().StringVar(&updScope, "scope", "", backupScheduleScopeHelp())
 	set.Flags().IntVar(&updKeep[0], "keep-daily", 0, T("хранить дневных снимков", "daily snapshots to keep"))
 	set.Flags().IntVar(&updKeep[1], "keep-weekly", 0, T("хранить недельных снимков", "weekly snapshots to keep"))
 	set.Flags().IntVar(&updKeep[2], "keep-monthly", 0, T("хранить месячных снимков", "monthly snapshots to keep"))
@@ -234,7 +243,8 @@ func backupCmd() *cobra.Command {
 	}}
 	restore.Flags().StringVar(&rreq.Target, "target", "", T("имя репозитория", "repository name"))
 	restore.Flags().StringSliceVar(&rreq.Include, "include", nil, T("восстановить только эти пути", "restore only these paths"))
-	restore.Flags().BoolVar(&rreq.InPlace, "in-place", false, T("восстановить поверх текущих файлов (нужен --include)", "restore over the current files (needs --include)"))
+	restore.Flags().BoolVar(&rreq.InPlace, "in-place", false, T("восстановить поверх текущих файлов (нужен --include или --scope); база при этом заливается обратно", "restore over the current files (needs --include or --scope); a database is loaded back then"))
+	restore.Flags().StringVar(&rreq.Scope, "scope", "", T("что восстановить: user:<логин> (домашний каталог и базы аккаунта), site:<домен> (файлы сайта), db:<имя> (база); без --include", "what to restore: user:<login> (the home and the account's databases), site:<domain> (the site's files), db:<name> (the database); not with --include"))
 	restore.MarkFlagRequired("target")
 	c.AddCommand(target, run, runs, snaps, restore)
 	return c
@@ -244,4 +254,10 @@ func backupCmd() *cobra.Command {
 func backupScheduleHelp() string {
 	return T("«daily ЧЧ:ММ» — каждый день, «weekly sun ЧЧ:ММ» — раз в неделю (mon…sun), по времени сервера; none — только вручную; daily без времени — 03:00",
 		"\"daily HH:MM\" — every day, \"weekly sun HH:MM\" — once a week (mon…sun), in the server's time; none — by hand only; daily alone is 03:00")
+}
+
+// backupScheduleScopeHelp is what --scope of a target takes.
+func backupScheduleScopeHelp() string {
+	return T("что бэкапить по расписанию: server (весь сервер, по умолчанию), user:<логин>, site:<домен>, db:<имя>",
+		"what the schedule backs up: server (the whole server, the default), user:<login>, site:<domain>, db:<name>")
 }

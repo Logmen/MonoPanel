@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -125,5 +126,48 @@ func TestScheduledBackupsByTheClock(t *testing.T) {
 	f.call(http.MethodGet, "/backups/targets", nil, http.StatusOK, &list)
 	if len(list) != 1 || list[0].Schedule != "" {
 		t.Errorf("list %+v", list)
+	}
+}
+
+// A target's schedule backs up what it was given — the whole server, an
+// account, a site or a database — as a run by hand takes it; one that names
+// nothing that exists is refused.
+func TestScheduledBackupScope(t *testing.T) {
+	f := newSiteFixture(t)
+	f.call(http.MethodPost, "/backups/targets", map[string]any{"name": "nope", "type": "local", "repository": "/srv/nope", "schedule": "daily 03:00", "schedule_scope": "user:nobody"}, http.StatusUnprocessableEntity, nil)
+	f.call(http.MethodPost, "/backups/targets", map[string]any{"name": "bad", "type": "local", "repository": "/srv/bad", "schedule": "daily 03:00", "schedule_scope": "home:alex"}, http.StatusUnprocessableEntity, nil)
+	var res apitypes.BackupTargetResponse
+	f.call(http.MethodPost, "/backups/targets", map[string]any{"name": "alex", "type": "local", "repository": "/srv/alex", "schedule": "daily 03:00", "schedule_scope": "user:alex"}, http.StatusCreated, &res)
+	if res.Target.ScheduleScope != "user:alex" {
+		t.Fatalf("scope %q", res.Target.ScheduleScope)
+	}
+	var plain apitypes.BackupTargetResponse
+	f.call(http.MethodPost, "/backups/targets", map[string]any{"name": "all", "type": "local", "repository": "/srv/all"}, http.StatusCreated, &plain)
+	if plain.Target.ScheduleScope != "server" {
+		t.Errorf("default scope %q", plain.Target.ScheduleScope)
+	}
+	past := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339Nano)
+	if _, err := f.db.SQL().ExecContext(f.ctx, `UPDATE backup_targets SET schedule_at=? WHERE id=?`, past, res.Target.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.s.scheduledBackups(f.ctx)
+	jobs, err := f.db.ListJobs(f.ctx, 100, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, j := range jobs {
+		if j.Type == "backup.run" && j.RequestedBy == "scheduler" {
+			full, _ := f.db.GetJob(f.ctx, j.ID)
+			found = strings.Contains(string(full.Payload), `"scope":"user:alex"`)
+		}
+	}
+	if !found {
+		t.Error("the scheduled backup does not back up user:alex")
+	}
+	f.call(http.MethodPatch, "/backups/targets/alex", map[string]any{"schedule_scope": "db:nothing"}, http.StatusUnprocessableEntity, nil)
+	f.call(http.MethodPatch, "/backups/targets/alex", map[string]any{"schedule_scope": "server"}, http.StatusOK, &res)
+	if res.Target.ScheduleScope != "server" {
+		t.Errorf("after PATCH: %q", res.Target.ScheduleScope)
 	}
 }

@@ -496,15 +496,18 @@ type BackupTargetRequest struct {
 	KeepWeekly  int               `json:"keep_weekly,omitempty" minimum:"0" maximum:"104"`
 	KeepMonthly int               `json:"keep_monthly,omitempty" minimum:"0" maximum:"120"`
 	Schedule    string            `json:"schedule,omitempty" maxLength:"32" doc:"daily HH:MM, weekly <mon…sun> HH:MM (the server's time; daily alone is daily 03:00), or empty for by hand only"`
+	// ScheduleScope is what the schedule backs up, as backups-run takes it.
+	ScheduleScope string `json:"schedule_scope,omitempty" maxLength:"300" doc:"what the schedule backs up: server (the default), user:<login>, site:<domain> or db:<name>"`
 }
 
 // BackupTargetUpdate changes what a target keeps and when it runs; a field
 // left out stays.
 type BackupTargetUpdate struct {
-	Schedule    *string `json:"schedule,omitempty" maxLength:"32" doc:"daily HH:MM, weekly <mon…sun> HH:MM (the server's time), or none for by hand only"`
-	KeepDaily   *int    `json:"keep_daily,omitempty" minimum:"0" maximum:"365"`
-	KeepWeekly  *int    `json:"keep_weekly,omitempty" minimum:"0" maximum:"104"`
-	KeepMonthly *int    `json:"keep_monthly,omitempty" minimum:"0" maximum:"120"`
+	Schedule      *string `json:"schedule,omitempty" maxLength:"32" doc:"daily HH:MM, weekly <mon…sun> HH:MM (the server's time), or none for by hand only"`
+	ScheduleScope *string `json:"schedule_scope,omitempty" maxLength:"300" doc:"what the schedule backs up: server, user:<login>, site:<domain> or db:<name>"`
+	KeepDaily     *int    `json:"keep_daily,omitempty" minimum:"0" maximum:"365"`
+	KeepWeekly    *int    `json:"keep_weekly,omitempty" minimum:"0" maximum:"104"`
+	KeepMonthly   *int    `json:"keep_monthly,omitempty" minimum:"0" maximum:"120"`
 }
 
 // BackupTargetResponse returns the target and, once, a generated password.
@@ -524,7 +527,10 @@ type RestoreRequest struct {
 	Target   string   `json:"target" minLength:"1"`
 	Snapshot string   `json:"snapshot" minLength:"1"`
 	Include  []string `json:"include,omitempty" doc:"paths to restore (all when empty)"`
-	InPlace  bool     `json:"in_place,omitempty" doc:"restore to / (requires include; the web root and the panel's configuration only); otherwise to /var/lib/monopanel-agent/restore/<snapshot>"`
+	InPlace  bool     `json:"in_place,omitempty" doc:"restore to / (requires include or a scope; the web root and the panel's configuration only); otherwise to /var/lib/monopanel-agent/restore/<snapshot>"`
+	// Scope restores a part of the snapshot by what it is rather than by
+	// its paths; not with include.
+	Scope string `json:"scope,omitempty" maxLength:"300" doc:"what to restore: user:<login> (the home and the account's databases), site:<domain> (the site's files), db:<name> (the database); in place a database is loaded back, aside its dump lands as a file; server or empty is the whole snapshot (aside only)"`
 }
 
 // Snapshot is a restic snapshot.

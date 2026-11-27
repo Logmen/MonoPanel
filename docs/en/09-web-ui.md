@@ -307,14 +307,17 @@ The page is for administrators.
 ![Backups: a restic repository and snapshots](img/backups.webp)
 
 Backups go to restic repositories — a local directory, SFTP, S3, B2 or a REST server —
-with a schedule (the whole server daily or weekly at a set time of the server's clock; the
+with a schedule (daily or weekly at a set time of the server's clock, backing up the whole server, an
+account, a site or a database as a run by hand does; the
 pencil button changes it and the retention on an existing repository) or manual runs and
 retention by days, weeks and months; the repository password is generated and shown once, and the S3, B2 and REST
 credentials are stored encrypted. A backup can be run for the whole server, an account, a
 site or a database; a snapshot is restored alongside, into `/var/lib/monopanel-agent/restore/<snapshot>`
-(root's alone), or in place — for the chosen paths in the web root, the panel's
-configuration, certificates, the ACME account and dumps, and after an explicit
-confirmation. Before an in-place restore the agent checks that the file system the files
+(root's alone), or in place after an explicit confirmation. What to restore is chosen as
+for a backup: an account (its home and its databases), a site, a database (in place its
+dump is loaded back as the database's own account) — the panel finds the paths and dumps
+in the snapshot — or paths by hand in the web root, the panel's configuration,
+certificates, the ACME account and dumps; what the snapshot was taken of is preselected. Before an in-place restore the agent checks that the file system the files
 go back to has room: the snapshot is first staged next to them, in a directory of the
 agent's on that file system. When there is not enough, the job fails at once, saying how
 much it takes and how much is free. A restore aside is checked for room too — in

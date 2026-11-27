@@ -132,12 +132,16 @@ mp dns-provider types | list
 mp dns-provider add <name> --type cloudflare --cred CLOUDFLARE_DNS_API_TOKEN=…|--cred-stdin | rm <name>
 
 mp backup target add <name> --type local|sftp|s3|b2|rest --repo … [--password …|--password-stdin] [--env KEY=…|--env-stdin]
-                   [--schedule "daily 03:00"|"weekly sun 03:00"] [--keep-daily 7] [--keep-weekly 4] [--keep-monthly 3]
-mp backup target set <name> [--schedule "daily HH:MM"|"weekly <mon…sun> HH:MM"|none] [--keep-daily N] [--keep-weekly N] [--keep-monthly N]
+                   [--schedule "daily 03:00"|"weekly sun 03:00"] [--scope server|user:<login>|site:<domain>|db:<name>] [--keep-daily 7] [--keep-weekly 4] [--keep-monthly 3]
+mp backup target set <name> [--schedule "daily HH:MM"|"weekly <mon…sun> HH:MM"|none] [--scope …] [--keep-daily N] [--keep-weekly N] [--keep-monthly N]
+                                     # --scope — what the schedule backs up, as mp backup run takes it: the whole server (the default), an account, a site or a database
                                      # the schedule is in the server's time; daily alone is 03:00; a run by hand does not move the planned one,
                                      # one missed while the server was down runs once it is up; list shows the next run
 mp backup run [--target …] [--scope server|user:<login>|site:<domain>|db:<name>]
 mp backup list [--target …] [-n 50] | snapshots [--target …]   # status: running, done, partial (a snapshot without some files), failed
+mp backup restore <snapshot> [--target …] [--scope user:<login>|site:<domain>|db:<name>] [--in-place]   # by scope: an account — its home and its databases, a site — its files,
+                                     # a database — in place its dump is loaded back as its own account (tables replaced), aside as a .sql file;
+                                     # the panel finds the paths and dumps in the snapshot; the whole snapshot goes aside only
 mp backup restore <snapshot> [--target …] [--include path…] [--in-place]   # a snapshot with device files, FIFOs, sockets or
                                      # set-user-ID/set-group-ID files in the paths chosen the job refuses, naming the first — choose paths without them
                                      # --in-place into the home of an account or the tree of a site being deleted is refused;
