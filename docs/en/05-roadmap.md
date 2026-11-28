@@ -261,10 +261,13 @@ This is the project log by stage and date: what is done, what is verified and wh
 ### Mail policy (2026-11-22)
 - [x] No account sends mail as another account's domain: the milter `monopanel-mailpolicy` (the same binary, a user of its own without privileges, a socket systemd holds) answers postfix before opendkim and refuses a message whose envelope or From is in another account's domain (550 5.7.1); it checks mailboxes on 587/465, sendmail by the sender's uid and SMTP from the server's addresses by the socket's uid; while the policy does not answer, mail waits (`default_action=tempfail`). Before 0.9.0 such a message left, and opendkim signed it with the other domain's key. On EL `monopanel-mailguard` closes the milter ports 8890 and 8891 to everyone but root and postfix. Sieve redirects leave with the forwarding mailbox as envelope sender, vacation replies with the mailbox; a mail domain cannot be taken as a site or an alias of another account; opendkim's `TrustedHosts` are the server's addresses only. The `mail policy` line of `mp doctor`; on a downgrade below 0.9.0 the package's script takes the policy out of `main.cf` ([06 §11](06-mail.md#11-mail-policy)).
 
+### Mail in backups and the schedule's zone (0.9.12, 2026-11-28)
+- [x] The whole-server backup takes the mailboxes (`/var/mail/monopanel`, once the mail is installed); the DKIM keys stay out of the repository. The mail is restored aside.
+- [x] The server's time zone beside the schedule's time: "daily at 03:00 (UTC)", `daily 03:00 UTC` in `mp backup target list`.
+
 ### The schedule's scope and partial restores (0.9.11, 2026-11-28)
 - [x] A repository's schedule has its own scope, as a run by hand does: the whole server, an account, a site or a database (`mp backup target add|set --scope`, "What it backs up" in the form).
 - [x] Restore by scope: an account (its home and its databases), a site (its files), a database — in place its dump is loaded back as the database's own account, aside it lands as a `.sql` file; the panel finds the paths and dumps in the snapshot (`mp backup restore --scope`, "What to restore" in the restore dialog).
-- [ ] The mail (`/var/mail/monopanel`, DKIM keys) in the whole-server backup; leaving CMS caches out of snapshots.
 
 ### Backup schedules with a time (0.9.10, 2026-11-27)
 - [x] A repository's schedule: daily or weekly at a set time of the server's clock (`daily 03:00`, `weekly sun 04:30`), or by hand only; the old `daily` is 03:00. A run by hand does not move the planned one, one missed while the server was down runs after the start; the next run shows in the list.
