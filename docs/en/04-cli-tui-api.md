@@ -35,7 +35,7 @@ mp doctor                            # diagnostics (restic's sandbox, the shared
 mp whoami                            # who you are to the panel: account, role, how you are authenticated, token, 2FA
 mp version
 mp update                            # what is installed and what is available; after a rollback, that the package database lists the version already
-mp update check | apply [--version v0.9.12]    # apply installs a version whose install rolled back once more as well
+mp update check | apply [--version v0.9.13]    # apply installs a version whose install rolled back once more as well
 mp update settings [--repo owner/name] [--channel stable|beta] [--check-hours 24] [--auto-apply] [--api …]
                    [--token …|--token-stdin|--clear-token]   # --repo "-" turns updates off
 mp update trust [--key <fork key>] [--restart] | --clear | --off   # root on the server only; no flags — which key checks the signature
