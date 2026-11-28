@@ -354,6 +354,7 @@ func New(cfg config.Config, db *store.DB, ag *agent.Client, runner *jobs.Runner,
 		s.registerFirewall()
 		s.registerMetrics()
 		s.registerBackups()
+		s.registerSnapshotBrowse()
 		s.registerTOTP()
 		s.registerWebhooks()
 		s.registerFiles()

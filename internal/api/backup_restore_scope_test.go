@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"monopanel/internal/agent"
+	"monopanel/internal/apitypes"
 	"monopanel/internal/store"
 )
 
@@ -150,3 +151,79 @@ func TestRestoreByScope(t *testing.T) {
 }
 
 type agenttestStream struct{ args, head string }
+
+// A directory of a snapshot as restic ls --json prints it (struct_type of
+// restic 0.16, message_type of 0.17): the directory itself left out, its own
+// entries only, directories first; a file asked for is its one entry; output
+// the agent cut at its start says so.
+func TestParseSnapshotLs(t *testing.T) {
+	out := `{"time":"2026-11-27T03:00:00Z","paths":["/var/www"],"struct_type":"snapshot"}
+{"name":"alex","type":"dir","path":"/var/www/alex","mtime":"2026-11-01T00:00:00Z","struct_type":"node"}
+{"name":"z.txt","type":"file","path":"/var/www/alex/z.txt","size":12,"mtime":"2026-11-02T00:00:00Z","message_type":"node"}
+{"name":"data","type":"dir","path":"/var/www/alex/data","message_type":"node"}
+{"name":"a.php","type":"file","path":"/var/www/alex/a.php","size":5,"message_type":"node"}
+{"name":"deep","type":"file","path":"/var/www/alex/data/deep","size":1,"message_type":"node"}
+`
+	l := parseSnapshotLs("/var/www/alex", out)
+	var got []string
+	for _, e := range l.Entries {
+		got = append(got, e.Type+":"+e.Name)
+	}
+	if strings.Join(got, " ") != "dir:data file:a.php file:z.txt" || l.Truncated {
+		t.Errorf("entries %v, truncated %v", got, l.Truncated)
+	}
+	if l.Entries[2].Size != 12 || l.Entries[2].MTime == "" {
+		t.Errorf("z.txt: %+v", l.Entries[2])
+	}
+	f := parseSnapshotLs("/var/www/alex/z.txt", `{"name":"z.txt","type":"file","path":"/var/www/alex/z.txt","size":12,"struct_type":"node"}`)
+	if len(f.Entries) != 1 || f.Entries[0].Path != "/var/www/alex/z.txt" {
+		t.Errorf("a file: %+v", f.Entries)
+	}
+	cut := parseSnapshotLs("/var/www", "[...truncated...]\n"+`ame":"x","type":"dir","path":"/var/www/x"}`+"\n"+`{"name":"y","type":"dir","path":"/var/www/y","struct_type":"node"}`)
+	if !cut.Truncated || len(cut.Entries) != 1 || cut.Entries[0].Name != "y" {
+		t.Errorf("cut: %+v", cut)
+	}
+}
+
+// The listing asks restic for one directory, and at the top shows the
+// snapshot's own paths; a path that is not clean is refused.
+func TestSnapshotLsEndpoint(t *testing.T) {
+	f := newSiteFixture(t)
+	f.call(http.MethodPost, "/backups/targets", map[string]any{"name": "local", "type": "local", "repository": "/srv/backup"}, http.StatusCreated, nil)
+	snap, _ := json.Marshal([]map[string]any{{"id": "abcdef0123456789", "short_id": "abcdef01", "paths": []string{"/var/www", "/var/lib/monopanel/backups/tmp/run-5/alex_shop.sql"}, "tags": []string{"monopanel"}}})
+	var asked []string
+	var mu sync.Mutex
+	f.agent.ToolHook = func(req agent.ToolRequest) *agent.ToolResponse {
+		if req.Name != "restic" || len(req.Args) == 0 {
+			return nil
+		}
+		mu.Lock()
+		asked = append(asked, strings.Join(req.Args, " "))
+		mu.Unlock()
+		switch req.Args[0] {
+		case "snapshots":
+			return &agent.ToolResponse{Output: string(snap) + "\n"}
+		case "ls":
+			return &agent.ToolResponse{Output: `{"name":"alex","type":"dir","path":"/var/www/alex","struct_type":"node"}` + "\n" + `{"name":"index.php","type":"file","path":"/var/www/alex/index.php","size":7,"struct_type":"node"}` + "\n"}
+		}
+		return nil
+	}
+	var top apitypes.SnapshotListing
+	f.call(http.MethodGet, "/backups/targets/local/snapshots/abcdef01/ls", nil, http.StatusOK, &top)
+	if len(top.Entries) != 2 || top.Entries[0].Type != "dir" || top.Entries[1].Type != "file" {
+		t.Errorf("top: %+v", top.Entries)
+	}
+	var dir apitypes.SnapshotListing
+	f.call(http.MethodGet, "/backups/targets/local/snapshots/abcdef01/ls?path=/var/www/alex", nil, http.StatusOK, &dir)
+	if len(dir.Entries) != 1 || dir.Entries[0].Name != "index.php" {
+		t.Errorf("dir: %+v", dir.Entries)
+	}
+	mu.Lock()
+	if !slices.Contains(asked, "ls --json abcdef01 /var/www/alex") {
+		t.Errorf("asked %q", asked)
+	}
+	mu.Unlock()
+	f.call(http.MethodGet, "/backups/targets/local/snapshots/abcdef01/ls?path=/var/www/../etc", nil, http.StatusUnprocessableEntity, nil)
+	f.call(http.MethodGet, "/backups/targets/local/snapshots/abcdef01/ls?path=var/www", nil, http.StatusUnprocessableEntity, nil)
+	f.call(http.MethodGet, "/backups/targets/local/snapshots/abc:def/ls?path=/var/www", nil, http.StatusUnprocessableEntity, nil)
+}

@@ -139,6 +139,7 @@ mp backup target set <имя> [--schedule "daily ЧЧ:ММ"|"weekly <mon…sun> 
 mp backup target list | rm <имя>
 mp backup run [--target …] [--scope server|user:<login>|site:<domain>|db:<name>]   # server — веб-корень, конфигурация панели, сертификаты и ACME, дампы баз, база панели и почтовые ящики (/var/mail/monopanel, если почта установлена); ключей DKIM в бэкапе нет
 mp backup list [--target …] [-n 50] | snapshots [--target …]   # статус: running, done, partial (снимок без части файлов), failed
+mp backup ls <snapshot> [каталог] [--target …]   # что лежит в каталоге снимка (без каталога — пути снимка): тип, размер, время — выбрать, что восстановить, вплоть до файла
 mp backup restore <snapshot> [--target …] [--scope user:<логин>|site:<домен>|db:<имя>] [--in-place]   # по области: аккаунт — домашний каталог и его базы, сайт — файлы,
                                      # база — на месте дамп заливается обратно её же учётной записью (таблицы заменяются), рядом — файлом .sql;
                                      # пути и дампы панель находит в снимке сама; весь снимок — только рядом

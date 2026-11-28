@@ -547,6 +547,35 @@ func (a *Agent) restic(args []string) (*agent.ToolResponse, error) {
 		a.st.Restic = append(a.st.Restic, s)
 		line, _ := json.Marshal(map[string]any{"message_type": "summary", "snapshot_id": s.ID, "total_files_processed": s.Files, "total_bytes_processed": s.Bytes, "data_added": s.Bytes / 9})
 		return &agent.ToolResponse{Output: string(line) + "\n"}, nil
+	case "ls":
+		// A directory of the pretend snapshot is the directory as it is
+		// now, in the demo's own web root; elsewhere the snapshot is empty.
+		if len(args) < 4 || !a.real(args[3]) {
+			return &agent.ToolResponse{}, nil
+		}
+		dir := filepath.Clean(args[3])
+		var b strings.Builder
+		node := func(name, kind, p string, size int64, mod time.Time) {
+			line, _ := json.Marshal(map[string]any{"name": name, "type": kind, "path": p, "size": size, "mtime": mod.UTC().Format(time.RFC3339), "struct_type": "node"})
+			b.Write(line)
+			b.WriteByte('\n')
+		}
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			kind := "file"
+			switch {
+			case e.IsDir():
+				kind = "dir"
+			case info.Mode()&os.ModeSymlink != 0:
+				kind = "symlink"
+			}
+			node(e.Name(), kind, filepath.Join(dir, e.Name()), info.Size(), info.ModTime())
+		}
+		return &agent.ToolResponse{Output: b.String()}, nil
 	}
 	return &agent.ToolResponse{}, nil
 }

@@ -250,7 +250,43 @@ func backupCmd() *cobra.Command {
 	restore.Flags().BoolVar(&rreq.InPlace, "in-place", false, T("восстановить поверх текущих файлов (нужен --include или --scope); база при этом заливается обратно", "restore over the current files (needs --include or --scope); a database is loaded back then"))
 	restore.Flags().StringVar(&rreq.Scope, "scope", "", T("что восстановить: user:<логин> (домашний каталог и базы аккаунта), site:<домен> (файлы сайта), db:<имя> (база); без --include", "what to restore: user:<login> (the home and the account's databases), site:<domain> (the site's files), db:<name> (the database); not with --include"))
 	restore.MarkFlagRequired("target")
-	c.AddCommand(target, run, runs, snaps, restore)
+	var lsTarget string
+	ls := &cobra.Command{Use: "ls <snapshot> [directory]", Short: T("что лежит в каталоге снимка (без каталога — пути снимка): выбрать, что восстановить, вплоть до файла", "what a directory of a snapshot holds (without one, the snapshot's paths): to pick what to restore, down to a file"), Args: cobra.RangeArgs(1, 2), RunE: func(cmd *cobra.Command, args []string) error {
+		cl, err := newClient()
+		if err != nil {
+			return err
+		}
+		dir := ""
+		if len(args) == 2 {
+			dir = args[1]
+		}
+		l, err := cl.BackupSnapshotLs(cmd.Context(), lsTarget, args[0], dir)
+		if err != nil {
+			return err
+		}
+		if g.json {
+			return printJSON(l)
+		}
+		rows := make([][]string, 0, len(l.Entries))
+		for _, e := range l.Entries {
+			size := ""
+			if e.Type == "file" {
+				size = humanSize(e.Size)
+			}
+			when := e.MTime
+			if len(when) >= 16 {
+				when = strings.Replace(when[:16], "T", " ", 1)
+			}
+			rows = append(rows, []string{e.Type, size, when, e.Path})
+		}
+		table([]string{"TYPE", "SIZE", "MODIFIED", "PATH"}, rows)
+		if l.Truncated {
+			fmt.Println(T("каталог больше, чем показано: остальное восстанавливается по пути (--include)", "the directory holds more than shown: the rest is restored by its path (--include)"))
+		}
+		return nil
+	}}
+	ls.Flags().StringVar(&lsTarget, "target", "", T("имя репозитория", "repository name"))
+	c.AddCommand(target, run, runs, snaps, ls, restore)
 	return c
 }
 
@@ -264,4 +300,19 @@ func backupScheduleHelp() string {
 func backupScheduleScopeHelp() string {
 	return T("что бэкапить по расписанию: server (весь сервер, по умолчанию), user:<логин>, site:<домен>, db:<имя>",
 		"what the schedule backs up: server (the whole server, the default), user:<login>, site:<domain>, db:<name>")
+}
+
+// humanSize is a size in bytes for a person.
+func humanSize(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	f, suffix := float64(b)/unit, "KMGTP"
+	i := 0
+	for f >= unit && i < len(suffix)-1 {
+		f /= unit
+		i++
+	}
+	return fmt.Sprintf("%.1f %ciB", f, suffix[i])
 }

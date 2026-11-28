@@ -316,8 +316,9 @@ site or a database; a snapshot is restored alongside, into `/var/lib/monopanel-a
 (root's alone), or in place after an explicit confirmation. What to restore is chosen as
 for a backup: an account (its home and its databases), a site, a database (in place its
 dump is loaded back as the database's own account) — the panel finds the paths and dumps
-in the snapshot — or paths by hand in the web root, the panel's configuration,
-certificates, the ACME account and dumps; what the snapshot was taken of is preselected. Before an in-place restore the agent checks that the file system the files
+in the snapshot — or "pick from the snapshot": the snapshot opens a directory at a time,
+and the directories or single files needed are ticked (in place: in the web root, the
+panel's configuration, certificates, the ACME account and dumps); what the snapshot was taken of is preselected. Before an in-place restore the agent checks that the file system the files
 go back to has room: the snapshot is first staged next to them, in a directory of the
 agent's on that file system. When there is not enough, the job fails at once, saying how
 much it takes and how much is free. A restore aside is checked for room too — in

@@ -689,6 +689,17 @@ func (c *Client) BackupTargetDelete(ctx context.Context, ref string) error {
 	return c.do(ctx, http.MethodDelete, "/backups/targets/"+ref, nil, nil)
 }
 
+// BackupSnapshotLs lists a directory of a snapshot; an empty path lists the
+// snapshot's own paths.
+func (c *Client) BackupSnapshotLs(ctx context.Context, ref, snapshot, path string) (*apitypes.SnapshotListing, error) {
+	var out apitypes.SnapshotListing
+	q := ""
+	if path != "" {
+		q = "?path=" + url.QueryEscape(path)
+	}
+	return &out, c.do(ctx, http.MethodGet, "/backups/targets/"+url.PathEscape(ref)+"/snapshots/"+url.PathEscape(snapshot)+"/ls"+q, nil, &out)
+}
+
 // BackupSnapshots lists snapshots.
 func (c *Client) BackupSnapshots(ctx context.Context, ref string) ([]apitypes.Snapshot, error) {
 	var out []apitypes.Snapshot

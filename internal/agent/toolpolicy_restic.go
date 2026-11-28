@@ -59,8 +59,9 @@ var (
 var resticEnvPrefixes = []string{"RESTIC_", "AWS_", "B2_", "AZURE_", "GOOGLE_", "OS_", "SWIFT_"}
 
 // planRestic: the repository's snapshots, its config (does it exist), init,
-// a backup of what the panel backs up, retention, and a restore aside or in
-// place (internal/api/ops_backup.go). -o/--option (sftp.command and
+// a backup of what the panel backs up, retention, the entries of one
+// directory of a snapshot (ls, for picking what to restore), and a restore
+// aside or in place (internal/api/ops_backup.go). -o/--option (sftp.command and
 // rclone.program run a program), --password-command, --repository-file,
 // --cache-dir, --files-from, --stdin-from-command and the rest are not
 // among them.
@@ -98,6 +99,12 @@ func (s *Server) planRestic(c *toolCall) (*toolPlan, error) {
 		// restore it in place later, too.
 		if area := s.restoreArea(); slices.ContainsFunc(a[6:], func(p string) bool { return below(area, p) }) {
 			plan.args = append(append([]string{}, a...), "--exclude="+resticPattern(area))
+		}
+	case len(a) == 4 && a[0] == "ls" && a[1] == "--json":
+		// One directory's entries, its subdirectories not walked: names,
+		// sizes and times of what the snapshot holds there, no content.
+		if !resticSnapshotRe.MatchString(a[2]) || !cleanAbs(a[3]) {
+			return nil, refuseArgs("restic", a, "restic ls --json <snapshot> <absolute directory>")
 		}
 	case len(a) >= 4 && a[0] == "restore":
 		if _, err := s.planResticRestore(plan); err != nil {

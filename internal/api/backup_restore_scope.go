@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -242,4 +244,102 @@ func (s *Server) streamRestoredDump(ctx context.Context, name, account, p string
 		return fmt.Errorf("mysql: %s", toolOutput(out.Output))
 	}
 	return nil
+}
+
+type snapshotLsInput struct {
+	Ref      string `path:"ref"`
+	Snapshot string `path:"snapshot" pattern:"^([0-9a-f]{8,64}|latest)$"`
+	Path     string `query:"path" maxLength:"4096" doc:"an absolute directory of the snapshot; empty lists the snapshot's own paths"`
+}
+
+type snapshotLsOutput struct {
+	Body apitypes.SnapshotListing
+}
+
+// registerSnapshotBrowse is the listing a restore picks its paths from, a
+// file at a time if need be: one directory of a snapshot, its entries with
+// type, size and time — names, never content.
+func (s *Server) registerSnapshotBrowse() {
+	huma.Register(s.api, huma.Operation{
+		OperationID: "backup-snapshot-ls", Method: http.MethodGet, Path: "/backups/targets/{ref}/snapshots/{snapshot}/ls", Summary: "What a directory of a snapshot holds", Tags: []string{"backups"}, Security: secured, Metadata: adminOnly,
+	}, func(ctx context.Context, in *snapshotLsInput) (*snapshotLsOutput, error) {
+		t, err := s.loadTarget(ctx, in.Ref)
+		if err != nil {
+			return nil, err
+		}
+		if in.Path == "" {
+			snap, err := s.snapshotOf(ctx, t, in.Snapshot)
+			if err != nil {
+				return nil, err
+			}
+			out := apitypes.SnapshotListing{Path: "", Entries: []apitypes.SnapshotEntry{}}
+			for _, p := range snap.Paths {
+				kind := "dir"
+				if ext := filepath.Ext(p); ext == ".sql" || ext == ".db" {
+					kind = "file"
+				}
+				out.Entries = append(out.Entries, apitypes.SnapshotEntry{Name: p, Type: kind, Path: p})
+			}
+			return &snapshotLsOutput{Body: out}, nil
+		}
+		p := filepath.Clean(in.Path)
+		if !filepath.IsAbs(p) || p != in.Path && p+"/" != in.Path {
+			return nil, huma.Error422UnprocessableEntity("path must be a clean absolute path")
+		}
+		env, err := s.resticEnv(t)
+		if err != nil {
+			return nil, huma.Error422UnprocessableEntity(err.Error())
+		}
+		res, err := s.restic(ctx, env, 300, "ls", "--json", in.Snapshot, p)
+		if err != nil {
+			return nil, huma.Error502BadGateway(err.Error())
+		}
+		if res.ExitCode != 0 {
+			return nil, huma.Error502BadGateway("restic: " + lastLinesJoin(res.Output, 3))
+		}
+		return &snapshotLsOutput{Body: parseSnapshotLs(p, res.Output)}, nil
+	})
+}
+
+// parseSnapshotLs reads restic ls --json: the snapshot's line, then one line
+// a node — the directory itself among them, left out (a file asked for is
+// its only entry). The agent keeps the last 512 KiB of a tool's output: a
+// directory of more entries comes back cut at its start, which says so.
+func parseSnapshotLs(dir, out string) apitypes.SnapshotListing {
+	listing := apitypes.SnapshotListing{Path: dir, Entries: []apitypes.SnapshotEntry{}}
+	listing.Truncated = strings.HasPrefix(out, "[...truncated...]")
+	var self *apitypes.SnapshotEntry
+	for _, line := range strings.Split(out, "\n") {
+		var n struct {
+			Name        string `json:"name"`
+			Type        string `json:"type"`
+			Path        string `json:"path"`
+			Size        int64  `json:"size"`
+			MTime       string `json:"mtime"`
+			StructType  string `json:"struct_type"`
+			MessageType string `json:"message_type"`
+		}
+		if json.Unmarshal([]byte(strings.TrimSpace(line)), &n) != nil || n.Path == "" || n.StructType == "snapshot" || n.MessageType == "snapshot" {
+			continue
+		}
+		e := apitypes.SnapshotEntry{Name: n.Name, Type: n.Type, Path: n.Path, Size: n.Size, MTime: n.MTime}
+		if n.Path == dir {
+			self = &e
+			continue
+		}
+		if filepath.Dir(n.Path) == dir {
+			listing.Entries = append(listing.Entries, e)
+		}
+	}
+	if len(listing.Entries) == 0 && self != nil && self.Type != "dir" {
+		listing.Entries = append(listing.Entries, *self)
+	}
+	sort.SliceStable(listing.Entries, func(i, j int) bool {
+		a, b := listing.Entries[i], listing.Entries[j]
+		if (a.Type == "dir") != (b.Type == "dir") {
+			return a.Type == "dir"
+		}
+		return a.Name < b.Name
+	})
+	return listing
 }

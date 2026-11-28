@@ -533,6 +533,23 @@ type RestoreRequest struct {
 	Scope string `json:"scope,omitempty" maxLength:"300" doc:"what to restore: user:<login> (the home and the account's databases), site:<domain> (the site's files), db:<name> (the database); in place a database is loaded back, aside its dump lands as a file; server or empty is the whole snapshot (aside only)"`
 }
 
+// SnapshotEntry is one entry of a directory of a snapshot.
+type SnapshotEntry struct {
+	Name  string `json:"name"`
+	Type  string `json:"type" doc:"dir, file or symlink"`
+	Path  string `json:"path"`
+	Size  int64  `json:"size,omitempty"`
+	MTime string `json:"mtime,omitempty"`
+}
+
+// SnapshotListing is what a directory of a snapshot holds; at its top, the
+// snapshot's own paths.
+type SnapshotListing struct {
+	Path      string          `json:"path"`
+	Entries   []SnapshotEntry `json:"entries"`
+	Truncated bool            `json:"truncated,omitempty" doc:"the directory has more entries than came back: name what is not shown by its path"`
+}
+
 // Snapshot is a restic snapshot.
 type Snapshot struct {
 	ID       string   `json:"id"`

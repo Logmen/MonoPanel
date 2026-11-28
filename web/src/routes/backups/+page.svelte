@@ -154,8 +154,27 @@
     const p = scopeParts(tag);
     rest = { snap: s, where: 'aside', kind: p.scopeKind, arg: p.scopeArg, include: '', sure: false };
     loadScope(p.scopeKind);
+    browse = { path: '', entries: [], truncated: false, busy: false, error: '' };
   }
-  function setRestoreKind(kind: RestoreKind) { if (!rest) return; rest.kind = kind; rest.arg = ''; if (kind !== 'paths') loadScope(kind); if (kind === 'server') rest.where = 'aside'; }
+  function setRestoreKind(kind: RestoreKind) { if (!rest) return; rest.kind = kind; rest.arg = ''; if (kind !== 'paths') loadScope(kind); else browseTo(''); if (kind === 'server') rest.where = 'aside'; }
+  // Picking paths by hand: the snapshot is browsed a directory at a time
+  // (restic ls), and what is ticked — a directory or a single file — goes
+  // into the paths to restore.
+  let browse = $state<{ path: string; entries: any[]; truncated: boolean; busy: boolean; error: string }>({ path: '', entries: [], truncated: false, busy: false, error: '' });
+  async function browseTo(path: string) {
+    if (!rest || !snaps) return;
+    browse = { ...browse, path, busy: true, error: '' };
+    try {
+      const q = path ? `?path=${encodeURIComponent(path)}` : '';
+      const l: any = await api(`/backups/targets/${encodeURIComponent(snaps.target)}/snapshots/${rest.snap.short_id || rest.snap.id}/ls${q}`);
+      browse = { path, entries: l.entries ?? [], truncated: !!l.truncated, busy: false, error: '' };
+    } catch (e) { browse = { ...browse, busy: false, error: errText(e) }; }
+  }
+  const crumbs = $derived(browse.path ? browse.path.split('/').filter(Boolean).map((_, i, all) => ({ name: all[i], path: '/' + all.slice(0, i + 1).join('/') })) : []);
+  function togglePath(p: string) {
+    if (!rest) return;
+    rest.include = (includes.includes(p) ? includes.filter((x) => x !== p) : [...includes, p]).join(', ');
+  }
   function addPath(p: string) { if (rest && !includes.includes(p)) rest.include = [...includes, p].join(', '); }
   async function restore() {
     if (!rest || !snaps || !canRestore) return;
@@ -242,7 +261,25 @@
       <label class="flex items-start gap-2"><input type="radio" name="where" value="inplace" bind:group={rest.where} disabled={rest.kind === 'server'} class="mt-1" /><span>{t('backups.restoreInPlace')}{#if rest.kind === 'server'} <span class="text-xs text-muted">— {t('backups.restoreWholeAside')}</span>{/if}</span></label>
     </div>
     {#if rest.where === 'aside'}<p class="text-muted">{t('backups.restoreAsideHint')}</p>{/if}
-    {#if rest.kind === 'paths'}<div>
+    {#if rest.kind === 'paths'}<div class="border border-line rounded-lg">
+      <div class="flex flex-wrap items-center gap-1 px-2 py-1.5 border-b border-line text-xs font-mono">
+        <button type="button" class="hover:text-accent" onclick={() => browseTo('')}>{t('backups.browseRoot')}</button>
+        {#each crumbs as c}<span class="text-muted">/</span><button type="button" class="hover:text-accent" onclick={() => browseTo(c.path)}>{c.name}</button>{/each}
+        {#if browse.busy}<span class="text-muted ml-auto">{t('backups.browseBusy')}</span>{/if}
+      </div>
+      {#if browse.error}<p class="text-xs text-danger p-2">{browse.error}</p>{/if}
+      <div class="max-h-72 overflow-auto text-xs">
+        {#if browse.path}<label class="flex items-center gap-2 px-2 py-1 border-b border-line bg-surface-2"><input type="checkbox" checked={includes.includes(browse.path)} onchange={() => togglePath(browse.path)} /> <span>{t('backups.browseWholeDir')}</span></label>{/if}
+        {#each browse.entries as e (e.path)}<div class="flex items-center gap-2 px-2 py-1 hover:bg-surface-2">
+          <input type="checkbox" checked={includes.includes(e.path)} onchange={() => togglePath(e.path)} aria-label={e.path} />
+          <Icon name={e.type === 'dir' ? 'archive' : 'file'} size={12} />
+          {#if e.type === 'dir'}<button type="button" class="font-mono text-left break-all hover:text-accent" onclick={() => browseTo(e.path)}>{e.name}/</button>{:else}<span class="font-mono break-all">{e.name}{e.type === 'symlink' ? ' →' : ''}</span>{/if}
+          <span class="ml-auto text-muted tabular-nums whitespace-nowrap">{e.type === 'file' ? bytes(e.size) : ''}{#if e.mtime} · {when(e.mtime)}{/if}</span>
+        </div>{:else}{#if !browse.busy && !browse.error}<p class="text-muted p-2">{t('backups.browseEmpty')}</p>{/if}{/each}
+        {#if browse.truncated}<p class="text-warn p-2">{t('backups.browseTruncated')}</p>{/if}
+      </div>
+    </div>
+    <div>
       <label class="label" for="rinc">{t('backups.pathsComma')}</label>
       <textarea id="rinc" class="input font-mono text-xs h-16" bind:value={rest.include} placeholder={rest.where === 'inplace' ? t('backups.pathsRequired') : t('backups.pathsPlaceholder')}></textarea>
       {#if rest.snap.paths?.length}<div class="flex flex-wrap gap-1 mt-1.5">{#each rest.snap.paths as p}<button type="button" class="tag tag-muted hover:text-ink cursor-pointer max-w-full whitespace-normal break-all text-left" onclick={() => addPath(p)}>+ {p}</button>{/each}</div>{/if}
