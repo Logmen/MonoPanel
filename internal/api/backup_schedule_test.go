@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -169,5 +170,55 @@ func TestScheduledBackupScope(t *testing.T) {
 	f.call(http.MethodPatch, "/backups/targets/alex", map[string]any{"schedule_scope": "server"}, http.StatusOK, &res)
 	if res.Target.ScheduleScope != "server" {
 		t.Errorf("after PATCH: %q", res.Target.ScheduleScope)
+	}
+}
+
+// The whole server's backup takes the mailboxes once the panel's mail is
+// installed — and never the DKIM keys, which sign as the domains.
+func TestServerBackupTakesTheMailStore(t *testing.T) {
+	f := newSiteFixture(t)
+	paths, _, err := f.s.backupPaths(f.ctx, "server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(paths, mailBase) {
+		t.Errorf("the mail store without mail installed: %v", paths)
+	}
+	c := f.s.loadMailConfig(f.ctx)
+	c.Installed = true
+	if err := f.s.saveMailConfig(f.ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	if paths, _, err = f.s.backupPaths(f.ctx, "server"); err != nil || !slices.Contains(paths, mailBase) {
+		t.Errorf("no mail store with mail installed: %v %v", paths, err)
+	}
+	for _, p := range paths {
+		if strings.Contains(p, "dkim") {
+			t.Errorf("the DKIM keys in the backup: %s", p)
+		}
+	}
+	// An account's backup is its home and its databases, not the mail.
+	if paths, _, _ = f.s.backupPaths(f.ctx, "user:alex"); slices.Contains(paths, mailBase) {
+		t.Errorf("an account's backup took the mail store: %v", paths)
+	}
+}
+
+// The schedule's times are in the server's zone, and the list says which:
+// TZ when set, Etc/UTC as UTC.
+func TestBackupScheduleZone(t *testing.T) {
+	t.Setenv("TZ", "Asia/Almaty")
+	if z := serverZone(); z != "Asia/Almaty" {
+		t.Errorf("TZ=Asia/Almaty: %q", z)
+	}
+	t.Setenv("TZ", ":Etc/UTC")
+	if z := serverZone(); z != "UTC" {
+		t.Errorf("TZ=:Etc/UTC: %q", z)
+	}
+	f := newSiteFixture(t)
+	f.call(http.MethodPost, "/backups/targets", map[string]any{"name": "local", "type": "local", "repository": "/srv/backup", "schedule": "daily 22:00"}, http.StatusCreated, nil)
+	var list []*store.BackupTarget
+	f.call(http.MethodGet, "/backups/targets", nil, http.StatusOK, &list)
+	if len(list) != 1 || list[0].ScheduleZone != "UTC" {
+		t.Errorf("list: %+v", list)
 	}
 }

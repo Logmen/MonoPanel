@@ -137,7 +137,7 @@ mp backup target set <имя> [--schedule "daily ЧЧ:ММ"|"weekly <mon…sun> 
                                      # расписание — по времени сервера; daily без времени — 03:00; запуск вручную плановый не сдвигает,
                                      # пропущенный, пока сервер был выключен, выполняется, когда он поднялся; list показывает следующий запуск
 mp backup target list | rm <имя>
-mp backup run [--target …] [--scope server|user:<login>|site:<domain>|db:<name>]
+mp backup run [--target …] [--scope server|user:<login>|site:<domain>|db:<name>]   # server — веб-корень, конфигурация панели, сертификаты и ACME, дампы баз, база панели и почтовые ящики (/var/mail/monopanel, если почта установлена); ключей DKIM в бэкапе нет
 mp backup list [--target …] [-n 50] | snapshots [--target …]   # статус: running, done, partial (снимок без части файлов), failed
 mp backup restore <snapshot> [--target …] [--scope user:<логин>|site:<домен>|db:<имя>] [--in-place]   # по области: аккаунт — домашний каталог и его базы, сайт — файлы,
                                      # база — на месте дамп заливается обратно её же учётной записью (таблицы заменяются), рядом — файлом .sql;

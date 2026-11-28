@@ -89,6 +89,8 @@ func backupCmd() *cobra.Command {
 			schedule, next := t.Schedule, "-"
 			if schedule == "" {
 				schedule = T("вручную", "by hand")
+			} else if t.ScheduleZone != "" {
+				schedule += " " + t.ScheduleZone
 			}
 			if t.NextRunAt != nil {
 				next = t.NextRunAt.Local().Format("2006-01-02 15:04")
@@ -145,6 +147,8 @@ func backupCmd() *cobra.Command {
 		schedule := t.Schedule
 		if schedule == "" {
 			schedule = T("вручную", "by hand")
+		} else if t.ScheduleZone != "" {
+			schedule += " " + t.ScheduleZone
 		}
 		fmt.Printf(T("%s: расписание %s (%s), хранить %d/%d/%d", "%s: schedule %s (%s), keep %d/%d/%d"), t.Name, schedule, t.ScheduleScope, t.KeepDaily, t.KeepWeekly, t.KeepMonthly)
 		if t.NextRunAt != nil {

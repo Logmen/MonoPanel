@@ -137,7 +137,7 @@ mp backup target set <name> [--schedule "daily HH:MM"|"weekly <mon…sun> HH:MM"
                                      # --scope — what the schedule backs up, as mp backup run takes it: the whole server (the default), an account, a site or a database
                                      # the schedule is in the server's time; daily alone is 03:00; a run by hand does not move the planned one,
                                      # one missed while the server was down runs once it is up; list shows the next run
-mp backup run [--target …] [--scope server|user:<login>|site:<domain>|db:<name>]
+mp backup run [--target …] [--scope server|user:<login>|site:<domain>|db:<name>]   # server — the web root, the panel's configuration, certificates and ACME, database dumps, the panel's database and the mailboxes (/var/mail/monopanel, once the mail is installed); the DKIM keys stay out
 mp backup list [--target …] [-n 50] | snapshots [--target …]   # status: running, done, partial (a snapshot without some files), failed
 mp backup restore <snapshot> [--target …] [--scope user:<login>|site:<domain>|db:<name>] [--in-place]   # by scope: an account — its home and its databases, a site — its files,
                                      # a database — in place its dump is loaded back as its own account (tables replaced), aside as a .sql file;

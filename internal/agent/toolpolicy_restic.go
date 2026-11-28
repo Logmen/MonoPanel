@@ -133,7 +133,7 @@ func (s *Server) resticBackupPath(p string) error {
 	}
 	root := s.resticBackupRoot(p)
 	if root == "" {
-		return refuse("the panel backs up the web root, its configuration, certificates and the run's dumps")
+		return refuse("the panel backs up the web root, its configuration, certificates, the mail store and the run's dumps")
 	}
 	if s.inRestoreArea(p) {
 		return refuse(s.restoreAreaErr(p).Error())
@@ -151,13 +151,17 @@ func (s *Server) resticBackupPath(p string) error {
 }
 
 // resticBackupRoot is the tree among those resticBackupPath accepts that p
-// lies in, "" for none: the web root, the configuration directory, or the
-// data directory for its certificates, ACME account and a run's dumps.
+// lies in, "" for none: the web root, the configuration directory, the mail
+// store (the Maildirs; the DKIM keys, which sign as the domain, stay out of
+// the repository), or the data directory for its certificates, ACME account
+// and a run's dumps.
 func (s *Server) resticBackupRoot(p string) string {
 	dir, base := filepath.Dir(p), filepath.Base(p)
 	switch {
 	case atOrBelow(p, s.cfg.WWWRoot):
 		return s.cfg.WWWRoot
+	case atOrBelow(p, mailStore):
+		return mailStore
 	case atOrBelow(p, s.cfg.ConfigDir):
 		return s.cfg.ConfigDir
 	case p == filepath.Join(s.cfg.DataDir, "certs"), p == filepath.Join(s.cfg.DataDir, "acme"):

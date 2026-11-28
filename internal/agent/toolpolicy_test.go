@@ -207,6 +207,7 @@ func TestToolPolicyAcceptsThePanelsCallsDebian(t *testing.T) {
 		{"init rest", withEnv(tc(modeTool, "restic", "init"), rest...)},
 		{"init b2", withEnv(tc(modeTool, "restic", "init"), b2...)},
 		{"backup server", withEnv(tc(modeTool, "restic", "backup", "--json", "--tag", "monopanel", "--tag", "scope=server", www, s.cfg.ConfigDir, filepath.Join(data, "certs"), filepath.Join(data, "acme"), filepath.Join(run, "alex_wp.sql"), filepath.Join(run, "panel.db")), repo...)},
+		{"backup server with the mail store", withEnv(tc(modeTool, "restic", "backup", "--json", "--tag", "monopanel", "--tag", "scope=server", www, s.cfg.ConfigDir, "/var/mail/monopanel"), repo...)},
 		{"backup user", withEnv(tc(modeTool, "restic", "backup", "--json", "--tag", "monopanel", "--tag", "scope=user:alex", home), repo...)},
 		{"backup site", withEnv(tc(modeTool, "restic", "backup", "--json", "--tag", "monopanel", "--tag", "scope=site:shop.example.com", site), repo...)},
 		{"backup db", withEnv(tc(modeTool, "restic", "backup", "--json", "--tag", "monopanel", "--tag", "scope=db:alex_wp", filepath.Join(run, "alex_wp.sql")), repo...)},
@@ -396,6 +397,11 @@ func TestToolPolicyRefusesTheRest(t *testing.T) {
 		{"restic option", withEnv(tc(modeTool, "restic", "init", "--option=rclone.program=/tmp/x"), repo...)},
 		{"restic password-command", withEnv(tc(modeTool, "restic", "snapshots", "--json", "--tag", "monopanel", "--password-command=sh"), repo...)},
 		{"restic backup shadow", withEnv(tc(modeTool, "restic", "backup", "--json", "--tag", "monopanel", "--tag", "scope=server", "/etc/shadow"), repo...)},
+		// The mail store's Maildirs, not its neighbours: the DKIM keys sign
+		// as the domains, and the system's own mail spool is nobody's here.
+		{"restic backup dkim keys", withEnv(tc(modeTool, "restic", "backup", "--json", "--tag", "monopanel", "--tag", "scope=server", "/etc/opendkim/keys"), repo...)},
+		{"restic backup the mail spool", withEnv(tc(modeTool, "restic", "backup", "--json", "--tag", "monopanel", "--tag", "scope=server", "/var/mail"), repo...)},
+		{"restic backup beside the mail store", withEnv(tc(modeTool, "restic", "backup", "--json", "--tag", "monopanel", "--tag", "scope=server", "/var/mail/monopanel-old"), repo...)},
 		{"restic backup root", withEnv(tc(modeTool, "restic", "backup", "--json", "--tag", "monopanel", "--tag", "scope=server", www, "/root"), repo...)},
 		{"restic backup data", withEnv(tc(modeTool, "restic", "backup", "--json", "--tag", "monopanel", "--tag", "scope=server", data), repo...)},
 		{"restic backup run file", withEnv(tc(modeTool, "restic", "backup", "--json", "--tag", "monopanel", "--tag", "scope=server", run+"/id_rsa"), repo...)},

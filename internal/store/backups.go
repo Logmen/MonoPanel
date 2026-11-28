@@ -25,12 +25,15 @@ type BackupTarget struct {
 	ScheduleScope string     `json:"schedule_scope"`
 	ScheduleAt    *time.Time `json:"schedule_at,omitempty"`
 	NextRunAt     *time.Time `json:"next_run_at,omitempty"`
-	Enabled       bool       `json:"enabled"`
-	LastRunAt     *time.Time `json:"last_run_at,omitempty"`
-	LastStatus    string     `json:"last_status,omitempty"`
-	LastError     string     `json:"last_error,omitempty"`
-	CreatedAt     Time       `json:"created_at"`
-	UpdatedAt     Time       `json:"updated_at"`
+	// ScheduleZone is the server's time zone the schedule's times are in
+	// (the API fills it in).
+	ScheduleZone string     `json:"schedule_zone,omitempty"`
+	Enabled      bool       `json:"enabled"`
+	LastRunAt    *time.Time `json:"last_run_at,omitempty"`
+	LastStatus   string     `json:"last_status,omitempty"`
+	LastError    string     `json:"last_error,omitempty"`
+	CreatedAt    Time       `json:"created_at"`
+	UpdatedAt    Time       `json:"updated_at"`
 }
 
 // Backup is one run.

@@ -414,6 +414,12 @@ func (s *Server) backupPaths(ctx context.Context, scope string) (paths []string,
 	switch kind {
 	case "server":
 		paths = []string{s.cfg.WWWRoot, s.cfg.ConfigDir, filepath.Join(s.cfg.DataDir, "certs"), filepath.Join(s.cfg.DataDir, "acme")}
+		// The mailboxes, once the panel's mail is installed: they were in no
+		// backup at all. The DKIM keys stay out — whoever reads the
+		// repository would sign as the domains; mail install makes new ones.
+		if s.loadMailConfig(ctx).Installed {
+			paths = append(paths, mailBase)
+		}
 		all, err := s.db.ListDatabases(ctx, 0)
 		if err != nil {
 			return nil, nil, err

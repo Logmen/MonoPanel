@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -91,10 +93,14 @@ func (b backupSchedule) next(now time.Time) time.Time {
 	return b.last(now).AddDate(0, 0, 1)
 }
 
-// withNextRun fills in when each target's schedule comes next.
+// withNextRun fills in when each target's schedule comes next, and the time
+// zone its times are in: 03:00 on a server that runs in UTC is 08:00 in
+// Almaty, and the page shows the next run in the browser's own zone.
 func withNextRun(targets ...*store.BackupTarget) {
 	now := time.Now()
+	zone := serverZone()
 	for _, t := range targets {
+		t.ScheduleZone = zone
 		if b, ok := parseBackupSchedule(t.Schedule); ok && t.Enabled {
 			n := b.next(now)
 			t.NextRunAt = &n
@@ -154,4 +160,22 @@ func (s *Server) scheduledBackups(ctx context.Context) {
 			s.log.Info("scheduled backup", "target", t.Name, "schedule", t.Schedule, "scope", scope, "job", job.ID)
 		}
 	}
+}
+
+// serverZone names the time zone the scheduler's clock runs in: TZ when set,
+// else the IANA name /etc/localtime leads to (Etc/UTC as UTC), else the
+// zone's abbreviation.
+func serverZone() string {
+	name := ""
+	if tz, ok := os.LookupEnv("TZ"); ok && tz != "" {
+		name = strings.TrimPrefix(tz, ":")
+	} else if l, err := os.Readlink("/etc/localtime"); err == nil {
+		if i := strings.Index(l, "zoneinfo/"); i >= 0 {
+			name = l[i+len("zoneinfo/"):]
+		}
+	}
+	if name == "" {
+		name, _ = time.Now().Zone()
+	}
+	return strings.TrimPrefix(name, "Etc/")
 }
